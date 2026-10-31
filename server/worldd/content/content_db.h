@@ -1,0 +1,1660 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+// ============================================================================
+//  content/content_db.h
+//
+//  A read-only reader of content.db, the SQLite file plan C1's contentc builds from
+//  the client's design database (services/cmd/contentc, `go run ./cmd/contentc` ->
+//  dist/content/content.db).  worldd reads from it what the native bootstrap needs
+//  to value a character (plan A5/E1): the class of an archetype id and the six
+//  primary attributes of a class at a level.
+//
+//  The schema is services/internal/content/schema.go (the one place the DDL lives);
+//  this reader uses these of its tables and columns, and open() checks that they
+//  are there:
+//
+//    meta             key, value        schema_version (must be 1), contentc.version,
+//                                       source.dbc.sha256 (the design database's)
+//    class            guid, name, archetype_id
+//    class_stat_base  class_guid, level, stat_guid, stat_name, value, rounding_ambiguous
+//    ability_runtime, effect_runtime, effect_stat_runtime, stamina_rule
+//                     plan A7: what the ability runtime runs (below); contentc has run every formula
+//    item, item_equip_slot
+//                     plan B2 (contentc version 3): where each ItemRecord may be worn and whether a two-handed item takes all its
+//                     slots (the equip rules and the visible gear; below)
+//    skill_tree, skill_node, skill_node_require, skill_node_exclusive, skill_rank, skill_rank_cost, skill_rank_stat_mod, skill_point_type,
+//    leveling_point, item_weapon
+//                     plan D1 stage 2 (contentc version 5): the talents and the weapons' combos (talent_data, item_weapon)
+//    stat_program, quality_curve, stat_block_stat, item_set, set_bonus, item_tag, equip_slot
+//                     plan B3 (contentc version 4): the compiled stat formula graph, and what an item adds to the stats
+//                     (its stat block at each rarity, the quality bands, the sets, the tags) and the names of the equip slots
+//
+//  The file is opened SQLITE_OPEN_READONLY: a path that does not exist is an error
+//  and is never created (SQLite would otherwise make an empty file that the next run
+//  opens as a database with no tables), and nothing here can write to the file.
+//
+//  One ContentDb may be shared by several threads: the connection is opened in
+//  SQLite's serialized mode and every query prepares and finalizes its own
+//  statement.
+//
+//  Errors are returned, not thrown: a failing call returns nullopt and sets `error`
+//  to a message fit for a log line (and, from character_setup, for a login refusal).
+// ============================================================================
+#pragma once
+
+#include "items/rarity.h"
+#include "stats/gear.h"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+struct sqlite3;
+
+namespace aoc::worldd::content {
+
+/// contentc's meta rows that identify the file (logged by open()).
+struct ContentMeta {
+    int         schema_version = 0;     // meta schema_version; the only version this reader reads is kSchemaVersion
+    std::string contentc_version;       // meta contentc.version
+    std::string source_dbc_sha256;      // meta source.dbc.sha256: the design database the file was built from
+    std::string built_at;               // meta built_at ("" when the file has none)
+};
+// Cyb / C-O-A
+
+/// The schema version this reader reads (services/internal/content SchemaVersion).
+inline constexpr int kSchemaVersion = 1;
+
+/// The oldest contentc whose file this worldd reads (services/internal/content MinContentcVersion): version 4 has the stat program and
+/// the item stat tables (plan B3), version 5 the item uses, reward tables, level curves and auto-granted ranks (plan D1), version 6 the ability tables and the stat bundle's format 2 (plan D2), version 7 the NPC population chain and
+/// the vendors (plan E1), version 8 the routes' waypoints, 9 the combat tables and the spawn filter's records, 10 the reward tables, 11 the mounts (mount, mount_stat, mount_ability, mount_effect), 12 the city nodes (city_node, city_zoi and the other node tables: Nodes 1), 13 the gathering tables (gather_def, gather_tool, item_variation, profession, certification_level ...), the profession level-up curves and the host functions 180-184 (Gathering stage 2), 14 the items' inventory dimension and resource flag (item.inv_w, inv_h, resource) and the resource bags' grids (resource_bag, resource_bag_cell: Gathering stage 3, "Resource storage"), 15 the foliage defs and states and every gathering interaction (foliage_def, foliage_state, gather_interaction, gather_interaction_def: Gathering stage 3, "Foliage gathering"). An older file does not open, and the message says to rebuild it.
+inline constexpr int kMinContentcVersion = 15;
+
+/// One row of `class`: a player class.
+struct ClassRecord {
+    int64_t     guid = 0;               // the class's record Guid (CombatInfo.PrimaryClassId.Guid; the Bard's is 108640158570105)
+    std::string name;                   // "Bard"
+    int64_t     archetype_id = 0;       // the character-select archetype id (Bard 17747 ... Tank 17754)
+};
+
+/// One row of `class_stat_base`: a primary attribute of a class at a level.
+struct PrimaryAttribute {
+    int64_t     stat_guid = 0;          // the stat's record Guid, as the StatsComponent names it (Strength 0x634D499C567A)
+    std::string stat_name;              // "Strength" ...
+    double      value = 0;              // computed by contentc in float64, Round rounding halves up
+    /// contentc's flag: evaluating the formula in float32 (the engine's likely arithmetic) rounds to another integer
+    /// (7 of the 2400 rows; the real value is one of two neighbouring integers).
+    bool        rounding_ambiguous = false;
+};
+
+/// The levels class_stat_base covers (services/internal/content MinLevel, MaxLevel).
+inline constexpr int kMinLevel = 1;
+inline constexpr int kMaxLevel = 50;
+
+// ---- plan A7: the ability runtime's numbers ---------------------------------------------------------------------------------
+
+/// The record Guids the ability runtime needs by name: the three abilities, and the stats it spends and regenerates
+/// (services/internal/content known.go; the stats' Guids are the ones the captured Owner array carries).
+inline constexpr int64_t kGuidSprint = 6064631641648332884ll;
+inline constexpr int64_t kGuidDodge = 107258680465016ll;
+inline constexpr int64_t kGuidRest = 109393746155128ll;
+inline constexpr int64_t kGuidHealth = 108986352686712ll;                // the stats the basic regeneration tick reads and sets (plan D1, stage 2)
+inline constexpr int64_t kGuidMaxHealth = 108986356618873ll;
+inline constexpr int64_t kGuidHealthRegeneration = 109343399171806ll;
+inline constexpr int64_t kGuidMana = 109183576135288ll;
+inline constexpr int64_t kGuidMaxMana = 109183578756729ll;
+inline constexpr int64_t kGuidManaRegeneration = 109343399171796ll;
+inline constexpr int64_t kGuidGuard = 107887054050936ll;                // General_Guard: the weapon bank's first slot (plan D1, stage 2)
+inline constexpr int64_t kTypeAbilityRecord = 1841048597116038327ll;       // the TypeId of ReplicatedRecordsToLoad's elements
+inline constexpr int64_t kGuidStamina = 6064629575339934476ll;
+inline constexpr int64_t kGuidMaxStamina = 6064631747701440948ll;
+inline constexpr int64_t kGuidStaminaRegeneration = 6064631663405498419ll;
+/// plan D2, stage 2: TempHealth (the float-array stat the shields fill), the record types a hit's source names in its confirmation (the record
+/// type ids of the retail confirmations: 3,529 projectile hits, 5,455 ability hits, 1,525 effect hits, 432 reactions, 84 lingering zones), and
+/// the targeting record of a hit aimed at the caster, whose hits the server never confirms.
+inline constexpr int64_t kGuidTempHealth = 6064629069966082048ll;
+/// The class resources whose current value is the character's own state between limits, with a regeneration program that reads it (stat_def rows with
+/// a regeneration and no spawn at the maximum: the Tank's Courage, the Cleric's DivinePower and its Gen, the Fighter's Momentum, the Ranger's Focus,
+/// the Summoner's Essence).
+inline constexpr int64_t kResourceStats[] = {6064629429438907308ll, 6064629623747772676ll, 6064629623761404733ll, 6064629959589298751ll,
+                                             6064633175093543338ll, 6064633668368219158ll};
+inline constexpr int64_t kSourceTypeAbility = 1841048597116038327ll;
+inline constexpr int64_t kSourceTypeProjectile = 979581256175327151ll;
+inline constexpr int64_t kSourceTypeEffect = 3377240744094973029ll;
+inline constexpr int64_t kSourceTypeZone = 7793593157135267051ll;
+inline constexpr int64_t kSourceTypeReaction = 6091248426050982904ll;
+inline constexpr int64_t kTargetingDefaultSelf = 6064628968549646338ll;
+
+/// HeldAbilityBehavior: Smart is held while the key is pressed (Sprint), Toggle starts on one press and ends on the next
+/// (Rest), Naive is a plain press (Dodge).
+enum class Held : uint8_t { Naive, Smart, Toggle };
+// [CoA - C.Y.B]
+
+/// One row of `ability_runtime` (contentc's resolved numbers; the table's comments in schema.go say what each is).
+struct AbilityRule {
+    int64_t     guid = 0;
+    std::string name;
+    Held        held = Held::Naive;
+    bool        requires_out_of_combat = false;
+    double      min_stamina = 0;            // the Stamina the ability needs to start (0: none)
+    int64_t     cost_stat_guid = 0;         // 0: it spends nothing
+    double      cost_amount = 0;            // once, at the trigger, or per charge when charge_interval > 0
+    bool        cost_requires_moving = false;
+    double      charge_interval = 0;        // seconds between charges of a held ability (0: paid once)
+    double      cooldown = 0;               // seconds
+    bool        triggers_cooldown = false;
+    bool        disable_during_cooldown = false;
+    bool        targets_self = false;
+    int64_t     effect_guid = 0;            // the ability's own effect (0: none)
+    std::string montage_path;
+    std::string cancel_section;
+};
+
+/// A stat mod of an effect: `stat_guid` gets + (factor x the owner's `source_stat_guid` + addend); no source stat (0): a
+/// constant.
+struct StatMod {
+    int64_t stat_guid = 0;
+    int64_t source_stat_guid = 0;
+    double  factor = 0;
+    double  addend = 0;
+};
+
+/// One row of `effect_runtime` with its `effect_stat_runtime` mods.
+struct EffectRule {
+    int64_t              guid = 0;
+    std::string          name;
+    bool                 infinite = false;
+    double               duration = 0;      // seconds; 0 with infinite
+    double               tick_timer = 0;
+    bool                 stops_regen_standing = false;   // the StaminaRegeneration formula gives 0 with this effect on the owner
+    bool                 stops_regen_moving = false;
+    int64_t              end_effect_guid = 0;            // the regeneration pause its End hit applies (0: none)
+    double               end_effect_duration = 0;
+    std::vector<StatMod> stat_mods;
+};
+
+/// Everything the ability runtime reads from content.db.
+struct AbilityRules {
+    AbilityRule                   sprint, dodge, rest;
+    std::map<int64_t, EffectRule> effects;               // by effect Guid: the abilities' effects and their End hits' effects
+    double                        stat_regen_time = 1;   // stamina_rule stat_regen_time: seconds between regeneration ticks
+    double                        regen_rate = 5;        // regen.rate_enabled: Stamina per second when nothing stops it
+
+    const AbilityRule* ability(int64_t guid) const {
+        return guid == sprint.guid ? &sprint : guid == dodge.guid ? &dodge : guid == rest.guid ? &rest : nullptr;
+    }
+    const EffectRule* effect(int64_t guid) const {
+        const auto it = effects.find(guid);
+        return it == effects.end() ? nullptr : &it->second;
+    }
+};
+
+// ---- plan B2: items ---------------------------------------------------------------------------------------------------------
+
+/// The facts of one ItemRecord the equip rules need (rows of `item` and `item_equip_slot`).  Item rarities, step 0: it carries the rarity rule's facts too (items/rarity.h: the
+/// quality curve and RarityMin..RarityMax), so a toast, a price or a new item's durability read the rarity the client shows.
+struct ItemRecord : items::ItemRarityFacts {
+    int64_t              guid = 0;              // the item's record Guid (an item instance's ItemRecordId)
+    std::string          name;                  // "Gear_Armor_Light_Starter_Chest"
+    /// The record's bCanEquip: NOT what the client wears. The three starter armor pieces of every class's kit have it 0 and are
+    /// worn, and 374 gear records have a slot and 0 (services/internal/content schema.go); only equip_slots decides what is worn.
+    bool                 can_equip = false;
+    /// A two-handed item: worn, it takes every slot of equip_slots (a Sword2H: Primary and Secondary; a Book: Ranged and RangedOffHand).
+    bool                 occupies_all_equip_slots = false;
+    /// The EEquipSlot values the item may be worn in, in the record's order (empty: it is not worn). The first free one is used
+    /// when the client does not name a slot.
+    std::vector<uint8_t> equip_slots;
+    /// Plan D1: what a fresh instance of the item is (a reward): its default quality, the most of it one stack holds and its
+    /// durability at that quality (the kit's rule: MaxDurability rounded half up, 0 for an item with none).
+    int32_t              default_quality = 1;
+    int32_t              max_stack_size = 1;
+    double               max_durability = 0;   // at the default quality, held by no bound (the value of contentc's item.max_durability); a new item's is max_durability_at
+    /// false when the data's DefaultQuality is below 1 (six reagents hold -3 or -2: a marker no instance can hold; a fresh instance takes quality 1 and no rarity can be chosen for it).
+    bool                 has_quality = true;
+    /// The item's MaxDurability at each rarity (the row of its stat block); none for an item whose block has no such stat.
+    std::optional<items::RarityRange> durability_stat;
+    /// Gathering stage 3 (contentc version 14): the cells the item takes in a resource container's grid (inv_w x inv_h, never turned), and whether it is a resource
+    /// (its gameplay tags hold a child of item.resource): a resource item is kept in a Resource container, any other item in the Backpack, the Equipment or the Quest storage.
+    int32_t              inv_w = 1;
+    int32_t              inv_h = 1;
+    bool                 resource = false;
+    /// Gathering stage 3, "the pick-up popup" (contentc version 16): the record's ItemName as the player reads it ("Coconut Wood"; item.display_name).  Empty where the record has
+    /// no name and in a file older than version 16 (it opens all the same; the popup's text then uses the record's `name`).
+    std::string          display_name;
+
+    /// The maximum durability of a new item of this record at `quality`: its MaxDurability stat at the rarity the item shows (items/rarity.h max_durability_at), else the record's own
+    /// value; 0 for an item that does not wear.  A repair restores the same maximum.
+    float max_durability_at(int quality) const {
+        return static_cast<float>(items::max_durability_at(*this, durability_stat ? &*durability_stat : nullptr, max_durability, static_cast<double>(quality)));
+    }
+};
+
+/// Gathering stage 3 (contentc version 14): the grid a worn resource bag gives its container (rows of resource_bag and resource_bag_cell).
+struct ResourceBagRecord {
+    int64_t                       item = 0;       // the bag item's record Guid
+    int64_t                       def = 0;        // its ResourceBagDef
+    std::string                   def_name;
+    int32_t                       columns = 0;    // BagDimension.X
+    int32_t                       rows = 0;       // BagDimension.Y
+    bool                          custom = false; // bCustomDimension: the matrix applies
+    /// The def's BagMatrixOverride by column (matrix[x][y]): -1 usable, -2 blocked; empty when the def has none.  It is stored even when `custom` is false (the Sanctus def's).
+    std::vector<std::vector<int32_t>> matrix;
+};
+
+// ---- plan D1: using an item, the level curves and the ranks a level grants (contentc version 5) ---------------------------------------
+
+/// The record Guids and TypeIds of plan D1 (services/internal/content known.go).
+inline constexpr int64_t kGuidAdventuring = 108651085518458ll;              // the LevelingTypeDef of the character's own level
+inline constexpr int64_t kGuidUniversalTree = 6064631673604472832ll;        // the SkillTree whose nodes a level grants by itself
+inline constexpr int64_t kGuidAdventuringXPAddMult = 6064630809541214212ll; // the stat the level scrolls' formula adds to 1
+inline constexpr int64_t kGuidDropCrate = 6064633774740275540ll;            // General_DropCrate: the ability that takes the crate off the back
+/// Gathering stage 3, "Hunting": the Hunting profession (CharacterProfession; its leveling type is LevelingTypeDef_Hunter 109460722964090).  A gathering interaction of this profession is
+/// the hunt of a creature's corpse with a Bow (the 53 Hunting_<kind> interactions); every other gathering interaction is a node's or a tree's.
+inline constexpr int64_t kProfessionHunting = 108752770061965ll;
+inline constexpr int64_t kTypeLevelingTypeDef = 5949882024684912047ll;      // the TypeId of the XPTracker's map keys
+inline constexpr int64_t kTypeSkillTree = 297887639323616934ll;             // the TypeId of SkillTreePurchasesFastMap's keys
+inline constexpr int64_t kTypeSkillRank = 4847957796014348780ll;            // the TypeId of a tree list's ranks
+inline constexpr int64_t kTypeItemRecord = 2616523457551378613ll;
+
+/// A row of `item_use` with its `item_action` rows: what using the item does.
+struct ItemUse {
+    int64_t              item = 0;
+    std::string          activation;        // EItemActivationAction without its prefix (ActivateActionResponses runs `actions`)
+    bool                 consume_on_use = false;
+    double               cooldown = 0;
+    bool                 disabled_in_combat = false;
+    std::vector<int64_t> actions;           // ActionResponse guids, in the record's order
+};
+
+/// A row of `action_response` with its `action_reward` rows.
+struct ActionResponse {
+    int64_t              guid = 0;
+    std::string          name;
+    std::string          response_type;     // EActionResponse without its prefix: GiveItem, SetPrimaryArchetype ...
+    int64_t              class_guid = 0;    // SetPrimaryArchetype's class (a `class` row's guid), 0 for the others
+    std::string          class_name;
+    bool                 remove_up_to_quantity = false;
+    std::vector<int64_t> reward_tables;     // GiveItem's, in the record's order
+};
+
+struct RewardItem {
+    int64_t item = 0;
+    int64_t variation = 0;
+    int32_t quantity = 1;
+};
+
+/// An ExperienceRewards entry resolved to the level scrolls' formula (schema.go reward_xp): the XP it grants is
+/// (curve(target) - curve(level) + debt_ratio * xp_of_level) / max(0.001, 1 + mult) + margin. target_level 0: not that formula.
+struct RewardXp {
+    std::string experience_type;   // EExperienceContextType without its prefix: Adventuring, Weapon ...
+    int         target_level = 0;
+    double      margin = 0;
+    int64_t     curve_guid = 0;
+    int64_t     mult_stat_guid = 0;
+    /// Gathering stage 2 (contentc version 13): a Profession reward's own expression, as an ab_expr id (0: none; the other kinds have none), and its text (the
+    /// profession is named in it: professions::profession_named_in).
+    int64_t     expr = 0;
+    std::string expression;
+};
+// == C-O-A | C:Y:B ==
+
+/// A row of `reward_table` with its items and experience rewards.
+struct RewardTable {
+    int64_t                 guid = 0;
+    std::string             name;
+    std::string             predicate;
+    int                     level_below = 0;   // the predicate GetPlayerLevel() < N as N; 0 none; -1 one contentc does not model
+    bool                    modelled = false;  // every container grants always and selects all (the GM items' shape)
+    std::vector<RewardItem> items;
+    std::vector<RewardXp>   experience;
+};
+
+/// A curve record of the design data (stat_curve: the Weapon_LevelUpCurve of the level scrolls' Weapon experience is one): its keys in order.
+struct CurveKeyRow {
+    double      level = 0, value = 0;
+    std::string interp;   // Linear, Constant or Cubic: how the curve goes on from this key
+};
+struct CurveRow {
+    int64_t                  guid = 0;
+    std::string              name;
+    std::vector<CurveKeyRow> keys;
+};
+
+/// A row of `leveling_type` with its curve: the XP total at which each level is reached, ascending by level.
+struct LevelingType {
+    int64_t                                   guid = 0;
+    std::string                               name;
+    std::string                               experience_type;
+    int                                       level_cap = 0;     // LevelCapOverride; 0: the curve's last level
+    bool                                      uses_debt = false;
+    int64_t                                   xp_mult_stat_guid = 0;
+    std::vector<std::pair<int, int64_t>>      curve;             // (level, xp)
+};
+
+/// A constant stat mod of an auto-granted rank's passive effect (skill_rank_stat_mod).
+struct RankStatMod {
+    int64_t     stat_guid = 0;
+    std::string stat_name;
+    double      value = 0;
+};
+
+/// A row of `skill_auto_grant`: a SkillTreeNode a level grants by itself, with its rank's constant stat mods.
+struct AutoGrant {
+    int64_t                  tree_guid = 0;
+    std::string              tree_name;
+    int64_t                  leveling_type_guid = 0;
+    int64_t                  node_guid = 0;
+    std::string              node_name;
+    int                      level_requirement = 0;
+    int64_t                  skill_guid = 0;
+    std::string              skill_name;
+    int64_t                  rank_guid = 0;
+    int64_t                  effect_guid = 0;
+    std::vector<RankStatMod> mods;
+};
+
+// ---- Gathering stage 2, part "Professions and GM items" (contentc version 13): the professions and their certification levels -----------------------------------
+
+/// A row of `certification_level`: the five tiers (Novice 0 ... GrandMaster 4), the profession levels each spans and how many professions a character may hold at it.
+struct CertificationRow {
+    int64_t     guid = 0;
+    std::string name;
+    int         tier = 0;
+    int         min_level = 1;
+    int         max_level = 10;
+    bool        limited = false;       // has_max_allowable
+    int         max_allowable = 0;
+};
+
+/// A row of `profession` with its leveling type and curve (the XP total at which each of the 50 levels is reached).
+struct ProfessionRow {
+    int64_t       guid = 0;
+    std::string   name;
+    std::string   category;            // Gathering, Processing or Crafting
+    int64_t       leveling_type_guid = 0;
+    int64_t       skill_tree_guid = 0;
+    LevelingType  leveling;
+};
+
+/// A row of `action_certification`: a SetCertificationLevel ActionResponse, one tier up (Promote) or down (Demote) for a profession.
+struct CertificationActionRow {
+    int64_t     action_guid = 0;
+    std::string name;
+    int64_t     profession_guid = 0;
+    bool        promote = true;
+};
+
+struct ProfessionData {
+    std::vector<ProfessionRow>                   professions;      // guid order
+    std::vector<CertificationRow>                certifications;   // tier order
+    std::map<int64_t, CertificationActionRow>    actions;          // by action guid
+};
+
+// ---- Glint tiers (contentc version 24): the currencies (currency_tier, currency_def) ----------------------------------------------------------------------------------------
+
+/// A row of `currency_tier`: a set of currency kinds that make one another up (Money; the six Glint kinds).
+struct CurrencyTierRow {
+    int64_t     guid = 0;
+    std::string name;
+    int64_t     max_base_quantity = 0;   // the most the wallet holds of the tier, in units of its first kind
+};
+
+/// A row of `currency_def`: one kind of a tier.  `ord` is its place in the tier (0 the smallest kind), `rate` how many of it make one of the next kind, `item` the item record it is carried as
+/// (0: the coins have none).
+struct CurrencyDefRow {
+    int64_t     guid = 0;
+    std::string name;
+    int64_t     tier = 0;                // 0: no tier lists the kind
+    int         ord = 0;
+    int64_t     item = 0;
+    int64_t     rate = 0;
+};
+
+struct CurrencyData {
+    std::vector<CurrencyTierRow> tiers;   // guid order
+    std::vector<CurrencyDefRow>  defs;    // by tier, then ord
+};
+
+// ---- Gathering stage 2, part "Harvesting" (contentc version 13): what a harvest reads (gather_def, gather_tool, item_variation) ------------------------------------
+
+/// A row of `gather_def`: a GatherableActorDef joined to its foliage data (the respawn), its PlayerInteractionDef (the range) and its GatheringInteractionData (the rest).
+struct GatherDefRow {
+    int64_t     guid = 0;               // the GatherableActorDef (what AGatherableActor.GatherableActorDef.Guid carries)
+    std::string name;                   // Plant_Daffodil_Medium_1
+    double      empty_duration = 0;     // GatheringFoliageData.EmptyDuration, seconds
+    double      override_respawn = 0;   // the actor def's OverrideRespawnDuration, seconds (0: none)
+    int64_t     interaction_guid = 0;   // the PlayerInteractionDef
+    double      interact_radius = 0;    // cm
+    double      interact_tolerance = 0; // cm
+    bool        allow_in_combat = true;
+    int64_t     profession_guid = 0;    // the CharacterProfession (Mining, Lumberjacking, Herbalism ...)
+    int         tool_slot = 0;          // the EEquipSlot of the tool: Pickaxe 26, Axe 29, Sickle 33, FishingRod 35, Bow 38
+    int64_t     cert_guid = 0;          // the CertificationLevel the interaction needs
+    int         cert_tier = 0;          // ... its tier (Novice 0 ... GrandMaster 4)
+    double      base_duration = 0;      // BaseGatheringDuration, seconds
+    int64_t     duration_expr = 0;      // ab_expr ids (0: none): the channel's length and the tool's wear
+    int64_t     durability_expr = 0;
+    int64_t     reward_guid = 0;        // loot_table.guid
+};
+
+/// A row of `gather_tool`: a tool item and what it is for.
+struct GatherToolRow {
+    int64_t     item_guid = 0;
+    std::string item_name;
+    int64_t     profession_guid = 0;    // GatheringToolData.Profession
+    int64_t     cert_guid = 0;
+    int         cert_tier = 0;          // the tier of nodes the tool reaches
+    int         tool_slot = 0;          // the slot the item is worn in
+    int64_t     required_profession = 0;   // the item's own requirement to be used (0: none)
+    int64_t     required_cert = 0;
+};
+
+struct GatherData {
+    std::map<int64_t, GatherDefRow>  defs;         // by GatherableActorDef guid
+    std::map<int64_t, GatherToolRow> tools;        // by item guid
+    std::map<int64_t, int64_t>       quality_expr; // ItemVariation guid -> the ab_expr id of its Quality formula (0: none)
+    std::map<int64_t, int64_t>       durability_expr; // ... and of its Durability formula
+};
+
+// ---- Gathering stage 3, part "Foliage gathering" (contentc version 15): the painted trees, plants and stones, and every gathering interaction ------------------------
+
+/// EFoliageState as the client's IndexedStates and FoliageData carry it (a harvested instance is Empty; regrowth passes Infancy and Juvenile up to the state it is painted in).
+inline constexpr int kFoliageInfancy = 0, kFoliageJuvenile = 1, kFoliageAdult = 2, kFoliageEmpty = 3;
+
+/// A row of `foliage_def`: a GatheringFoliageData.
+struct FoliageDefRow {
+    int64_t     guid = 0;
+    std::string name;                   // Tree_Oak_Large_1
+    double      empty_duration = 0;     // seconds an instance stays Empty after a harvest
+    int64_t     dynamic_guid = 0;       // the seasonal factor's def (not applied)
+    int         paint_state = kFoliageAdult;   // the state the map paints the instances in: what a regrown instance returns to
+    int         gatherable_state = kFoliageAdult, min_state = kFoliageInfancy, max_state = kFoliageAdult;
+    int64_t     state_guids[3] = {0, 0, 0};    // the GatheringFoliageState of Infancy, Juvenile, Adult (0: none)
+};
+
+/// A row of `foliage_state`: a GatheringFoliageState.
+struct FoliageStateRow {
+    int64_t     guid = 0;
+    std::string name;
+    double      lifecycle_duration = 0;   // seconds in the state before the next one (0: permanent)
+    int64_t     interaction_guid = 0;     // the gather_interaction that harvests the instance in this state (0: none)
+    double      override_distance = -1;   // cm (-1: the interaction's own)
+    double      override_angle = -1;      // degrees (-1: the interaction's own)
+    double      collision_radius = 0;     // cm
+};
+// (Cyb : C O A)
+
+/// A row of `gather_interaction`: a GatheringInteractionData with the range of the PlayerInteractionDef named like it.
+struct GatherInteractionRow {
+    int64_t     guid = 0;
+    std::string name;                   // Tree_Oak_Large, Hunting_Wolf
+    int         target_state = kFoliageEmpty;
+    int64_t     profession_guid = 0;
+    int64_t     cert_guid = 0;
+    int         cert_tier = 0;
+    int         tool_slot = -1;         // -1: the data names no tool
+    double      base_duration = 0;
+    int64_t     duration_expr = 0;
+    int64_t     durability_expr = 0;
+    int64_t     reward_guid = 0;
+    int64_t     interaction_guid = 0;   // the PlayerInteractionDef that carries the range (0: none)
+    double      interact_radius = 0, interact_tolerance = 0;
+    bool        allow_in_combat = true;
+};
+
+/// A row of `gather_interaction_def`: a PlayerInteractionDef that names a gathering interaction (the Hunting_<X> defs of the huntable creatures among them).
+struct GatherInteractionDefRow {
+    int64_t     guid = 0;
+    std::string name;
+    int64_t     gather_guid = 0;        // the GatheringInteractionData it names (one is no record)
+    double      interact_radius = 0, interact_tolerance = 0, discovery_distance = 0;
+    bool        allow_in_combat = true;
+};
+
+struct FoliageData {
+    std::map<int64_t, FoliageDefRow>           defs;               // by guid
+    std::multimap<std::string, int64_t>        defs_by_name;       // a name -> its guids (Stone_Limestone_Large_2 has two records)
+    std::map<int64_t, FoliageStateRow>         states;             // by guid
+    std::map<int64_t, GatherInteractionRow>    interactions;       // by GatheringInteractionData guid
+    std::map<int64_t, GatherInteractionDefRow> interaction_defs;   // by PlayerInteractionDef guid
+};
+
+// ---- plan D1, stage 2: the talents (contentc's skill_tree, skill_node, skill_node_require, skill_node_exclusive, skill_rank,
+//      skill_rank_cost, skill_rank_stat_mod, skill_point_type, leveling_point and item_weapon) ---------------------------------------
+
+/// The record Guids of the stage's rules by name: the point types a tree's ranks cost, which content.db names.
+inline constexpr const char* kPointArchetype = "Combat_Archetype";   // the class trees' points: 1 per level from 2
+inline constexpr const char* kPointStamina = "Combat_Stamina";       // the Universal tree's: 1 per level from 2
+inline constexpr const char* kPointWeapon = "Combat_Weapon";         // a weapon tree's: 1 per level of the line from 2 (24 by level 25)
+
+/// What a rank costs in points of one type.
+struct SkillCost {
+    int64_t point_type = 0;
+    int64_t quantity = 0;
+};
+
+/// A rank of a skill (skill_rank with its costs and, for an infinite effect, the constant stat mods).
+struct SkillRankRow {
+    int64_t                  guid = 0;
+    int                      ord = 0;             // the rank's place in its skill
+    std::string              name;
+    int64_t                  ability = 0;         // the ability it grants (0: none: a passive)
+    std::string              ability_name;
+    int64_t                  effect = 0;          // the passive effect it applies (0: none)
+    std::string              effect_name;
+    bool                     effect_infinite = false;
+    double                   effect_duration = 0;   // seconds; 0 with an infinite effect
+    std::vector<SkillCost>   costs;
+    std::vector<RankStatMod> mods;
+};
+
+/// A node of a tree with its skill's ranks.
+struct SkillNodeRow {
+    int64_t                  node = 0;
+    int                      ord = 0;             // the place in the tree's list
+    std::string              name;
+    int64_t                  skill = 0;
+    std::string              skill_name;
+    int                      level_requirement = 0;
+    int                      point_requirement = 0;   // points spent in the tree
+    bool                     auto_granted = false;    // a level grants its first rank by itself
+    bool                     auto_hotbar = false;     // the client puts it on the action bar
+    bool                     all_required = false;
+    int                      opt = 0;                 // a slot node is listed once per option (the same node and ord): the option's place in its slot
+    int64_t                  slot = 0;                // the SkillTreeSlot a slot node offers its skills from (a talent choice); 0: a plain node
+    std::vector<int64_t>     requires_skills;         // skills that must be owned (0: a requirement that is met)
+    std::vector<int64_t>     requires_nodes;          // slot nodes of the tree, each a requirement that any of its options owned meets
+    std::vector<int64_t>     exclusive_skills;
+    std::vector<SkillRankRow> ranks;
+};
+// [C | O | A :: C-Y-B]
+
+struct SkillTreeRow {
+    int64_t                   guid = 0;
+    std::string               name;
+    std::string               kind;                   // class, universal, weapon, profession, other
+    int64_t                   leveling_type_guid = 0;
+    int64_t                   class_guid = 0;
+    int64_t                   weapon_line_guid = 0;
+    std::vector<SkillNodeRow> nodes;                  // in the tree's order
+};
+
+/// Everything the talents catalog reads, in one go at startup.
+struct TalentData {
+    std::vector<SkillTreeRow>                                     trees;
+    std::map<std::string, int64_t>                                point_types;   // by name
+    /// What reaching a level of a leveling type gives: type guid -> level -> point type guid -> quantity.
+    std::map<int64_t, std::map<int, std::map<int64_t, int64_t>>>  points;
+};
+
+/// A weapon item's combo ability and weapon line (item_weapon).
+struct ItemWeaponRow {
+    int64_t     attack_ability = 0;
+    int64_t     skill_line = 0;
+    std::string skill_line_name;
+};
+
+// ---- plan E1: the NPC population chain and the vendors (contentc version 7) ----------------------------------------------------
+
+/// A PopulationFilter (npc_asset.filter, npc_filter.filter, contentc version 9): the conditions under which an asset may spawn.  Enum values are
+/// their names without the type ("Village", "Kaelar", "Riverlands"); `node_level_*` are ENodeLevel names (Wilderness, Crossroads, Encampment, Village,
+/// Town, City, Metropolis; cCount never matches); a time of day of -1 on both ends is no condition.
+struct PopFilter {
+    std::vector<std::string> biomes, cultures, node_types, required_tags, seasons, weather;
+    std::vector<int64_t>     node_ids, zones;
+    std::string              node_level_min = "Wilderness", node_level_max = "Metropolis";
+    double                   time_of_day_start = -1, time_of_day_end = -1;
+};
+
+/// A PopulationAsset (npc_asset): the NPC's blueprint and archetype path, faction, radii, scale.
+struct NpcAssetRow {
+    int64_t     guid = 0;
+    std::string name;
+    std::string asset_ref;
+    std::string archetype_path;     // "" when the asset names no Blueprint
+    int64_t     faction = 0;
+    double      aggro_radius = 0, leash_radius = 0;
+    bool        override_aggro = false, override_leash = false;
+    double      scale_min = 1, scale_max = 1;
+    int64_t     dialogue_root = 0, interact_component = 0, interaction_def = 0, appearance = 0;
+    std::vector<int64_t> loot_tables;
+    // contentc version 9 (the spawn filter)
+    bool        dev_only = false;
+    PopFilter   filter;
+    std::vector<std::string> tags;       // the asset's GameplayTags
+};
+
+/// A PopulationInstance (npc_instance): the AssetSets it draws from and how its NPC lives.
+struct NpcInstanceRow {
+    int64_t     guid = 0;
+    std::string name;
+    int         level_min = 0, level_max = 0;
+    bool        dynamic_leveling = false;
+    double      respawn_time = 0, respawn_variance = 0;
+    std::string respawn_rule;
+    int64_t     patrol_route = 0, vendor = 0, interact_component = 0, interact_response = 0, dialogue = 0;
+    int64_t     dialogue_root = 0;   // quests slice 0 (contentc version 17): the conversation root the instance opens (npc_dialogue; 0: none, or a file of an older version)
+    std::string ambient_behavior;
+    double      min_radius = 0, max_radius = 0, arrival_distance = 0, wander_speed_mult = 0, wander_delay = 0, wander_delay_deviation = 0;
+    std::string speed_expr, snapping_rule, orientation_type, spawn_location_type;
+    double      aggro_radius = 0, area_weight = 0, activation_range = 0;
+    bool        override_aggro = false, blacklisted = false;
+    int64_t     group_id = 0;
+    // contentc version 8 (stage 2): how a patrol walks its route
+    int         num_waypoints = 0;       // how many of the route's waypoints a patrol visits (0: all)
+    double      max_angle = 0, follow_distance = 0;
+    std::string formation, idle_anim;
+    bool        align_to_slope = false;
+    // contentc version 9 (the spawn filter)
+    bool        dev_only = false;
+    int64_t     filter_override = 0;     // FilteringOverrideId (PopulationData::filters), 0 none
+    std::string spawner_priority;
+    std::vector<std::string> tags;
+    std::vector<int64_t> asset_sets;
+    std::vector<int64_t> loot_tables;
+};
+
+/// A PathingRoute (npc_route, contentc version 8): the patrol path.  `waypoints` are the places a patrol walks to, in order (every route but 14 has
+/// them), `pauses` the seconds it waits at each (shorter than waypoints: the rest wait 0), `points` the spline's points of the same path (924 routes
+/// carry both).  Positions are relative to the actor's transform (translation, rotation as a quaternion, scale) unless a flag says the route is placed
+/// by something else (a city node, an encounter): those are not walked in the open world.
+struct NpcRouteRow {
+    int64_t     guid = 0;
+    std::string name;
+    bool        looping = false, start_closest = false, relative_city_node = false, relative_encounter = false;
+    double      tx = 0, ty = 0, tz = 0, qx = 0, qy = 0, qz = 0, qw = 1, sx = 1, sy = 1, sz = 1;
+    std::vector<std::array<double, 3>> points;
+    std::vector<std::array<double, 3>> waypoints;
+    std::vector<double>                pauses;
+    std::string pathing_set;
+};
+
+/// One instance of a PopulationSet at a local offset (cm, yaw in degrees).
+struct NpcSetMember {
+    int64_t key = 0;
+    int64_t instance = 0;
+    double  x = 0, y = 0, z = 0, yaw = 0;
+    bool    random_rotation = false;
+};
+
+struct NpcSetRow {
+    int64_t                   guid = 0;
+    std::string               name;
+    int64_t                   area = 0;      // PopulationArea (0: none)
+    double                    activation_range = 0;
+    bool                      blacklisted = false;
+    bool                      dev_only = false;           // contentc version 9
+    int64_t                   filter_override = 0;
+    std::vector<std::string>  tags;
+    std::vector<NpcSetMember> members;
+};
+
+/// A WorldSpawn (npc_world_spawn): the map its placements belong to ("Verra_World_Master" for the open world; a quest's or an event's spawns, a node's
+/// layout and the test maps name another or none) and its filter override.
+struct NpcWorldSpawn {
+    int64_t     guid = 0;
+    std::string name;
+    std::string culture;
+    std::string map_name;
+    bool        dev_only = false;
+    int64_t     filter_override = 0;
+};
+// -- Cyb & C-O-A --
+
+/// A WorldSpawn's placement of a set: where, and its level overrides (npc_placement).
+struct NpcPlacement {
+    int64_t spawn = 0;
+    int64_t key = 0;
+    int64_t set = 0;
+    double  x = 0, y = 0, z = 0, yaw = 0;
+    int     min_level = 0, max_level = 0;
+};
+
+struct NpcAreaCircle {
+    double  x = 0, y = 0, z = 0, extent = 0, weight = 1;
+    int64_t max_spawns = 0;
+};
+
+struct NpcAreaRow {
+    int64_t                    guid = 0;
+    std::string                name;
+    int                        min_spawns = 0, max_spawns = 0;
+    std::vector<NpcAreaCircle> circles;
+};
+
+/// Plan E1, stage 3 (contentc version 9): the combat configuration. The DamageProfile's stats (DefaultCombat.ini; combat_profile: the key is
+/// "PowerMult", "Physical.Damage", ...; combat_element: one row per element tag), the combat rules' numbers (combat_config) and who fights whom
+/// (CharacterAlignment.RelationshipsIds and the relationship records' CombatPermissions: 1 hostile, 2 friendly, 3 neutral).
+// The keys of combat_config (services/internal/content/combat.go).
+inline constexpr const char* kCombatInCombatTimer = "in_combat_timer";
+inline constexpr const char* kCombatGlobalDamageMult = "global_damage_multiplier";
+inline constexpr const char* kCombatGlobalHealingMult = "global_healing_multiplier";
+inline constexpr const char* kCombatOutOfRange = "out_of_range_distance";
+inline constexpr const char* kCombatActivationLeeway = "server_activation_leeway";
+inline constexpr const char* kCombatThirdPartyHit = "third_party_hit_distance";
+inline constexpr const char* kCombatMaxHitsPerRpc = "max_hits_per_rpc";
+inline constexpr const char* kCombatStatRegenTime = "stat_regen_time";
+// The CharacterRelationship CombatPermissions values, and the alignment records a player carries (Player) and that make a creature the players' enemy.
+inline constexpr int kPermissionHostile = 1, kPermissionFriendly = 2, kPermissionNeutral = 3;
+inline constexpr int64_t kAlignmentPlayer = 6064629444695359488ll;
+inline constexpr int64_t kAlignmentNpcPlayerEnemy = 6064629454762803230ll;
+
+struct CombatRows {
+    struct Element {
+        std::string tag;
+        int64_t     damage = 0, damage_mult = 0, damage_add_mult = 0, mitigation = 0;
+    };
+    std::map<std::string, int64_t>          profile;
+    std::vector<Element>                    elements;
+    std::map<std::string, double>           config;
+    std::map<int64_t, int>                  permissions;                     // relationship record -> CombatPermissions
+    std::map<int64_t, std::map<int64_t, int64_t>> relation;                  // alignment -> other alignment -> relationship record
+};
+
+// ---- plan E1, stage 3, part 2 (contentc version 10): the reward tables ------------------------------------------------------------
+/// One reward table (loot_table: services/internal/content/loot.go has the document).  An expression is an ab_expr id (0: none); the programs are the
+/// ability catalog's.
+struct LootXp {
+    std::string type;      // Adventuring, Weapon, NodeActivity ...
+    int64_t     expr = 0;
+};
+struct LootItem {
+    int64_t item = 0, variation = 0, qty = 0;
+};
+struct LootCurrency {
+    int64_t currency = 0, amount = 0;
+};
+struct LootReward {
+    std::vector<LootXp>       xp;
+    std::vector<LootItem>     items;
+    std::vector<LootCurrency> currency;
+};
+struct LootContainer {
+    std::string grant;      // Auto (straight to the players) or Always (into the loot)
+    std::string algo;       // All, PureRandom, PerElementWeightedRandom, PerElementWeightedExpressionRandom, RollEachByPercent
+    int64_t     pred = 0;   // GrantPredicate
+    int64_t     n = 0;      // NumberToSelect
+    std::vector<double>     w;
+    std::vector<int64_t>    pct, xw;
+    std::vector<LootReward> rewards;
+};
+struct LootTable {
+    int64_t     guid = 0;
+    std::string name;
+    int64_t     pred = 0;
+    std::string algo;       // the sub tables' selection ("" none)
+    int64_t     n = 0;
+    std::vector<int64_t>       subs;
+    std::vector<double>        w;
+    std::vector<int64_t>       pct, xw;
+    std::vector<LootContainer> containers;
+};
+
+/// The chain, whole: 4,576 assets, 16,902 instances, 4,728 sets, 15,179 placements, 608 areas.
+// ---- quests, slice 0 (contentc version 17): NPC conversations (dialogue_*, npc_dialogue) ------------------------------------------------------------
+
+/// One thing a requirement compares: a quest's or objective's state, an item count, an expression, a currency or a variable, against a number.
+struct DialogueCriterion {
+    std::string              kind;         // QuestState, ObjectiveState, Item, Expression, Currency, PlayerVariable, WorldVariable
+    std::string              op;           // Equal, NotEqual, GreaterThan, GreaterThanOrEqual, LessThan, LessThanOrEqual
+    int64_t                  value = 0;    // the number it is compared with
+    int64_t                  quest = 0, objective = 0, currency = 0;
+    std::string              quest_query;      // Available, Active, Completed, ReadyForHandIn
+    std::string              objective_query;  // Active, Succeeded, Hidden, Completed, cCount
+    std::string              variable;         // the name of a player or world variable
+    std::string              right_variable;   // compare with this variable instead of `value` (empty: with `value`)
+    std::string              expression;
+    std::vector<int64_t>     items;            // the item records an Item criterion counts
+    std::vector<std::string> tags;             // or the item tags
+};
+
+/// A condition: a tree (tokens: node := type count child..., type 0 AND and 2 OR over nodes, 1 ALL, 3 ANY and 5 NONE over criterion indexes) and its criteria.
+struct DialogueRequirement {
+    std::vector<int>               tokens;
+    std::vector<DialogueCriterion> criteria;
+    bool empty() const { return tokens.empty(); }
+};
+
+struct DialogueActionRow {
+    std::string action;   // OpenWindow, ActionResponse, GiveItems, IncrementDialogueObjective, ...
+    std::string window;   // for OpenWindow: Vendor
+    int64_t     vendor = 0;   // for OpenWindow/Vendor: the VendorDef the window opens (0: none named)
+    std::string response;        // storage, step 0 (contentc version 25), for ActionResponse: the kind worldd answers ("OpenPlayerWarehouse"); empty for any other
+    int64_t     access_config = 0;   // ... and its StorageAccessConfig
+    /// Quests, slice 2 (contentc version 27): the quest and objective an ActivateObjective / RevealObjective / FailObjective names (0: none), and the reward tables a GiveItems gives.
+    int64_t              quest = 0, objective = 0;
+    std::vector<int64_t> rewards;
+};
+
+struct DialogueChoiceRow {
+    int64_t                        next = 0;   // 0: the line ends the conversation
+    DialogueRequirement            requirement;
+    std::vector<DialogueActionRow> actions;
+};
+
+struct DialogueNodeRow {
+    int64_t                        guid = 0;
+    std::string                    name, type, exhaust;   // type: Response, Automatic, AcceptQuest, TurnIn, Confirmation, BuyOrderFulfillment
+    int64_t                        quest = 0;
+    bool                           has_text = true;        // contentc version 28: the node has words to show (a placeholder has none); a file of an older version says yes for every node
+    std::vector<DialogueChoiceRow> choices;                // by the line's index
+    std::vector<DialogueActionRow> on_enter, on_exit;
+};
+
+/// A quest a condition names, with the rule that makes it available.
+struct DialogueQuestRow {
+    int64_t             guid = 0;
+    std::string         name;
+    bool                disabled = false, repeatable = false;
+    DialogueRequirement activation;
+};
+
+/// Crafting, step 0 (contentc version 20): the station definitions (craft_station_def) and which population asset is the station of which (craft_station_asset).
+struct CraftStationDef {
+    int64_t     guid = 0;
+    std::string name;            // "ProcessingStation_Lumbermilling_T2"
+    std::string display_name;    // the window's title ("Lumber Milling - Apprentice")
+    bool        processing = false;   // Type Processing (a job runs for a time and is collected); else FastCraft
+    int         max_tier = -1;   // the certification tier a recipe may need here (Novice 0 ... Grand Master 4); -1 for none
+    int         queue_size = 1;
+    int         simultaneous = 1;
+    bool        individual = true;    // a queue for each player
+    std::string tax_tag;         // "" for none
+    int64_t     recipe_set = 0;
+};
+struct CraftStationData {
+    std::map<int64_t, CraftStationDef> defs;            // CraftingStationDef guid -> the def
+    std::map<int64_t, int64_t>         asset_defs;      // PopulationAsset guid -> the def it is the station of
+    std::map<std::string, int64_t>     by_name;         // def name -> guid
+    const CraftStationDef* def_of_asset(int64_t asset) const {
+        const auto a = asset_defs.find(asset);
+        if (a == asset_defs.end()) return nullptr;
+        const auto d = defs.find(a->second);
+        return d == defs.end() ? nullptr : &d->second;
+    }
+};
+
+/// Embersprings (contentc version 23): the places a player can be attuned to, the respawn definitions and which population instances name one.
+struct AttunePoint {
+    int64_t     guid = 0;
+    std::string name, descriptor, level_name;   // descriptor: the name the players see ("Flame and Formula")
+    int         number = 0;                     // the place's number in the master list (1 to 255); 0 when the list has none
+    double      x = 0, y = 0, z = 0;            // cm
+    double      radius = 0;                     // cm: how close a player has to come to discover it
+};
+struct RespawnDef {
+    int64_t     guid = 0;
+    std::string name, descriptor;
+    int         kind = 0;                       // EPlayerRespawnType: 1 player, 2 attuned, 3 corrupted, 4 node siege camp, 5 node siege safe house, 6 guild war, 7 node war, 8 forward base
+    int64_t     attune = 0;                     // AttunePoint guid; 0 for none
+    double      box_x = 0, box_y = 0, box_z = 0;   // cm, half sizes
+    double      exclusion = 0, max_range = 0;   // cm
+};
+struct RespawnData {
+    std::map<int64_t, AttunePoint> places;
+    std::map<int64_t, RespawnDef>  respawns;
+    std::map<int64_t, int64_t>     instance_respawn;   // PopulationInstance guid -> RespawnDef guid
+};
+
+/// Crafting, step 1 (contentc version 20): the recipes (craft_recipe with its inputs, predicates and cost records) and which recipes each station's recipe set lists.
+struct CraftInput {
+    int64_t     item = 0;        // the resource record (0 when the input is named by a filter or by tags)
+    int64_t     filter = 0;      // CostGatherItemFilter
+    std::string tags;            // MaterialTags, comma separated
+    int         quantity = 0;    // for one unit
+    int         min_rarity = 0;  // Common 0 ... Artifact 6
+    bool        consume = true;
+    bool        primary = false; // the reagent (PrimaryResourceCosts): the server takes it, the request does not name it
+};
+/// A predicate of a recipe or a list (craft_pred): the recipe is available only where it holds.
+struct CraftPred {
+    std::string type;            // "Biome", "NodeLevel", "Node" or "BuildingModification"
+    int         node_level = -1; // the least node level (Wilderness 0 ... Metropolis 6), for NodeLevel
+    std::string biomes, modifications, nodes;   // comma separated
+    bool        hidden = false;
+};
+struct CraftRecipe {
+    int64_t     guid = 0;
+    std::string name;
+    int64_t     profession = 0;
+    int         tier = -1;       // the certification tier it needs (Novice 0 ... Grand Master 4)
+    double      base_duration = 0;   // seconds for one unit
+    std::string std_cost;        // StandardCurrencyCost, a number in text ("" for none)
+    int64_t     cost_guid = 0;   // CraftingCurrencyCostId (CraftCost), 0 for none
+    int64_t     reward = 0;
+    bool        learnable = false;   // the crafter must learn it
+    bool        inventory_destination = true;
+    int         fuel = 0;
+    bool        blacklisted = false;
+    std::string category_tag;    // CategoryTag: for a piece of gear its slot ("Slot.Head"), else the kind of thing ("Item.Caravan.Component")
+    bool        has_duration_formula = false, has_quantity_formula = false, has_quality_formula = false;   // crafting quality: the recipe has such a formula (the text is in the data); a processing recipe's three read the crafter's artisan ratings, a crafting recipe's quality formula does
+    std::vector<CraftInput> inputs;   // the general resources in order, then the reagents
+    std::vector<CraftPred>  preds;
+};
+struct CraftCost {
+    int64_t tier = 0;            // the currency tier the amount is in
+    int64_t value = 0;
+};
+/// Crafting, step 2 (the same contentc version 20): what a finished recipe yields, from craft_reward (the table the recipe names and the sub-tables it reaches).
+struct CraftRewardItem {
+    int64_t item = 0;
+    int64_t quantity = 0;        // for one unit made
+};
+struct CraftRewardContainer {
+    enum class Pick : uint8_t { All, PureRandom, WeightedRandom };
+    Pick                                       pick = Pick::All;
+    int                                        number = 0;     // NumberToSelect (a random pick takes at least one)
+    std::vector<std::vector<CraftRewardItem>>  rewards;        // the items of each reward of the container
+    std::vector<double>                        weights;        // WeightsPerReward (a weighted pick)
+};
+/// The experience formulas the data names for a recipe: what the reader knows of each.
+enum class XpRule : uint8_t { None, Processing, AnimalHusbandry, Crafting, Unknown };
+struct CraftReward {
+    std::vector<CraftRewardContainer> containers;   // the table's own and then its sub-tables', in order
+    XpRule                            profession_rule = XpRule::None;    // Artisanship_Processing_BaseXP (Processing), its Animal Husbandry form, or Artisanship_Crafting_BaseXP (Crafting)
+    XpRule                            adventuring_rule = XpRule::None;   // Adventuring_Processing_BaseXP (Processing) or Adventuring_Crafting_BaseXP (Crafting)
+    int64_t                           profession = 0;                    // the profession the experience goes to
+    std::string                       unknown_formula;                   // the first formula of the experience this reader does not know
+    int                               unread = 0;                        // rewards left out: a currency, an item with a variation, a quantity that is no number
+};
+/// The curves the Adventuring experience of a job reads, by the character's level: the kill experience (Base_Kill_XP) and the modifier of each recipe tier (Novice, Apprentice,
+/// Journeyman and above).  Linear between keys, flat past the ends.
+struct CraftXpCurves {
+    std::vector<std::pair<double, double>> kill;
+    std::vector<std::pair<double, double>> tier[3];
+    bool ok() const { return !kill.empty() && !tier[0].empty() && !tier[1].empty() && !tier[2].empty(); }
+};
+inline constexpr int64_t kCurveBaseKillXp = 6064630639394422811ll;
+inline constexpr int64_t kCurveTierModNovice = 6064633469604267308ll, kCurveTierModApprentice = 6064633469606364461ll, kCurveTierModJourneyman = 6064633469607937326ll;
+/// The TypeId of a CharacterProfessions record, as the experience rows of a finished job name it.
+inline constexpr int64_t kTypeCharacterProfession = 5612931243805009072ll;
+/// Crafting quality: the rating stats of a crafting or processing profession (Artisan_Crafting_<Profession>_Quality_Rating ...), found by name in stat_def; 0 where the profession has none.
+struct ArtisanProfession {
+    bool    processing = false;   // a processing profession (time, quantity, rarity, experience), else a crafting one (quality, experience)
+    int64_t quality = 0, xp = 0, time = 0, quantity = 0, rarity = 0;
+};
+/// What the recipes' artisan formulas read: the curves of their equations (stat_curve, by name) and the rating stats whose two values (the general one and the profession's own) a formula adds up.
+struct ArtisanData {
+    using Curve = std::vector<std::pair<double, double>>;
+    Curve                                crafting_quality, crafting_xp, processing_time, processing_xp;
+    Curve                                rarity_step[5];       // the chance of one rarity up, by the rarity the unit has: Common to Epic (a Legendary or Artifact unit never steps up)
+    Curve                                quantity_chance[6];   // the chance of an extra unit, by rarity: Common to Legendary (an Artifact unit never)
+    ArtisanProfession                    general_crafting, general_processing;   // the ratings every crafting / processing recipe adds to its profession's own
+    std::map<int64_t, ArtisanProfession> by_profession;        // the CharacterProfessions guid -> its own rating stats
+    size_t                               crafting_professions = 0, processing_professions = 0;
+    bool ok() const { return !crafting_quality.empty() && !crafting_xp.empty() && !processing_time.empty() && !processing_xp.empty() && !by_profession.empty(); }
+};
+struct CraftRecipeData {
+    std::unordered_map<int64_t, CraftRecipe>           recipes;
+    std::unordered_map<int64_t, CraftReward>           rewards;       // by reward table guid (CraftRecipe::reward)
+    CraftXpCurves                                      xp_curves;
+    ArtisanData                                        artisan;       // crafting quality: the curves and the rating stats of the artisan formulas
+    std::map<int64_t, CraftCost>                       costs;
+    std::map<int64_t, std::vector<int64_t>>            set_lists;     // recipe set -> its lists, in order
+    std::map<int64_t, std::vector<int64_t>>            list_recipes;  // list -> its recipes, in order
+    std::map<int64_t, std::vector<CraftPred>>          list_preds;
+    /// Crate stations (contentc version 31): the items that satisfy each tag that names a recipe input, alone or with others (craft_tag_item), by the tag in lower case, the item records ascending.
+    /// `tags_read` is false for a file that has no such table.
+    std::map<std::string, std::vector<int64_t>>        tag_items;
+    bool                                               tags_read = false;
+    /// Whether `item` carries `tag` (any case): a recipe input named by that tag takes it.
+    bool tag_admits(const std::string& tag, int64_t item) const {
+        std::string lower;
+        for (const char c : tag) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const auto it = tag_items.find(lower);
+        return it != tag_items.end() && std::binary_search(it->second.begin(), it->second.end(), item);
+    }
+    const CraftRecipe* recipe(int64_t guid) const {
+        const auto it = recipes.find(guid);
+        return it == recipes.end() ? nullptr : &it->second;
+    }
+    const CraftReward* reward_of(const CraftRecipe& r) const {
+        const auto it = rewards.find(r.reward);
+        return it == rewards.end() ? nullptr : &it->second;
+    }
+    /// Whether `recipe` is in a list of `set`; `lists_out` (optional) gets the lists of the set that hold it.
+    bool set_holds(int64_t set, int64_t recipe, std::vector<int64_t>* lists_out = nullptr) const {
+        bool found = false;
+        const auto s = set_lists.find(set);
+        if (s == set_lists.end()) return false;
+        for (const int64_t list : s->second) {
+            const auto l = list_recipes.find(list);
+            if (l == list_recipes.end()) continue;
+            for (const int64_t r : l->second) {
+                if (r == recipe) {
+                    found = true;
+                    if (lists_out) lists_out->push_back(list);
+                    break;
+                }
+            }
+        }
+        return found;
+    }
+};
+
+struct DialogueData {
+    std::map<int64_t, int64_t>         roots;           // root guid -> the node it starts at (0: none)
+    std::map<int64_t, DialogueNodeRow> nodes;
+    std::map<int64_t, DialogueQuestRow> quests;
+    std::map<int64_t, int64_t>         instance_roots;  // PopulationInstance guid -> root
+    std::map<int64_t, int64_t>         asset_roots;     // PopulationAsset guid -> root
+};
+
+// ---- quests, slice 1 (contentc version 21): quest, quest_objective, npc_offered_quest, dialogue_accept, zoi_quest, item_quest ----------------------------------------------
+
+/// One thing a quest or an objective does (only what is set in the data): the lists of a quest (start, success, failure, tick) and of an objective (start, tick, success, failure).
+struct QuestStartAction {
+    std::string action;                    // ActivateObjective, RevealObjective, SucceedObjective, SetPlayerVariable, GrantItem ...
+    int64_t     objective = 0, quest = 0;
+    std::string variable;
+    int64_t     value = 0;
+    bool        conditional = false;       // the action has a condition of its own
+    // Quests, slice 2 (contentc version 27):
+    DialogueRequirement rule;              // ... that condition (empty when the action has none)
+    int64_t     reward_table = 0;          // GrantItem: the reward table it gives
+    std::vector<std::pair<int64_t, int64_t>> items;   // RemoveItem: item record, quantity (0: every one)
+    std::string text;                      // Toast
+    std::vector<int64_t> spawns;           // ActivateSpawns / DeactivateSpawns: population sets
+};
+using QuestAction = QuestStartAction;
+
+/// Where a Dialogue or TurnIn objective is met: an NPC (its population instance) and the conversation node it starts at, an interactable or an item.
+struct QuestSource {
+    std::string kind;                      // NPC, Interactable, Item
+    int64_t     instance = 0, node = 0, interactable = 0, item = 0;
+};
+
+/// A place a GoTo objective is done at (world cm).
+struct QuestLocation {
+    double  x = 0, y = 0, z = 0, radius = 0;
+    bool    completes = false;             // standing in it completes the objective
+    bool    hidden = false;                // not drawn on the map
+    std::string display;                   // DisplayType (RadiusArea, Hidden ...)
+    int64_t id = 0;                        // QuestLocationId
+};
+
+/// One objective of a quest, in the quest's own order.
+struct QuestObjectiveRow {
+    int64_t     guid = 0;
+    std::string name, type;
+    int64_t     count = 1;                 // CompletionCount
+    bool        awake = false, hidden = false, completes = false, optional = false;
+    // Quests, slice 2 (contentc version 27): what the objective does and what its kind needs.
+    bool        show_dialogue = false;     // bShowQuestCompletionDialogue
+    double      timeout = 0;               // seconds; 0: none
+    bool        succeed_on_timeout = false;
+    DialogueRequirement      activation;   // the rule that makes an awake objective active (empty: none)
+    std::vector<int64_t>     rewards;      // the reward tables it adds to the quest's
+    std::vector<QuestAction> on_start, on_tick, on_success, on_fail;
+    /// Quest items that listed creatures drop while the objective is active (QuestItemRewards): the reward table, and the creatures (population instances or sets) that drop it.
+    struct ItemReward {
+        int64_t              table = 0;
+        std::vector<int64_t> instances, sets;
+        bool                 tag_query = false;   // the creatures are named by tags: not modelled (it matches nothing)
+    };
+    std::vector<ItemReward> item_rewards;
+    std::vector<int64_t> kill_sets, kill_instances;            // Kill: population sets and instances
+    bool        advanced = false;          // ... EliteRank filter on
+    int         elite = 0;
+    bool        kill_owner = false, use_context = false, tag_query = false;   // ... (a tag query is not modelled)
+    std::vector<QuestSource> sources;      // Dialogue / TurnIn
+    bool        any_source = false;        // TurnIn: any source
+    std::vector<int64_t> components, actors;   // Interact: interactable component and actor definitions
+    std::string collect_type;              // Collect: InventoryUpdate, Purchase, Sell, Craft, Process, Equip
+    std::vector<int64_t>     items;        // Collect / TurnIn item filter: records
+    std::vector<std::string> tags;         // ... or tags
+    std::vector<std::string> rarities;     // ... and rarities
+    std::vector<QuestLocation> locations;  // GoTo
+    // Map markers (contentc version 30): what the client's map pins of the objective come from besides `locations`.
+    bool        override_markers = false;  // the record switches its base markers off: `override_locations` are its pins (an empty list: no pin)
+    std::vector<QuestLocation> override_locations;
+    std::vector<int64_t> trackers;         // Interact / Collect / TurnIn / EventNotification: the population instances the objective tracks
+    bool        no_dynamic_markers = false;   // the record switches the markers made from the population off (Dialogue, Kill)
+    /// The clustering of the creatures' places of a Kill objective (the record's, the same in all but 19 of the data's 10,762 objectives).
+    struct Cluster {
+        double      epsilon = 20000, min_radius = 5000, max_radius = 500000, merge = 6000;
+        int         min_points = 2, max_clusters = 50;
+        std::string default_type = "SpecificLocations";
+        bool        weighted = true;
+    } cluster;
+    bool        area_map = false;
+    bool        crate = false;             // TurnIn: crates put into a construction project
+    std::vector<int64_t> crate_types, crate_items;
+    std::string quest_variable;            // TurnIn: the quest variable a turn-in raises
+    bool        inc_variable = false;
+    std::string notify;                    // EventNotification: the notify type
+    int64_t     recipe = 0;
+    std::vector<int64_t> abilities;        // UseAbility
+    DialogueRequirement rule;              // Custom: one criterion
+};
+
+struct QuestRow {
+    int64_t     guid = 0;
+    std::string name, flavor, locality;
+    int         level = 0;
+    bool        can_abandon = true, repeatable = false, disabled = false, default_activate = true;
+    int64_t     giver_registration = 0;          // map markers (contentc version 30): the map registration the NPC that offers the quest shows while the quest is on offer
+    DialogueRequirement            activation;
+    std::vector<QuestStartAction>  start_actions;
+    std::vector<int64_t>           rewards;      // the reward tables
+    std::vector<QuestObjectiveRow> objectives;
+    // Quests, slice 2 (contentc version 27):
+    std::vector<QuestAction> on_success, on_fail, on_tick;
+    double      timeout = 0;                     // seconds; 0: none
+    bool        succeed_on_timeout = false;
+};
+
+/// A quest an NPC offers and the node its talk starts at while the quest is offered.
+struct QuestOfferRow {
+    int64_t quest = 0, node = 0;
+};
+
+/// A dialogue node that offers a quest.
+struct QuestAcceptRow {
+    int64_t node = 0, quest = 0, on_success = 0;
+    std::vector<int64_t> objectives;
+};
+
+/// An item bound to a quest: `kind` is delete_all / delete_one (deleted when the quest leaves the log) or abandon (the quest leaves the log when the item is deleted).
+struct QuestItemLink {
+    int64_t     quest = 0;
+    std::string kind;
+};
+
+struct QuestData {
+    std::map<int64_t, QuestRow>                   quests;
+    std::map<std::string, int64_t>                by_name;
+    std::map<int64_t, std::vector<QuestOfferRow>> instance_offers;   // PopulationInstance guid -> its offers, in the data's order
+    std::map<int64_t, std::vector<QuestOfferRow>> asset_offers;      // PopulationAsset guid -> its offers
+    std::map<int64_t, QuestAcceptRow>             accepts;           // by node
+    std::map<int64_t, int64_t>                    confirms;          // slice 2: a Confirmation node -> the node the talk goes on at after the player confirms (OnSuccessNode)
+    std::map<int64_t, QuestAcceptRow>             turn_ins;          // quests part 3, slice 2 (contentc version 37): a TurnIn node -> its quest, where the talk goes on after the hand-in and the objectives it lists
+    std::map<int64_t, std::vector<int64_t>>       zoi_quests;        // zone of influence guid -> the quests it starts
+    std::map<int64_t, std::vector<QuestItemLink>> item_quests;       // item record guid -> its quest links
+    std::map<int64_t, int64_t>                    item_crate;        // slice 2 (contentc version 27): crate item record -> its crate type (CrateRecordBase)
+    std::map<int64_t, std::vector<int64_t>>       kill_sets;         // ... population instance -> the sets (of the Kill objectives) it stands in
+    std::map<int64_t, std::vector<int64_t>>       shrine_icds;       // ... attune point -> the interactable definitions of the Emberspring of that place
+};
+
+/// Quests part 3, slice 1 (contentc version 36): what a quest object (a body, a crate, a root, a building site) is used by.  An interactable definition (ICD) holds the reach and the
+/// rule of the prompt and, through its first input point, the player interaction (PID) that says how long the use takes and what it gives.
+struct InteractableRow {
+    std::string name;
+    double      radius = 200, tolerance = 30, discovery = 200;   // cm
+    bool        require_los = false;
+    DialogueRequirement requirement;                  // what must hold for the prompt (an objective Active ...); empty: nothing
+    int64_t     pid = 0;                              // the player interaction (0: none)
+    double      channel = 0, busy = 0;                // seconds: the use takes `channel` (0: at once)
+    bool        allow_combat = true, single_use = false, delete_done = false;
+    double      delete_delay = 0;
+    std::string anim;                                 // the montage the client plays
+    std::vector<std::pair<int64_t, int64_t>> grants;  // item, quantity: given when the use ends
+    int64_t     reward_table = 0;                     // given when the use ends (0: none)
+    std::vector<int64_t> complete_objs, reveal_objs;  // objective records the use completes / reveals
+};
+
+/// An interactable actor definition: whether the object leaves after its use.
+struct ActorDefRow {
+    double despawn_delay = 0;
+    bool   despawn_final = false;
+};
+
+struct ObjectData {
+    std::map<int64_t, InteractableRow> interactables;   // by ICD
+    std::map<int64_t, ActorDefRow>     actor_defs;      // by IAD
+    std::map<int64_t, int64_t>         instance_iad;    // population instance -> its IAD
+    std::map<int64_t, bool>            quest_items;     // item record -> Major (it belongs in the Quest bag)
+    std::map<int64_t, int64_t>         item_boxes;      // item record -> the reward table its choose-one window lists
+};
+
+// ---- vendors, step 0 (contentc version 18): which NPC opens which shop and what its listings cost (npc_vendor_link, vendor_def_data, vendor_price, vendor_availability) ----------
+
+/// One priced listing: the tab (inventory) and the listing's index in it, what it sells (item, the variation and the offer the cart names; 0: none) and the price in one
+/// currency tier, per unit, before the node tax.
+struct VendorPriceRow {
+    int64_t inventory = 0;
+    int     ord = 0;
+    int64_t item = 0, variation = 0, offer = 0, currency = 0;
+    int64_t price = 0;
+};
+
+/// A predicate of a tab (listing -1) or a listing: an expression that must hold for the player, and the text the window shows when it does not.
+struct VendorPredicateRow {
+    std::string expression, failure;
+    bool        hidden = false;
+};
+
+/// A gameplay tag query as the data holds it (vendor_modifier.filter, vendor_sell_filter.filter): the token stream and the tag dictionary (lower case); `present` is false for none.
+struct TagQuery {
+    bool                     present = false;
+    std::vector<int64_t>     tok;
+    std::vector<std::string> tags;
+};
+
+/// One price modifier (vendor_modifier): the operations it applies to (contexts: a bit mask, 1 buy, 2 sell, 4 repair), how it changes a price (operation Add / Multiply / Set),
+/// where its value comes from (source Expression: `expression`; Curve: `curve` read at `factor`; PriceModifierSet: its `children`), the items it touches (`filter`) and the currency
+/// tiers it touches.
+struct VendorModifier {
+    struct Key {
+        double      time = 0, value = 0;
+        std::string interp;   // Linear, Constant or Cubic
+    };
+    int64_t              guid = 0;
+    std::string          name;
+    int64_t              contexts = 0;
+    std::string          operation, source, factor, expression;
+    std::vector<Key>     curve;
+    TagQuery             filter;
+    std::vector<int64_t> currencies, children;
+};
+
+// ---- storage clerks, step 0 (contentc version 25): the warehouse tables ------------------------------------------------------------------------------
+
+/// One cost of a tab or an item chunk (the JSON of warehouse_tab.costs): the currency's record, its record type id, and the value and multiplier expressions (literals in the data).
+struct WarehouseCostRow {
+    int64_t     currency = 0;
+    int64_t     type_id = 0;
+    std::string value, multiplier;
+};
+
+struct WarehouseTabRow {
+    int64_t                       guid = 0;
+    std::string                   name;
+    int                           storage_type = 0;   // 0 General, 1 Crates
+    bool                          member = false, specializable = false;
+    std::string                   requirement;        // the availability expression ("" and "true" always hold)
+    std::vector<WarehouseCostRow> costs;
+};
+
+struct WarehouseChunkRow {
+    int64_t                       guid = 0;
+    std::string                   name;
+    int                           size = 0;           // the slots
+    int                           level = 0;
+    std::string                   requirement;
+    std::vector<WarehouseCostRow> costs;
+};
+
+struct WarehouseDefRow {
+    int64_t              guid = 0;
+    std::string          name;
+    int                  columns = 0, rows = 0;
+    std::vector<int64_t> tabs;   // the tabs in the def's order
+};
+
+struct WarehouseData {
+    struct Node {
+        int64_t resource_def = 0, crate_def = 0, chunks_def = 0;
+    };
+    std::map<int64_t, Node>                 nodes;         // by city node guid
+    std::map<int64_t, WarehouseDefRow>      defs;          // material and cargo tab defs
+    std::map<int64_t, WarehouseTabRow>      tabs;
+    std::map<int64_t, std::vector<int64_t>> chunk_defs;    // the chunks of an item chunks def, in order
+    std::map<int64_t, WarehouseChunkRow>    chunks;
+};
+
+/// One sell filter of a def (vendor_sell_filter): a whitelist of items and a tag query.
+struct VendorSellFilter {
+    TagQuery          filter;
+    std::set<int64_t> whitelist;
+};
+
+struct VendorData {
+    struct Def {
+        std::string name;
+        int64_t     operations = 0;   // the bit mask of what the shop does: 1 buy, 2 sell, 4 repair
+        std::string tax_tag;          // "" for none
+        bool        blacklisted = false;
+        std::vector<int64_t> modifiers;     // the def's price modifiers, in order (vendors, the selling step: contentc version 19 reads them for sales and repairs)
+        std::vector<int64_t> sell_filters;  // the def's sell filters, in order
+        std::vector<int64_t> inventories;   // the def's tabs (VendorInventory guids) in the order the window counts them
+    };
+    std::map<int64_t, VendorModifier>   modifiers;      // vendor_modifier by guid
+    std::map<int64_t, VendorSellFilter> sell_filters;   // vendor_sell_filter by guid
+    std::map<int64_t, Def>     defs;             // VendorDef guid -> the def
+    std::map<int64_t, int64_t> instance_links;   // PopulationInstance guid -> the VendorDef its use opens
+    std::map<int64_t, int64_t> asset_links;      // PopulationAsset guid -> the same
+    std::map<int64_t, std::map<int64_t, std::vector<VendorPriceRow>>> prices;   // VendorDef -> item -> its priced listings (a row per listing, offer and currency)
+    std::map<std::pair<int64_t, int>, std::vector<VendorPredicateRow>> predicates;   // (tab, listing; -1 for the tab's own) -> its predicates
+};
+
+/// What a sale or a repair needs of an item (contentc version 19: item_vendor, item_sell_value, item_tag, quality_curve), read for one item by ContentDb::item_sale.  The item's
+/// quality curve and RarityMin..RarityMax come from the rarity rule's facts (items/rarity.h): rarity_of(quality) is the rarity a price is looked up at.
+/// One effect an item puts on its wearer while it is worn, for the item rarities `min_rarity` to `max_rarity` (Common 0 ... Artifact 6).
+struct EquippedEffect {
+    int64_t effect = 0;
+    int     min_rarity = 0;
+    int     max_rarity = 6;
+    int     stacks = 1;
+};
+
+struct ItemSaleFacts : items::ItemRarityFacts {
+    bool                  known = false;          // item_vendor has a row for the item
+    bool                  vendorable = false;     // a shop may buy it at all
+    bool                  blacklisted = false;
+    int                   level = 0;
+    std::set<std::string> tags;                   // lower case, each tag with its parents
+    std::map<std::pair<int, int64_t>, int64_t> values;   // (rarity, currency tier) -> the base value of a sale, per unit, rounded up
+};
+
+struct PopulationData {
+    std::map<int64_t, NpcAssetRow>                         assets;
+    std::map<int64_t, std::vector<std::pair<int64_t, double>>> asset_sets;   // set guid -> (asset guid, weight) in order
+    std::map<int64_t, NpcInstanceRow>                      instances;
+    std::map<int64_t, NpcSetRow>                           sets;
+    std::vector<NpcPlacement>                              placements;
+    std::map<int64_t, NpcAreaRow>                          areas;
+    std::map<int64_t, NpcRouteRow>                         routes;           // contentc version 8
+    // contentc version 9: what decides whether a point spawns now (the spawn filter, spawns/spawn_filter.h)
+    std::map<int64_t, NpcWorldSpawn>                       world_spawns;
+    std::map<int64_t, PopFilter>                           filters;          // FilteringOverride guid -> its PopulationFilter
+    std::map<int64_t, std::vector<std::string>>            gates;            // set guid -> what spawns it when its turn comes (a quest, an event, ...)
+    std::map<int64_t, std::vector<std::string>>            asset_set_tags;
+};
+
+/// A listing of a vendor's inventory: an item and the guids of the offers that price it (none: free).
+struct VendorListing {
+    int64_t              item = 0;
+    std::vector<int64_t> offers;
+    bool                 hidden = false;
+};
+
+struct VendorInventoryRow {
+    int64_t                    guid = 0;
+    std::string                name;
+    std::vector<VendorListing> listings;
+};
+
+struct VendorDefRow {
+    int64_t                         guid = 0;
+    std::string                     name;
+    std::vector<VendorInventoryRow> inventories;   // the vendor window's tabs, in order
+};
+
+/// An item record whose name begins "GM" or holds "PTR": the items a GM or the public test realm hands out.
+struct GmItemRow {
+    int64_t     guid = 0;
+    std::string name;
+    int         max_stack = 1;
+};
+
+// ---- the mounts (contentc version 11; services/internal/content mounts.go) -------------------------------------------------
+
+/// One row of `mount`: an item that summons a mount.
+struct MountRow {
+    int64_t     item = 0;                // the ItemRecord (Mount_Grounded_TerrorBird_0)
+    std::string item_name;
+    std::string kind;                    // "ground", "flying" or "aquatic"
+    std::string blueprint_path;          // SummonNotifyClassPath: /Game/GameBlueprints/Mounts/Mount_Grounded_TerrorBird_0.Mount_Grounded_TerrorBird_0_C
+    std::string blueprint;               // the package name: Mount_Grounded_TerrorBird_0 (several items share one)
+    std::string activation;              // "SummonMount", or "CastAbility" (the flying ones)
+    int64_t     cast_ability = 0;        // ActivationCastId: Summon_Mount
+    int         level = 0;               // the item text's "Level N" (0: none)
+    int         ground_pct = 0;          // "165% Ground Speed" (0: the text names none: 22 of the 51 ground items)
+    int         flying_pct = 0;
+    int         water_pct = 0;
+    int         health_pct = 100;        // "500% Maximum Health"
+    bool        mule = false;
+    int         crate_capacity = 0;
+    bool        tradeable = false;
+    std::string description;
+    std::string display_name;            // the item's name as the player reads it ("Dawnbreaker"; item.display_name, contentc version 16; empty in an older file; a retired mount's without its "RETIRED_" marker): the nameplate of the summoned mount
+// [C O A x C | Y | B]
+
+    double health_factor() const { return health_pct / 100.0; }
+};
+
+/// One row of `mount_stat`: a Mount_Base stat at an owner's level.
+struct MountStatRow {
+    int         level = 0;
+    int64_t     stat = 0;
+    std::string stat_name;
+    double      value = 0;
+};
+
+/// One row of `mount_ability`.
+struct MountAbilityRow {
+    int64_t     ability = 0;
+    std::string name;
+    std::string role;                    // "summon", "dash", "dismount_elevated", "dismount_grounded" or ""
+    bool        usable_while_mounted = false;
+    bool        auto_dismount = false;
+};
+
+/// One row of `mount_effect`: a road effect (Road_T0..T4_Speed_Mount), the dash, an effect with bForceDismount, the crate debuff.
+struct MountEffectRow {
+    int64_t     effect = 0;
+    std::string name;
+    std::string kind;                    // "road", "dash", "force_dismount" or "crate"
+    int         tier = -1;               // a road's T0..T4
+    int64_t     stat = 0;                // MoveSpeedMult; 0 for none
+    double      value = 0;               // added to the stat; the dash (relative) adds this share of the stat
+    bool        relative = false;
+    bool        infinite = false;
+    double      duration = 0;            // seconds; 0 for an infinite effect
+    bool        force_dismount = false;
+};
+
+/// The four tables, read whole (101 mounts, 250 stat rows, 34 abilities, 9 effects).
+struct MountData {
+    std::vector<MountRow>         mounts;               // by item name
+    std::vector<MountStatRow>     stats;                // by level, then stat
+    std::vector<MountAbilityRow>  abilities;
+    std::vector<MountEffectRow>   effects;
+
+    const MountRow*        find(int64_t item) const;
+    /// The Mount_Base value of a stat at an owner's level (1 to 50); `fallback` when the file has none.
+    double                 stat_at(int level, int64_t stat, double fallback = 0) const;
+    const MountAbilityRow* ability(int64_t guid) const;
+    const MountAbilityRow* ability_with_role(const std::string& role) const;
+    const MountEffectRow*  road(int tier) const;
+    const MountEffectRow*  dash() const;
+};
+
+// ---- plan B3: the stat program and the items' stat data --------------------------------------------------------------------
+
+/// The one row of `stat_program`: the compiled stat formula graph (services/internal/statprog) and what contentc says it holds.
+struct StatProgramRow {
+    int                  version = 0;       // the bundle format's version
+    std::string          mode;              // float32, double or single
+    int                  stats = 0;
+    int                  classes = 0;
+    uint32_t             crc32 = 0;         // the body's checksum, as the bundle's header has it
+    std::vector<uint8_t> data;              // the bundle: stats::parse_bundle reads and verifies it
+};
+
+class ContentDb {
+public:
+    /// Opens `path` read-only and checks meta and the tables above; logs contentc's version and the source's sha256.
+    /// nullopt, with `error` set, when the file is missing, is not a SQLite database, is not a content.db of this
+    /// schema version, or lacks a table or column this reader uses.
+    static std::optional<ContentDb> open(const std::string& path, std::string& error);
+
+    ContentDb(const ContentDb&) = delete;
+    ContentDb& operator=(const ContentDb&) = delete;
+    ContentDb(ContentDb&& other) noexcept;
+    ContentDb& operator=(ContentDb&& other) noexcept;
+    ~ContentDb();
+
+    const ContentMeta& meta() const { return meta_; }
+    const std::string& path() const { return path_; }
+
+    /// The player class whose archetype id is `archetype_id`; nullopt (error says so) when there is none.
+    std::optional<ClassRecord> class_for_archetype(int64_t archetype_id, std::string& error) const;
+
+    /// The player class named `name` ("Bard": the name of an ECharacterClass); nullopt (error says so) when there is none.
+    std::optional<ClassRecord> class_for_name(const std::string& name, std::string& error) const;
+
+    /// The six primary attributes of a class at a level, ordered by stat Guid; nullopt (error says so) when the
+    /// class has none at that level (levels kMinLevel..kMaxLevel are there).
+    std::optional<std::vector<PrimaryAttribute>> primary_attributes(int64_t class_guid, int level, std::string& error) const;
+
+    /// Plan A7: the three abilities worldd runs (Sprint, Dodge, Rest), the effects they apply and end with, and the
+    /// regeneration numbers. nullopt (error says so) when a row is missing or says something the runtime cannot run (a Sprint
+    /// that is not held, a Dodge with no cost ...): the file was built by another contentc than this worldd's.
+    std::optional<AbilityRules> ability_rules(std::string& error) const;
+
+    /// Plan B2: the item with the record Guid. nullopt with `error` empty when there is no such item (an instance of a record the
+    /// file does not know); nullopt with `error` set when the query failed or the row holds an EEquipSlot that does not fit a byte.
+    std::optional<ItemRecord> item(int64_t guid, std::string& error) const;
+    /// The item records with this name (exact, case does not count), at most 8: how a GM tool finds an item it was given by name.  `error` is set when the query fails.
+    std::vector<int64_t> items_named(const std::string& name, std::string& error) const;
+
+    /// Gathering stage 3 (contentc version 14): the grid of a resource bag item.  nullopt with `error` empty for an item that is no resource bag; with `error` set when a query
+    /// failed or the rows are not what contentc writes (a dimension below 1 or above the 255 cells a container holds, a cell outside the grid).
+    std::optional<ResourceBagRecord> resource_bag(int64_t item_guid, std::string& error) const;
+
+    /// Plan B3: the stat program. nullopt, with `error`, when the table has no row or the query failed.
+    std::optional<StatProgramRow> stat_program(std::string& error) const;
+
+    /// Plan B3: what the item adds to the stats (its quality bands, stat block, sets and tags). nullopt with `error` empty when there is
+    /// no such item; nullopt with `error` set when a query failed or the rows are not what contentc writes (a curve without its seven
+    /// rarities).
+    std::optional<stats::ItemGear> item_gear(int64_t guid, std::string& error) const;
+
+    /// Plan B3: a set bonus's tiers; nullopt with `error` empty for a set that is none, with `error` set when the query failed.
+    std::optional<stats::SetBonus> set_bonus(int64_t guid, std::string& error) const;
+
+    /// Crates, round 2 (contentc version 33): the effects an item puts on its wearer while it is worn (ItemRecordBase.EquippedEffects), each for the item rarities `min_rarity` to
+    /// `max_rarity`.  Empty for an item with none and for a file of an older version (it has no such table); nullopt with `error` set when a query failed.
+    std::optional<std::vector<EquippedEffect>> item_equipped_effects(int64_t item, std::string& error) const;
+
+    /// Plan B3: the EEquipSlot enumerator names by value ("Chest" for 2).
+    std::optional<std::map<int, std::string>> equip_slot_names(std::string& error) const;
+
+    /// Plan D1: how an item is used. nullopt with `error` empty for an item that is not used; with `error` set when a query failed.
+    std::optional<ItemUse> item_use(int64_t item_guid, std::string& error) const;
+    /// Plan D1: an ActionResponse; nullopt with `error` empty when there is none.
+    std::optional<ActionResponse> action_response(int64_t guid, std::string& error) const;
+    /// Plan D1: a RewardTable; nullopt with `error` empty when there is none. A row of another storage class than its column's is an error.
+    std::optional<RewardTable> reward_table(int64_t guid, std::string& error) const;
+    /// Item rarities, step 0: the Quality an ItemVariation gives when its formula is one whole number from 1 to 200 (the Rarity_* family: 1, 6, 16, 31, 51, 71, 101 and the mid-band
+    /// 3, 13, 25, 45, 65, 90; the game master scrolls name no other).  nullopt with `error` empty for a variation that has no formula, whose formula is more than a number (a random
+    /// loot roll), or that a file without the variation tables cannot tell; nullopt with `error` set when a query failed.
+    std::optional<int32_t> variation_quality(int64_t variation, std::string& error) const;
+    /// Plan D1: the leveling type named ("Adventuring") with its curve; nullopt with `error` set when there is none or a key is not a
+    /// whole level at a whole XP total ascending.
+    std::optional<LevelingType> leveling_type_named(const std::string& name, std::string& error) const;
+    /// Weapon XP: the names of the leveling types of one experience type whose names start with `prefix`, in guid order (the weapon lines: "Weapon" and "Weapon_"). Empty with `error` empty for a file with
+    /// none; empty with `error` set when a query failed.
+    std::vector<std::string> leveling_type_names(const std::string& experience_type, const std::string& prefix, std::string& error) const;
+    /// Weapon XP: a curve record (stat_curve) with its keys in order.  nullopt with `error` empty for a curve that has no rows; nullopt with `error` set when the file has no curve table
+    /// (an older file or fixture) or a query failed or a row is not what contentc writes.
+    std::optional<CurveRow> stat_curve(int64_t guid, std::string& error) const;
+    /// Gathering stage 2, "Professions and GM items": the 22 professions with their curves, the five certification levels and the certification actions. nullopt with
+    /// `error` empty when the file has none of these tables (an older fixture); nullopt with `error` set when a query failed or a row is not what contentc writes.
+    std::optional<ProfessionData> profession_data(std::string& error) const;
+    /// Glint tiers (contentc version 24): the currency tiers and kinds.  nullopt with `error` empty when the file has no such tables (an older file or fixture: no stack of Glint changes kind);
+    /// nullopt with `error` set when a query failed or a row is not what contentc writes.
+    std::optional<CurrencyData> currency_data(std::string& error) const;
+    /// Gathering stage 2, "Harvesting": the gather tables, whole (339 defs, 87 tools, 47 item variations in contentc version 13). nullopt with `error` empty when the file has none of the tables
+    /// (an older fixture); nullopt with `error` set when a query failed or a row is not what contentc writes.
+    std::optional<GatherData> gather_data(std::string& error) const;
+    /// Gathering stage 3, "Foliage gathering": the foliage defs and states and every gathering interaction (402, 743, 236 and 194 rows in contentc version 15).  nullopt with `error` empty
+    /// when the file has none of the tables (an older fixture); nullopt with `error` set when a query failed or a row is not what contentc writes.
+    std::optional<FoliageData> foliage_data(std::string& error) const;
+    /// Plan D1: the nodes a level grants in the trees of a leveling type, by level requirement then node guid, with their rank mods.
+    std::optional<std::vector<AutoGrant>> auto_grants(int64_t leveling_type_guid, std::string& error) const;
+
+    /// Plan D1, stage 2: every skill tree with its nodes, ranks, gates and costs, the point types and the points each level gives.
+    /// nullopt with `error` set when a query failed or a row is of another storage class than its column's.
+    std::optional<TalentData> talent_data(std::string& error) const;
+    /// Plan D1, stage 2: a weapon item's combo ability and weapon line; nullopt with `error` empty for an item that names none.
+    std::optional<ItemWeaponRow> item_weapon(int64_t item_guid, std::string& error) const;
+// C_Y_B + C | O | A
+
+    /// Plan E1, stage 3: the combat configuration (combat_profile, combat_element, combat_config, relationship, alignment_relation). nullopt with `error`
+    /// set when a table is missing (a file built by an older contentc, the tests' fixtures).
+    std::optional<CombatRows> combat_rows(std::string& error) const;
+
+    /// Plan E1, stage 3, part 2: the reward tables with the guids `roots` and every sub table they reach (loot_table, contentc version 10).
+    /// A guid that is no table is skipped (a Blueprint may name a record the file lacks).  nullopt with `error` set when the table is missing or a
+    /// document does not read.
+    std::optional<std::map<int64_t, LootTable>> loot_tables(const std::vector<int64_t>& roots, std::string& error) const;
+
+    /// Plan E1, stage 3, part 2: an experience rule (xp_rule): the ab_expr id of the rule named `key` ("adventuring_decay"); 0 with `error` empty when the
+    /// file has none, nullopt with `error` set when the query failed.
+    std::optional<int64_t> xp_rule(const std::string& key, std::string& error) const;
+
+    /// Plan E1: the NPC population chain (npc_*), read whole. nullopt with `error` set when a table is missing (a file of another shape: the
+    /// fixtures of the tests have none) or a column is of another storage class than the column's.
+    std::optional<PopulationData> population_data(std::string& error) const;
+    /// Quests, slice 0 (contentc version 17): the NPC conversations (dialogue_root, dialogue_node, dialogue_choice, dialogue_quest, npc_dialogue), read whole.
+    /// nullopt with `error` set when a table is missing (a file of an older version) or a row does not read.
+    std::optional<DialogueData> dialogue_data(std::string& error) const;
+    /// Quests, slice 1 (contentc version 21): the quests, their objectives, the NPCs' offers, the nodes that offer a quest, the zones that start one and the items bound to quests.
+    std::optional<QuestData> quest_data(std::string& error) const;
+    /// Quests part 3, slice 1 (contentc version 36): the quest objects' definitions; nullopt, with `error`, from a content.db of an older version.
+    std::optional<ObjectData> object_data(std::string& error) const;
+    /// Crafting, step 0 (contentc version 20): the station definitions and the assets that are their stations, read whole. nullopt, with `error` set, for a file of an older version.
+    std::optional<CraftStationData> craft_station_data(std::string& error) const;
+    /// Embersprings (contentc version 23): the places, the respawn definitions and the instances that name one, read whole. nullopt, with `error` set, for a file of an older version.
+    std::optional<RespawnData> respawn_data(std::string& error) const;
+    /// Crafting, step 1 (contentc version 20): the recipes, their inputs, predicates and cost records, and the recipe sets' lists, read whole. nullopt, with `error` set, for a file of an older version.
+    std::optional<CraftRecipeData> craft_recipe_data(std::string& error) const;
+    /// Vendors, step 0 (contentc version 18): the shops' links, tax tags, prices and predicates, read whole.  nullopt, with `error` set, for a file of an older version.
+    std::optional<VendorData> vendor_data(std::string& error) const;
+    /// Storage clerks, step 0 (contentc version 25): the warehouse tables, read whole.  nullopt, with `error` set, for a file of an older version.
+    std::optional<WarehouseData> warehouse_data(std::string& error) const;
+    /// Vendors, the selling step (contentc version 19): what a sale or a repair needs of one item.  `known` is false for an item with no item_vendor row; nullopt, with `error` set,
+    /// for a file of an older version or a damaged read.
+    std::optional<ItemSaleFacts> item_sale(int64_t item, std::string& error) const;
+    /// Plan E1: a vendor (vendor_def with its inventories and their listings) by its VendorDef guid; nullopt with `error` empty when there is none.
+    std::optional<VendorDefRow> vendor_def(int64_t guid, std::string& error) const;
+    /// Plan E1: a vendor by name ("PTR_ONLY_Vendor_Gear_0-9"); nullopt with `error` empty when there is none.
+    std::optional<VendorDefRow> vendor_def_named(const std::string& name, std::string& error) const;
+    /// Plan E1: every vendor whose name begins with `prefix` ("PTR_ONLY_Vendor_"), by name, each read whole (inventories and listings);
+    /// nullopt with `error` set when a query failed. Empty for a file with none.
+    std::optional<std::vector<VendorDefRow>> vendor_defs_with_prefix(const std::string& prefix, std::string& error) const;
+    /// Plan E1: every item record named GM% or %PTR%, by guid; nullopt with `error` set when the query failed.
+    std::optional<std::vector<GmItemRow>> gm_items(std::string& error) const;
+    /// The mounts milestone (contentc version 11): the mount tables, read whole. nullopt with `error` set when a table is missing (a file of another shape)
+    /// or a column is of another storage class than the column's.
+    std::optional<MountData> mount_data(std::string& error) const;
+
+private:
+    ContentDb() = default;
+
+    /// The stats the client shows as a percentage (stat_def.display_pct, contentc version 33; none in an older file): the values of an item's stat block for them are not rounded.
+    void load_percent_stats();
+
+    sqlite3*    db_ = nullptr;
+    std::string path_;
+    ContentMeta meta_;
+    std::set<int64_t> percent_stats_;
+};
+
+/// The stat engine's view of content.db's items (stats::GearCatalog), read when first asked and kept: an item's data is a handful of rows,
+/// and a login or an equip asks for the few dozen the character wears. Safe to share between threads.
+class ContentGearCatalog final : public stats::GearCatalog {
+public:
+    /// Reads the equip slot names; ok() is false, with error(), when it cannot. `db` must outlive the catalog.
+    explicit ContentGearCatalog(const ContentDb& db);
+
+    bool               ok() const { return error_.empty(); }
+    const std::string& error() const { return error_; }
+
+    const stats::ItemGear*  item(int64_t record) const override;
+    const stats::SetBonus*  set(int64_t guid) const override;
+    std::string             slot_name(int slot) const override;
+
+private:
+    const ContentDb&                                                 db_;
+    std::map<int, std::string>                                       slots_;
+    std::string                                                      error_;
+    mutable std::mutex                                               mutex_;
+    mutable std::unordered_map<int64_t, std::unique_ptr<stats::ItemGear>> items_;
+    mutable std::unordered_map<int64_t, std::unique_ptr<stats::SetBonus>> sets_;
+};
+
+}  // namespace aoc::worldd::content

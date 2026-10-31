@@ -1,0 +1,420 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+// ============================================================================
+//  svc/services.h
+//
+//  What worldd asks the platform services (architecture spec §2): redeem a
+//  join ticket (gateway), load a character (character), register and send
+//  heartbeats (mesh).  Interfaces, so the login flow and the endpoint can be
+//  tested with fakes; svc/grpc_services.h implements them over gRPC.
+// ============================================================================
+#pragma once
+
+#include <cstdint>
+#include <cstring>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace aoc { namespace worldd { namespace svc {
+
+/// How a call ended, from worldd's point of view.
+enum class CallStatus {
+    Ok,
+    Refused,      // the service said no (PermissionDenied, InvalidArgument)
+    NotFound,
+    Unavailable,  // unreachable, timed out, or shutting down: worth retrying
+    Failed,       // anything else
+};
+
+struct RedeemResult {
+    CallStatus status = CallStatus::Failed;
+    int64_t account_id = 0;
+    std::string character_id;
+};
+
+struct Position {
+    double x = 0, y = 0, z = 0;
+    float yaw = 0;
+};
+
+/// The storages a character's items are in (aoc.character.v1.ItemContainer, plan B2): the Backpack (70 slots), the Equipment
+/// (83: the slot is the client's EEquipSlot) and the Quest storage (100); Gathering stage 3 adds the three resource containers, the resource bags worn in Equipment slots 23,
+/// 24 and 25 (EItemLocation Resource0 to Resource2): a slot is the index of the top-left cell of the item's rectangle in the bag's grid.
+enum class ItemContainer : uint8_t { Backpack = 0, Equipment = 1, Quest = 2, Resource0 = 3, Resource1 = 4, Resource2 = 5 };
+
+/// One item instance of a character (aoc.character.v1.Item).
+struct InventoryItem {
+    ItemContainer container = ItemContainer::Backpack;
+    int32_t       slot = 0;
+    int64_t       item_record_id = 0;        // the design database's ItemRecord Guid
+    std::string   instance_guid;             // the instance's FGuid: 32 lowercase hex digits (the four int32 words in order)
+    int32_t       quantity = 1;
+    int32_t       quality = 1;
+    float         durability = 0;
+    int64_t       created_at_ms = 0;         // Unix milliseconds
+    /// The state a mount item persists (the mounts milestone; character service migration 0007; retail's login shows it on every mount item as the two
+    /// persisted stats and the LockExpiration of its FItemInstance): the mount's Health and Mana as they were when it was last desummoned or died, and the
+    /// Unix second until which the item cannot be summoned (0 or a past time: it is not locked).  Absent and 0 on every other item.
+    std::optional<float> persisted_health;
+    std::optional<float> persisted_mana;
+    int64_t       lock_expiration = 0;
+    bool operator==(const InventoryItem& o) const {
+        const auto same = [](const std::optional<float>& a, const std::optional<float>& b) {
+            return a.has_value() == b.has_value() && (!a || std::memcmp(&*a, &*b, sizeof(float)) == 0);
+        };
+        return container == o.container && slot == o.slot && item_record_id == o.item_record_id && instance_guid == o.instance_guid &&
+               quantity == o.quantity && quality == o.quality && std::memcmp(&durability, &o.durability, sizeof durability) == 0 &&
+               created_at_ms == o.created_at_ms && same(persisted_health, o.persisted_health) && same(persisted_mana, o.persisted_mana) &&
+               lock_expiration == o.lock_expiration;
+    }
+};
+
+/// Storage clerks, step 0: one item of a character's warehouse (aoc.character.v1.WarehouseItem).  `area` is "Items" (the item chunks, the same in every town: node 0), "Materials" or "Cargo"
+/// (the tabs of the town `node_guid`); `container_guid` the chunk's or the tab's record; `item.slot` the place in the container (`item.container` is not used).
+struct WarehouseItem {
+    std::string   area;
+    int64_t       node_guid = 0;
+    int64_t       container_guid = 0;
+    InventoryItem item;
+    bool operator==(const WarehouseItem&) const = default;
+};
+
+/// The vendors milestone, step 0: one currency of a character's wallet (aoc.character.v1.WalletEntry): the BASE currency def's Guid (Copper, Node currency) and the balance in that
+/// unit (copper for money).
+struct WalletEntry {
+    int64_t currency_guid = 0;
+    int64_t amount = 0;
+    bool operator==(const WalletEntry&) const = default;
+};
+
+/// Crafting, step 1: one rarity of a resource a processing job was paid with (aoc.character.v1.JobRarity).
+struct JobRarity {
+    int32_t rarity = 0;   // 0 Common ... 6 Artifact
+    int32_t count = 0;
+    bool    from_warehouse = false;
+    bool operator==(const JobRarity&) const = default;
+};
+struct JobResource {
+    int64_t                record_id = 0;
+    std::vector<JobRarity> rarities;
+    bool operator==(const JobResource&) const = default;
+};
+
+/// Crafting, step 1: a processing job of a character (aoc.character.v1.ProcessingJob). The times are Unix milliseconds on the wall clock: the job started at `started_at_ms` (the end of the
+/// job before it when it waited) and is done `duration_ms` later, whether its player is logged in or not.
+struct ProcessingJob {
+    std::string              job_guid;        // 32 lowercase hex digits
+    std::string              station_key;     // 16 lowercase hex digits
+    int64_t                  recipe_guid = 0;
+    int64_t                  sub_recipe_guid = 0;
+    int32_t                  quantity = 0;
+    int64_t                  queued_at_ms = 0;
+    int64_t                  started_at_ms = 0;
+    int64_t                  duration_ms = 0;
+    std::string              client_txn;      // 32 lowercase hex digits
+    std::vector<JobResource> resources;
+    // the crafter's artisan ratings when the job was queued (crafting quality; the sums its formulas add up): the job pays what it was started with, whatever its crafter wears when it is collected.  0 for a
+    // job saved before they were kept.
+    double rating_xp = 0, rating_quantity = 0, rating_rarity = 0;
+    int64_t end_ms() const { return started_at_ms + duration_ms; }
+    bool operator==(const ProcessingJob&) const = default;
+};
+
+/// Plan D1: the XP a character has in one leveling type (aoc.character.v1.Experience): the design database's LevelingTypeDef
+/// Guid (Adventuring 108651085518458), the total as the client's XPTracker shows it and the experience debt.
+struct Experience {
+    int64_t leveling_type_guid = 0;
+    int64_t xp = 0;
+    int64_t debt = 0;
+    bool operator==(const Experience& o) const { return leveling_type_guid == o.leveling_type_guid && xp == o.xp && debt == o.debt; }
+};
+// C:Y:B : C.O.A
+
+/// Gathering stage 2: one of the 22 CharacterProfessions of a character (aoc.character.v1.ProfessionState): the design database's CharacterProfessions Guid
+/// (Mining 108752769996425 ...), the certification tier (0 Novice ... 4 GrandMaster), the level (1-50) and the XP total on the profession's level-up curve.
+/// A profession's XP lives only here (not in `experience`).
+struct ProfessionState {
+    int64_t profession_guid = 0;
+    int32_t certification_tier = 0;
+    int32_t level = 1;
+    int64_t xp = 0;
+    bool operator==(const ProfessionState&) const = default;
+};
+
+/// Plan D1, stage 2: the ranks a character bought in one skill tree (aoc.character.v1.TreeRanks): the tree's Guid and the SkillRank Guids in the
+/// order they were bought. The ranks a level grants by itself are not stored.
+struct TreeRanks {
+    int64_t              tree_guid = 0;
+    std::vector<int64_t> rank_guids;
+    bool operator==(const TreeRanks&) const = default;
+};
+
+/// Plan D1, stage 2: one slot of the action bar (aoc.character.v1.ActionbarSlot): FActionbarSlotUseData with its bank and slot.
+struct ActionbarSlot {
+    int32_t     bank = 0;
+    int32_t     slot = 0;
+    int32_t     use_type = 0;
+    int32_t     instigator = 0;
+    int64_t     ability_id = 0;
+    int64_t     skill_rank_id = 0;
+    int64_t     pet_command_id = 0;
+    int64_t     item_record_id = 0;
+    std::string item_guid;   // 32 lowercase hex digits, or empty
+    int32_t     item_rarity = 0;
+    int32_t     item_quality = 0;
+    int32_t     combo_button = 0;
+    bool operator==(const ActionbarSlot&) const = default;
+};
+
+/// A character record (aoc.character.v1.Character). race_id, gender_id and class_id are the client's own enums
+/// (plan B1): ECharacterRace 0 Kaelar ... 7 Nikua (8 Tulnar is never created), ECharacterGender 0 Male / 1 Female,
+/// ECharacterClass 1 Ranger, 2 Bard, 3 Cleric, 4 Fighter, 5 Rogue, 6 Summoner, 7 Tank, 8 Mage (0: none, a record whose
+/// class the character service's migration could not derive).
+/// One character of an account as the node window lists it.
+struct AccountCharacter {
+    std::string id;     // 32 hex digits
+    std::string name;
+};
+
+/// Quests, slice 1: one objective of a quest the character took, as the quest service keeps it (aoc.quest.v1.ObjectiveState).
+struct SavedObjective {
+    std::string instance_guid;               // 32 lower-case hex digits
+    int64_t     record_id = 0;
+    bool        active = false, awake = false, hidden = false, completed = false, succeeded = false, failed = false;
+    int32_t     count = 0;
+    double      start_time = 0;
+    bool operator==(const SavedObjective&) const = default;
+};
+
+/// A quest the character took and has not finished (aoc.quest.v1.QuestInstance).
+struct SavedQuest {
+    std::string instance_guid;               // 32 lower-case hex digits
+    int64_t     record_id = 0;
+    int32_t     status = 0;                  // 0 active, 1 completed, 2 failed, 3 paused
+    double      start_time = 0;
+    int64_t     source_guid = 0;
+    std::vector<SavedObjective> objectives;
+    bool operator==(const SavedQuest&) const = default;
+};
+
+struct SavedCompleted {
+    int64_t record_id = 0;
+    int32_t count = 0;
+    bool operator==(const SavedCompleted&) const = default;
+};
+
+struct SavedVariable {
+    std::string name;
+    int64_t     value = 0;
+    bool operator==(const SavedVariable&) const = default;
+};
+
+/// A character's whole quest log (aoc.quest.v1.QuestLog).
+struct SavedQuestLog {
+    std::vector<SavedQuest>     instances;   // in the order the quests were taken
+    std::vector<SavedCompleted> completed;
+    std::vector<SavedVariable>  variables;
+    bool operator==(const SavedQuestLog&) const = default;
+};
+
+/// A GM command waiting for a character (aoc.quest.v1.Command): kind give / finish / fail / abandon / clear / set-var.
+struct QuestCommand {
+    int64_t     id = 0;
+    std::string kind, quest, name;
+    int64_t     value = 0;
+};
+
+struct QuestLogResult {
+    CallStatus    status = CallStatus::Failed;
+    SavedQuestLog log;
+};
+
+struct Character {
+    std::string id;
+    int64_t account_id = 0;
+    std::string name;
+    int32_t race_id = 0;
+    int32_t gender_id = 0;
+    int32_t class_id = 0;
+    int32_t archetype_id = 0;
+    std::string class_name;
+    std::string appearance_json;
+    int32_t level = 0;
+    bool has_position = false;
+    Position position;
+    std::string last_region;
+    /// Plan B2: the character's items (GetCharacter with include_items), the Backpack's by slot, then the Equipment's, then the
+    /// Quest storage's. A character that was never given a kit has none.
+    std::vector<InventoryItem> items;
+    /// Plan D1: the character's XP per leveling type (with the items). A character that never earned any has none.
+    std::vector<Experience> experience;
+    /// Plan D1, stage 2: the ranks the character bought per tree, and its action bar (with the items). A character that never bought a rank
+    /// or arranged its bar has none.
+    std::vector<TreeRanks>     skill_ranks;
+    std::vector<ActionbarSlot> action_bar;
+    /// Gathering stage 2: the character's 22 professions in guid order (with the items): a profession the service has no row for is Novice, level 1, no XP,
+    /// so a service of this version always sends 22; an older fake may send none, which worldd reads the same way.
+    std::vector<ProfessionState> professions;
+    /// The vendors milestone, step 0: the character's money (with the items). The service gives a character with no wallet the start purse when it reads it, so a service of this
+    /// version always sends a Copper entry; an older fake sends none, which worldd reads as an empty purse.
+    std::vector<WalletEntry> wallet;
+    /// Crafting, step 1: the character's processing jobs, in the order they were queued (with the items). A service of an older version sends none.
+    std::vector<ProcessingJob> processing_jobs;
+    /// Crafting, step 3: the recipes the character was taught although the game makes a player learn them (recipe Guids, in the order they were taught; with the items).  A service of an
+    /// older version sends none.
+    std::vector<int64_t> known_recipes;
+    /// Missing systems, step 0: the tutorials the character finished (FirstTimeEvent Guids, in the order they were finished; with the items).  A service of an older version sends none.
+    std::vector<int64_t> completed_ftues;
+    /// Embersprings: the places the character discovered (their numbers in the master list, in the order they were discovered), the one that is its home (0: none) and when its home
+    /// respawn was last used (Unix milliseconds on the server's wall clock; 0: never).  A service of an older version sends none.
+    std::vector<int32_t> attunements;
+    int32_t              home_attunement = 0;
+    int64_t              home_last_used_ms = 0;
+    /// Quests, slice 1: the character's saved quest log, read from the quest service at the login.  Empty (nullopt) when the world server has no quest service or it did not answer: the
+    /// character then plays without quests, and nothing is saved over what the service holds.
+    std::optional<SavedQuestLog> quest_log;
+    /// Storage clerks, step 0: the items the character keeps in the warehouse (with the items).  A service of an older version sends none.
+    std::vector<WarehouseItem> warehouse_items;
+    /// Nodes 1, stage 2: the characters of the same account (id, name), this one included, for OwnerInfo.CharactersNodeData.  Empty when the list is not known
+    /// (a service that does not answer ListCharacters, a fake): the join lists this character alone.
+    std::vector<AccountCharacter> account_characters;
+};
+
+/// Plan D1: what SaveProgress writes: a zero level or class leaves that value; every row replaces the character's row of its type.
+struct Progress {
+    int32_t                 level = 0;
+    int32_t                 class_id = 0;
+    std::vector<Experience> experience;
+    /// Plan D1, stage 2: with replace_skill_ranks the character's bought ranks become exactly `skill_ranks` (a tree not listed has none left); with
+    /// replace_action_bar its bar becomes exactly `action_bar`. Without them they are left alone.
+    bool                       replace_skill_ranks = false;
+    std::vector<TreeRanks>     skill_ranks;
+    bool                       replace_action_bar = false;
+    std::vector<ActionbarSlot> action_bar;
+    /// Gathering stage 2: each profession replaces the character's row of that profession; the others are left alone (the character service refuses a profession
+    /// that is none of the 22, one twice, a tier outside 0-4, a level outside 1-50 or a negative XP).
+    std::vector<ProfessionState> professions;
+    /// Missing systems, step 0: with replace_completed_ftues the character's finished tutorials become exactly `completed_ftues`, in this order; without it they are left alone (the character
+    /// service refuses an id of 0 or less, one twice, and more than 1,024).
+    bool                         replace_completed_ftues = false;
+    std::vector<int64_t>         completed_ftues;
+    /// Embersprings: with replace_attunements the character's discovered places, home and last use of the home respawn become exactly these (the character service refuses a number outside
+    /// 1 to 255, one twice, a home outside 0 to 255 and a negative time).
+    bool                         replace_attunements = false;
+    std::vector<int32_t>         attunements;
+    int32_t                      home_attunement = 0;
+    int64_t                      home_last_used_ms = 0;
+    bool operator==(const Progress& o) const {
+        if (level != o.level || class_id != o.class_id || experience.size() != o.experience.size()) return false;
+        for (size_t i = 0; i < experience.size(); ++i) {
+            if (!(experience[i] == o.experience[i])) return false;
+        }
+        return replace_skill_ranks == o.replace_skill_ranks && skill_ranks == o.skill_ranks && replace_action_bar == o.replace_action_bar &&
+               action_bar == o.action_bar && professions == o.professions && replace_completed_ftues == o.replace_completed_ftues && completed_ftues == o.completed_ftues &&
+               replace_attunements == o.replace_attunements && attunements == o.attunements && home_attunement == o.home_attunement && home_last_used_ms == o.home_last_used_ms;
+    }
+};
+// [C:Y:B :: C O A]
+
+struct CharacterResult {
+    CallStatus status = CallStatus::Failed;
+    Character character;
+};
+
+struct RegisterResult {
+    CallStatus status = CallStatus::Failed;
+    uint32_t server_id = 0;
+    int64_t heartbeat_interval_ms = 0;
+};
+
+class GatewayApi {
+public:
+    virtual ~GatewayApi() = default;
+    virtual RedeemResult redeem_ticket(const std::string& ticket, const std::string& character_id,
+                                       uint32_t server_id) = 0;
+};
+
+class CharacterApi {
+public:
+    virtual ~CharacterApi() = default;
+    virtual CharacterResult get_character(const std::string& id) = 0;
+    /// SaveCharacterState with a position: the character's last good position after play (plan A6). The service
+    /// leaves last_region and level unchanged (they are not sent). Refused: a position the store rejects (not
+    /// finite); NotFound: no such character.
+    virtual CallStatus save_position(const std::string& id, const Position& position) = 0;
+    /// Plan B2: SaveInventory, which replaces all of the character's items with `items` (the latest save wins; worldd is the
+    /// only writer while the character plays). Refused: items the service's rules refuse (a slot outside its storage, two items in
+    /// a slot, a quantity out of range ...) or none at all; NotFound: no such character. A fake that does not care leaves the default.
+    virtual CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items) {
+        (void)id;
+        (void)items;
+        return CallStatus::Failed;
+    }
+    /// The vendors milestone, step 0: SaveInventory that also stores the wallet, in the same transaction (each currency named is set, the others are left). A fake that does not care
+    /// saves the items alone.
+    virtual CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet) {
+        (void)wallet;
+        return save_inventory(id, items);
+    }
+    /// Crafting, step 1: SaveInventory that also stores the wallet and the character's processing jobs, in the same transaction (the jobs become exactly `jobs`). A fake that does not care saves
+    /// the items and the wallet.
+    virtual CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet, const std::vector<ProcessingJob>& jobs) {
+        (void)jobs;
+        return save_inventory(id, items, wallet);
+    }
+    /// Crafting, step 3: the same that also stores the recipes the character was taught (they become exactly `known_recipes`), in the same transaction.  A fake that does not care saves the
+    /// items, the wallet and the jobs.
+    virtual CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet, const std::vector<ProcessingJob>& jobs,
+                                      const std::vector<int64_t>& known_recipes) {
+        (void)known_recipes;
+        return save_inventory(id, items, wallet, jobs);
+    }
+    /// Storage clerks, step 0: the same that also stores the character's warehouse (it becomes exactly `warehouse`), in the same transaction.  A fake that does not care saves the rest.
+    virtual CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items, const std::vector<WalletEntry>& wallet, const std::vector<ProcessingJob>& jobs,
+                                      const std::vector<int64_t>& known_recipes, const std::vector<WarehouseItem>& warehouse) {
+        (void)warehouse;
+        return save_inventory(id, items, wallet, jobs, known_recipes);
+    }
+    /// Plan D1: SaveProgress: the level, the class and the XP rows, in one transaction (the latest save wins). Refused: a level
+    /// outside 1-25, a class outside 1-8, a leveling type of 0, a negative XP or debt; NotFound: no such character.
+    virtual CallStatus save_progress(const std::string& id, const Progress& progress) {
+        (void)id;
+        (void)progress;
+        return CallStatus::Failed;
+    }
+};
+
+/// Quests, slice 1: the quest service (aoc.quest.v1.QuestService).  A world server that cannot reach it plays without quests.
+class QuestApi {
+public:
+    virtual ~QuestApi() = default;
+    /// The character's saved log (empty for a character that took nothing).
+    virtual QuestLogResult load_log(const std::string& character_id) = 0;
+    /// Replaces the character's whole log.  Refused: a log the service finds invalid; NotFound: no such character.
+    virtual CallStatus save_log(const std::string& character_id, const SavedQuestLog& log) = 0;
+    /// The GM commands queued for the character, oldest first; they are removed from the service.
+    virtual CallStatus take_commands(const std::string& character_id, std::vector<QuestCommand>& out) = 0;
+};
+
+class MeshApi {
+public:
+    virtual ~MeshApi() = default;
+    virtual RegisterResult register_server(const std::string& address,
+                                           const std::vector<std::string>& regions) = 0;
+    virtual CallStatus heartbeat(uint32_t server_id) = 0;
+};
+
+inline const char* call_status_name(CallStatus s) {
+    switch (s) {
+    case CallStatus::Ok: return "ok";
+    case CallStatus::Refused: return "refused";
+    case CallStatus::NotFound: return "not found";
+    case CallStatus::Unavailable: return "unavailable";
+    case CallStatus::Failed: return "failed";
+    }
+    return "?";
+}
+
+}}} // namespace aoc::worldd::svc

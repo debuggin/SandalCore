@@ -1,0 +1,319 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+// ============================================================================
+//  combat/rewards.cpp (see rewards.h)
+// ============================================================================
+#include "combat/rewards.h"
+
+#include "combat/hit_context.h"
+#include "items/rarity.h"
+#include "stats/stat_program.h"
+
+#include <algorithm>
+#include <functional>
+#include <optional>
+#include <cmath>
+
+namespace aoc::worldd::combat {
+
+namespace {
+
+constexpr int kMaxDepth = 8;
+constexpr size_t kMaxRolled = 64;   // the most stacks one death rolls (a table cannot make a corpse of thousands)
+constexpr int kMaxBoostDraws = 4096;   // the most times the rarity boost draws one quality again (a line whose every outcome is Common is kept after this many)
+
+/// The host of a reward expression.
+class RewardHost final : public stats::ExprHost {
+public:
+    explicit RewardHost(RollContext& c) : c_(c) {}
+    double rand_double() override { return c_.rng ? c_.rng->rand_double() : 0.0; }
+    double host_fn(int fn, const std::string& name, const double* args, int n) override {
+        switch (fn) {
+            case stats::kHostRandIntRange: {
+                if (n < 2) return 0;
+                // lo when hi < lo, as the other hosts (the ability pipeline's, the hit resolver's) and UE's RandRange(Min, Max): the quantity of a gathering reward with no
+                // table entry is RandIntRange(1, 0) = 1 (Gathering stage 2); no random number is used
+                const double lo = std::floor(args[0]), hi = std::floor(args[1]);
+                if (hi < lo) return lo;
+                return std::min(hi, lo + std::floor(rand_double() * (hi - lo + 1.0)));
+            }
+            case stats::kHostArtisanStat:
+            case stats::kHostRolledItemQuality:
+            case stats::kHostItemRarity:
+            case stats::kHostSourceCertTier:
+            case stats::kHostGatherBaseSecs: {
+                // Gathering stage 2: a harvest's reads (stats/gather_host.h); the rating of a stat is the player's settled value of it
+                double out = 0;
+                if (!c_.gather) return 0;
+                if (fn == stats::kHostArtisanStat && !name.empty()) {
+                    char* end = nullptr;
+                    const long long guid = std::strtoll(name.c_str(), &end, 10);
+                    if (end != name.c_str() + name.size() || (n >= 1 && static_cast<int>(args[0]) != stats::kRoleCaster)) return 0;
+                    const auto given = c_.gather->context.ratings.find(static_cast<int64_t>(guid));   // a rating the caller gave (the tests): else the player's settled value
+                    if (given != c_.gather->context.ratings.end()) return given->second;
+                    return c_.npc ? c_.npc->stat(static_cast<int64_t>(guid)) : 0.0;
+                }
+                return stats::gather_host_fn(c_.gather->context, fn, name, args, n, out) ? out : 0.0;
+            }
+            case stats::kHostLootMaxLevel: return c_.loot_max_level;
+            case stats::kHostLootAvgLuck: return c_.avg_luck;
+            case stats::kHostPlayerLevel: return c_.player_level;
+            case stats::kHostNarrativeLevel: return c_.narrative_level;
+            case stats::kHostNpcTag: {
+                if (!c_.npc_tags) return 0;
+                for (const std::string& t : *c_.npc_tags) {
+                    if (tag_matches(t, name)) return 1.0;
+                }
+                return 0;
+            }
+            case stats::kHostIsClient: return 0;
+            default: {
+                if (fn >= stats::kHostNodeBiome && fn <= stats::kHostNodeLast) {
+                    // the player is read as being where the creature died
+                    const world::NodeContext where{c_.node, c_.biome, c_.node, c_.node};
+                    double out = 0;
+                    if (world::node_host_fn(c_.nodes, where, fn, args, n, out)) return out;
+                }
+                return 0;
+            }
+        }
+    }
+// ~ CoA & C_Y_B ~
+
+private:
+    RollContext& c_;
+};
+
+class Roller {
+public:
+    Roller(const RewardBook& book, const abilities::Catalog& catalog, const std::map<int64_t, content::LootTable>&, RollContext& ctx, Rolled& out,
+           const std::function<const content::LootTable*(int64_t)>& lookup)
+        : book_(book), catalog_(catalog), ctx_(ctx), out_(out), host_(ctx), lookup_(lookup) {}
+
+    void table(int64_t guid, int depth) {
+        if (depth > kMaxDepth) return;
+        const content::LootTable* t = lookup_(guid);
+        if (!t) return;
+        if (t->pred != 0 && !truth(t->pred)) return;
+        ++out_.tables;
+        for (const content::LootContainer& c : t->containers) container(c);
+        for (const size_t i : select(t->algo, t->n, t->subs.size(), t->w, t->pct, t->xw, /*empty_is_all=*/false)) table(t->subs[i], depth + 1);
+    }
+
+private:
+    /// An expression's value; nullopt for none (id 0) and for one that does not run (counted).
+    std::optional<double> value(int64_t expr) {
+        if (expr == 0) return std::nullopt;
+        const int program = catalog_.program(expr);
+        if (program < 0 || !ctx_.npc) {
+            ++out_.gated;
+            return std::nullopt;
+        }
+        double v = 0;
+        std::string err;
+        if (!ctx_.npc->eval(program, host_, v, err) || !std::isfinite(v)) {
+            ++out_.gated;
+            return std::nullopt;
+        }
+        return v;
+    }
+
+    /// A predicate: none holds, one that does not run does not.
+    bool truth(int64_t expr) {
+        if (expr == 0) return true;
+        const std::optional<double> v = value(expr);
+        return v && *v != 0.0;
+    }
+
+    /// Item rarities, step 1: the quality a KILL's reward line gives its item: the line's variation rolls it, run as the dead creature (its elite rank adds 2 per rank to a gear roll).  0 when
+    /// the line has no variation, the book holds no rules or the formula does not run (the item keeps the record's quality).  The test boost throws a Common outcome back with the chance
+    /// 1 - 1 / boost and draws again, which makes every outcome above Common that many times as likely against Common; at 1 the formula runs once and nothing else is drawn.
+    int kill_quality(const content::LootItem& it) {
+        const int64_t program = book_.quality_program(it.variation);
+        if (program == 0) return 0;
+        const double boost = ctx_.rarity_boost > 1.0 ? ctx_.rarity_boost : 1.0;
+        for (int draw = 1;; ++draw) {
+            const std::optional<double> rolled = value(program);
+            if (!rolled || !(*rolled >= 1.0 && *rolled <= 1000.0)) {
+                ++out_.quality_failures;
+                return 0;
+            }
+            const int quality = std::clamp(static_cast<int>(std::floor(*rolled + 1e-9)), items::kMinQuality, items::kMaxQuality);   // (the character store holds 1 to 200)
+            if (boost > 1.0 && ctx_.rng && draw < kMaxBoostDraws && book_.rarity_of(it.item, quality) == 0 && ctx_.rng->rand_double() * boost >= 1.0) {
+                ++out_.boost_redraws;
+                continue;
+            }
+            ++out_.quality_rolls;
+            return quality;
+        }
+    }
+
+    double weight_at(const std::vector<double>& w, size_t i) { return i < w.size() ? std::max(0.0, w[i]) : 1.0; }
+
+    std::vector<size_t> select(const std::string& algo, int64_t n, size_t count, const std::vector<double>& w, const std::vector<int64_t>& pct,
+                               const std::vector<int64_t>& xw, bool empty_is_all) {
+        std::vector<size_t> out;
+        if (count == 0) return out;
+        const std::string a = algo.empty() || algo == "None" ? (empty_is_all ? "All" : "None") : algo;
+        const size_t pick = static_cast<size_t>(std::max<int64_t>(1, std::min<int64_t>(n, static_cast<int64_t>(count))));
+        if (a == "None") return out;
+        if (a == "All") {
+            for (size_t i = 0; i < count; ++i) out.push_back(i);
+            return out;
+        }
+        if (a == "RollEachByPercent") {
+            for (size_t i = 0; i < count; ++i) {
+                if (i >= pct.size()) continue;
+                const std::optional<double> p = value(pct[i]);
+                if (p && ctx_.rng && ctx_.rng->rand_double() < std::min(1.0, *p * ctx_.chance_mult)) out.push_back(i);
+            }
+            return out;
+        }
+        std::vector<double> weights(count, 1.0);
+        if (a == "PerElementWeightedRandom") {
+            for (size_t i = 0; i < count; ++i) weights[i] = weight_at(w, i);
+        } else if (a == "PerElementWeightedExpressionRandom") {
+            for (size_t i = 0; i < count; ++i) {
+                const std::optional<double> v = i < xw.size() ? value(xw[i]) : std::nullopt;
+                weights[i] = v ? std::max(0.0, *v) : 0.0;
+            }
+        } else if (a != "PureRandom") {
+            for (size_t i = 0; i < count; ++i) out.push_back(i);   // an algorithm this reader does not know: everything
+            return out;
+        }
+        for (size_t k = 0; k < pick; ++k) {
+            double total = 0;
+            for (const double x : weights) total += x;
+            if (!(total > 0) || !ctx_.rng) break;
+            double r = ctx_.rng->rand_double() * total;
+            size_t chosen = count;
+            for (size_t i = 0; i < count; ++i) {
+                if (weights[i] <= 0) continue;
+                chosen = i;
+                r -= weights[i];
+                if (r < 0) break;
+            }
+            if (chosen == count) break;
+            out.push_back(chosen);
+            weights[chosen] = 0;
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+// built by CoA with C-Y-B
+
+    void container(const content::LootContainer& c) {
+        if (c.pred != 0 && !truth(c.pred)) return;
+        for (const size_t i : select(c.algo, c.n, c.rewards.size(), c.w, c.pct, c.xw, /*empty_is_all=*/true)) {
+            const content::LootReward& r = c.rewards[i];
+            for (const content::LootXp& x : r.xp) {
+                const std::optional<double> v = value(x.expr);
+                if (v && *v > 0) out_.xp.push_back({x.type, static_cast<int64_t>(std::llround(*v))});
+            }
+            for (const content::LootItem& it : r.items) {
+                // a harvest: the item's variation rolls its quality first (the quantity formula reads what it gave)
+                int quality = 0;
+                stats::GatherContext saved;
+                bool borrowed = false;
+                if (ctx_.gather && it.item != 0) {
+                    GatherRoll& g = *ctx_.gather;
+                    int64_t quality_program = 0;
+                    if (g.quality_expr && it.variation != 0) {
+                        const auto qe = g.quality_expr->find(it.variation);
+                        if (qe != g.quality_expr->end()) quality_program = qe->second;
+                    }
+                    if (quality_program != 0) {
+                        const std::optional<double> rolled = value(quality_program);
+                        if (rolled && *rolled >= 1.0 && *rolled <= 1000.0) {
+                            quality = static_cast<int>(std::floor(*rolled + 1e-9));
+                            const int rarity = g.rarity_of ? g.rarity_of(it.item, quality) : 0;
+                            if (g.primary_set) {   // a bonus drop: its own quality for its own quantity, the harvest's rarity stays what the interaction's own item rolled
+                                saved = g.context;
+                                borrowed = true;
+                            }
+                            g.context.quality = g.quality_literal ? quality : rarity;
+                            g.context.item_rarity = rarity;
+                            if (!g.primary_set) {
+                                g.primary_set = true;
+                                g.primary_quality = quality;
+                                g.primary_rarity = rarity;
+                            }
+                        } else {
+                            ++g.quality_failures;
+                        }
+                    }
+                } else if (!ctx_.gather && it.item != 0 && it.variation != 0) {
+                    quality = kill_quality(it);   // a kill: the same variations roll the drops of a creature (item rarities, step 1)
+                }
+                const std::optional<double> q = value(it.qty);
+                if (borrowed) ctx_.gather->context = saved;
+                // a line the design data gives no Quantity (the quests' rewards: the medallion a guard hands over, a reward box) is one item; a formula that does not run is none
+                const int64_t qty = it.qty == 0 ? 1 : q ? static_cast<int64_t>(std::floor(*q + 1e-9)) : 0;
+                if (qty <= 0 || it.item == 0) continue;
+                add(c.grant == "Auto" ? out_.direct : out_.loot, {it.item, it.variation, qty, quality});
+            }
+            out_.currency += r.currency.size();
+        }
+    }
+
+    void add(std::vector<RolledItem>& list, const RolledItem& item) {
+        for (RolledItem& x : list) {
+            if (x.item == item.item && x.variation == item.variation && x.quality == item.quality) {
+                x.quantity += item.quantity;
+                return;
+            }
+        }
+        if (list.size() < kMaxRolled) list.push_back(item);
+    }
+
+    const RewardBook&                                           book_;
+    const abilities::Catalog&                                   catalog_;
+    RollContext&                                                ctx_;
+    Rolled&                                                     out_;
+    RewardHost                                                  host_;
+    const std::function<const content::LootTable*(int64_t)>&    lookup_;
+};
+
+}  // namespace
+
+int RewardBook::rarity_of(int64_t item, int quality) const {
+    return rarity_of_ ? rarity_of_(item, quality) : items::default_rarity_facts().rarity_of(static_cast<double>(quality));
+}
+
+Rolled RewardBook::roll(const std::vector<int64_t>& roots, RollContext& ctx) const {
+    Rolled out;
+    const std::function<const content::LootTable*(int64_t)> lookup = [this](int64_t g) { return table(g); };
+    Roller r(*this, catalog_, tables_, ctx, out, lookup);
+    std::vector<int64_t> done;
+    for (const int64_t root : roots) {
+        if (std::find(done.begin(), done.end(), root) != done.end()) continue;   // a table named twice rolls once
+        done.push_back(root);
+        r.table(root, 0);
+    }
+    // the same kind of experience from two tables adds up
+    std::vector<RolledXp> merged;
+    for (const RolledXp& x : out.xp) {
+        const auto it = std::find_if(merged.begin(), merged.end(), [&](const RolledXp& m) { return m.type == x.type; });
+        if (it == merged.end()) merged.push_back(x);
+        else it->amount += x.amount;
+    }
+    out.xp = std::move(merged);
+    return out;
+}
+
+int64_t RewardBook::xp_for(int64_t amount, RollContext& ctx) const {
+    double mult = 1.0;
+    if (decay_expr_ != 0 && ctx.npc) {
+        const int program = catalog_.program(decay_expr_);
+        if (program >= 0) {
+            RewardHost host(ctx);
+            double v = 0;
+            std::string err;
+            if (ctx.npc->eval(program, host, v, err) && std::isfinite(v) && v >= 0) mult = v;
+        }
+    }
+    return static_cast<int64_t>(std::llround(static_cast<double>(amount) * mult));
+}
+
+}  // namespace aoc::worldd::combat
