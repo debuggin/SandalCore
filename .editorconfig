@@ -1,0 +1,35 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 100
+
+[*.cs]
+indent_style = space
+indent_size = 4
+# K&R / 1TBS Brace Enforcement (Overrides C# Allman default)
+csharp_new_line_before_open_brace = none:error
+csharp_new_line_before_else = false:error
+csharp_new_line_before_catch = false:error
+csharp_new_line_before_finally = false:error
+csharp_prefer_braces = true:error
+dotnet_sort_system_directives_first = true
+
+[*.{cpp,cc,c,h,hpp,ts,tsx,js,jsx,json,yml,yaml,proto,sh,css,html}]
+indent_style = space
+indent_size = 2
+
+[*.{ps1,psm1,psd1,py,rs,sql}]
+indent_style = space
+indent_size = 4
+
+[*.go]
+indent_style = tab
+indent_size = 4
+
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
