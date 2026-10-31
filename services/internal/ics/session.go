@@ -17,6 +17,21 @@ import (
 	icsxclient "aocrop/services/gen/ics/xclient"
 )
 
+// Session is one client stream.
+type Session struct {
+	id      uint64
+	account *Account // nil until a SessionRequest(OPEN) with a valid token
+	token   string   // the token that opened it
+	chars   int      // the account's character count, for the world list and the limit
+}
+
+type session = Session
+
+// end forgets the account: the stream carries on without a session.
+func (sess *Session) end() {
+	sess.account, sess.token, sess.chars = nil, "", 0
+}
+
 // pingConfig is what the legacy server sends for the client's latency probes
 // (the retail hosts; the client only pings them).
 const pingConfig = `{"log_level":"info","ping_hosts":[{"host":"ping-eunorth1.ashesofcreation.com","name":"eunorth1"},{"host":"ping-useast2.ashesofcreation.com","name":"useast2"}],"ping_period_msec":2000,"version":"0.2.13"}`
@@ -25,7 +40,7 @@ const sessionReply = "ics_common.SessionReply"
 
 // Cyb captures, C | O | A code
 
-func (s *Server) onSession(ctx context.Context, sess *session, o *outbox) error {
+func (s *Server) onSession(ctx context.Context, sess *Session, o *outbox) error {
 	var req icscommon.SessionRequest
 	if err := proto.Unmarshal(o.in.GetMessageData(), &req); err != nil {
 		return o.reply(sessionReply, &icscommon.SessionReply{ResultCode: codeInvalidRequest}, codeInvalidRequest, "ics_session")
@@ -52,7 +67,7 @@ func (s *Server) onSession(ctx context.Context, sess *session, o *outbox) error 
 // openSession opens the session with the token in the wrapper's auth_token
 // tag. It replaces any session the stream had: when the new one is refused,
 // none is left.
-func (s *Server) openSession(ctx context.Context, sess *session, o *outbox, rep *icscommon.SessionReply) error {
+func (s *Server) openSession(ctx context.Context, sess *Session, o *outbox, rep *icscommon.SessionReply) error {
 	sess.end()
 	token := o.in.GetSystemData().GetTags()["auth_token"]
 	acc, err := s.deps.Accounts.ValidateToken(ctx, token)
@@ -98,7 +113,7 @@ func (s *Server) openSession(ctx context.Context, sess *session, o *outbox, rep 
 // is still valid. Tokens are checked at OPEN and here: one that has expired
 // ends the session. When the auth service cannot be reached nothing says the
 // token expired, and the session carries on.
-func (s *Server) onAuthRefresh(ctx context.Context, sess *session, o *outbox) error {
+func (s *Server) onAuthRefresh(ctx context.Context, sess *Session, o *outbox) error {
 	const replyType, ftag = "ics_xclient.AuthRefreshReply", "ics_xclient_auth"
 	if _, err := s.deps.Accounts.ValidateToken(ctx, sess.token); err != nil {
 		if ctx.Err() != nil {
@@ -130,7 +145,7 @@ func (s *Server) sessionState(chars []*characterv1.Character) []byte {
 
 // world is the one world the gateway offers, with the session's character
 // count.
-func (s *Server) world(sess *session) *icsxclient.WorldInfo {
+func (s *Server) world(sess *Session) *icsxclient.WorldInfo {
 	return &icsxclient.WorldInfo{
 		WorldId: s.cfg.WorldID, WorldDisplayName: s.cfg.WorldName, Available: true, CharacterCount: int32(sess.chars),
 	}
@@ -138,7 +153,7 @@ func (s *Server) world(sess *session) *icsxclient.WorldInfo {
 
 // onInterest pushes the world status when the client starts listening for it;
 // stopping needs no answer.
-func (s *Server) onInterest(sess *session, o *outbox) error {
+func (s *Server) onInterest(sess *Session, o *outbox) error {
 	var ev icsxclient.GameClientInterestEvent
 	if err := proto.Unmarshal(o.in.GetMessageData(), &ev); err != nil {
 		slog.Info("ics: unreadable interest event", "session", sess.id, "err", err)

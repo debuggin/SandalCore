@@ -15,14 +15,14 @@ import (
 	"aocrop/services/internal/dbtest"
 )
 
-// setup returns a store on a fresh schema whose clock the test moves.
-func setup(t *testing.T, static string) (*Store, *time.Time) {
+// setup returns a registry on a fresh schema whose clock the test moves.
+func setup(t *testing.T, static string) (*Registry, *time.Time) {
 	t.Helper()
 	pool := dbtest.Pool(t)
 	if err := db.Migrate(context.Background(), pool); err != nil {
 		t.Fatal(err)
 	}
-	s := NewStore(pool, 15*time.Second, static)
+	s := NewRegistry(pool, 15*time.Second, static)
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
 	return s, &now

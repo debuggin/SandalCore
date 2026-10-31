@@ -64,7 +64,7 @@ func run(seedPath string) error {
 		return startupErr(ctx, err)
 	}
 
-	svc := citynode.New(pool, citynode.DefaultRoster(), seedPath)
+	svc := citynode.NewService(pool, citynode.DefaultRoster(), seedPath)
 	if err := svc.Start(ctx); err != nil {
 		return startupErr(ctx, err)
 	}
@@ -91,10 +91,10 @@ func run(seedPath string) error {
 	return err
 }
 
-// newServer is the gRPC server worldd, nodectl and the admin app call. It requires the service token.
+// newServer is the gRPC server world, nodectl and the admin app call. It requires the service token.
 func newServer(token svcauth.Token, svc *citynode.Service) *grpc.Server {
 	s := grpc.NewServer(token.ServerOptions()...)
-	citynodev1.RegisterCityNodeServiceServer(s, citynodegrpc.New(svc))
+	citynodev1.RegisterCityNodeServiceServer(s, citynodegrpc.NewServer(svc))
 	return s
 }
 

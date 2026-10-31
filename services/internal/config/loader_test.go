@@ -155,7 +155,7 @@ func TestCityNodeSettings(t *testing.T) {
 	}
 }
 
-// The GM travel tools: worldd's admin API address (worldctl dials it, worldd listens on it).
+// The GM travel tools: world's admin API address (worldctl dials it, world listens on it).
 func TestWorldAdminSettings(t *testing.T) {
 	t.Setenv("AOC_WORLD_ADMIN_ADDR", "")
 	if c := Load(); c.WorldAdminAddr != "127.0.0.1:50056" {

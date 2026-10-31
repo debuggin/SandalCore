@@ -108,14 +108,19 @@ type Option func(*Service)
 // WithClock makes the service read the real time from now (the tests'); the default is time.Now.
 func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = now } }
 
-// New makes a service over pool for the nodes of roster. seedPath is the seed file ApplySeed reads when it is not handed one
+// NewService makes a service over pool for the nodes of roster. seedPath is the seed file ApplySeed reads when it is not handed one
 // (deploy/citynode_seed.json). Start must run before anything else.
-func New(pool *pgxpool.Pool, roster *Roster, seedPath string, opts ...Option) *Service {
+func NewService(pool *pgxpool.Pool, roster *Roster, seedPath string, opts ...Option) *Service {
 	s := &Service{pool: pool, roster: roster, seedPath: seedPath, now: time.Now}
 	for _, o := range opts {
 		o(s)
 	}
 	return s
+}
+
+// New makes a service over pool for the nodes of roster.
+func New(pool *pgxpool.Pool, roster *Roster, seedPath string, opts ...Option) *Service {
+	return NewService(pool, roster, seedPath, opts...)
 }
 
 // Roster is the nodes the service knows.

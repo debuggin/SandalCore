@@ -66,7 +66,7 @@ func TestSessionOpensWithTheLauncherToken(t *testing.T) {
 
 func TestSessionRefusesAnInvalidToken(t *testing.T) {
 	h := newHarness(t, twoOfMine())
-	m := h.open("emulator-ics-token-deadbeef", codeAuthFailed)
+	m := h.open("sage-trident-steppe-reef-b47f99ef90d9ce08", codeAuthFailed)
 	var rep icscommon.SessionReply
 	if err := proto.Unmarshal(m.GetMessageData(), &rep); err != nil || rep.GetResultCode() != codeAuthFailed {
 		t.Errorf("SessionReply = %v %v, want result %v", &rep, err, codeAuthFailed)

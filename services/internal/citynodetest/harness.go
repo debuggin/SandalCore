@@ -73,7 +73,7 @@ func New(t *testing.T, seed string) *Env {
 	}
 	clk := NewClock()
 	return &Env{Pool: pool, Clock: clk, SeedPath: path,
-		Svc: citynode.New(pool, citynode.DefaultRoster(), path, citynode.WithClock(clk.Now))}
+		Svc: citynode.NewService(pool, citynode.DefaultRoster(), path, citynode.WithClock(clk.Now))}
 }
 
 // Start starts the service (the node rows, the seed).
@@ -86,5 +86,5 @@ func (e *Env) Start(t *testing.T) {
 
 // Another is a second service over the same schema and seed file (a restart of citynode).
 func (e *Env) Another() *citynode.Service {
-	return citynode.New(e.Pool, citynode.DefaultRoster(), e.SeedPath, citynode.WithClock(e.Clock.Now))
+	return citynode.NewService(e.Pool, citynode.DefaultRoster(), e.SeedPath, citynode.WithClock(e.Clock.Now))
 }

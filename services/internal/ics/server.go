@@ -107,19 +107,6 @@ func New(deps Deps, cfg Config) *Server {
 	return s
 }
 
-// session is one client stream.
-type session struct {
-	id      uint64
-	account *Account // nil until a SessionRequest(OPEN) with a valid token
-	token   string   // the token that opened it
-	chars   int      // the account's character count, for the world list and the limit
-}
-
-// end forgets the account: the stream carries on without a session.
-func (sess *session) end() {
-	sess.account, sess.token, sess.chars = nil, "", 0
-}
-
 // Bounds on what the client sends.
 const (
 	maxTypeName      = 128      // bytes of a message_type_name; the longest real one is about 40
@@ -132,7 +119,7 @@ const (
 // Messages are answered one at a time, in order, as the legacy server does.
 func (s *Server) ProcessXClientMessage(stream icsxclient.XClientService_ProcessXClientMessageServer) error {
 	ctx := stream.Context()
-	sess := &session{id: s.nextSession.Add(1)}
+	sess := &Session{id: s.nextSession.Add(1)}
 	md, _ := metadata.FromIncomingContext(ctx)
 	slog.Info("ics stream opened", "session", sess.id, "metadata", metadataKeys(md))
 	defer slog.Info("ics stream closed", "session", sess.id)
@@ -155,7 +142,7 @@ func (s *Server) ProcessXClientMessage(stream icsxclient.XClientService_ProcessX
 
 // handle answers one message. It returns an error only when the stream is
 // broken; what the client got wrong is answered with a status code.
-func (s *Server) handle(ctx context.Context, sess *session, o *outbox) error {
+func (s *Server) handle(ctx context.Context, sess *Session, o *outbox) error {
 	if n := len(o.in.GetMessageTypeName()); n > maxTypeName {
 		// No message type has a name this long; do not echo it.
 		slog.Info("ics: message type name too long", "session", sess.id, "bytes", n, "type", clip(o.in.GetMessageTypeName()))

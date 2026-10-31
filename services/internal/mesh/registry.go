@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-// Package mesh keeps the registry of world servers (worldd) and decides where
+// Package mesh keeps the registry of world servers (world) and decides where
 // a character plays. Milestone A runs one world server: placement picks the
 // live registered one, or the configured static world (a world server that
 // never registers) while none is live.
@@ -34,23 +34,30 @@ var (
 // Registered servers get ids from 1 up.
 const StaticServerID uint32 = 0
 
-type Store struct {
+type Registry struct {
 	pool   *pgxpool.Pool
 	ttl    time.Duration // a server silent this long is not placed
 	static string        // address of the static world, "" for none
 	now    func() time.Time
 }
 
-func NewStore(pool *pgxpool.Pool, heartbeatTTL time.Duration, staticWorld string) *Store {
-	return &Store{pool: pool, ttl: heartbeatTTL, static: staticWorld, now: time.Now}
+// Store is an alias for Registry.
+type Store = Registry
+
+func NewRegistry(pool *pgxpool.Pool, heartbeatTTL time.Duration, staticWorld string) *Registry {
+	return &Registry{pool: pool, ttl: heartbeatTTL, static: staticWorld, now: time.Now}
+}
+
+func NewStore(pool *pgxpool.Pool, heartbeatTTL time.Duration, staticWorld string) *Registry {
+	return NewRegistry(pool, heartbeatTTL, staticWorld)
 }
 
 // HeartbeatTTL is how long a server may stay silent and still be placed.
-func (s *Store) HeartbeatTTL() time.Duration { return s.ttl }
+func (s *Registry) HeartbeatTTL() time.Duration { return s.ttl }
 
 // Register records a world server at address (host:port) owning regions and
 // returns its new ServerId. Registering counts as a first heartbeat.
-func (s *Store) Register(ctx context.Context, address string, regions []string) (uint32, error) {
+func (s *Registry) Register(ctx context.Context, address string, regions []string) (uint32, error) {
 	if err := ValidAddress(address); err != nil {
 		return 0, fmt.Errorf("%w: address %q: %v", ErrInvalid, address, err)
 	}
@@ -71,7 +78,7 @@ func (s *Store) Register(ctx context.Context, address string, regions []string) 
 
 // Heartbeat marks a registered server as alive. ErrUnknownServer when there is
 // no such registration: the server should register again.
-func (s *Store) Heartbeat(ctx context.Context, id uint32) error {
+func (s *Registry) Heartbeat(ctx context.Context, id uint32) error {
 	if id == StaticServerID || id > math.MaxInt32 {
 		return ErrUnknownServer // no registration can have this id
 	}
@@ -91,7 +98,7 @@ func (s *Store) Heartbeat(ctx context.Context, id uint32) error {
 // server with the most recent heartbeat inside the TTL, else the static
 // world, else ErrNoServer. With one world server the character does not
 // matter yet; the region of its saved position will once there are several.
-func (s *Store) Place(ctx context.Context, characterID string) (uint32, string, error) {
+func (s *Registry) Place(ctx context.Context, characterID string) (uint32, string, error) {
 	var id int32
 	var address string
 	err := s.pool.QueryRow(ctx, `

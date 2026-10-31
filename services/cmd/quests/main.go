@@ -77,10 +77,10 @@ func run() error {
 	return err
 }
 
-// newServer is the gRPC server worldd and questctl call. It requires the service token.
+// newServer is the gRPC server world and questctl call. It requires the service token.
 func newServer(token svcauth.Token, svc *quests.Service) *grpc.Server {
 	s := grpc.NewServer(token.ServerOptions()...)
-	questv1.RegisterQuestServiceServer(s, questsgrpc.New(svc))
+	questv1.RegisterQuestServiceServer(s, questsgrpc.NewServer(svc))
 	return s
 }
 

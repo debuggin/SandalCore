@@ -61,7 +61,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	srv := newServer(token, mesh.NewStore(pool, cfg.MeshHeartbeatTTL, cfg.MeshStaticWorld))
+	srv := newServer(token, mesh.NewRegistry(pool, cfg.MeshHeartbeatTTL, cfg.MeshStaticWorld))
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(lis) }()

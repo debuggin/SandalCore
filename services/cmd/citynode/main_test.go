@@ -26,7 +26,7 @@ const testToken = svcauth.Token("0123456789abcdef0123456789abcdef0123456789abcde
 
 // Every call to citynode needs the service token. A guid no node has is answered NotFound without the database.
 func TestServerRequiresTheServiceToken(t *testing.T) {
-	srv := newServer(testToken, citynode.New(nil, citynode.DefaultRoster(), ""))
+	srv := newServer(testToken, citynode.NewService(nil, citynode.DefaultRoster(), ""))
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
