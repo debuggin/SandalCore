@@ -62,36 +62,36 @@ if(NOT PROTOC)
 endif()
 
 # ── Proto codegen ───────────────────────────────────────────────────────────
-# worldd generates the gRPC stubs of the internal services it calls (server/worldd/CMakeLists.txt, from proto/internal) with the PROTOC
+# world generates the gRPC stubs of the internal services it calls (server/worldd/CMakeLists.txt, from proto/internal) with the PROTOC
 # and GRPC_CPP_PLUGIN found above.  The Go services generate theirs from proto/ (services/buf.gen.yaml).
 
 # ── libaocnet: protocol library (wire / emit / schema / NetGUIDs) ──────────
 add_subdirectory(libs/aocnet)
 
-# ── worldd: the C++ world server (plan A4) ──────────────────────────────────
+# ── world: the C++ world server & navbuild (plan A4) ────────────────────────
 add_subdirectory(server/worldd)
 
 # ── Tether server (standalone UDP ARQ executable) ───────────────────────────
-add_executable(tether_server
+add_executable(tether
     src/tether_server_main.cpp
     src/services/tether/tether_service.h
 )
 
-target_include_directories(tether_server PRIVATE
+target_include_directories(tether PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
-target_link_libraries(tether_server
+target_link_libraries(tether
     PRIVATE
         spdlog::spdlog
         nlohmann_json::nlohmann_json
         ws2_32
 )
 
-target_compile_features(tether_server PRIVATE cxx_std_20)
+target_compile_features(tether PRIVATE cxx_std_20)
 
 if(MSVC)
-    target_compile_definitions(tether_server PRIVATE
+    target_compile_definitions(tether PRIVATE
         _CRT_SECURE_NO_WARNINGS
         WIN32_LEAN_AND_MEAN
         NOMINMAX
@@ -99,7 +99,7 @@ if(MSVC)
     )
 endif()
 
-set_target_properties(tether_server PROPERTIES FOLDER "Servers")
+set_target_properties(tether PROPERTIES FOLDER "Servers")
 
 # ── Launcher GUI application ─────────────────────────────────────────────────
 # Self-contained Win32 GUI.  Reads config\paths.json for the game exe path

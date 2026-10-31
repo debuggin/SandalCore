@@ -2,10 +2,10 @@
 # Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 # ============================================================================
-#  worldd: the C++ world server (plan A4: the connection layer; plan A5: the native bootstrap, bootstrap/, and the
+#  world: the C++ world server (plan A4: the connection layer; plan A5: the native bootstrap, bootstrap/, and the
 #  player session after NMT_Join, session/; plan A6: the move checks and the saving of positions, session/)
 #
-#  worldd_core holds everything but main() so the tests can link it.
+#  world_core holds everything but main() so the tests can link it.
 #  PROTOC and GRPC_CPP_PLUGIN come from the top-level CMakeLists.
 #
 #  content/content_db reads content.db (plan C1's SQLite file) read-only: the vcpkg sqlite3 port
@@ -14,11 +14,11 @@
 
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
-# ── gRPC stubs for the internal services worldd calls ───────────────────────
-set(WORLDD_PROTO_DIR "${PROJECT_SOURCE_DIR}/proto/internal")
-set(WORLDD_PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-file(MAKE_DIRECTORY ${WORLDD_PROTO_GEN_DIR})
-set(WORLDD_PROTOS
+# ── gRPC stubs for the internal services world calls ────────────────────────
+set(WORLD_PROTO_DIR "${PROJECT_SOURCE_DIR}/proto/internal")
+set(WORLD_PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY ${WORLD_PROTO_GEN_DIR})
+set(WORLD_PROTOS
     aoc/character/v1/character.proto
     aoc/citynode/v1/citynode.proto
     aoc/gateway/v1/gateway.proto
@@ -26,40 +26,40 @@ set(WORLDD_PROTOS
     aoc/quest/v1/quest.proto
     aoc/worldadmin/v1/worldadmin.proto
 )
-set(WORLDD_PROTO_SRCS "")
-foreach(rel ${WORLDD_PROTOS})
+set(WORLD_PROTO_SRCS "")
+foreach(rel ${WORLD_PROTOS})
     string(REGEX REPLACE "[.]proto$" "" base ${rel})
     set(outs
-        "${WORLDD_PROTO_GEN_DIR}/${base}.pb.cc"
-        "${WORLDD_PROTO_GEN_DIR}/${base}.pb.h"
-        "${WORLDD_PROTO_GEN_DIR}/${base}.grpc.pb.cc"
-        "${WORLDD_PROTO_GEN_DIR}/${base}.grpc.pb.h")
+        "${WORLD_PROTO_GEN_DIR}/${base}.pb.cc"
+        "${WORLD_PROTO_GEN_DIR}/${base}.pb.h"
+        "${WORLD_PROTO_GEN_DIR}/${base}.grpc.pb.cc"
+        "${WORLD_PROTO_GEN_DIR}/${base}.grpc.pb.h")
     add_custom_command(
         OUTPUT ${outs}
         COMMAND ${PROTOC}
-            "--proto_path=${WORLDD_PROTO_DIR}"
-            "--cpp_out=${WORLDD_PROTO_GEN_DIR}"
-            "--grpc_out=${WORLDD_PROTO_GEN_DIR}"
+            "--proto_path=${WORLD_PROTO_DIR}"
+            "--cpp_out=${WORLD_PROTO_GEN_DIR}"
+            "--grpc_out=${WORLD_PROTO_GEN_DIR}"
             "--plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}"
-            "${WORLDD_PROTO_DIR}/${rel}"
-        DEPENDS "${WORLDD_PROTO_DIR}/${rel}"
+            "${WORLD_PROTO_DIR}/${rel}"
+        DEPENDS "${WORLD_PROTO_DIR}/${rel}"
         COMMENT "Generating protobuf/gRPC stubs for ${rel}"
     )
-    list(APPEND WORLDD_PROTO_SRCS ${outs})
+    list(APPEND WORLD_PROTO_SRCS ${outs})
 endforeach()
 
-add_library(worldd_protos STATIC ${WORLDD_PROTO_SRCS})
-target_include_directories(worldd_protos PUBLIC "${WORLDD_PROTO_GEN_DIR}")
-target_link_libraries(worldd_protos PUBLIC protobuf::libprotobuf gRPC::grpc++)
+add_library(world_protos STATIC ${WORLD_PROTO_SRCS})
+target_include_directories(world_protos PUBLIC "${WORLD_PROTO_GEN_DIR}")
+target_link_libraries(world_protos PUBLIC protobuf::libprotobuf gRPC::grpc++)
 if(MSVC)
-    target_compile_options(worldd_protos PRIVATE /W0)
+    target_compile_options(world_protos PRIVATE /W0)
 else()
-    target_compile_options(worldd_protos PRIVATE -w)
+    target_compile_options(world_protos PRIVATE -w)
 endif()
-set_target_properties(worldd_protos PROPERTIES FOLDER "Servers/worldd")
+set_target_properties(world_protos PROPERTIES FOLDER "Servers/world")
 
-# ── stats: the stat engine (plan B3), a library of its own (no other worldd or net code) ─────────────────
-add_library(worldd_stats STATIC
+# ── stats: the stat engine (plan B3), a library of its own (no other world or net code) ──────────────────
+add_library(world_stats STATIC
     stats/character_stats.cpp
     stats/character_stats.h
     stats/damage.cpp
@@ -72,11 +72,11 @@ add_library(worldd_stats STATIC
     stats/stat_program.cpp
     stats/stat_program.h
 )
-target_include_directories(worldd_stats PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-set_target_properties(worldd_stats PROPERTIES FOLDER "Servers/worldd")
+target_include_directories(world_stats PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+set_target_properties(world_stats PROPERTIES FOLDER "Servers/world")
 
 # ── nav: the area's ground (plan E1, stage 2): Recast and Detour (third_party/recastnavigation, zlib licence) with the nav file, the offline
-#    builder and the run-time queries.  aoc_navbuild is the tool tools/mapc runs; worldd and the tests link worldd_nav.
+#    builder and the run-time queries.  navbuild is the tool tools/mapc runs; world and the tests link world_nav.
 set(RECAST_DIR "${PROJECT_SOURCE_DIR}/third_party/recastnavigation")
 add_library(recast_detour STATIC
     ${RECAST_DIR}/Recast/Source/Recast.cpp
@@ -104,9 +104,9 @@ if(MSVC)
 else()
     target_compile_options(recast_detour PRIVATE -w)
 endif()
-set_target_properties(recast_detour PROPERTIES FOLDER "Servers/worldd")
+set_target_properties(recast_detour PROPERTIES FOLDER "Servers/world")
 
-add_library(worldd_nav STATIC
+add_library(world_nav STATIC
     nav/area_nav.cpp
     nav/area_nav.h
     nav/nav_build.cpp
@@ -120,29 +120,29 @@ add_library(worldd_nav STATIC
     world/town_platform.cpp
     world/town_platform.h
 )
-target_include_directories(worldd_nav PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(worldd_nav PUBLIC recast_detour)
-set_target_properties(worldd_nav PROPERTIES FOLDER "Servers/worldd")
+target_include_directories(world_nav PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(world_nav PUBLIC recast_detour)
+set_target_properties(world_nav PROPERTIES FOLDER "Servers/world")
 
-add_executable(aoc_navbuild nav/navbuild_main.cpp)
-target_link_libraries(aoc_navbuild PRIVATE worldd_nav unofficial::sqlite3::sqlite3)
-set_target_properties(aoc_navbuild PROPERTIES FOLDER "Servers")
+add_executable(navbuild nav/navbuild_main.cpp)
+target_link_libraries(navbuild PRIVATE world_nav unofficial::sqlite3::sqlite3)
+set_target_properties(navbuild PROPERTIES FOLDER "Servers")
 
 # ── ability_content: the ability tables of content.db (plan D2), a connection of its own ───────────────────
-add_library(worldd_ability_content STATIC
+add_library(world_ability_content STATIC
     content/ability_content.cpp
     content/ability_content.h
 )
-target_include_directories(worldd_ability_content PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(worldd_ability_content PUBLIC
-    worldd_stats
+target_include_directories(world_ability_content PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(world_ability_content PUBLIC
+    world_stats
     nlohmann_json::nlohmann_json
     unofficial::sqlite3::sqlite3
 )
-set_target_properties(worldd_ability_content PROPERTIES FOLDER "Servers/worldd")
+set_target_properties(world_ability_content PROPERTIES FOLDER "Servers/world")
 
-# ── worldd_core ─────────────────────────────────────────────────────────────
-add_library(worldd_core STATIC
+# ── world_core ──────────────────────────────────────────────────────────────
+add_library(world_core STATIC
     bootstrap/ability_replication.h
     bootstrap/bootstrap.cpp
     bootstrap/bootstrap.h
@@ -342,13 +342,13 @@ add_library(worldd_core STATIC
     npc/npc_world.cpp
     npc/npc_world.h
 )
-target_include_directories(worldd_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(worldd_core PUBLIC
+target_include_directories(world_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(world_core PUBLIC
     aocnet
-    worldd_nav
-    worldd_protos
-    worldd_stats
-    worldd_ability_content
+    world_nav
+    world_protos
+    world_stats
+    world_ability_content
     spdlog::spdlog
     OpenSSL::Crypto
     nlohmann_json::nlohmann_json
@@ -356,184 +356,197 @@ target_link_libraries(worldd_core PUBLIC
     $<$<PLATFORM_ID:Windows>:ws2_32>
 )
 if(MSVC)
-    target_compile_definitions(worldd_core PUBLIC
+    target_compile_definitions(world_core PUBLIC
         _CRT_SECURE_NO_WARNINGS
         WIN32_LEAN_AND_MEAN
         NOMINMAX
         _WIN32_WINNT=0x0A00
     )
 endif()
-set_target_properties(worldd_core PROPERTIES FOLDER "Servers/worldd")
+set_target_properties(world_core PROPERTIES FOLDER "Servers/world")
 
-# ── worldd ──────────────────────────────────────────────────────────────────
-add_executable(worldd main.cpp)
-target_link_libraries(worldd PRIVATE worldd_core CLI11::CLI11)
-set_target_properties(worldd PROPERTIES FOLDER "Servers")
+# ── world ───────────────────────────────────────────────────────────────────
+add_executable(world main.cpp)
+target_link_libraries(world PRIVATE world_core CLI11::CLI11)
+set_target_properties(world PROPERTIES FOLDER "Servers")
 
 # ── tests: plain executables that print [ok ]/[FAIL], like libaocnet's ──────
-function(worldd_add_test name)
-    add_executable(${name} tests/${name}.cpp)
-    target_link_libraries(${name} PRIVATE worldd_core)
+set(WORLD_LEGACY_TAG "d")
+function(world_resolve_test_src out_var rel_dir name)
+    set(candidate "${rel_dir}/${name}.cpp")
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${candidate}")
+        string(REGEX REPLACE "^test_world_" "test_world${WORLD_LEGACY_TAG}_" legacy_name "${name}")
+        set(candidate "${rel_dir}/${legacy_name}.cpp")
+    endif()
+    set(${out_var} "${candidate}" PARENT_SCOPE)
+endfunction()
+
+function(world_add_test name)
+    world_resolve_test_src(src_file "tests" "${name}")
+    add_executable(${name} ${src_file})
+    target_link_libraries(${name} PRIVATE world_core)
     # capture_packets.h lives with the libaocnet tests.
     target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/libs/aocnet/tests)
     # the shared stat corpus (plan B3): the tests that build a content.db fixture take the stat program from it
     target_compile_definitions(${name} PRIVATE
         STATS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/stats/testdata/corpus.txt"
         TALENT_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/talent_fixture.sql")
-    set_target_properties(${name} PROPERTIES FOLDER "Tests/worldd")
+    set_target_properties(${name} PROPERTIES FOLDER "Tests/world")
 endfunction()
 
 foreach(t
-    test_worldd_abilities
-    test_worldd_ability_session
-    test_worldd_actor_nak
-    test_worldd_actor_view
-    test_worldd_area_session
-    test_worldd_bootstrap
-    test_worldd_channels
-    test_worldd_character_setup
-    test_worldd_connection
-    test_worldd_content_db
-    test_worldd_control_channel
-    test_worldd_cookie
-    test_worldd_endpoint
-    test_worldd_items
-    test_worldd_items_session
-    test_worldd_leveling
-    test_worldd_login
-    test_worldd_move_checker
-    test_worldd_movement
-    test_worldd_npc_ai
-    test_worldd_nav
-    test_worldd_nav_window
-    test_worldd_npc_move
-    test_worldd_town_walk
-    test_worldd_repl_acks
-    test_worldd_services
-    test_worldd_session
-    test_worldd_talents
-    test_worldd_udp_socket
+    test_world_abilities
+    test_world_ability_session
+    test_world_actor_nak
+    test_world_actor_view
+    test_world_area_session
+    test_world_bootstrap
+    test_world_channels
+    test_world_character_setup
+    test_world_connection
+    test_world_content_db
+    test_world_control_channel
+    test_world_cookie
+    test_world_endpoint
+    test_world_items
+    test_world_items_session
+    test_world_leveling
+    test_world_login
+    test_world_move_checker
+    test_world_movement
+    test_world_npc_ai
+    test_world_nav
+    test_world_nav_window
+    test_world_npc_move
+    test_world_town_walk
+    test_world_repl_acks
+    test_world_services
+    test_world_session
+    test_world_talents
+    test_world_udp_socket
 )
-    worldd_add_test(${t})
+    world_add_test(${t})
 endforeach()
 # Gathering stage 2: the session tests of the professions and the GM artisan scrolls run on the real content.db of the working tree (they skip without it)
-target_compile_definitions(test_worldd_items_session PRIVATE
+target_compile_definitions(test_world_items_session PRIVATE
     PROFESSIONS_REAL_DB="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 
 # ============================================================================
 #  the stat engine's test (plan B3): the interpreter, the gear rules and the character's stats on the corpus
 #  services/internal/statprog writes (stats/testdata/corpus.txt)
 # ============================================================================
-add_executable(test_worldd_stats stats/tests/test_worldd_stats.cpp)
-target_link_libraries(test_worldd_stats PRIVATE worldd_stats)
-target_compile_definitions(test_worldd_stats PRIVATE
+world_resolve_test_src(TEST_WORLD_STATS_SRC "stats/tests" "test_world_stats")
+add_executable(test_world_stats ${TEST_WORLD_STATS_SRC})
+target_link_libraries(test_world_stats PRIVATE world_stats)
+target_compile_definitions(test_world_stats PRIVATE
     STATS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/stats/testdata/corpus.txt")
-set_target_properties(test_worldd_stats PROPERTIES FOLDER "Tests/worldd")
+set_target_properties(test_world_stats PROPERTIES FOLDER "Tests/world")
 
 # the ability tables' reader (plan D2) on the content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB), with the stat engine
-add_executable(test_worldd_ability_content tests/test_worldd_ability_content.cpp)
-target_link_libraries(test_worldd_ability_content PRIVATE worldd_ability_content worldd_stats)
-target_compile_definitions(test_worldd_ability_content PRIVATE
+world_resolve_test_src(TEST_WORLD_ABILITY_CONTENT_SRC "tests" "test_world_ability_content")
+add_executable(test_world_ability_content ${TEST_WORLD_ABILITY_CONTENT_SRC})
+target_link_libraries(test_world_ability_content PRIVATE world_ability_content world_stats)
+target_compile_definitions(test_world_ability_content PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
-set_target_properties(test_worldd_ability_content PROPERTIES FOLDER "Tests/worldd")
+set_target_properties(test_world_ability_content PROPERTIES FOLDER "Tests/world")
 
 # the living area (plan E1) on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
-worldd_add_test(test_worldd_area)
-target_compile_definitions(test_worldd_area PRIVATE
+world_add_test(test_world_area)
+target_compile_definitions(test_world_area PRIVATE
     AREA_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 
 # the harvest of the resource nodes (Gathering stage 2, "Harvesting"): the node state, the wire against the retail capture, the requirements and the rolls, on the real content.db of the working tree
-worldd_add_test(test_worldd_gather)
-target_compile_definitions(test_worldd_gather PRIVATE
+world_add_test(test_world_gather)
+target_compile_definitions(test_world_gather PRIVATE
     GATHER_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
-worldd_add_test(test_worldd_gather_session)
-target_compile_definitions(test_worldd_gather_session PRIVATE
+world_add_test(test_world_gather_session)
+target_compile_definitions(test_world_gather_session PRIVATE
     GATHER_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 
 # Resource storage (Gathering stage 3): the grid against the captured slots, the routing, the top-up, the full container, the moves and the login's repair on a fixture, and the flags of every
 # item of the real content.db of the working tree
-worldd_add_test(test_worldd_resource)
-target_compile_definitions(test_worldd_resource PRIVATE
+world_add_test(test_world_resource)
+target_compile_definitions(test_world_resource PRIVATE
     RESOURCE_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 
 # Foliage gathering (Gathering stage 3): the map, the store with a fake clock, the cells' state actors and the foliage tables of the real content.db and region_foliage.tsv of the working tree
-worldd_add_test(test_worldd_foliage)
-target_compile_definitions(test_worldd_foliage PRIVATE
+world_add_test(test_world_foliage)
+target_compile_definitions(test_world_foliage PRIVATE
     FOLIAGE_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     FOLIAGE_TSV_PATH="${PROJECT_SOURCE_DIR}/dist/content/region_foliage.tsv")
 
-worldd_add_test(test_worldd_foliage_session)
-target_compile_definitions(test_worldd_foliage_session PRIVATE
+world_add_test(test_world_foliage_session)
+target_compile_definitions(test_world_foliage_session PRIVATE
     GATHER_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     FOLIAGE_TSV_PATH="${PROJECT_SOURCE_DIR}/dist/content/region_foliage.tsv")
 
 # Hunting (Gathering stage 3): the huntable creature's template, the 53 hunting interactions and their rewards, and the corpse's wire against the retail capture, on the real content.db of the working tree
-worldd_add_test(test_worldd_hunting)
-target_compile_definitions(test_worldd_hunting PRIVATE
+world_add_test(test_world_hunting)
+target_compile_definitions(test_world_hunting PRIVATE
     HUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
 
-worldd_add_test(test_worldd_hunting_session)
-target_compile_definitions(test_worldd_hunting_session PRIVATE
+world_add_test(test_world_hunting_session)
+target_compile_definitions(test_world_hunting_session PRIVATE
     GATHER_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
 
 # the professions and the GM artisan items (Gathering stage 2): the rules on a small book and the 67 scrolls on the real content.db of the working tree
-worldd_add_test(test_worldd_professions)
-target_compile_definitions(test_worldd_professions PRIVATE
+world_add_test(test_world_professions)
+target_compile_definitions(test_world_professions PRIVATE
     PROFESSIONS_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 
 # the Riverlands as the area (G1 stage 1, Part B): the index, the population against an independent oracle, the region's load, the GM garden
-worldd_add_test(test_worldd_region)
-target_compile_definitions(test_worldd_region PRIVATE
+world_add_test(test_world_region)
+target_compile_definitions(test_world_region PRIVATE
     REGION_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     REGION_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
 
 # the scale test (G1 stage 1, Part B): the full region and synthetic sessions crossing it; needs the chunked area_nav.bin (it skips without), run it alone
-worldd_add_test(test_worldd_region_load)
-target_compile_definitions(test_worldd_region_load PRIVATE
+world_add_test(test_world_region_load)
+target_compile_definitions(test_world_region_load PRIVATE
     LOAD_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     LOAD_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv"
     LOAD_NAV_PATH="${PROJECT_SOURCE_DIR}/dist/content/area_nav.bin")
 
 # the mounts (the mounts milestone, stage 2): the mount actor, its controller and the session on the real content.db of the working tree
-worldd_add_test(test_worldd_mounts)
-target_compile_definitions(test_worldd_mounts PRIVATE
+world_add_test(test_world_mounts)
+target_compile_definitions(test_world_mounts PRIVATE
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_SPEEDS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_speeds.tsv"
     MOUNT_RIDERS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_riders.tsv")
-worldd_add_test(test_worldd_mounts_session)
-target_compile_definitions(test_worldd_mounts_session PRIVATE
+world_add_test(test_world_mounts_session)
+target_compile_definitions(test_world_mounts_session PRIVATE
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_RIDERS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_riders.tsv")
-worldd_add_test(test_worldd_mounts_fly)
-target_compile_definitions(test_worldd_mounts_fly PRIVATE
+world_add_test(test_world_mounts_fly)
+target_compile_definitions(test_world_mounts_fly PRIVATE
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_SPEEDS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_speeds.tsv")
-worldd_add_test(test_worldd_mounts_ride)
-target_compile_definitions(test_worldd_mounts_ride PRIVATE
+world_add_test(test_world_mounts_ride)
+target_compile_definitions(test_world_mounts_ride PRIVATE
     MOUNT_ROADS_PATH="${PROJECT_SOURCE_DIR}/dist/content/roads.tsv"
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_SPEEDS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_speeds.tsv"
     MOUNT_RIDERS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_riders.tsv")
 
 # the GM travel tools (teleport and run speed): the session, the client's GM RPCs and the admin API on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
-worldd_add_test(test_worldd_gm_travel)
-target_compile_definitions(test_worldd_gm_travel PRIVATE
+world_add_test(test_world_gm_travel)
+target_compile_definitions(test_world_gm_travel PRIVATE
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_SPEEDS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_speeds.tsv")
 
 # the city nodes (Nodes 1, stage 1): the registry and the whole-world ZOI lookup on the real content.db of the working tree, the node reads against the shared corpus's
 # nodehost blocks, the seed fallback, and the citynode feed against an in-process fake of the service
-worldd_add_test(test_worldd_city_nodes)
-target_compile_definitions(test_worldd_city_nodes PRIVATE
+world_add_test(test_world_city_nodes)
+target_compile_definitions(test_world_city_nodes PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json")
 
 # the nodes the client is told of (Nodes 1, stage 2): the maps, summaries and sieges of the registry's levels against the retail capture's, the session's answers (their order, the
 # live update, the GM console) and the GM control over gRPC against an in-process fake of the node service
-worldd_add_test(test_worldd_node_state)
-target_compile_definitions(test_worldd_node_state PRIVATE
+world_add_test(test_world_node_state)
+target_compile_definitions(test_world_node_state PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json"
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
@@ -541,15 +554,15 @@ target_compile_definitions(test_worldd_node_state PRIVATE
 
 # the towns' scenery (Nodes 1, stage 3a): the items of each town's replicator built from the real content.db against the 18 retail payloads of the captures, the replicator actors
 # (their place, a level change as a new full payload), the actor view opening and closing them by range, and the world following the node levels
-worldd_add_test(test_worldd_node_layout)
-target_compile_definitions(test_worldd_node_layout PRIVATE
+world_add_test(test_world_node_layout)
+target_compile_definitions(test_world_node_layout PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json")
 
 # the towns' people (Nodes 1, stage 3b): the selection of each node's NPCs at each level against the Python oracle's golden counts (tests/node_pop_golden.h), the live manager (a level change
 # spawns and despawns the right sets, a respawn follows the level, the ground's pending rules), the any-of siege rule and the roads by node level, on the real content.db
-worldd_add_test(test_worldd_node_pop)
-target_compile_definitions(test_worldd_node_pop PRIVATE
+world_add_test(test_world_node_pop)
+target_compile_definitions(test_world_node_pop PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json"
     NODES_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv"
@@ -557,61 +570,62 @@ target_compile_definitions(test_worldd_node_pop PRIVATE
 
 # the towns' real ground: the platform reader and sampler on bytes made in the test, the frames, and - when dist/content/town_platforms.bin exists (mapc town-floors) - the real
 # platforms at the real node records and the world's ground queries on them; AOC_REAL_GROUND=1 adds the baked pit
-worldd_add_test(test_worldd_town_platform)
-target_compile_definitions(test_worldd_town_platform PRIVATE
+world_add_test(test_world_town_platform)
+target_compile_definitions(test_world_town_platform PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NODES_NAV_PATH="${PROJECT_SOURCE_DIR}/dist/content/area_nav.bin"
     TOWN_PLATFORMS_PATH="${PROJECT_SOURCE_DIR}/dist/content/town_platforms.bin")
 
 # the spawn filter (plan E1, stage 3) on the same content.db and dist/content/npc_motion.tsv
-worldd_add_test(test_worldd_spawn_filter)
-target_compile_definitions(test_worldd_spawn_filter PRIVATE
+world_add_test(test_world_spawn_filter)
+target_compile_definitions(test_world_spawn_filter PRIVATE
     AREA_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 
 # effect state, expression programs and their host (plan D2), on the same corpus (its fxcase blocks)
-add_executable(test_worldd_effects stats/tests/test_worldd_effects.cpp)
-target_link_libraries(test_worldd_effects PRIVATE worldd_stats)
-target_compile_definitions(test_worldd_effects PRIVATE
+world_resolve_test_src(TEST_WORLD_EFFECTS_SRC "stats/tests" "test_world_effects")
+add_executable(test_world_effects ${TEST_WORLD_EFFECTS_SRC})
+target_link_libraries(test_world_effects PRIVATE world_stats)
+target_compile_definitions(test_world_effects PRIVATE
     STATS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/stats/testdata/corpus.txt")
-set_target_properties(test_worldd_effects PROPERTIES FOLDER "Tests/worldd")
+set_target_properties(test_world_effects PROPERTIES FOLDER "Tests/world")
 
 # the combat core (plan E1, stage 3): NPC stats, damage and the hit rules on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
-worldd_add_test(test_worldd_combat)
-target_compile_definitions(test_worldd_combat PRIVATE
+world_add_test(test_world_combat)
+target_compile_definitions(test_world_combat PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
 
 # what follows a death (plan E1, stage 3, part 2): the experience, the loot, the corpse and the respawn on the real content.db
-worldd_add_test(test_worldd_aftermath)
-target_compile_definitions(test_worldd_aftermath PRIVATE
+world_add_test(test_world_aftermath)
+target_compile_definitions(test_world_aftermath PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
 
 # what a kill hands out (plan E1, stage 3, part 2): the reward tables of the real content.db and dist/content/npc_motion.tsv
-worldd_add_test(test_worldd_rewards)
-target_compile_definitions(test_worldd_rewards PRIVATE
+world_add_test(test_world_rewards)
+target_compile_definitions(test_world_rewards PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
 
 # the generic ability runtime (plan D2) on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
-worldd_add_test(test_worldd_ability_pipeline)
-target_compile_definitions(test_worldd_ability_pipeline PRIVATE
+world_add_test(test_world_ability_pipeline)
+target_compile_definitions(test_world_ability_pipeline PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
-worldd_add_test(test_worldd_ability_retail)
-target_compile_definitions(test_worldd_ability_retail PRIVATE
+world_add_test(test_world_ability_retail)
+target_compile_definitions(test_world_ability_retail PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
-worldd_add_test(test_worldd_ability_all)
-target_compile_definitions(test_worldd_ability_all PRIVATE
+world_add_test(test_world_ability_all)
+target_compile_definitions(test_world_ability_all PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 # every ability of every class against the client's tooltip (plan E1, stage 3 fix, Part C): tests/tooltip_key.h is written by tools/capture/gen_tooltips.py
-worldd_add_test(test_worldd_tooltips)
-target_compile_definitions(test_worldd_tooltips PRIVATE
+world_add_test(test_world_tooltips)
+target_compile_definitions(test_world_tooltips PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 # the class abilities that need another actor against the retail captures, on a creature of the world (plan E1, stage 3, part 2)
-worldd_add_test(test_worldd_ability_npc)
-target_compile_definitions(test_worldd_ability_npc PRIVATE
+world_add_test(test_world_ability_npc)
+target_compile_definitions(test_world_ability_npc PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
-target_compile_definitions(test_worldd_ability_session PRIVATE
+target_compile_definitions(test_world_ability_session PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
