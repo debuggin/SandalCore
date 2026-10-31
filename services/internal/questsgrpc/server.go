@@ -24,8 +24,11 @@ type Server struct {
 	svc *quests.Service
 }
 
+// NewServer serves svc.
+func NewServer(svc *quests.Service) *Server { return &Server{svc: svc} }
+
 // New serves svc.
-func New(svc *quests.Service) *Server { return &Server{svc: svc} }
+func New(svc *quests.Service) *Server { return NewServer(svc) }
 
 func (s *Server) LoadLog(ctx context.Context, r *questv1.LoadLogRequest) (*questv1.LoadLogResponse, error) {
 	log, err := s.svc.LoadLog(ctx, r.GetCharacterId())

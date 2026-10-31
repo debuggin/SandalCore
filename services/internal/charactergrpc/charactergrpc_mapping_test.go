@@ -59,7 +59,7 @@ type recStore struct {
 	xp          []character.Experience // what Experience returns
 	gotProgress character.Progress     // what SaveProgress was given
 
-	ranks []character.TreeRanks     // what SkillRanks returns (plan D1, stage 2)
+	ranks []character.TreeRanks     // what SkillRanks returns
 	bar   []character.ActionbarSlot // what ActionBar returns
 
 	profs []character.Profession // what Professions returns (Gathering stage 2)

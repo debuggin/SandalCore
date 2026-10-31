@@ -24,8 +24,11 @@ type Server struct {
 	svc *citynode.Service
 }
 
+// NewServer serves svc.
+func NewServer(svc *citynode.Service) *Server { return &Server{svc: svc} }
+
 // New serves svc.
-func New(svc *citynode.Service) *Server { return &Server{svc: svc} }
+func New(svc *citynode.Service) *Server { return NewServer(svc) }
 
 func (s *Server) ListNodes(ctx context.Context, _ *citynodev1.ListNodesRequest) (*citynodev1.ListNodesResponse, error) {
 	snap, err := s.svc.ListNodes(ctx)

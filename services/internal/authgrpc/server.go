@@ -30,7 +30,10 @@ type Server struct {
 	tokens Tokens
 }
 
-func New(tokens Tokens) *Server { return &Server{tokens: tokens} }
+// NewServer serves tokens.
+func NewServer(tokens Tokens) *Server { return &Server{tokens: tokens} }
+
+func New(tokens Tokens) *Server { return NewServer(tokens) }
 
 // ValidateToken resolves a launcher login token to its account. Errors:
 // Unauthenticated for an unknown or expired token; Canceled or

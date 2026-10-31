@@ -30,17 +30,17 @@ service CharacterService {
   // Removes a character of the given account. NotFound when that account has
   // no such character (another account's character looks the same).
   rpc DeleteCharacter(DeleteCharacterRequest) returns (DeleteCharacterResponse);
-  // Replaces all the items of a character (plan B2): worldd is the only writer while a
+  // Replaces all the items of a character: worldd is the only writer while a
   // character plays, and the latest save wins. NotFound for an unknown id; InvalidArgument,
   // with nothing changed, for items that break the rules (a slot outside the storage, two items
   // in a slot or with one instance guid, a quantity, quality or durability out of range) and for
   // no items at all: a character keeps its items, so an empty save would be a bug in the caller.
   rpc SaveInventory(SaveInventoryRequest) returns (SaveInventoryResponse);
-  // Saves the character's progress (plan D1): its level, its class and its XP and XP debt per leveling type, in one
+  // Saves the character's progress: its level, its class and its XP and XP debt per leveling type, in one
   // transaction (worldd is the only writer while a character plays; the latest save wins). A zero level or class leaves that
   // value unchanged; an experience row replaces the character's row of that leveling type. NotFound for an unknown id;
   // InvalidArgument, with nothing changed, for a level outside 1-25, a class outside 1-8, a leveling type of 0 or a negative
-  // XP or debt. Plan D1, stage 2: the same call stores the ranks the character bought and its action bar (replace_skill_ranks and
+  // XP or debt. The same call stores the ranks the character bought and its action bar (replace_skill_ranks and
   // replace_action_bar); InvalidArgument, with nothing changed, for a tree or rank of 0, a rank twice in a tree, a bar slot outside
   // the banks 0-19 and slots 0-15 or one held twice. Gathering stage 2: and the professions it names (see SaveProgressRequest.professions).
   // Missing systems, step 0: and the tutorials the character finished (replace_completed_ftues).
@@ -59,8 +59,7 @@ message Position {
 // CharacterInformation of the client's protocol): race 0 Kaelar, 1 Vaelune,
 // 2 Vek, 3 Renkai, 4 Empyrean, 5 Pyrai, 6 Dunir, 7 Nikua (8 Tulnar is never
 // created); gender 0 Male, 1 Female; class 1 Ranger, 2 Bard, 3 Cleric,
-// 4 Fighter, 5 Rogue, 6 Summoner, 7 Tank, 8 Mage. Until plan B1 race_id held
-// the class and gender_id the ids 1 (Male) and 2 (Female).
+// 4 Fighter, 5 Rogue, 6 Summoner, 7 Tank, 8 Mage.
 message Character {
   string id = 1; // 32 lowercase hex digits (the client's GUID)
   int64 account_id = 2;
@@ -81,10 +80,10 @@ message Character {
   // The character's items, Backpack then Equipment then Quest by slot: only when GetCharacterRequest.include_items asked for
   // them (every other reply leaves it empty). A character that was never given a kit has none.
   repeated Item items = 15;
-  // Plan D1: the character's XP per leveling type, with the items (include_items): a character that never earned any has
+  // The character's XP per leveling type, with the items (include_items): a character that never earned any has
   // none, and its XP is its level's threshold.
   repeated Experience experience = 16;
-  // Plan D1, stage 2: the ranks the character bought, per skill tree, and its action bar (with the items, like the experience): a
+  // The ranks the character bought, per skill tree, and its action bar (with the items, like the experience): a
   // character that never bought a rank or arranged its bar has none.
   repeated TreeRanks skill_ranks = 17;
   repeated ActionbarSlot action_bar = 18;
@@ -182,7 +181,7 @@ message ProfessionState {
 }
 // (CoA | C-Y-B)
 
-// The ranks a character bought in one skill tree (plan D1, stage 2): the tree's Guid (the design database's SkillTree) and the
+// The ranks a character bought in one skill tree: the tree's Guid (the design database's SkillTree) and the
 // SkillRank Guids in the order they were bought. A tree keeps its ranks per tree, so a character that switches class and back finds
 // the class's ranks again. The ranks a level grants by itself are not stored.
 message TreeRanks {
@@ -190,7 +189,7 @@ message TreeRanks {
   repeated int64 rank_guids = 2;
 }
 
-// One slot of the character's action bar (plan D1, stage 2): FActionbarSlotUseData with its bank and slot. use_type is EActionbarUseType
+// One slot of the character's action bar: FActionbarSlotUseData with its bank and slot. use_type is EActionbarUseType
 // (1 Ability, 2 Skill ... 9 Dismount; 0 is no slot), instigator EActionbarInstigator (0-3); item_guid is the 32 hex digits of an
 // item's instance guid or empty.
 message ActionbarSlot {
@@ -208,7 +207,7 @@ message ActionbarSlot {
   int32 combo_button = 12; // 0-15
 }
 
-// The XP a character has in one leveling type (plan D1): the design database's LevelingTypeDef Guid (Adventuring
+// The XP a character has in one leveling type: the design database's LevelingTypeDef Guid (Adventuring
 // 108651085518458, the weapon lines ...), the XP total as the client's XPTracker shows it and the experience debt.
 message Experience {
   int64 leveling_type_guid = 1;
@@ -335,7 +334,7 @@ message SaveProgressRequest {
   int32 level = 2; // 1-25; 0 leaves the level unchanged
   int32 class_id = 3; // ECharacterClass 1-8; 0 leaves the class unchanged
   repeated Experience experience = 4; // each replaces the character's row of its leveling type
-  // Plan D1, stage 2: with replace_skill_ranks the character's bought ranks become exactly skill_ranks (a tree not listed has none
+  // With replace_skill_ranks the character's bought ranks become exactly skill_ranks (a tree not listed has none
   // left; an empty list removes them all); without it they are left alone. The same for the action bar.
   bool replace_skill_ranks = 5;
   repeated TreeRanks skill_ranks = 6;

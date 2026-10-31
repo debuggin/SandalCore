@@ -31,7 +31,10 @@ type Server struct {
 	tickets Tickets
 }
 
-func New(t Tickets) *Server { return &Server{tickets: t} }
+// NewServer serves t.
+func NewServer(t Tickets) *Server { return &Server{tickets: t} }
+
+func New(t Tickets) *Server { return NewServer(t) }
 
 // RedeemTicket spends a join ticket. PermissionDenied for any ticket that is
 // not valid (the reason is not given); Canceled or DeadlineExceeded when the

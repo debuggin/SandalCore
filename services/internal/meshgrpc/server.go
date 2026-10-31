@@ -36,7 +36,10 @@ type Server struct {
 	store Store
 }
 
-func New(store Store) *Server { return &Server{store: store} }
+// NewServer serves store.
+func NewServer(store Store) *Server { return &Server{store: store} }
+
+func New(store Store) *Server { return NewServer(store) }
 
 // [C-O-A ~ Cyb]
 

@@ -35,7 +35,7 @@ type Store interface {
 	// Plan D1: a character's XP per leveling type, and the save of its level, class and XP.
 	Experience(ctx context.Context, id string) ([]character.Experience, error)
 	SaveProgress(ctx context.Context, id string, p character.Progress) (character.Character, error)
-	// Plan D1, stage 2: the ranks a character bought and its action bar.
+	// The ranks a character bought and its action bar.
 	SkillRanks(ctx context.Context, id string) ([]character.TreeRanks, error)
 	ActionBar(ctx context.Context, id string) ([]character.ActionbarSlot, error)
 	// Gathering stage 2: the character's 22 professions (a profession with no row is Novice, level 1, no XP).
@@ -130,14 +130,20 @@ func WithKits(k Kits) Option { return func(s *Server) { s.kits = k } }
 // and is marked as given it, so the backfill at the next start leaves it alone.
 func WithStarterSet(m StarterSets) Option { return func(s *Server) { s.starter = m } }
 
-// New serves store. check judges the characters CreateCharacter is asked to
+// NewServer serves store. check judges the characters CreateCharacter is asked to
 // create; a nil check refuses them all (there is nothing to judge by).
-func New(store Store, check Checker, opts ...Option) *Server {
+func NewServer(store Store, check Checker, opts ...Option) *Server {
 	s := &Server{store: store, check: check}
 	for _, o := range opts {
 		o(s)
 	}
 	return s
+}
+
+// New serves store. check judges the characters CreateCharacter is asked to
+// create; a nil check refuses them all (there is nothing to judge by).
+func New(store Store, check Checker, opts ...Option) *Server {
+	return NewServer(store, check, opts...)
 }
 
 // CreateCharacter checks the race, gender, class and customization (see
@@ -338,7 +344,7 @@ func (s *Server) SaveProgress(ctx context.Context, r *characterv1.SaveProgressRe
 	return &characterv1.SaveProgressResponse{Character: out}, nil
 }
 
-// addTalents puts the character's bought ranks and its action bar (plan D1, stage 2) into a reply.
+// addTalents puts the character's bought ranks and its action bar into a reply.
 func (s *Server) addTalents(ctx context.Context, id string, out *characterv1.Character) error {
 	ranks, err := s.store.SkillRanks(ctx, id)
 	if err != nil {

@@ -31,7 +31,7 @@ func serve(t *testing.T) (citynodev1.CityNodeServiceClient, *citynodetest.Env) {
 	e := citynodetest.New(t, citynodetest.SeedJoevaHalcyon)
 	e.Start(t)
 	srv := grpc.NewServer(testToken.ServerOptions()...)
-	citynodev1.RegisterCityNodeServiceServer(srv, citynodegrpc.New(e.Svc))
+	citynodev1.RegisterCityNodeServiceServer(srv, citynodegrpc.NewServer(e.Svc))
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestTokenRequired(t *testing.T) {
 	e := citynodetest.New(t, citynodetest.SeedJoevaHalcyon)
 	e.Start(t)
 	srv := grpc.NewServer(testToken.ServerOptions()...)
-	citynodev1.RegisterCityNodeServiceServer(srv, citynodegrpc.New(e.Svc))
+	citynodev1.RegisterCityNodeServiceServer(srv, citynodegrpc.NewServer(e.Svc))
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

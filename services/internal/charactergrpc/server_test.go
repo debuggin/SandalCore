@@ -37,7 +37,7 @@ type fakeStore struct {
 	listErr error
 	items   map[string][]character.Item
 	xp      map[string][]character.Experience
-	ranks   map[string][]character.TreeRanks // plan D1, stage 2
+	ranks   map[string][]character.TreeRanks
 	bar     map[string][]character.ActionbarSlot
 	profs   map[string][]character.Profession // Gathering stage 2
 }
