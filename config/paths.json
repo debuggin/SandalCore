@@ -1,3 +1,5 @@
 {
-    "game_executable": ""
+    "game_executable": "",
+    "wslDistro": "Ubuntu-24.04",
+    "dockerSocket": "/var/run/docker.sock"
 }
