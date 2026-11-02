@@ -158,3 +158,6 @@ target_compile_definitions(aocnet INTERFACE $<$<PLATFORM_ID:Windows>:NOMINMAX>)
 set_target_properties(aocnet PROPERTIES FOLDER "Libs")
 
 add_subdirectory(tests)
+target_sources(test_repl_actor_open PRIVATE
+    tests/test_repl_actor_open_part2.cpp
+)
