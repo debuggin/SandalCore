@@ -1,30 +1,151 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  warehouse/player_warehouse.inc  (storage clerks, step 0, "put it in, take it out")
-//
-//  The session's side of the storage clerk's window.  It is part of session/player_session.cpp (included at its end, inside the namespace), so that the build lists stay as they are.
-//
-//  The base item chunk.  The character's base chunk gets its component on the pawn when the character joins, and OwnerInfo lists it in NodeItemContainers (list_item_chunk), as retail's login
-//  does: the client asks for its data and has it before any window opens.  The chunk stays listed for good.
-//
-//  The window.  The clerk's line "I want to access my storage." ends the conversation and opens the warehouse of the town the clerk stands in, in two halves.  The first half (open_warehouse)
-//  gives the town's tabs their components (read-only, not listed) and has OwnerInfo name the town in WarehouseMaterialTabsByIds and WarehouseCrateTabsByIds: the client builds the
-//  "Materials" and "Crate" rows of the window's left list from those two lists, and hides a row whose list is empty.  The second half (finish_open_warehouse), one reply delay later, goes out in
-//  retail's packet order: the window call (an RPC goes out before the property updates of its frame), the conversation's clear, then OwnerInfo's lists naming the tabs and their bReadOnly 0.  The
-//  client builds the window from what it holds when the call arrives (the town's entry of the Materials row, which asks for the town's tabs with ServerFetchWarehouse because none is listed yet)
-//  and again when each list arrives (it asks for the data of every container that is new in a list, and builds the tab buttons and the Crate row).  So the components must be on the client, and
-//  mapped, before a list names them: the first half is that.  The client then asks for the summary and the data and moves stacks (ServerRequestStorageEvent) and closes the window
-//  (ServerCloseWarehouse).  A clerk who is gone, a walk of 12 m or more away and death close it too: the tab lists empty and the tabs read-only, as the client's close does.
-// ============================================================================
+#include "session/player_session.h"
+
+#include "items/acquired.h"
+#include "protocol/repl/storage_rpc.h"
+#include "protocol/repl/vendor_rpc.h"
+#include "world/city_nodes.h"
+
+#include <spdlog/spdlog.h>
+
+namespace aoc { namespace worldd {
+
+namespace repl = ::aoc::protocol::repl;
+using bootstrap::Role;
+using protocol::emit::FIntrepidNetworkGUID;
+
+namespace {
+
+std::vector<warehouse::Spec> allowed_warehouse_specs(const warehouse::Book& book, int64_t node_guid, int32_t node_level, int access_config) {
+    warehouse::Facts facts;
+    facts.node = node_guid;
+    facts.level = node_level;
+    std::vector<warehouse::Spec> specs = book.owned(node_guid, facts);
+    specs.erase(std::remove_if(specs.begin(), specs.end(),
+                               [&](const warehouse::Spec& s) {
+                                   const int bit = s.key.area == warehouse::Area::Items       ? repl::kAccessGlobalItems
+                                                   : s.key.area == warehouse::Area::Materials ? repl::kAccessNodeMaterials
+                                                                                              : repl::kAccessNodeCrates;
+                                   return (access_config & bit) == 0;
+                               }),
+                specs.end());
+    return specs;
+}
+
+template <typename WhVec>
+std::vector<bootstrap::WarehouseComponent> collect_wh_components(const WhVec& wh_components, bool hide_tabs) {
+    std::vector<bootstrap::WarehouseComponent> out;
+    out.reserve(wh_components.size());
+    for (const auto& w : wh_components) {
+        bootstrap::WarehouseComponent c = w.comp;
+        if (hide_tabs && c.kind != bootstrap::WarehouseComponent::Kind::ItemChunk) {
+            c.listed = false;
+            c.read_only = true;
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+template <typename WhVec>
+bool upsert_wh_components(WhVec& wh_components, const std::vector<warehouse::Spec>& specs, const PlayerWorld& world) {
+    for (auto& w : wh_components) {
+        if (w.comp.kind != bootstrap::WarehouseComponent::Kind::ItemChunk) {
+            w.comp.listed = false;
+            w.comp.read_only = true;
+        }
+    }
+    bool has_cargo = false;
+    for (const warehouse::Spec& s : specs) {
+        typename WhVec::value_type* have = nullptr;
+        for (auto& w : wh_components) {
+            if (w.key == s.key) have = &w;
+        }
+        if (!have) {
+            typename WhVec::value_type made;
+            made.key = s.key;
+            made.comp.kind = s.key.area == warehouse::Area::Items       ? bootstrap::WarehouseComponent::Kind::ItemChunk
+                             : s.key.area == warehouse::Area::Materials ? bootstrap::WarehouseComponent::Kind::MaterialTab
+                                                                        : bootstrap::WarehouseComponent::Kind::CargoTab;
+            made.comp.guid = world.mint_guid();
+            made.comp.node = s.key.node;
+            made.comp.record = s.key.record;
+            wh_components.push_back(std::move(made));
+            have = &wh_components.back();
+        }
+        have->spec = s;
+        have->comp.index = s.index;
+        have->comp.member = s.member;
+        have->comp.listed = true;
+        have->comp.read_only = false;
+        has_cargo = has_cargo || s.key.area == warehouse::Area::Cargo;
+    }
+    return has_cargo;
+}
+
+template <typename WhVec>
+const typename WhVec::value_type* find_wh_component(const WhVec& wh_components, const FIntrepidNetworkGUID& object) {
+    for (const auto& w : wh_components) {
+        if (w.comp.guid == object) return &w;
+    }
+    return nullptr;
+}
+
+std::optional<svc::ItemContainer> resolve_bag_container(const bootstrap::PlayerSetup& setup, const FIntrepidNetworkGUID& object) {
+    if (object == setup.guids.backpack) return svc::ItemContainer::Backpack;
+    for (int i = 0; i < items::kResourceContainers; ++i) {
+        const size_t idx = static_cast<size_t>(i);
+        if (setup.resource_bags[idx].present && object == setup.guids.resource_storage[idx]) return items::resource_container(i);
+    }
+    return std::nullopt;
+}
+
+template <typename Side, typename WhComp>
+bool fill_warehouse_side(Side& side, const WhComp* wh, const bootstrap::PlayerSetup& setup, const FIntrepidNetworkGUID& object) {
+    if (wh) {
+        side.in_warehouse = true;
+        side.key = wh->key;
+        return true;
+    }
+    if (const auto bag = resolve_bag_container(setup, object)) {
+        side.bag = *bag;
+        return true;
+    }
+    return false;
+}
+
+template <typename WhVec>
+std::vector<bootstrap::ItemEvent> build_warehouse_item_events(const warehouse::Result& res, const WhVec& wh_components) {
+    std::vector<bootstrap::ItemEvent> events;
+    events.reserve(res.steps.size());
+    for (const warehouse::Step& s : res.steps) {
+        bootstrap::ItemEvent ev;
+        ev.type = s.type;
+        ev.slot = s.slot;
+        ev.item = items::to_instance(s.item);
+        ev.instigated = true;
+        if (s.in_warehouse) {
+            for (const auto& w : wh_components) {
+                if (w.key == s.key) ev.container = w.comp.guid;
+            }
+        } else {
+            ev.storage = bootstrap::item_storage_of(s.bag);
+        }
+        events.push_back(std::move(ev));
+    }
+    return events;
+}
+
+}  // namespace
 
 void PlayerSession::list_item_chunk(Connection& conn) {
     const warehouse::Book* book = world_ ? world_->warehouses() : nullptr;
     const std::optional<warehouse::Spec> spec = book ? book->base_chunk() : std::nullopt;
     if (!spec) return;
     for (const WhComponent& w : wh_components_) {
-        if (w.key == spec->key) return;   // (made already)
+        if (w.key == spec->key) return;
     }
     WhComponent made;
     made.key = spec->key;
@@ -34,8 +155,7 @@ void PlayerSession::list_item_chunk(Connection& conn) {
     made.comp.record = spec->key.record;
     made.comp.listed = true;
     wh_components_.push_back(std::move(made));
-    std::vector<bootstrap::WarehouseComponent> comps;
-    for (const WhComponent& w : wh_components_) comps.push_back(w.comp);
+    const std::vector<bootstrap::WarehouseComponent> comps = collect_wh_components(wh_components_, false);
     queue("the item chunk", [comps](bootstrap::PlayerBootstrap& pb) -> std::optional<bootstrap::Send> {
         if (!pb.set_warehouse_components(comps)) return std::nullopt;
         return pb.warehouse_update();
@@ -62,64 +182,12 @@ bool PlayerSession::open_warehouse(Connection& conn, const world::WorldActor& np
         return refuse("the clerk is " + std::to_string(static_cast<int>(std::sqrt(dx * dx + dy * dy + dz * dz) / 100.0)) + " m away (a window opens within 12 m)");
     }
     if (!room_for(4)) return refuse("the connection is busy");
-    warehouse::Facts facts;
-    facts.node = town->guid;
-    facts.level = nodes->level_of(town->guid);
-    std::vector<warehouse::Spec> specs = book->owned(town->guid, facts);
-    // the containers the access config allows: 1 the item chunks, 2 the town's materials, 4 its cargo
-    specs.erase(std::remove_if(specs.begin(), specs.end(),
-                               [&](const warehouse::Spec& s) {
-                                   const int bit = s.key.area == warehouse::Area::Items ? repl::kAccessGlobalItems : s.key.area == warehouse::Area::Materials ? repl::kAccessNodeMaterials : repl::kAccessNodeCrates;
-                                   return (access_config & bit) == 0;
-                               }),
-                specs.end());
+    const std::vector<warehouse::Spec> specs = allowed_warehouse_specs(*book, town->guid, nodes->level_of(town->guid), access_config);
     if (specs.empty()) return refuse("the town offers no container for access config " + std::to_string(access_config));
 
-    // the components: a container the connection has not met yet gets a new one (a guid of its own).  What `comp` holds is the state the open window has (the tabs listed and writable); the first
-    // half below sends them read-only and unlisted.
-    for (WhComponent& w : wh_components_) {
-        if (w.comp.kind != bootstrap::WarehouseComponent::Kind::ItemChunk) {
-            w.comp.listed = false;
-            w.comp.read_only = true;
-        }
-    }
-    bool has_cargo = false;
-    for (const warehouse::Spec& s : specs) {
-        WhComponent* have = nullptr;
-        for (WhComponent& w : wh_components_) {
-            if (w.key == s.key) have = &w;
-        }
-        if (!have) {
-            WhComponent made;
-            made.key = s.key;
-            made.comp.kind = s.key.area == warehouse::Area::Items ? bootstrap::WarehouseComponent::Kind::ItemChunk
-                             : s.key.area == warehouse::Area::Materials ? bootstrap::WarehouseComponent::Kind::MaterialTab
-                                                                         : bootstrap::WarehouseComponent::Kind::CargoTab;
-            made.comp.guid = world_->mint_guid();
-            made.comp.node = s.key.node;
-            made.comp.record = s.key.record;
-            wh_components_.push_back(std::move(made));
-            have = &wh_components_.back();
-        }
-        have->spec = s;
-        have->comp.index = s.index;
-        have->comp.member = s.member;
-        have->comp.listed = true;
-        have->comp.read_only = false;
-        has_cargo = has_cargo || s.key.area == warehouse::Area::Cargo;
-    }
-
-    // the first half: what the client must hold before the window call.  The tabs exist (read-only, not listed), the base chunk is listed, and OwnerInfo names the town for the Materials row
-    // (and for the Crate row where the town has a cargo tab).
-    std::vector<bootstrap::WarehouseComponent> first;
-    for (const WhComponent& w : wh_components_) {
-        bootstrap::WarehouseComponent c = w.comp;
-        if (c.kind != bootstrap::WarehouseComponent::Kind::ItemChunk) {
-            c.listed = false;
-            c.read_only = true;
-        }
-        first.push_back(c);
-    }
+    // Send tabs read-only and unlisted first so client maps their components before the window RPC arrives.
+    const bool has_cargo = upsert_wh_components(wh_components_, specs, *world_);
+    const std::vector<bootstrap::WarehouseComponent> first = collect_wh_components(wh_components_, true);
     const std::vector<int64_t> material_nodes{town->guid};
     const std::vector<int64_t> crate_nodes = has_cargo ? std::vector<int64_t>{town->guid} : std::vector<int64_t>{};
     queue("the warehouse components", [first, material_nodes, crate_nodes](bootstrap::PlayerBootstrap& pb) -> std::optional<bootstrap::Send> {
@@ -145,14 +213,12 @@ void PlayerSession::finish_open_warehouse(Connection& conn, Clock::time_point no
     const uint32_t gen = wh_gen_;
     const int64_t node = wh_window_.node;
     const uint8_t config = wh_access_;
-    // (each step is dropped when the window has closed or been opened again by the time its turn comes)
     queue_later("ClientOpenWarehouseWindow", [this, gen, node, config](bootstrap::PlayerBootstrap& pb) -> std::optional<bootstrap::Send> {
         if (gen != wh_gen_ || !wh_open_) return std::nullopt;
         return pb.open_warehouse_window(node, config);
     }, conn, now);
     if (clear) send_dialogue_later(conn, now);
-    std::vector<bootstrap::WarehouseComponent> comps;
-    for (const WhComponent& w : wh_components_) comps.push_back(w.comp);
+    const std::vector<bootstrap::WarehouseComponent> comps = collect_wh_components(wh_components_, false);
     queue_later("the warehouse lists", [this, gen, comps](bootstrap::PlayerBootstrap& pb) -> std::optional<bootstrap::Send> {
         if (gen != wh_gen_ || !wh_open_) return std::nullopt;
         if (!pb.set_warehouse_components(comps)) return std::nullopt;
@@ -177,8 +243,7 @@ void PlayerSession::close_warehouse(Connection& conn, const char* why) {
             w.comp.read_only = true;
         }
     }
-    std::vector<bootstrap::WarehouseComponent> comps;
-    for (const WhComponent& w : wh_components_) comps.push_back(w.comp);
+    const std::vector<bootstrap::WarehouseComponent> comps = collect_wh_components(wh_components_, false);
     queue("the warehouse components", [comps](bootstrap::PlayerBootstrap& pb) -> std::optional<bootstrap::Send> {
         if (!pb.set_warehouse_components(comps)) return std::nullopt;
         return pb.warehouse_update();
@@ -208,7 +273,6 @@ void PlayerSession::on_warehouse_request(Connection& conn, const repl::ClientRpc
         return;
     }
     if (rpc_name == "ServerVisitWarehouse") {
-        // only the storage clerk's line opens a warehouse; the visit a window of another place sends (the caravan master's) opens nothing here
         spdlog::log(level_for(wh_logged_), "[session] {}: a ServerVisitWarehouse for node {} opens nothing (only the storage clerk's line opens a warehouse)", name(), request->id.record);
         return;
     }
@@ -218,7 +282,7 @@ void PlayerSession::on_warehouse_request(Connection& conn, const repl::ClientRpc
                     wh_open_ ? "it names another town than the window's" : "no storage window is open");
         return;
     }
-    if (rpc_name == "ServerFetchWarehouse") return;   // the window asks for a kind of container to be ready: they are, and the client's requests for their data are answered
+    if (rpc_name == "ServerFetchWarehouse") return;
     if (!within_budget(wh_budget_, "ServerRequestWarehouseSummary", now) || !room_for(2)) return;
     const warehouse::Book* book = world_ ? world_->warehouses() : nullptr;
     const world::CityNodes* nodes = world_ ? world_->city_nodes() : nullptr;
@@ -233,27 +297,24 @@ void PlayerSession::on_warehouse_request(Connection& conn, const repl::ClientRpc
 }
 
 bool PlayerSession::warehouse_payload(Connection& conn, const FIntrepidNetworkGUID& container, Clock::time_point now) {
-    for (const WhComponent& w : wh_components_) {
-        if (!(w.comp.guid == container)) continue;
-        const warehouse::Spec* spec = wh_open_ ? wh_window_.find(w.key) : nullptr;
-        if (!spec && w.key.area == warehouse::Area::Items) spec = &w.spec;   // (the base chunk is listed for good: its data goes out with no window open, as the client asks for it at the join)
-        if (!spec) {
-            spdlog::debug("[session] {}: the data of a warehouse container is asked while its window is closed: not sent", name());
-            return true;   // (it is a warehouse container: the bags' lookup has nothing to say about it)
-        }
-        if (!within_budget(storage_budget_, "ServerRequestStorageData", now) || !room_for(1)) return true;
-        repl::StoragePayload data = warehouse::payload_of(*spec, wh_storage_);
-        data.target = container;
-        queue("ClientReceiveStoragePayload", [data](bootstrap::PlayerBootstrap& pb) { return pb.container_payload(data); }, conn);
+    const WhComponent* w = find_wh_component(wh_components_, container);
+    if (!w) return false;
+    const warehouse::Spec* spec = wh_open_ ? wh_window_.find(w->key) : nullptr;
+    if (!spec && w->key.area == warehouse::Area::Items) spec = &w->spec;
+    if (!spec) {
+        spdlog::debug("[session] {}: the data of a warehouse container is asked while its window is closed: not sent", name());
         return true;
     }
-    return false;
+    if (!within_budget(storage_budget_, "ServerRequestStorageData", now) || !room_for(1)) return true;
+    repl::StoragePayload data = warehouse::payload_of(*spec, wh_storage_);
+    data.target = container;
+    queue("ClientReceiveStoragePayload", [data](bootstrap::PlayerBootstrap& pb) { return pb.container_payload(data); }, conn);
+    return true;
 }
 
 void PlayerSession::refuse_warehouse_request(Connection& conn, const char* what, const std::string& why, Clock::time_point now) {
     ++wh_refused_;
     spdlog::log(level_for(wh_refused_logged_), "[session] {}: {} in the warehouse refused, nothing changed: {}", name(), what, why);
-    // the client is told what is where (the bags' payloads, then the open containers'); one that is refused over and over gets that a few times, then silence
     if (!resync_budget_.take(now) || !room_for(3 + wh_window_.specs.size())) return;
     std::vector<bootstrap::StorageKind> kinds = {bootstrap::StorageKind::Backpack};
     for (int i = 0; i < items::kResourceContainers; ++i) {
@@ -273,15 +334,9 @@ void PlayerSession::refuse_warehouse_request(Connection& conn, const char* what,
 }
 
 bool PlayerSession::warehouse_event(Connection& conn, const repl::ItemStorageEvent& event, Clock::time_point now) {
-    const auto component_of = [&](const FIntrepidNetworkGUID& object) -> const WhComponent* {
-        for (const WhComponent& w : wh_components_) {
-            if (w.comp.guid == object) return &w;
-        }
-        return nullptr;
-    };
-    const WhComponent* from_wh = component_of(event.move_source.object);
-    const WhComponent* to_wh = event.targets.empty() ? nullptr : component_of(event.targets[0].object);
-    if (!from_wh && !to_wh) return false;   // the bags' own
+    const WhComponent* from_wh = find_wh_component(wh_components_, event.move_source.object);
+    const WhComponent* to_wh = event.targets.empty() ? nullptr : find_wh_component(wh_components_, event.targets[0].object);
+    if (!from_wh && !to_wh) return false;
     const char* what = "ServerRequestStorageEvent";
     if (!wh_open_) {
         refuse_warehouse_request(conn, what, "no storage window is open", now);
@@ -291,43 +346,24 @@ bool PlayerSession::warehouse_event(Connection& conn, const repl::ItemStorageEve
         refuse_warehouse_request(conn, what, "a move names one source slot and one target slot", now);
         return true;
     }
-    // the clerk is still within reach
     const world::WorldActor* clerk = registry_ ? registry_->find(wh_clerk_) : nullptr;
     const GoodPosition at = checker_.good();
     if (!clerk || (clerk->x - at.x) * (clerk->x - at.x) + (clerk->y - at.y) * (clerk->y - at.y) + (clerk->z - at.z) * (clerk->z - at.z) >= vendor::kShopRangeCm * vendor::kShopRangeCm) {
         refuse_warehouse_request(conn, what, "the clerk is not within reach", now);
         return true;
     }
-    const bootstrap::SessionGuids& g = pb_.setup().guids;
-    const auto bag_of = [&](const FIntrepidNetworkGUID& object) -> std::optional<svc::ItemContainer> {
-        if (object == g.backpack) return svc::ItemContainer::Backpack;
-        for (int i = 0; i < items::kResourceContainers; ++i) {
-            if (pb_.setup().resource_bags[static_cast<size_t>(i)].present && object == g.resource_storage[static_cast<size_t>(i)]) return items::resource_container(i);
-        }
-        return std::nullopt;
-    };
     warehouse::Request req;
     req.type = static_cast<repl::StorageEventType>(event.type);
-    const repl::StorageEventSlot& src = event.move_source.slots[0];
-    const repl::StorageEventSlot& dst = event.targets[0].slots[0];
-    if (from_wh) {
-        req.from.in_warehouse = true;
-        req.from.key = from_wh->key;
-    } else if (const auto bag = bag_of(event.move_source.object)) {
-        req.from.bag = *bag;
-    } else {
+    if (!fill_warehouse_side(req.from, from_wh, pb_.setup(), event.move_source.object)) {
         refuse_warehouse_request(conn, what, "a source that is none of this character's bags or warehouse containers", now);
         return true;
     }
-    if (to_wh) {
-        req.to.in_warehouse = true;
-        req.to.key = to_wh->key;
-    } else if (const auto bag = bag_of(event.targets[0].object)) {
-        req.to.bag = *bag;
-    } else {
+    if (!fill_warehouse_side(req.to, to_wh, pb_.setup(), event.targets[0].object)) {
         refuse_warehouse_request(conn, what, "a target that is none of this character's bags or warehouse containers", now);
         return true;
     }
+    const repl::StorageEventSlot& src = event.move_source.slots[0];
+    const repl::StorageEventSlot& dst = event.targets[0].slots[0];
     req.from.slot = src.slot;
     req.to.slot = dst.slot;
     req.count = src.count;
@@ -344,24 +380,7 @@ bool PlayerSession::warehouse_event(Connection& conn, const repl::ItemStorageEve
         refuse_warehouse_request(conn, what, res.refusal, now);
         return true;
     }
-    // what the client is told: the Remove from the place the stack left, then the Add where it arrived (a swap: both Removes, then both Adds); the bag's side carries the item toast
-    std::vector<bootstrap::ItemEvent> events;
-    events.reserve(res.steps.size());
-    for (const warehouse::Step& s : res.steps) {
-        bootstrap::ItemEvent ev;
-        ev.type = s.type;
-        ev.slot = s.slot;
-        ev.item = items::to_instance(s.item);
-        ev.instigated = true;
-        if (s.in_warehouse) {
-            for (const WhComponent& w : wh_components_) {
-                if (w.key == s.key) ev.container = w.comp.guid;
-            }
-        } else {
-            ev.storage = bootstrap::item_storage_of(s.bag);
-        }
-        events.push_back(std::move(ev));
-    }
+    std::vector<bootstrap::ItemEvent> events = build_warehouse_item_events(res, wh_components_);
     if (res.steps.size() == 2) {
         for (bootstrap::ItemEvent& ev : events) {
             if (ev.container) continue;
@@ -378,3 +397,5 @@ bool PlayerSession::warehouse_event(Connection& conn, const repl::ItemStorageEve
     spdlog::log(level_for(wh_logged_), "[session] {}: a stack moves {} the warehouse ({} event(s))", name(), from_wh && to_wh ? "inside" : from_wh ? "out of" : "into", events.size());
     return true;
 }
+
+}}  // namespace aoc::worldd

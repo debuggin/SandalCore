@@ -7508,10 +7508,10 @@ void PlayerSession::on_gm_node_rpc(const repl::ClientRpc& rpc, Clock::time_point
     }
 }
 
-// storage clerks, step 0: the session's side of the warehouse window (warehouse/player_warehouse.inc is part of this file, so that the build lists stay as they are)
-#include "warehouse/player_warehouse.inc"
-#include "respawn/session_embersprings.inc"
-#include "quest/session_quests2.inc"
-#include "quest/session_givers.inc"
+
+
+
+
+
 
 }}  // namespace aoc::worldd

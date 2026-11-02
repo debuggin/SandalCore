@@ -113,9 +113,12 @@ add_library(world_core STATIC
     quest/quest_service.h
     quest/quest_wire.cpp
     quest/quest_wire.h
+    quest/session_givers.cpp
     quest/session_handin.cpp
     quest/session_objects.cpp
+    quest/session_quests2.cpp
     respawn/bootstrap_embersprings.cpp
+    respawn/session_embersprings.cpp
     session/abilities.cpp
     session/abilities.h
     session/actor_view.cpp
@@ -196,6 +199,7 @@ add_library(world_core STATIC
     vendor/node_tax.cpp
     vendor/node_tax.h
     vendor/node_tax_table.h
+    warehouse/player_warehouse.cpp
     world/city_nodes.cpp
     world/city_nodes.h
     world/node_control.h
