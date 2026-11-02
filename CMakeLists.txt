@@ -164,3 +164,8 @@ if(WIN32)
     )
     set_target_properties(test_launcher_saved_sign_in PROPERTIES FOLDER "Tools")
 endif()
+
+option(AOC_DATA_FREE "Enable --data-free synthetic fixtures for hermetic CTest runs" ON)
+enable_testing()
+add_subdirectory(tests)
+

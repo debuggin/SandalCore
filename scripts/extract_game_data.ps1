@@ -390,7 +390,7 @@ function Get-CodeContentc { Get-CodeHash @('services\cmd\contentc', 'services\in
 function Get-CodeNpcAbilities { Get-CodeHash @('tools\npcabilities') }
 function Get-CodeItemNames { Get-CodeHash @('tools\itemnames') }
 function Get-CodeGens     { Get-CodeHash @('tools\capture\gen_zoi_surface.py', 'tools\capture\gen_region_rects.py', 'tools\capture\gen_region.py', 'tools\capture\gen_node_constants.py', 'tools\capture\gen_gm_garden.py', 'tools\capture\gen_tooltips.py', 'tools\worldd\gen_gear_fixture.py', 'tools\worldd\gen_talent_fixture.py') }
-function Get-CodeNav      { Get-CodeHash @('server\worldd\nav', 'third_party\recastnavigation', 'CMakeLists.txt', 'server\worldd\CMakeLists.txt', 'vcpkg.json') }
+function Get-CodeNav      { Get-CodeHash @('server\worldd\nav', 'third_party\recastnavigation', 'vcpkg.json') }
 # The level each node starts at in the server's seed file (deploy\citynode_seed.json): the towns' buildings are listed at those levels (tools\capture\gen_town_layouts.py), so a change of a
 # level there changes the list and the navigation mesh.  Only "nodes" counts: the workshops and the comment do not change what the map holds.
 function Get-SeedLevels {

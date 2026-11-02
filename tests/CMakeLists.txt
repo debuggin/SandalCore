@@ -1,0 +1,193 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+function(add_sandal_domain_test_exe target_name source_relpath)
+    add_executable(${target_name} "${CMAKE_CURRENT_SOURCE_DIR}/${source_relpath}")
+    target_include_directories(${target_name} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/world"
+        "${PROJECT_SOURCE_DIR}"
+    )
+    target_compile_features(${target_name} PRIVATE cxx_std_20)
+    set_target_properties(${target_name} PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+        FOLDER "Tests/domain"
+    )
+    if(MSVC)
+        target_compile_definitions(${target_name} PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+        )
+    endif()
+    if(AOC_DATA_FREE)
+        target_compile_definitions(${target_name} PRIVATE AOC_DATA_FREE=1)
+    endif()
+endfunction()
+
+set(SANDAL_DOMAIN_TEST_TARGETS
+    test_world_clock_and_data_free
+    test_world_zoi_and_nodes
+    test_nav_ground_snap
+    test_nav_los_and_bvh
+    test_combat_core_formulas
+    test_combat_procs_and_cc
+    test_combat_mob_gates_and_swings
+    test_quests_dialogue_session
+    test_quests_objectives_and_commissions
+    test_protocol_bitstream_bounds
+    test_character_inventory_and_glint
+    test_character_mounts_and_talents
+    test_mesh_handover_hysteresis
+    test_chaos_fault_seams
+)
+
+add_sandal_domain_test_exe(test_world_clock_and_data_free world/test_world_clock_and_data_free.cpp)
+add_sandal_domain_test_exe(test_world_zoi_and_nodes world/test_world_zoi_and_nodes.cpp)
+add_sandal_domain_test_exe(test_nav_ground_snap nav/test_nav_ground_snap.cpp)
+add_sandal_domain_test_exe(test_nav_los_and_bvh nav/test_nav_los_and_bvh.cpp)
+add_sandal_domain_test_exe(test_combat_core_formulas combat/test_combat_core_formulas.cpp)
+add_sandal_domain_test_exe(test_combat_procs_and_cc combat/test_combat_procs_and_cc.cpp)
+add_sandal_domain_test_exe(test_combat_mob_gates_and_swings combat/test_combat_mob_gates_and_swings.cpp)
+add_sandal_domain_test_exe(test_quests_dialogue_session quests/test_quests_dialogue_session.cpp)
+add_sandal_domain_test_exe(test_quests_objectives_and_commissions quests/test_quests_objectives_and_commissions.cpp)
+add_sandal_domain_test_exe(test_protocol_bitstream_bounds protocol/test_protocol_bitstream_bounds.cpp)
+add_sandal_domain_test_exe(test_character_inventory_and_glint character/test_character_inventory_and_glint.cpp)
+add_sandal_domain_test_exe(test_character_mounts_and_talents character/test_character_mounts_and_talents.cpp)
+add_sandal_domain_test_exe(test_mesh_handover_hysteresis mesh/test_mesh_handover_hysteresis.cpp)
+add_sandal_domain_test_exe(test_chaos_fault_seams chaos/test_chaos_fault_seams.cpp)
+
+set(SANDAL_AOCNET_TEST_TARGETS
+    test_cs_packet_info
+    test_level_visibility
+    test_pc_bootstrap
+    test_possession
+    test_rep_layout_writer
+    test_sc_packet_info
+    test_hit_confirmation
+    test_pkt22_round_trip
+    test_pkt104_round_trip
+    test_name_update_bunch
+    test_pawn_spawn_diff
+    test_pc_spawn_diff
+    test_package_map_export
+    test_packet_notify
+    test_handshake
+    test_packet_framing
+    test_packet_reader
+    test_server_guid_allocator
+    test_generated_schemas
+    test_repl_codecs
+    test_repl_rep_block
+    test_repl_fast_array
+    test_repl_aoc_codecs
+    test_repl_rpc
+    test_repl_move_packed
+    test_repl_ability_rpc
+    test_repl_items
+    test_repl_item_rpc
+    test_repl_hits
+    test_repl_leveling
+    test_repl_actor_open
+    test_repl_npc
+    test_repl_send_ledger
+    test_repl_vendor
+    test_repl_loot
+    test_repl_mount
+    test_repl_nodes
+    test_repl_gather
+    test_repl_resource
+    test_repl_foliage
+    test_repl_hunting
+    test_repl_node_layout
+    test_repl_dialogue
+    test_repl_quest
+    test_repl_warehouse
+)
+
+add_custom_target(sandal_ctest_suite
+    DEPENDS
+        ${SANDAL_AOCNET_TEST_TARGETS}
+        test_ics_token_file
+        $<$<BOOL:${WIN32}>:test_launcher_saved_sign_in>
+        test_world_stats
+        test_world_effects
+        ${SANDAL_DOMAIN_TEST_TARGETS}
+)
+set_target_properties(sandal_ctest_suite PROPERTIES FOLDER "Tests")
+
+foreach(t IN LISTS SANDAL_AOCNET_TEST_TARGETS)
+    add_test(
+        NAME aocnet.${t}
+        COMMAND $<TARGET_FILE:${t}>
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+endforeach()
+
+add_test(
+    NAME tools.test_ics_token_file
+    COMMAND $<TARGET_FILE:test_ics_token_file>
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+if(WIN32)
+    add_test(
+        NAME tools.test_launcher_saved_sign_in
+        COMMAND $<TARGET_FILE:test_launcher_saved_sign_in>
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+endif()
+
+add_test(
+    NAME world_stats.test_world_stats
+    COMMAND $<TARGET_FILE:test_world_stats>
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+add_test(
+    NAME world_stats.test_world_effects
+    COMMAND $<TARGET_FILE:test_world_effects>
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+
+function(add_sandal_domain_case_test test_name target_name case_name)
+    add_test(
+        NAME ${test_name}
+        COMMAND $<TARGET_FILE:${target_name}> --data-free --case ${case_name}
+        WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+endfunction()
+
+add_sandal_domain_case_test(world.manual_clock_tick_barriers test_world_clock_and_data_free manual_clock_tick_barriers)
+add_sandal_domain_case_test(world.data_free_standin_tooltip_lookup test_world_clock_and_data_free data_free_standin_tooltip_lookup)
+add_sandal_domain_case_test(world.zoi_spatial_cell_partition test_world_zoi_and_nodes zoi_spatial_cell_partition)
+add_sandal_domain_case_test(world.city_node_stage_progression test_world_zoi_and_nodes city_node_stage_progression)
+add_sandal_domain_case_test(nav.heightfield_ground_snap_no_z test_nav_ground_snap heightfield_ground_snap_no_z)
+add_sandal_domain_case_test(nav.water_floor_clamp_corridor test_nav_ground_snap water_floor_clamp_corridor)
+add_sandal_domain_case_test(nav.bvh_chunk_bounds_query test_nav_los_and_bvh bvh_chunk_bounds_query)
+add_sandal_domain_case_test(nav.detour_polyref64_los_raycast test_nav_los_and_bvh detour_polyref64_los_raycast)
+add_sandal_domain_case_test(combat.mitigation_and_crit_scaling test_combat_core_formulas mitigation_and_crit_scaling)
+add_sandal_domain_case_test(combat.npc_ability_known_table_standin test_combat_core_formulas npc_ability_known_table_standin)
+add_sandal_domain_case_test(combat.proc_chain_depth_guard test_combat_procs_and_cc proc_chain_depth_guard)
+add_sandal_domain_case_test(combat.cc_diminishing_returns_clock test_combat_procs_and_cc cc_diminishing_returns_clock)
+add_sandal_domain_case_test(combat.mob_aggro_and_leash_evade test_combat_mob_gates_and_swings mob_aggro_and_leash_evade)
+add_sandal_domain_case_test(combat.mob_swing_timer_cadence test_combat_mob_gates_and_swings mob_swing_timer_cadence)
+add_sandal_domain_case_test(quests.npc_dialogue_prerequisite_gate test_quests_dialogue_session npc_dialogue_prerequisite_gate)
+add_sandal_domain_case_test(quests.dialogue_choice_branch_transition test_quests_dialogue_session dialogue_choice_branch_transition)
+add_sandal_domain_case_test(quests.quest_objective_counter_step test_quests_objectives_and_commissions quest_objective_counter_step)
+add_sandal_domain_case_test(quests.commission_board_reward_payout test_quests_objectives_and_commissions commission_board_reward_payout)
+add_sandal_domain_case_test(protocol.bit_reader_varint_and_tail_bounds test_protocol_bitstream_bounds bit_reader_varint_and_tail_bounds)
+add_sandal_domain_case_test(protocol.bunch_header_framing_roundtrip test_protocol_bitstream_bounds bunch_header_framing_roundtrip)
+add_sandal_domain_case_test(character.inventory_bag_slot_stacking test_character_inventory_and_glint inventory_bag_slot_stacking)
+add_sandal_domain_case_test(character.vendor_glint_denomination_change test_character_inventory_and_glint vendor_glint_denomination_change)
+add_sandal_domain_case_test(character.mount_cooldown_manual_clock test_character_mounts_and_talents mount_cooldown_manual_clock)
+add_sandal_domain_case_test(character.talent_tree_rank_allocation test_character_mounts_and_talents talent_tree_rank_allocation)
+add_sandal_domain_case_test(mesh.hysteresis_band_200m_authority test_mesh_handover_hysteresis hysteresis_band_200m_authority)
+add_sandal_domain_case_test(mesh.mesh_forward_header_12b_epoch test_mesh_handover_hysteresis mesh_forward_header_12b_epoch)
+add_sandal_domain_case_test(chaos.udp_jitter_loss_reorder_seam test_chaos_fault_seams udp_jitter_loss_reorder_seam)
+add_sandal_domain_case_test(chaos.rcu_snapshot_generation_fence test_chaos_fault_seams rcu_snapshot_generation_fence)
+
+find_program(SANDAL_PWSH_EXECUTABLE NAMES pwsh powershell REQUIRED)
+add_test(
+    NAME powershell.public_check
+    COMMAND "${SANDAL_PWSH_EXECUTABLE}" -NoProfile -File "${PROJECT_SOURCE_DIR}/tests/powershell/public_check.Tests.ps1"
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
