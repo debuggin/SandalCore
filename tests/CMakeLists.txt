@@ -45,12 +45,15 @@ set(SANDAL_DOMAIN_TEST_TARGETS
     test_diff_save_334_parity
     test_stop_cast_race
     test_world_config
+    test_health_probes_drain
 )
 
 add_sandal_domain_test_exe(test_world_clock_and_data_free world/test_world_clock_and_data_free.cpp)
 add_sandal_domain_test_exe(test_world_config world/test_world_config.cpp)
 target_sources(test_world_config PRIVATE "${PROJECT_SOURCE_DIR}/libs/aoccore/config/world_config.cpp")
 add_test(NAME world.config COMMAND test_world_config)
+add_sandal_domain_test_exe(test_health_probes_drain world/test_health_probes_drain.cpp)
+add_test(NAME world.health_probes_drain COMMAND test_health_probes_drain)
 add_sandal_domain_test_exe(test_world_zoi_and_nodes world/test_world_zoi_and_nodes.cpp)
 add_sandal_domain_test_exe(test_nav_ground_snap nav/test_nav_ground_snap.cpp)
 add_sandal_domain_test_exe(test_nav_los_and_bvh nav/test_nav_los_and_bvh.cpp)
