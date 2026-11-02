@@ -395,7 +395,7 @@ function Get-CodeNpcAbilities { Get-CodeHash @('tools\npcabilities') }
 function Get-CodeItemNames { Get-CodeHash @('tools\itemnames') }
 # WHY: CMakeLists.txt is intentionally excluded from Get-CodeGens, Get-CodeNav, and Get-CodeLayouts so CMake topology edits never invalidate game data stamps.
 function Get-CodeGens     { Get-CodeHash @('tools\capture\gen_zoi_surface.py', 'tools\capture\gen_region_rects.py', 'tools\capture\gen_region.py', 'tools\capture\gen_node_constants.py', 'tools\capture\gen_gm_garden.py', 'tools\capture\gen_tooltips.py', 'tools\worldd\gen_gear_fixture.py', 'tools\worldd\gen_talent_fixture.py') }
-function Get-CodeNav      { Get-CodeHash @('server\worldd\nav', 'third_party\recastnavigation', 'vcpkg.json') }
+function Get-CodeNav      { Get-CodeHash @('libs\aocnav', 'tools\navbuild', 'third_party\recastnavigation', 'vcpkg.json') <# server\worldd\nav #> }
 # The level each node starts at in the server's seed file (deploy\citynode_seed.json): the towns' buildings are listed at those levels (tools\capture\gen_town_layouts.py), so a change of a
 # level there changes the list and the navigation mesh.  Only "nodes" counts: the workshops and the comment do not change what the map holds.
 function Get-SeedLevels {
@@ -512,11 +512,11 @@ $steps = @(
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_node_constants.py'), '--ini', (Join-Path $outDir 'client_config\DefaultAoCRecordConstants.ini'))) 'gen_node_constants'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_gm_garden.py'), '--content-db', $db)) 'gen_gm_garden'
     } },
-    @{ Name = 'fixtures'; Title = 'Generate the test fixtures'; Outputs = @('server\worldd\stats\testdata\corpus.txt', 'server\worldd\tests\talent_fixture.sql', 'server\worldd\tests\gear_fixture.h', 'server\worldd\tests\tooltip_key.h'); Run = {
+    @{ Name = 'fixtures'; Title = 'Generate the test fixtures'; Outputs = @('libs\aocstats\testdata\corpus.txt', 'server\worldd\tests\talent_fixture.sql', 'server\worldd\tests\gear_fixture.h', 'server\worldd\tests\tooltip_key.h'); Run = {
         Assert-Files @('dist\content\content.db', 'dist\tools\statprog.exe') 'run the earlier steps first'
         $db = Join-Path $outDir 'content.db'
-        New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'server\worldd\stats\testdata') | Out-Null
-        Invoke-Checked $statprog @('corpus', '--db', $db, '--out', (Join-Path $repoRoot 'server\worldd\stats\testdata\corpus.txt')) 'statprog_corpus'
+        New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'libs\aocstats\testdata') | Out-Null
+        Invoke-Checked $statprog @('corpus', '--db', $db, '--out', (Join-Path $repoRoot 'libs\aocstats\testdata\corpus.txt')) 'statprog_corpus'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\worldd\gen_talent_fixture.py'), $db)) 'gen_talent_fixture'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\worldd\gen_gear_fixture.py'), $db)) 'gen_gear_fixture'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\capture\gen_tooltips.py'), '--db', $db)) 'gen_tooltips'

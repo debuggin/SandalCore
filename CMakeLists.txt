@@ -28,7 +28,7 @@ set(AOC_GENERATED_FILES
     server/worldd/world/node_constants.h
     server/worldd/spawns/region_data.h
     server/worldd/spawns/garden_defs.h
-    server/worldd/stats/testdata/corpus.txt
+    libs/aocstats/testdata/corpus.txt
     server/worldd/tests/talent_fixture.sql
     server/worldd/tests/gear_fixture.h
     server/worldd/tests/tooltip_key.h
@@ -71,17 +71,25 @@ add_subdirectory(libs/aocproto)
 # ── libaocnet: protocol library (wire / emit / schema / NetGUIDs) ──────────
 add_subdirectory(libs/aocnet)
 
-# ── world: the C++ world server & navbuild (plan A4) ────────────────────────
+# ── libaocstats: stat engine & damage evaluator (world_stats ALIAS aocstats) ─
+add_subdirectory(libs/aocstats)
+
+# ── libaocnav & navbuild: Recast/Detour navigation mesh library & tool ─────
+add_subdirectory(libs/aocnav)
+add_subdirectory(tools/navbuild)
+
+# ── world: the C++ world server (plan A4) ──────────────────────────────────
 add_subdirectory(server/worldd)
 
 # ── Tether server (standalone UDP ARQ executable) ───────────────────────────
 add_executable(tether
-    src/tether_server_main.cpp
-    src/services/tether/tether_service.h
+    server/tether/tether_server_main.cpp
+    server/tether/services/tether/tether_service.h
 )
+add_custom_target(tether_server DEPENDS tether)
 
 target_include_directories(tether PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/server/tether"
 )
 
 target_link_libraries(tether
@@ -110,11 +118,13 @@ set_target_properties(tether PROPERTIES FOLDER "Servers")
 # No gRPC or protobuf dependency — only WinInet (wininet.lib) + nlohmann_json.
 if(WIN32)
     add_executable(launcher WIN32
-        src/launcher_main.cpp
-        src/services/tether/ics_token_acl.cpp
+        launcher/SandalLauncher/launcher_main.cpp
+        server/tether/services/tether/ics_token_acl.cpp
     )
+    add_custom_target(SandalLauncher DEPENDS launcher)
     target_include_directories(launcher PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/launcher/SandalLauncher"
+        "${CMAKE_CURRENT_SOURCE_DIR}/server/tether"
     )
     target_link_libraries(launcher
         PRIVATE
@@ -136,11 +146,11 @@ endif()
 
 # test_ics_token_file: the launcher/tether login-token hand-off (plan A3)
 add_executable(test_ics_token_file
-    src/tools/test_ics_token_file.cpp
-    src/services/tether/ics_token_acl.cpp
+    tests/protocol/test_ics_token_file.cpp
+    server/tether/services/tether/ics_token_acl.cpp
 )
 target_include_directories(test_ics_token_file PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/server/tether"
 )
 target_compile_features(test_ics_token_file PRIVATE cxx_std_20)
 if(MSVC)
@@ -148,15 +158,15 @@ if(MSVC)
 endif()
 set_target_properties(test_ics_token_file PROPERTIES FOLDER "Tools")
 
-# test_launcher_saved_sign_in: "Keep me signed in" for launcher.exe (src/launcher_sign_in.h): the Windows Credential Manager
+# test_launcher_saved_sign_in: "Keep me signed in" for launcher.exe (launcher/SandalLauncher/launcher_sign_in.h): the Windows Credential Manager
 # round trip under a test-only target name, how the auth server's answers are read, and the automatic sign-in at start
 # (fake clock, fake auth server)
 if(WIN32)
     add_executable(test_launcher_saved_sign_in
-        src/tools/test_launcher_saved_sign_in.cpp
+        tests/protocol/test_launcher_saved_sign_in.cpp
     )
     target_include_directories(test_launcher_saved_sign_in PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        "${CMAKE_CURRENT_SOURCE_DIR}/launcher/SandalLauncher"
     )
     target_link_libraries(test_launcher_saved_sign_in PRIVATE nlohmann_json::nlohmann_json)
     target_compile_features(test_launcher_saved_sign_in PRIVATE cxx_std_20)

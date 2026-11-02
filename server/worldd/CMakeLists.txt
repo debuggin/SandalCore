@@ -15,76 +15,7 @@
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 # ── gRPC stubs come from unified libs/aocproto (world_protos ALIAS aocproto) ──
-
-# ── stats: the stat engine (plan B3), a library of its own (no other world or net code) ──────────────────
-add_library(world_stats STATIC
-    stats/character_stats.cpp
-    stats/character_stats.h
-    stats/damage.cpp
-    stats/damage.h
-    stats/gear.cpp
-    stats/gather_host.h
-    stats/gear.h
-    stats/stat_engine.cpp
-    stats/stat_engine.h
-    stats/stat_program.cpp
-    stats/stat_program.h
-)
-target_include_directories(world_stats PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-set_target_properties(world_stats PROPERTIES FOLDER "Servers/world")
-
-# ── nav: the area's ground (plan E1, stage 2): Recast and Detour (third_party/recastnavigation, zlib licence) with the nav file, the offline
-#    builder and the run-time queries.  navbuild is the tool tools/mapc runs; world and the tests link world_nav.
-set(RECAST_DIR "${PROJECT_SOURCE_DIR}/third_party/recastnavigation")
-add_library(recast_detour STATIC
-    ${RECAST_DIR}/Recast/Source/Recast.cpp
-    ${RECAST_DIR}/Recast/Source/RecastAlloc.cpp
-    ${RECAST_DIR}/Recast/Source/RecastArea.cpp
-    ${RECAST_DIR}/Recast/Source/RecastAssert.cpp
-    ${RECAST_DIR}/Recast/Source/RecastContour.cpp
-    ${RECAST_DIR}/Recast/Source/RecastFilter.cpp
-    ${RECAST_DIR}/Recast/Source/RecastLayers.cpp
-    ${RECAST_DIR}/Recast/Source/RecastMesh.cpp
-    ${RECAST_DIR}/Recast/Source/RecastMeshDetail.cpp
-    ${RECAST_DIR}/Recast/Source/RecastRasterization.cpp
-    ${RECAST_DIR}/Recast/Source/RecastRegion.cpp
-    ${RECAST_DIR}/Detour/Source/DetourAlloc.cpp
-    ${RECAST_DIR}/Detour/Source/DetourAssert.cpp
-    ${RECAST_DIR}/Detour/Source/DetourCommon.cpp
-    ${RECAST_DIR}/Detour/Source/DetourNavMesh.cpp
-    ${RECAST_DIR}/Detour/Source/DetourNavMeshBuilder.cpp
-    ${RECAST_DIR}/Detour/Source/DetourNavMeshQuery.cpp
-    ${RECAST_DIR}/Detour/Source/DetourNode.cpp
-)
-target_include_directories(recast_detour PUBLIC "${RECAST_DIR}/Recast/Include" "${RECAST_DIR}/Detour/Include")
-if(MSVC)
-    target_compile_options(recast_detour PRIVATE /W0)
-else()
-    target_compile_options(recast_detour PRIVATE -w)
-endif()
-set_target_properties(recast_detour PROPERTIES FOLDER "Servers/world")
-
-add_library(world_nav STATIC
-    nav/area_nav.cpp
-    nav/area_nav.h
-    nav/nav_build.cpp
-    nav/nav_build.h
-    nav/nav_file.cpp
-    nav/nav_file.h
-    nav/tile_repair.cpp
-    nav/tile_repair.h
-    nav/town_geometry.cpp
-    nav/town_geometry.h
-    world/town_platform.cpp
-    world/town_platform.h
-)
-target_include_directories(world_nav PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(world_nav PUBLIC recast_detour)
-set_target_properties(world_nav PROPERTIES FOLDER "Servers/world")
-
-add_executable(navbuild nav/navbuild_main.cpp)
-target_link_libraries(navbuild PRIVATE world_nav unofficial::sqlite3::sqlite3)
-set_target_properties(navbuild PROPERTIES FOLDER "Servers")
+# ── stats & nav come from libs/aocstats (world_stats ALIAS aocstats) & libs/aocnav (world_nav ALIAS aocnav) ──
 
 # ── ability_content: the ability tables of content.db (plan D2), a connection of its own ───────────────────
 add_library(world_ability_content STATIC
@@ -304,8 +235,8 @@ target_include_directories(world_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(world_core PUBLIC
     aocnet
     aocproto
-    world_nav
-    world_stats
+    aocnav
+    aocstats
     world_ability_content
     spdlog::spdlog
     OpenSSL::Crypto
@@ -347,7 +278,7 @@ function(world_add_test name)
     target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/libs/aocnet/tests)
     # the shared stat corpus (plan B3): the tests that build a content.db fixture take the stat program from it
     target_compile_definitions(${name} PRIVATE
-        STATS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/stats/testdata/corpus.txt"
+        STATS_CORPUS_PATH="${PROJECT_SOURCE_DIR}/libs/aocstats/testdata/corpus.txt"
         TALENT_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/talent_fixture.sql")
     set_target_properties(${name} PROPERTIES FOLDER "Tests/world")
 endfunction()
@@ -388,17 +319,6 @@ endforeach()
 # Gathering stage 2: the session tests of the professions and the GM artisan scrolls run on the real content.db of the working tree (they skip without it)
 target_compile_definitions(test_world_items_session PRIVATE
     PROFESSIONS_REAL_DB="${PROJECT_SOURCE_DIR}/dist/content/content.db")
-
-# ============================================================================
-#  the stat engine's test (plan B3): the interpreter, the gear rules and the character's stats on the corpus
-#  services/internal/statprog writes (stats/testdata/corpus.txt)
-# ============================================================================
-world_resolve_test_src(TEST_WORLD_STATS_SRC "stats/tests" "test_world_stats")
-add_executable(test_world_stats ${TEST_WORLD_STATS_SRC})
-target_link_libraries(test_world_stats PRIVATE world_stats)
-target_compile_definitions(test_world_stats PRIVATE
-    STATS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/stats/testdata/corpus.txt")
-set_target_properties(test_world_stats PROPERTIES FOLDER "Tests/world")
 
 # the ability tables' reader (plan D2) on the content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB), with the stat engine
 world_resolve_test_src(TEST_WORLD_ABILITY_CONTENT_SRC "tests" "test_world_ability_content")
@@ -538,14 +458,6 @@ target_compile_definitions(test_world_town_platform PRIVATE
 world_add_test(test_world_spawn_filter)
 target_compile_definitions(test_world_spawn_filter PRIVATE
     AREA_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
-
-# effect state, expression programs and their host (plan D2), on the same corpus (its fxcase blocks)
-world_resolve_test_src(TEST_WORLD_EFFECTS_SRC "stats/tests" "test_world_effects")
-add_executable(test_world_effects ${TEST_WORLD_EFFECTS_SRC})
-target_link_libraries(test_world_effects PRIVATE world_stats)
-target_compile_definitions(test_world_effects PRIVATE
-    STATS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/stats/testdata/corpus.txt")
-set_target_properties(test_world_effects PROPERTIES FOLDER "Tests/world")
 
 # the combat core (plan E1, stage 3): NPC stats, damage and the hit rules on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
 world_add_test(test_world_combat)
