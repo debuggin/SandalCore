@@ -8,7 +8,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -187,6 +186,18 @@ func (e *exprSet) id(text string, terms map[int64]string) (int64, error) {
 	return e.next, nil
 }
 
+func (b *abBuilder) exprIDs(texts ...string) ([]int64, error) {
+	ids := make([]int64, len(texts))
+	for i, t := range texts {
+		id, err := b.exprs.id(t, nil)
+		if err != nil {
+			return nil, err
+		}
+		ids[i] = id
+	}
+	return ids, nil
+}
+
 // abBuilder is the state of one buildAbilities.
 type abBuilder struct {
 	w         *writer
@@ -281,43 +292,48 @@ func jsonOf(v any) string {
 
 // C Y B / C O A
 
-// buildAbilities fills the ab_* tables (and meta's ab.* counts).
-func buildAbilities(w *writer, src *source, opt *Options, meta map[string]string) error {
+var zoneHitRoles = []string{"InitialHitsIds", "LingeringHitsIds", "OnBeginOverlapHitsIds", "OnEndOverlapHitsIds", "EndHitsIds"}
+
+type abClosure struct {
+	b                                               *abBuilder
+	abilitySet, effectSet, hitSet, projSet, zoneSet map[int64]bool
+	reactionSet, cooldownSet, targetingSet          map[int64]bool
+	effQ, hitQ                                      []int64
+}
+
+func newAbBuilder(w *writer, src *source) (*abBuilder, error) {
 	for _, schema := range []string{"ProjectileRecordBase", "LingeringEffectRecordBase", "AbilityTargetingRecordBase", "StatTypeDefRecordBase", "ReactionRecordBase", "ModifyCooldownRecordBase"} {
 		if _, err := src.need(schema); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	statNames := map[int64]string{}
 	for _, r := range src.rows["StatTypeDefRecordBase"] {
 		statNames[r.Guid] = r.Name
 	}
-	b := &abBuilder{
-		w: w, src: src, statNames: statNames,
-		exprs:         &exprSet{w: w, ids: map[string]int64{}, named: namedRecords(src)},
-		abilities:     indexRows(src.rows["AoCAbilityRecordBase"]),
-		effects:       indexRows(src.rows["EffectRecordBase"]),
-		hits:          indexRows(src.rows["AbilityHitRecordBase"]),
-		mods:          indexRows(src.rows["StatModRecordBase"]),
-		projectiles:   indexRows(src.rows["ProjectileRecordBase"]),
-		zones:         indexRows(src.rows["LingeringEffectRecordBase"]),
-		reactions:     indexRows(src.rows["ReactionRecordBase"]),
-		cooldowns:     indexRows(src.rows["ModifyCooldownRecordBase"]),
+	return &abBuilder{
+		w: w, src: src, statNames: statNames, exprs: &exprSet{w: w, ids: map[string]int64{}, named: namedRecords(src)},
+		abilities: indexRows(src.rows["AoCAbilityRecordBase"]), effects: indexRows(src.rows["EffectRecordBase"]),
+		hits: indexRows(src.rows["AbilityHitRecordBase"]), mods: indexRows(src.rows["StatModRecordBase"]),
+		projectiles: indexRows(src.rows["ProjectileRecordBase"]), zones: indexRows(src.rows["LingeringEffectRecordBase"]),
+		reactions: indexRows(src.rows["ReactionRecordBase"]), cooldowns: indexRows(src.rows["ModifyCooldownRecordBase"]),
 		targetingRows: indexRows(src.rows["AbilityTargetingRecordBase"]),
-	}
+	}, nil
+}
 
-	// ---- the ranks of every skill tree (plan D1's skill_rank: the one table of ranks); the abilities and effects they grant seed the closure ----
+// seedClosure reads the ranks of every skill tree (plan D1's skill_rank: the one table of ranks); the abilities and effects they grant seed the closure.
+func (b *abBuilder) seedClosure(opt *Options) (map[int64]bool, map[int64]bool, error) {
 	abilitySeed, effectSeed := map[int64]bool{}, map[int64]bool{}
-	rankRows, err := w.tx.Query(`SELECT DISTINCT ability_guid, effect_guid FROM skill_rank`)
+	rankRows, err := b.w.tx.Query(`SELECT DISTINCT ability_guid, effect_guid FROM skill_rank`)
 	if err != nil {
-		return fmt.Errorf("read skill_rank (buildTalents must run before buildAbilities): %w", err)
+		return nil, nil, fmt.Errorf("read skill_rank (buildTalents must run before buildAbilities): %w", err)
 	}
 	nranks := 0
 	for rankRows.Next() {
 		var ag, eg int64
 		if err := rankRows.Scan(&ag, &eg); err != nil {
 			rankRows.Close()
-			return err
+			return nil, nil, err
 		}
 		if b.abilities[ag] != nil {
 			abilitySeed[ag] = true
@@ -328,367 +344,364 @@ func buildAbilities(w *writer, src *source, opt *Options, meta map[string]string
 		nranks++
 	}
 	if err := rankRows.Err(); err != nil {
-		return err
+		return nil, nil, err
 	}
 	rankRows.Close()
 	// The abilities every character has and no tree grants (plan A7's Sprint, Dodge and Rest), and the Sprint's drain, which no record references.
 	for _, g := range []int64{content.GuidSprint, content.GuidDodge, content.GuidRest} {
 		if b.abilities[g] == nil {
-			return fmt.Errorf("no Ability row %d", g)
+			return nil, nil, fmt.Errorf("no Ability row %d", g)
 		}
 		abilitySeed[g] = true
 	}
 	if b.effects[content.GuidSprintStaminaDrain] == nil {
-		return fmt.Errorf("no Effect row %d (the Sprint's stamina drain)", content.GuidSprintStaminaDrain)
+		return nil, nil, fmt.Errorf("no Effect row %d (the Sprint's stamina drain)", content.GuidSprintStaminaDrain)
 	}
 	effectSeed[content.GuidSprintStaminaDrain] = true
 	// ... and the abilities of the retail captures by name (weapon combos, Guard, consumables)
 	named, err := seedByName(b.abilities, abilitySeed)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	opt.logf("ability_names.tsv: %d more abilities", named)
 	opt.logf("skill_rank: %d distinct ability/effect pairs, %d abilities, %d effects granted by ranks (and the always-on ones)", nranks, len(abilitySeed), len(effectSeed))
+	return abilitySeed, effectSeed, nil
+}
 
-	// ---- the closure ----
-	abilitySet := map[int64]bool{}
-	effectSet, hitSet, projSet, zoneSet := map[int64]bool{}, map[int64]bool{}, map[int64]bool{}, map[int64]bool{}
-	var effQ, hitQ []int64
-	addEffect := func(g int64) error {
-		if g == 0 || effectSet[g] {
-			return nil
-		}
-		if b.effects[g] == nil {
-			return fmt.Errorf("no Effect row %d", g)
-		}
-		effectSet[g] = true
-		effQ = append(effQ, g)
+func (c *abClosure) addEffect(g int64) error {
+	if g == 0 || c.effectSet[g] {
 		return nil
 	}
-	addHit := func(g int64) error {
-		if g == 0 || hitSet[g] {
-			return nil
-		}
-		if b.hits[g] == nil {
-			return fmt.Errorf("no AbilityHit row %d", g)
-		}
-		hitSet[g] = true
-		hitQ = append(hitQ, g)
+	if c.b.effects[g] == nil {
+		return fmt.Errorf("no Effect row %d", g)
+	}
+	c.effectSet[g] = true
+	c.effQ = append(c.effQ, g)
+	return nil
+}
+
+func (c *abClosure) addHit(g int64) error {
+	if g == 0 || c.hitSet[g] {
 		return nil
 	}
-	addProj := func(g int64) ([]int64, error) {
-		if g == 0 {
-			return nil, nil
-		}
-		p := b.projectiles[g]
-		if p == nil {
-			return nil, fmt.Errorf("no Projectile row %d", g)
-		}
-		projSet[g] = true
-		pf := newFields(fmt.Sprintf("Projectile %s (%d)", p.Name, g), p.Fields)
-		hs := refGuids(pf, "HitsIds")
-		return hs, pf.err
+	if c.b.hits[g] == nil {
+		return fmt.Errorf("no AbilityHit row %d", g)
 	}
-	zoneLists := []string{"InitialHitsIds", "LingeringHitsIds", "OnBeginOverlapHitsIds", "OnEndOverlapHitsIds", "EndHitsIds"}
-	addZone := func(g int64) (map[string][]int64, error) {
-		if g == 0 {
-			return nil, nil
-		}
-		z := b.zones[g]
-		if z == nil {
-			return nil, fmt.Errorf("no LingeringEffect row %d", g)
-		}
-		zoneSet[g] = true
-		zf := newFields(fmt.Sprintf("LingeringEffect %s (%d)", z.Name, g), z.Fields)
-		out := map[string][]int64{}
-		for _, role := range zoneLists {
-			out[role] = refGuids(zf, role)
-		}
-		return out, zf.err
-	}
-	// reactions (version 35): an effect, a hit or an ability that carries one brings it, the hits it applies and what those reach; a hit's cooldown
-	// modifiers and the targeting records of its recursive hits come with it
-	reactionSet, cooldownSet, targetingSet := map[int64]bool{}, map[int64]bool{}, map[int64]bool{}
-	addReaction := func(g int64) error {
-		if g == 0 || reactionSet[g] {
-			return nil
-		}
-		r := b.reactions[g]
-		if r == nil {
-			return fmt.Errorf("no Reaction row %d", g)
-		}
-		reactionSet[g] = true
-		rf := newFields(fmt.Sprintf("Reaction %s (%d)", r.Name, g), r.Fields)
-		for _, h := range refGuids(rf, "ReactHitsIds") {
-			if err := addHit(h); err != nil {
-				return err
-			}
-		}
-		return rf.err
-	}
-	addCooldown := func(g int64) error {
-		if g == 0 || cooldownSet[g] {
-			return nil
-		}
-		if b.cooldowns[g] == nil {
-			return fmt.Errorf("no ModifyCooldown row %d", g)
-		}
-		cooldownSet[g] = true
-		return nil
-	}
-	for _, g := range sortedBools(abilitySeed) {
-		abilitySet[g] = true
-	}
-	for _, g := range sortedBools(effectSeed) {
-		if err := addEffect(g); err != nil {
+	c.hitSet[g] = true
+	c.hitQ = append(c.hitQ, g)
+	return nil
+}
+
+func addAll(guids []int64, fn func(int64) error) error {
+	for _, g := range guids {
+		if err := fn(g); err != nil {
 			return err
 		}
 	}
-	// the abilities' own: effects, hits (directly, projectiles, zones)
-	for _, g := range sortedBools(abilitySet) {
-		af := newFields(fmt.Sprintf("Ability %s (%d)", b.abilities[g].Name, g), b.abilities[g].Fields)
-		_, effs := af.keyedIds("EffectsIds")
-		_, hs := af.keyedIds("HitsIds")
-		_, ps := af.keyedIds("ProjectilesIds")
-		_, zs := af.keyedIds("LingeringEffectsIds")
-		if af.err != nil {
-			return af.err
-		}
-		for _, rg := range refGuids(af, "ReactionsIds") {
-			if err := addReaction(rg); err != nil {
-				return err
-			}
-		}
-		for _, cg := range refGuids(af, "ModifyCooldownsIds") {
-			if err := addCooldown(cg); err != nil {
-				return err
-			}
-		}
-		if af.err != nil {
-			return af.err
-		}
-		for _, e := range effs {
-			if err := addEffect(e); err != nil {
-				return err
-			}
-		}
-		for _, h := range hs {
-			if err := addHit(h); err != nil {
-				return err
-			}
-		}
-		for _, p := range ps {
-			phs, err := addProj(p)
-			if err != nil {
-				return err
-			}
-			for _, h := range phs {
-				if err := addHit(h); err != nil {
-					return err
-				}
-			}
-		}
-		for _, z := range zs {
-			lists, err := addZone(z)
-			if err != nil {
-				return err
-			}
-			for _, role := range zoneLists {
-				for _, h := range lists[role] {
-					if err := addHit(h); err != nil {
-						return err
-					}
-				}
-			}
-		}
-	}
-	// the worklist: effects fire hits, hits apply effects and fire projectiles and zones, which fire hits
-	for len(effQ) > 0 || len(hitQ) > 0 {
-		for len(effQ) > 0 {
-			g := effQ[0]
-			effQ = effQ[1:]
-			ef := newFields(fmt.Sprintf("Effect %s (%d)", b.effects[g].Name, g), b.effects[g].Fields)
-			for _, p := range effectPhases {
-				for _, h := range refGuids(ef, p.field) {
-					if err := addHit(h); err != nil {
-						return err
-					}
-				}
-			}
-			for _, rg := range refGuids(ef, "ReactionsIds") {
-				if err := addReaction(rg); err != nil {
-					return err
-				}
-			}
-			if ef.err != nil {
-				return ef.err
-			}
-		}
-		for len(hitQ) > 0 {
-			g := hitQ[0]
-			hitQ = hitQ[1:]
-			hf := newFields(fmt.Sprintf("AbilityHit %s (%d)", b.hits[g].Name, g), b.hits[g].Fields)
-			for i, v := range hf.list("ApplyEffects") {
-				s, ok := v.(designdb.Struct)
-				if !ok {
-					return fmt.Errorf("%s: ApplyEffects[%d] is %T", hf.where, i, v)
-				}
-				xf := newFields(fmt.Sprintf("%s: ApplyEffects[%d]", hf.where, i), s)
-				e, _ := xf.id("EffectId")
-				if xf.err != nil {
-					return xf.err
-				}
-				if err := addEffect(e); err != nil {
-					return err
-				}
-			}
-			for i, v := range hf.list("EffectsAppliedToSelf") {
-				s, ok := v.(designdb.Struct)
-				if !ok {
-					return fmt.Errorf("%s: EffectsAppliedToSelf[%d] is %T", hf.where, i, v)
-				}
-				xf := newFields(fmt.Sprintf("%s: EffectsAppliedToSelf[%d]", hf.where, i), s)
-				e, _ := xf.id("Effect")
-				if xf.err != nil {
-					return xf.err
-				}
-				if err := addEffect(e); err != nil {
-					return err
-				}
-			}
-			for _, field := range []string{"ProjectilesToFire", "ProjectilesToSpawn"} {
-				for i, v := range hf.list(field) {
-					s, ok := v.(designdb.Struct)
-					if !ok {
-						return fmt.Errorf("%s: %s[%d] is %T", hf.where, field, i, v)
-					}
-					xf := newFields(fmt.Sprintf("%s: %s[%d]", hf.where, field, i), s)
-					p, _ := xf.id("Projectile")
-					if xf.err != nil {
-						return xf.err
-					}
-					phs, err := addProj(p)
-					if err != nil {
-						return err
-					}
-					for _, h := range phs {
-						if err := addHit(h); err != nil {
-							return err
-						}
-					}
-				}
-			}
-			for _, z := range refGuids(hf, "LingeringZonesIds") {
-				lists, err := addZone(z)
-				if err != nil {
-					return err
-				}
-				for _, role := range zoneLists {
-					for _, h := range lists[role] {
-						if err := addHit(h); err != nil {
-							return err
-						}
-					}
-				}
-			}
-			for _, rg := range refGuids(hf, "ReactionsIds") {
-				if err := addReaction(rg); err != nil {
-					return err
-				}
-			}
-			for _, cg := range refGuids(hf, "ModifyCooldownsIds") {
-				if err := addCooldown(cg); err != nil {
-					return err
-				}
-			}
-			for i, v := range hf.list("RecursiveHit") {
-				s, ok := v.(designdb.Struct)
-				if !ok {
-					return fmt.Errorf("%s: RecursiveHit[%d] is %T", hf.where, i, v)
-				}
-				xf := newFields(fmt.Sprintf("%s: RecursiveHit[%d]", hf.where, i), s)
-				ch, _ := xf.id("Hit")
-				tg, _ := xf.id("Targeting")
-				if xf.err != nil {
-					return xf.err
-				}
-				if err := addHit(ch); err != nil {
-					return err
-				}
-				if tg != 0 {
-					if b.targetingRows[tg] == nil {
-						return fmt.Errorf("%s: RecursiveHit[%d] names Targeting %d, which is not a row", hf.where, i, tg)
-					}
-					targetingSet[tg] = true
-				}
-			}
-			if hf.err != nil {
-				return hf.err
-			}
-		}
-	}
+	return nil
+}
 
-	// ---- the rows, in guid order ----
+func (c *abClosure) addProjHits(g int64) error {
+	if g == 0 {
+		return nil
+	}
+	p := c.b.projectiles[g]
+	if p == nil {
+		return fmt.Errorf("no Projectile row %d", g)
+	}
+	c.projSet[g] = true
+	pf := newFields(fmt.Sprintf("Projectile %s (%d)", p.Name, g), p.Fields)
+	hs := refGuids(pf, "HitsIds")
+	if pf.err != nil {
+		return pf.err
+	}
+	return addAll(hs, c.addHit)
+}
+
+func (c *abClosure) addZoneHits(g int64) error {
+	if g == 0 {
+		return nil
+	}
+	z := c.b.zones[g]
+	if z == nil {
+		return fmt.Errorf("no LingeringEffect row %d", g)
+	}
+	c.zoneSet[g] = true
+	zf := newFields(fmt.Sprintf("LingeringEffect %s (%d)", z.Name, g), z.Fields)
+	lists := map[string][]int64{}
+	for _, role := range zoneHitRoles {
+		lists[role] = refGuids(zf, role)
+	}
+	if zf.err != nil {
+		return zf.err
+	}
+	for _, role := range zoneHitRoles {
+		if err := addAll(lists[role], c.addHit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reactions (version 35): an effect, a hit or an ability that carries one brings it, the hits it applies and what those reach; a hit's cooldown
+// modifiers and the targeting records of its recursive hits come with it
+func (c *abClosure) addReaction(g int64) error {
+	if g == 0 || c.reactionSet[g] {
+		return nil
+	}
+	r := c.b.reactions[g]
+	if r == nil {
+		return fmt.Errorf("no Reaction row %d", g)
+	}
+	c.reactionSet[g] = true
+	rf := newFields(fmt.Sprintf("Reaction %s (%d)", r.Name, g), r.Fields)
+	if err := addAll(refGuids(rf, "ReactHitsIds"), c.addHit); err != nil {
+		return err
+	}
+	return rf.err
+}
+
+func (c *abClosure) addCooldown(g int64) error {
+	if g == 0 || c.cooldownSet[g] {
+		return nil
+	}
+	if c.b.cooldowns[g] == nil {
+		return fmt.Errorf("no ModifyCooldown row %d", g)
+	}
+	c.cooldownSet[g] = true
+	return nil
+}
+
+// seedAbilityOwn adds an ability's own effects and hits (directly, projectiles, zones).
+func (c *abClosure) seedAbilityOwn(g int64) error {
+	af := newFields(fmt.Sprintf("Ability %s (%d)", c.b.abilities[g].Name, g), c.b.abilities[g].Fields)
+	_, effs := af.keyedIds("EffectsIds")
+	_, hs := af.keyedIds("HitsIds")
+	_, ps := af.keyedIds("ProjectilesIds")
+	_, zs := af.keyedIds("LingeringEffectsIds")
+	for _, step := range []struct {
+		ids []int64
+		fn  func(int64) error
+	}{
+		{refGuids(af, "ReactionsIds"), c.addReaction}, {refGuids(af, "ModifyCooldownsIds"), c.addCooldown},
+		{effs, c.addEffect}, {hs, c.addHit}, {ps, c.addProjHits}, {zs, c.addZoneHits},
+	} {
+		if af.err != nil {
+			return af.err
+		}
+		if err := addAll(step.ids, step.fn); err != nil {
+			return err
+		}
+	}
+	return af.err
+}
+
+func (c *abClosure) expandEffect(g int64) error {
+	ef := newFields(fmt.Sprintf("Effect %s (%d)", c.b.effects[g].Name, g), c.b.effects[g].Fields)
+	for _, p := range effectPhases {
+		if err := addAll(refGuids(ef, p.field), c.addHit); err != nil {
+			return err
+		}
+	}
+	if err := addAll(refGuids(ef, "ReactionsIds"), c.addReaction); err != nil {
+		return err
+	}
+	return ef.err
+}
+
+func (c *abClosure) expandHitEffectsAndProjs(hf *fields) error {
+	for i, v := range hf.list("ApplyEffects") {
+		s, ok := v.(designdb.Struct)
+		if !ok {
+			return fmt.Errorf("%s: ApplyEffects[%d] is %T", hf.where, i, v)
+		}
+		xf := newFields(fmt.Sprintf("%s: ApplyEffects[%d]", hf.where, i), s)
+		e, _ := xf.id("EffectId")
+		if xf.err != nil {
+			return xf.err
+		}
+		if err := c.addEffect(e); err != nil {
+			return err
+		}
+	}
+	for i, v := range hf.list("EffectsAppliedToSelf") {
+		s, ok := v.(designdb.Struct)
+		if !ok {
+			return fmt.Errorf("%s: EffectsAppliedToSelf[%d] is %T", hf.where, i, v)
+		}
+		xf := newFields(fmt.Sprintf("%s: EffectsAppliedToSelf[%d]", hf.where, i), s)
+		e, _ := xf.id("Effect")
+		if xf.err != nil {
+			return xf.err
+		}
+		if err := c.addEffect(e); err != nil {
+			return err
+		}
+	}
+	for _, field := range []string{"ProjectilesToFire", "ProjectilesToSpawn"} {
+		for i, v := range hf.list(field) {
+			s, ok := v.(designdb.Struct)
+			if !ok {
+				return fmt.Errorf("%s: %s[%d] is %T", hf.where, field, i, v)
+			}
+			xf := newFields(fmt.Sprintf("%s: %s[%d]", hf.where, field, i), s)
+			p, _ := xf.id("Projectile")
+			if xf.err != nil {
+				return xf.err
+			}
+			if err := c.addProjHits(p); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *abClosure) expandHitZonesAndExtras(hf *fields) error {
+	if err := addAll(refGuids(hf, "LingeringZonesIds"), c.addZoneHits); err != nil {
+		return err
+	}
+	if err := addAll(refGuids(hf, "ReactionsIds"), c.addReaction); err != nil {
+		return err
+	}
+	if err := addAll(refGuids(hf, "ModifyCooldownsIds"), c.addCooldown); err != nil {
+		return err
+	}
+	for i, v := range hf.list("RecursiveHit") {
+		s, ok := v.(designdb.Struct)
+		if !ok {
+			return fmt.Errorf("%s: RecursiveHit[%d] is %T", hf.where, i, v)
+		}
+		xf := newFields(fmt.Sprintf("%s: RecursiveHit[%d]", hf.where, i), s)
+		ch, _ := xf.id("Hit")
+		tg, _ := xf.id("Targeting")
+		if xf.err != nil {
+			return xf.err
+		}
+		if err := c.addHit(ch); err != nil {
+			return err
+		}
+		if tg != 0 {
+			if c.b.targetingRows[tg] == nil {
+				return fmt.Errorf("%s: RecursiveHit[%d] names Targeting %d, which is not a row", hf.where, i, tg)
+			}
+			c.targetingSet[tg] = true
+		}
+	}
+	return hf.err
+}
+
+// computeClosure expands the worklist: effects fire hits, hits apply effects and fire projectiles and zones, which fire hits.
+func (b *abBuilder) computeClosure(abilitySeed, effectSeed map[int64]bool) (*abClosure, error) {
+	c := &abClosure{
+		b: b, abilitySet: map[int64]bool{}, effectSet: map[int64]bool{}, hitSet: map[int64]bool{},
+		projSet: map[int64]bool{}, zoneSet: map[int64]bool{}, reactionSet: map[int64]bool{},
+		cooldownSet: map[int64]bool{}, targetingSet: map[int64]bool{},
+	}
+	for _, g := range sortedBools(abilitySeed) {
+		c.abilitySet[g] = true
+	}
+	if err := addAll(sortedBools(effectSeed), c.addEffect); err != nil {
+		return nil, err
+	}
+	if err := addAll(sortedBools(c.abilitySet), c.seedAbilityOwn); err != nil {
+		return nil, err
+	}
+	for len(c.effQ) > 0 || len(c.hitQ) > 0 {
+		for len(c.effQ) > 0 {
+			g := c.effQ[0]
+			c.effQ = c.effQ[1:]
+			if err := c.expandEffect(g); err != nil {
+				return nil, err
+			}
+		}
+		for len(c.hitQ) > 0 {
+			g := c.hitQ[0]
+			c.hitQ = c.hitQ[1:]
+			hf := newFields(fmt.Sprintf("AbilityHit %s (%d)", b.hits[g].Name, g), b.hits[g].Fields)
+			if err := c.expandHitEffectsAndProjs(hf); err != nil {
+				return nil, err
+			}
+			if err := c.expandHitZonesAndExtras(hf); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return c, nil
+}
+
+func writeClosureSet(set map[int64]bool, rows map[int64]*designdb.Row, fn func(*designdb.Row) error) error {
+	for _, g := range sortedBools(set) {
+		if err := fn(rows[g]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeClosureRows writes the closure rows in guid order; the reactions' own rows come after all the others, so that the ab_expr ids of everything above keep their order.
+func (b *abBuilder) writeClosureRows(c *abClosure, opt *Options, meta map[string]string) error {
 	netGuids, err := montageNetGuids()
 	if err != nil {
 		return err
 	}
 	b.targetingNames = map[int64]string{}
-	for _, r := range src.rows["AbilityTargetingRecordBase"] {
+	for _, r := range b.src.rows["AbilityTargetingRecordBase"] {
 		b.targetingNames[r.Guid] = r.Name
 	}
-	for _, g := range sortedBools(abilitySet) {
-		if err := b.writeAbility(b.abilities[g], netGuids); err != nil {
-			return err
-		}
+	if err := writeClosureSet(c.abilitySet, b.abilities, func(r *designdb.Row) error { return b.writeAbility(r, netGuids) }); err != nil {
+		return err
 	}
-	for _, g := range sortedBools(hitSet) {
-		if err := b.writeHit(b.hits[g]); err != nil {
-			return err
-		}
+	if err := writeClosureSet(c.hitSet, b.hits, b.writeHit); err != nil {
+		return err
 	}
-	for _, g := range sortedBools(projSet) {
-		if err := b.writeProjectile(b.projectiles[g]); err != nil {
-			return err
-		}
+	if err := writeClosureSet(c.projSet, b.projectiles, b.writeProjectile); err != nil {
+		return err
 	}
-	for _, g := range sortedBools(zoneSet) {
-		if err := b.writeZone(b.zones[g], zoneLists); err != nil {
-			return err
-		}
+	if err := writeClosureSet(c.zoneSet, b.zones, func(r *designdb.Row) error { return b.writeZone(r, zoneHitRoles) }); err != nil {
+		return err
 	}
-	for _, g := range sortedBools(effectSet) {
-		if err := b.writeEffect(b.effects[g]); err != nil {
-			return err
-		}
+	if err := writeClosureSet(c.effectSet, b.effects, b.writeEffect); err != nil {
+		return err
 	}
-	// the reactions' own rows after all the others, so that the ab_expr ids of everything above keep their order
-	for _, g := range sortedBools(reactionSet) {
-		if err := b.writeReaction(b.reactions[g]); err != nil {
-			return err
-		}
+	if err := writeClosureSet(c.reactionSet, b.reactions, b.writeReaction); err != nil {
+		return err
 	}
-	for _, g := range sortedBools(cooldownSet) {
-		if err := b.writeModifyCooldown(b.cooldowns[g]); err != nil {
-			return err
-		}
+	if err := writeClosureSet(c.cooldownSet, b.cooldowns, b.writeModifyCooldown); err != nil {
+		return err
 	}
-	for _, g := range sortedBools(targetingSet) {
-		if err := b.writeTargetingDef(b.targetingRows[g]); err != nil {
-			return err
-		}
+	if err := writeClosureSet(c.targetingSet, b.targetingRows, b.writeTargetingDef); err != nil {
+		return err
 	}
-	opt.logf("ab_*: %d abilities, %d hits, %d projectiles, %d zones, %d effects, %d reactions, %d cooldown modifiers, %d targeting records, %d expressions", len(abilitySet), len(hitSet), len(projSet), len(zoneSet), len(effectSet), len(reactionSet), len(cooldownSet), len(targetingSet), b.exprs.next)
-	meta["ab.reactions"] = strconv.Itoa(len(reactionSet))
-	meta["ab.modify_cooldowns"] = strconv.Itoa(len(cooldownSet))
-	meta["ab.targeting_defs"] = strconv.Itoa(len(targetingSet))
-	meta["ab.abilities"] = strconv.Itoa(len(abilitySet))
-	meta["ab.hits"] = strconv.Itoa(len(hitSet))
-	meta["ab.projectiles"] = strconv.Itoa(len(projSet))
-	meta["ab.zones"] = strconv.Itoa(len(zoneSet))
-	meta["ab.effects"] = strconv.Itoa(len(effectSet))
+	opt.logf("ab_*: %d abilities, %d hits, %d projectiles, %d zones, %d effects, %d reactions, %d cooldown modifiers, %d targeting records, %d expressions", len(c.abilitySet), len(c.hitSet), len(c.projSet), len(c.zoneSet), len(c.effectSet), len(c.reactionSet), len(c.cooldownSet), len(c.targetingSet), b.exprs.next)
+	for k, n := range map[string]int{
+		"ab.reactions": len(c.reactionSet), "ab.modify_cooldowns": len(c.cooldownSet), "ab.targeting_defs": len(c.targetingSet),
+		"ab.abilities": len(c.abilitySet), "ab.hits": len(c.hitSet), "ab.projectiles": len(c.projSet), "ab.zones": len(c.zoneSet), "ab.effects": len(c.effectSet),
+	} {
+		meta[k] = strconv.Itoa(n)
+	}
 	meta["ab.exprs"] = strconv.FormatInt(b.exprs.next, 10)
 	meta["ab.montage_ids"] = "montage_ids.tsv: retail captures, ability and AnimationIndex to the montage's NetGUID where exactly one id was seen"
+	return nil
+}
+
+// buildAbilities fills the ab_* tables (and meta's ab.* counts).
+func buildAbilities(w *writer, src *source, opt *Options, meta map[string]string) error {
+	b, err := newAbBuilder(w, src)
+	if err != nil {
+		return err
+	}
+	abilitySeed, effectSeed, err := b.seedClosure(opt)
+	if err != nil {
+		return err
+	}
+	c, err := b.computeClosure(abilitySeed, effectSeed)
+	if err != nil {
+		return err
+	}
+	if err := b.writeClosureRows(c, opt, meta); err != nil {
+		return err
+	}
 	if err := b.buildLoot(opt, meta); err != nil { // plan E1, stage 3, part 2: the reward tables (their expressions join the set)
 		return err
 	}
@@ -711,713 +724,4 @@ func (b *abBuilder) name(guid int64, rows map[int64]*designdb.Row) string {
 		return r.Name
 	}
 	return ""
-}
-
-var effectFilterRef = regexp.MustCompile(`^\s*GetEffect\(\)\s*==\s*\$#\d+:(\d+)\$\s*$`)
-
-func (b *abBuilder) writeAbility(r *designdb.Row, netGuids map[string]map[int]uint64) error {
-	f := newFields(fmt.Sprintf("Ability %s (%d)", r.Name, r.Guid), r.Fields)
-	tags := f.tags("AbilityTags")
-	display := f.text("AbilityName")
-	held, input, targetReq, fallback := f.str("HeldAbilityBehavior"), f.str("AbilityActivationInput"), f.str("TargetActivationRequirement"), f.str("DefaultFallbackTargetType")
-	mask, types := f.int("ApplicableTargets"), f.int("ApplicableTypes")
-	weapon, sharedCD := f.str("WeaponRequirement"), f.str("SharedCooldownTag")
-	disable, hold, holdTime := f.boolean("bDisableDuringCooldown"), f.boolean("bHoldAnimation"), f.float("MaximumHoldTime")
-	air, swim, walk, mounted, hotbar := f.boolean("bUsableInAir"), f.boolean("bUsableWhileSwimming"), f.boolean("bUsableWhileWalking"), f.boolean("bUsableWhileMounted"), f.boolean("bUsableFromHotbar")
-	areaRange, areaRadius, netSpeed := f.float("AreaTargetRange"), f.float("AreaTargetRadius"), f.float("NetworkingMaxSpeed")
-	exprText := []struct{ key, text string }{
-		{"cooldown", f.str("Cooldown")}, {"charges", f.str("CooldownCharges")}, {"cast", f.str("DynamicCastDuration")},
-		{"requirement", f.str("ActivationRequirements")}, {"canbreak", f.str("CanBreakEffects")}, {"hasproc", f.str("HasProc")},
-	}
-	costs, montages := f.list("Costs"), f.list("AnimMontages")
-	effKeys, effs := f.keyedIds("EffectsIds")
-	hitKeys, hits := f.keyedIds("HitsIds")
-	projKeys, projs := f.keyedIds("ProjectilesIds")
-	zoneKeys, zones := f.keyedIds("LingeringEffectsIds")
-	// LingeringEffectsIds: the zones the ability itself spawns when it is cast, in key order. A zone with no hit of its own (Bard_Dance_Mesmerizing's)
-	// has no ab_ability_hit row, so this list is the only place the link from the ability to the zone is kept (the worldd runtime opens the zone's actor).
-	zoneGuids := []int64{}
-	for _, g := range zones {
-		if g != 0 {
-			zoneGuids = append(zoneGuids, g)
-		}
-	}
-	extra := map[string][]int64{
-		"ModifyCooldownsIds": refGuids(f, "ModifyCooldownsIds"), "ReactionsIds": refGuids(f, "ReactionsIds"), "TeleportRecordsIds": refGuids(f, "TeleportRecordsIds"),
-		"LingeringEffectsIds": zoneGuids,
-	}
-	tgKeys, tgs := f.keyedIds("TargetingRecordsIds")
-	if f.err != nil {
-		return f.err
-	}
-	ids := map[string]int64{}
-	for _, x := range exprText { // in this order: the ids are assigned as the expressions are met
-		id, err := b.exprs.id(x.text, nil)
-		if err != nil {
-			return err
-		}
-		ids[x.key] = id
-	}
-	if err := b.w.exec(`INSERT INTO ab_ability (guid, name, display_name, tags, held_behavior, activation_input, target_requirement, fallback_target,
-		applicable_targets, applicable_types, weapon_requirement, shared_cooldown_tag, disable_during_cooldown, max_hold_time, hold_animation,
-		usable_in_air, usable_while_swimming, usable_while_walking, usable_while_mounted, usable_from_hotbar, area_range, area_radius,
-		networking_max_speed, cooldown_expr, charges_expr, cast_expr, requirement_expr, can_break_expr, has_proc_expr, extra)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.Guid, r.Name, display, jsonOf(tags), held, input, targetReq, fallback, mask, types, weapon, sharedCD, b2i(disable), holdTime, b2i(hold),
-		b2i(air), b2i(swim), b2i(walk), b2i(mounted), b2i(hotbar), areaRange, areaRadius, netSpeed,
-		ids["cooldown"], ids["charges"], ids["cast"], ids["requirement"], ids["canbreak"], ids["hasproc"], jsonOf(extra)); err != nil {
-		return err
-	}
-	for i, g := range tgs {
-		name := ""
-		if g != 0 {
-			name = b.targetingName(g)
-		}
-		if err := b.w.exec(`INSERT INTO ab_targeting (ability_guid, key, targeting_guid, targeting_name) VALUES (?, ?, ?, ?)`, r.Guid, tgKeys[i], g, name); err != nil {
-			return err
-		}
-	}
-	// costs
-	for ci, cv := range costs {
-		cs, ok := cv.(designdb.Struct)
-		if !ok {
-			return fmt.Errorf("%s: Costs[%d] is %T", f.where, ci, cv)
-		}
-		cf := newFields(fmt.Sprintf("%s: Costs[%d]", f.where, ci), cs)
-		enabled, charge, trig := cf.str("Enabled"), cf.str("ChargeCost"), cf.boolean("bTriggersCooldown")
-		stats, effCosts := cf.list("StatCosts"), cf.list("EffectCosts")
-		if cf.err != nil {
-			return cf.err
-		}
-		enID, err := b.exprs.id(enabled, nil)
-		if err != nil {
-			return err
-		}
-		chID, err := b.exprs.id(charge, nil)
-		if err != nil {
-			return err
-		}
-		if len(stats) == 0 {
-			if err := b.w.exec(`INSERT INTO ab_cost (ability_guid, cost_ord, stat_ord, enabled_expr, triggers_cooldown, charge_cost_expr, stat_guid, stat_name, amount_expr)
-				VALUES (?, ?, -1, ?, ?, ?, 0, '', 0)`, r.Guid, ci, enID, b2i(trig), chID); err != nil {
-				return err
-			}
-		}
-		for si, sv := range stats {
-			ss, ok := sv.(designdb.Struct)
-			if !ok {
-				return fmt.Errorf("%s: StatCosts[%d] is %T", cf.where, si, sv)
-			}
-			sf := newFields(fmt.Sprintf("%s: StatCosts[%d]", cf.where, si), ss)
-			stat, _ := sf.id("Stat")
-			value := sf.str("Value")
-			if sf.err != nil {
-				return sf.err
-			}
-			if _, known := b.statNames[stat]; !known && stat != 0 { // a null reference is a cost with no stat
-				return fmt.Errorf("%s: names stat %d, which is not a StatTypeDef row", sf.where, stat)
-			}
-			vID, err := b.exprs.id(value, nil)
-			if err != nil {
-				return err
-			}
-			if err := b.w.exec(`INSERT INTO ab_cost (ability_guid, cost_ord, stat_ord, enabled_expr, triggers_cooldown, charge_cost_expr, stat_guid, stat_name, amount_expr)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.Guid, ci, si, enID, b2i(trig), chID, stat, b.statNames[stat], vID); err != nil {
-				return err
-			}
-		}
-		for ei, ev := range effCosts {
-			es, ok := ev.(designdb.Struct)
-			if !ok {
-				return fmt.Errorf("%s: EffectCosts[%d] is %T", cf.where, ei, ev)
-			}
-			xf := newFields(fmt.Sprintf("%s: EffectCosts[%d]", cf.where, ei), es)
-			filter, num := xf.str("EffectFilter"), xf.str("Num")
-			if xf.err != nil {
-				return xf.err
-			}
-			var eg int64
-			if m := effectFilterRef.FindStringSubmatch(filter); m != nil {
-				eg, _ = strconv.ParseInt(m[1], 10, 64)
-			}
-			nID, err := b.exprs.id(num, nil)
-			if err != nil {
-				return err
-			}
-			if err := b.w.exec(`INSERT INTO ab_effect_cost (ability_guid, cost_ord, ord, effect_guid, filter, num_expr) VALUES (?, ?, ?, ?, ?, ?)`,
-				r.Guid, ci, ei, eg, filter, nID); err != nil {
-				return err
-			}
-		}
-	}
-	// montages
-	for mi, mv := range montages {
-		ms, ok := mv.(designdb.Struct)
-		if !ok {
-			return fmt.Errorf("%s: AnimMontages[%d] is %T", f.where, mi, mv)
-		}
-		mf := newFields(fmt.Sprintf("%s: AnimMontages[%d]", f.where, mi), ms)
-		pathVals := mf.list("AbilityAnimationSoftPaths")
-		direction, expr, section := mf.str("AbilityDirection"), mf.str("AnimExpression"), mf.str("StartSectionName")
-		hitKeysV, tkey := mf.list("HitKeys"), mf.int("TargetingKey")
-		if mf.err != nil {
-			return mf.err
-		}
-		var paths []string
-		for _, p := range pathVals {
-			s, ok := p.(string)
-			if !ok {
-				return fmt.Errorf("%s: a soft path is %T", mf.where, p)
-			}
-			paths = append(paths, s)
-		}
-		first := ""
-		if len(paths) > 0 {
-			first = paths[0]
-		}
-		var hk []int64
-		for _, h := range hitKeysV {
-			n, ok := h.(int64)
-			if !ok {
-				return fmt.Errorf("%s: a hit key is %T", mf.where, h)
-			}
-			hk = append(hk, n)
-		}
-		eID, err := b.exprs.id(expr, nil)
-		if err != nil {
-			return err
-		}
-		var net any
-		if g, ok := netGuids[r.Name][mi]; ok {
-			net = int64(g)
-		}
-		if err := b.w.exec(`INSERT INTO ab_montage (ability_guid, anim_index, soft_path, paths, direction, select_expr, start_section, hit_keys, targeting_key, net_guid)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.Guid, mi, first, jsonOf(append([]string{}, paths...)), direction, eID, section, jsonOf(append([]int64{}, hk...)), tkey, net); err != nil {
-			return err
-		}
-	}
-	for i, g := range effs {
-		if g == 0 {
-			continue
-		}
-		if err := b.w.exec(`INSERT INTO ab_ability_effect (ability_guid, key, effect_guid) VALUES (?, ?, ?)`, r.Guid, effKeys[i], g); err != nil {
-			return err
-		}
-	}
-	for i, g := range hits {
-		if g == 0 {
-			continue
-		}
-		if err := b.w.exec(`INSERT INTO ab_ability_hit (ability_guid, source, key, owner_guid, role, ord, hit_guid) VALUES (?, 'hit', ?, 0, '', 0, ?)`, r.Guid, hitKeys[i], g); err != nil {
-			return err
-		}
-	}
-	for i, g := range projs {
-		if g == 0 {
-			continue
-		}
-		p := b.projectiles[g]
-		pf := newFields(fmt.Sprintf("Projectile %s (%d)", p.Name, g), p.Fields)
-		hs := refGuids(pf, "HitsIds")
-		if pf.err != nil {
-			return pf.err
-		}
-		for hi, h := range hs {
-			if err := b.w.exec(`INSERT INTO ab_ability_hit (ability_guid, source, key, owner_guid, role, ord, hit_guid) VALUES (?, 'projectile', ?, ?, 'HitsIds', ?, ?)`,
-				r.Guid, projKeys[i], g, hi, h); err != nil {
-				return err
-			}
-		}
-	}
-	for i, g := range zones {
-		if g == 0 {
-			continue
-		}
-		z := b.zones[g]
-		zf := newFields(fmt.Sprintf("LingeringEffect %s (%d)", z.Name, g), z.Fields)
-		for _, role := range []string{"InitialHitsIds", "LingeringHitsIds", "OnBeginOverlapHitsIds", "OnEndOverlapHitsIds", "EndHitsIds"} {
-			for hi, h := range refGuids(zf, role) {
-				if err := b.w.exec(`INSERT INTO ab_ability_hit (ability_guid, source, key, owner_guid, role, ord, hit_guid) VALUES (?, 'zone', ?, ?, ?, ?, ?)`,
-					r.Guid, zoneKeys[i], g, role, hi, h); err != nil {
-					return err
-				}
-			}
-		}
-		if zf.err != nil {
-			return zf.err
-		}
-	}
-	return nil
-}
-
-// ~ C Y B :: CoA ~
-
-// targetingName is the name of a targeting record (they are in no table kept: the row name comes from the ability's own reference
-// when it has one; the design data's Id struct carries "None" for most, so the guid is the key).
-func (b *abBuilder) targetingName(guid int64) string {
-	if n, ok := b.targetingNames[guid]; ok {
-		return n
-	}
-	return ""
-}
-
-func (b *abBuilder) writeHit(r *designdb.Row) error {
-	f := newFields(fmt.Sprintf("AbilityHit %s (%d)", r.Name, r.Guid), r.Fields)
-	mask, types := f.int("ApplicableTargets"), f.int("ApplicableTypes")
-	netType, fallback := f.str("NetworkType"), f.str("DefaultFallbackTargetType")
-	req, delay, threat, maxTargets := f.str("ApplicationRequirements"), f.str("HitDelay"), f.str("ThreatToTarget"), f.str("MaxTargetsPerHit")
-	applies, selfs := f.list("ApplyEffects"), f.list("EffectsAppliedToSelf")
-	fires, spawns := f.list("ProjectilesToFire"), f.list("ProjectilesToSpawn")
-	zones := refGuids(f, "LingeringZonesIds")
-	teleport, _ := f.id("TeleportId")
-	resurrect, _ := f.id("ResurrectId")
-	// A hit with an effect to show (OnHitFXId or OnActivateFXId) is confirmed to the client even when it has no stat mod: the retail server sent the
-	// confirmation of every such hit the client asked for (plan D2, stage 2: 89 of 89 requests of hits with a FX and no mod, 7 of 75 without one).
-	hitFX, _ := f.id("OnHitFXId")
-	activateFX, _ := f.id("OnActivateFXId")
-	extra := map[string]any{
-		"HitFX": hitFX != 0 || activateFX != 0, "MaxNumEffectsToRemove": f.int("MaxNumEffectsToRemove"),
-		"ModifyCooldownsIds": refGuids(f, "ModifyCooldownsIds"), "ModifyEffectsIds": refGuids(f, "ModifyEffectsIds"),
-		"EffectsToRemoveIds": refGuids(f, "EffectsToRemoveIds"), "ReactionsIds": refGuids(f, "ReactionsIds"),
-		"TeleportId": teleport, "ResurrectId": resurrect,
-		"LingeringZonesIds": zones, // the zones the hit spawns (also in ab_hit_zone)
-	}
-	// Plan E1, stage 3: what the damage rules read of a hit besides its mods: its event tags (the element, Melee, ComboStep.End ...), the rates that
-	// override the stats' crit, block and miss chances (expressions, 0 for the default), what it forces and the life states it applies to.
-	extra["EventTags"] = f.tags("EventTags")
-	recursive := f.list("RecursiveHit") // version 35: the hits this one fires when it lands, each with the targeting record that aims it
-	extra["ApplicableLifeStates"] = f.int("ApplicableLifeStates")
-	for _, k := range []string{"bForceCantCrit", "bForceCantBlock", "bForceCantMiss", "bForceRollCrit", "bForceRollBlock", "bForceRollMiss", "bShouldUseItemTags"} {
-		extra[k] = f.boolean(k)
-	}
-	if f.err != nil {
-		return f.err
-	}
-	var ids [4]int64
-	for i, t := range []string{req, delay, threat, maxTargets} {
-		id, err := b.exprs.id(t, nil)
-		if err != nil {
-			return err
-		}
-		ids[i] = id
-	}
-	for _, k := range []string{"CritRate", "BlockRate", "MissRate"} {
-		id, err := b.exprs.id(f.str(k), nil)
-		if err != nil {
-			return err
-		}
-		extra[k+"Expr"] = id
-	}
-	if err := b.w.exec(`INSERT INTO ab_hit (guid, name, net_type, applicable_targets, applicable_types, fallback_target, requirement_expr, delay_expr, threat_expr, max_targets_expr, extra)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.Guid, r.Name, netType, mask, types, fallback, ids[0], ids[1], ids[2], ids[3], jsonOf(extra)); err != nil {
-		return err
-	}
-	for i, v := range applies {
-		s, ok := v.(designdb.Struct)
-		if !ok {
-			return fmt.Errorf("%s: ApplyEffects[%d] is %T", f.where, i, v)
-		}
-		xf := newFields(fmt.Sprintf("%s: ApplyEffects[%d]", f.where, i), s)
-		g, _ := xf.id("EffectId")
-		reqT, stackT, durT := xf.str("EffectApplicationRequirement"), xf.str("StackCount"), xf.str("EffectDuration")
-		if xf.err != nil {
-			return xf.err
-		}
-		if g == 0 {
-			continue
-		}
-		var e [3]int64
-		for k, t := range []string{reqT, stackT, durT} {
-			id, err := b.exprs.id(t, nil)
-			if err != nil {
-				return err
-			}
-			e[k] = id
-		}
-		if err := b.w.exec(`INSERT INTO ab_hit_effect (hit_guid, kind, ord, effect_guid, requirement_expr, stack_count_expr, duration_expr, on_hit_behavior, max_applications)
-			VALUES (?, 'apply', ?, ?, ?, ?, ?, '', 0)`, r.Guid, i, g, e[0], e[1], e[2]); err != nil {
-			return err
-		}
-	}
-	for i, v := range selfs {
-		s, ok := v.(designdb.Struct)
-		if !ok {
-			return fmt.Errorf("%s: EffectsAppliedToSelf[%d] is %T", f.where, i, v)
-		}
-		xf := newFields(fmt.Sprintf("%s: EffectsAppliedToSelf[%d]", f.where, i), s)
-		g, _ := xf.id("Effect")
-		stackT, behavior, maxApps := xf.str("StackCount"), xf.str("OnHitBehavior"), xf.int("MaxNumApplications")
-		if xf.err != nil {
-			return xf.err
-		}
-		if g == 0 {
-			continue
-		}
-		sid, err := b.exprs.id(stackT, nil)
-		if err != nil {
-			return err
-		}
-		if err := b.w.exec(`INSERT INTO ab_hit_effect (hit_guid, kind, ord, effect_guid, requirement_expr, stack_count_expr, duration_expr, on_hit_behavior, max_applications)
-			VALUES (?, 'self', ?, ?, 0, ?, 0, ?, ?)`, r.Guid, i, g, sid, behavior, maxApps); err != nil {
-			return err
-		}
-	}
-	for _, k := range []struct {
-		kind string
-		list []designdb.Value
-	}{{"fire", fires}, {"spawn", spawns}} {
-		for i, v := range k.list {
-			s, ok := v.(designdb.Struct)
-			if !ok {
-				return fmt.Errorf("%s: projectile %s[%d] is %T", f.where, k.kind, i, v)
-			}
-			xf := newFields(fmt.Sprintf("%s: projectile %s[%d]", f.where, k.kind, i), s)
-			g, _ := xf.id("Projectile")
-			if xf.err != nil {
-				return xf.err
-			}
-			if err := b.w.exec(`INSERT INTO ab_hit_projectile (hit_guid, kind, ord, projectile_guid) VALUES (?, ?, ?, ?)`, r.Guid, k.kind, i, g); err != nil {
-				return err
-			}
-		}
-	}
-	for i, g := range zones {
-		if err := b.w.exec(`INSERT INTO ab_hit_zone (hit_guid, ord, zone_guid) VALUES (?, ?, ?)`, r.Guid, i, g); err != nil {
-			return err
-		}
-	}
-	for i, v := range recursive {
-		s, ok := v.(designdb.Struct)
-		if !ok {
-			return fmt.Errorf("%s: RecursiveHit[%d] is %T", f.where, i, v)
-		}
-		xf := newFields(fmt.Sprintf("%s: RecursiveHit[%d]", f.where, i), s)
-		ch, _ := xf.id("Hit")
-		tg, _ := xf.id("Targeting")
-		if xf.err != nil {
-			return xf.err
-		}
-		if err := b.w.exec(`INSERT INTO ab_hit_recursive (hit_guid, ord, child_hit_guid, targeting_guid) VALUES (?, ?, ?, ?)`, r.Guid, i, ch, tg); err != nil {
-			return err
-		}
-	}
-	return b.writeMods("hit", r, f)
-}
-
-// -- C-O-A . Cyb --
-
-func (b *abBuilder) writeProjectile(r *designdb.Row) error {
-	f := newFields(fmt.Sprintf("Projectile %s (%d)", r.Name, r.Guid), r.Fields)
-	typ := f.str("ProjectileType")
-	speed, rng, life := f.float("Speed"), f.float("Range"), f.float("LifeTime")
-	maxHits, chain := f.int("MaxProjectileHits"), f.int("ChainHitCount")
-	chainRadius, radius := f.float("ChainRadius"), f.float("SphereCollisionRadius")
-	hits := refGuids(f, "HitsIds")
-	if f.err != nil {
-		return f.err
-	}
-	if err := b.w.exec(`INSERT INTO ab_projectile (guid, name, projectile_type, speed, range, life_time, max_hits, chain_hit_count, chain_radius, sphere_radius)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.Guid, r.Name, typ, speed, rng, life, maxHits, chain, chainRadius, radius); err != nil {
-		return err
-	}
-	for i, h := range hits {
-		if err := b.w.exec(`INSERT INTO ab_projectile_hit (projectile_guid, ord, hit_guid) VALUES (?, ?, ?)`, r.Guid, i, h); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (b *abBuilder) writeZone(r *designdb.Row, roles []string) error {
-	f := newFields(fmt.Sprintf("LingeringEffect %s (%d)", r.Name, r.Guid), r.Fields)
-	life, tick, delay, speed := f.float("LifeTime"), f.float("TickRate"), f.float("DelayTime"), f.float("Speed")
-	global, charges := f.boolean("bUseGlobalTickRate"), f.int("NumberOfCharges")
-	delayType := f.str("DelayType")
-	expireHits, expireIf := f.str("ExpireAfterAppliedHits"), f.str("ExpireIfExpressionTrue")
-	targeting, _ := f.id("LingeringHitTargetingInfoId")
-	if f.err != nil {
-		return f.err
-	}
-	h, err := b.exprs.id(expireHits, nil)
-	if err != nil {
-		return err
-	}
-	x, err := b.exprs.id(expireIf, nil)
-	if err != nil {
-		return err
-	}
-	if err := b.w.exec(`INSERT INTO ab_zone (guid, name, life_time, tick_rate, use_global_tick_rate, charges, delay_time, delay_type, speed, expire_after_hits_expr, expire_if_expr, targeting_guid)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.Guid, r.Name, life, tick, b2i(global), charges, delay, delayType, speed, h, x, targeting); err != nil {
-		return err
-	}
-	for _, role := range roles {
-		for i, g := range refGuids(f, role) {
-			if err := b.w.exec(`INSERT INTO ab_zone_hit (zone_guid, role, ord, hit_guid) VALUES (?, ?, ?, ?)`, r.Guid, role, i, g); err != nil {
-				return err
-			}
-		}
-	}
-	return f.err
-}
-
-// == C.O.A | C_Y_B ==
-
-func (b *abBuilder) writeEffect(r *designdb.Row) error {
-	f := newFields(fmt.Sprintf("Effect %s (%d)", r.Name, r.Guid), r.Fields)
-	tags, etags := f.tags("Tags"), f.tags("EffectTags")
-	display, category := f.text("EffectName"), f.str("EffectCategory")
-	infinite, tick, ignoreTick := f.boolean("bInfiniteDuration"), f.float("TickTimer"), f.boolean("bIgnoreInitialTick")
-	stackType, refresh, limit := f.str("EffectStackType"), f.str("StackDurationRefresh"), f.int("GlobalStackLimit")
-	persDeath, persRelog, dispel, significant := f.boolean("bPersistsThroughDeath"), f.boolean("bPersistsRelog"), f.boolean("bDispellable"), f.boolean("bSignificant")
-	durT, reqT, inPlaceT := f.str("EffectDuration"), f.str("ApplicationRequirements"), f.str("InPlaceStackLimit")
-	cc, _ := f.id("CrowdControlId")
-	extra := map[string][]int64{"ReactionsIds": refGuids(f, "ReactionsIds"), "HitModsIds": refGuids(f, "HitModsIds"), "FragilityDefinitionsIds": refGuids(f, "FragilityDefinitionsIds")}
-	if f.err != nil {
-		return f.err
-	}
-	var ids [3]int64
-	for i, t := range []string{durT, reqT, inPlaceT} {
-		id, err := b.exprs.id(t, nil)
-		if err != nil {
-			return err
-		}
-		ids[i] = id
-	}
-	if err := b.w.exec(`INSERT INTO ab_effect (guid, name, display_name, category, tags, effect_tags, infinite_duration, duration_expr, tick_timer, ignore_initial_tick,
-		stack_type, global_stack_limit, in_place_stack_limit_expr, stack_duration_refresh, persists_through_death, persists_relog, dispellable, significant,
-		requirement_expr, crowd_control_guid, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.Guid, r.Name, display, category, jsonOf(tags), jsonOf(etags), b2i(infinite), ids[0], tick, b2i(ignoreTick), stackType, limit, ids[2], refresh,
-		b2i(persDeath), b2i(persRelog), b2i(dispel), b2i(significant), ids[1], cc, jsonOf(extra)); err != nil {
-		return err
-	}
-	for _, p := range effectPhases {
-		for i, g := range refGuids(f, p.field) {
-			if err := b.w.exec(`INSERT INTO ab_effect_hit (effect_guid, phase, ord, hit_guid) VALUES (?, ?, ?, ?)`, r.Guid, p.phase, i, g); err != nil {
-				return err
-			}
-		}
-	}
-	return b.writeMods("effect", r, f)
-}
-
-// writeMods writes the StatMod rows an effect or hit lists (StatModsIds).
-func (b *abBuilder) writeMods(kind string, r *designdb.Row, f *fields) error {
-	guids := f.ids("StatModsIds")
-	if f.err != nil {
-		return f.err
-	}
-	for i, g := range guids {
-		if g == 0 {
-			continue
-		}
-		m := b.mods[g]
-		if m == nil {
-			return fmt.Errorf("%s: StatModsIds names StatMod %d, which is not a row", f.where, g)
-		}
-		mf := newFields(fmt.Sprintf("StatMod %s (%d)", m.Name, g), m.Fields)
-		stat, _ := mf.id("StatRefId")
-		value := mf.str("Value")
-		shield := mf.boolean("bUseShieldAbsorb")
-		termVals := mf.list("ValueInputTerms")
-		if mf.err != nil {
-			return mf.err
-		}
-		if _, known := b.statNames[stat]; !known && stat != 0 {
-			return fmt.Errorf("%s: names stat %d, which is not a StatTypeDef row", mf.where, stat)
-		}
-		terms := map[int64]string{}
-		for ti, tv := range termVals {
-			ts, ok := tv.(designdb.Struct)
-			if !ok {
-				return fmt.Errorf("%s: ValueInputTerms[%d] is %T", mf.where, ti, tv)
-			}
-			tf := newFields(fmt.Sprintf("%s: ValueInputTerms[%d]", mf.where, ti), ts)
-			tg, _ := tf.id("TermId")
-			text := tf.str("Value")
-			if tf.err != nil {
-				return tf.err
-			}
-			terms[tg] = text
-		}
-		vID, err := b.exprs.id(value, terms)
-		if err != nil {
-			return err
-		}
-		if err := b.w.exec(`INSERT INTO ab_mod (owner_kind, owner_guid, ord, stat_mod_guid, stat_guid, stat_name, value_expr, shield_absorb) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			kind, r.Guid, i, g, stat, b.statNames[stat], vID, b2i(shield)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// ---- reactions (contentc version 35) ----------------------------------------------------------------------------------------------------
-
-// reactionBindKinds are EventBindings' fields in the order of ab_reaction's bind_* columns.
-var reactionBindKinds = [8]string{"HitEvents", "EffectEvents", "AbilityEvents", "ProjectileEvents", "LingeringZoneEvents", "MovementEvents", "FishingEvents", "StatEvents"}
-
-// writeReaction writes a ReactionRecordBase: ab_reaction, with the hits it applies in ab_reaction_hit. Which effects and hits carry it is in their
-// extra's ReactionsIds.
-func (b *abBuilder) writeReaction(r *designdb.Row) error {
-	f := newFields(fmt.Sprintf("Reaction %s (%d)", r.Name, r.Guid), r.Fields)
-	bf := newFields(f.where+": EventBindings", f.strukt("EventBindings"))
-	var bind [8]int64
-	for i, k := range reactionBindKinds {
-		bind[i] = bf.int(k)
-	}
-	instigator := strings.TrimPrefix(f.str("Instigator"), "EReactionTarget::")
-	mask, global, perInstigator := f.int("TargetsBitmask"), f.int("GlobalProcLimit"), f.int("InstigatorProcLimit")
-	evalApplying, onApply := f.boolean("bEvaluateApplyingHit"), f.boolean("ProcReactOnApply")
-	trigger := f.str("ReactTrigger")
-	hits := refGuids(f, "ReactHitsIds")
-	if f.err != nil {
-		return f.err
-	}
-	if bf.err != nil {
-		return bf.err
-	}
-	tid, err := b.exprs.id(trigger, nil)
-	if err != nil {
-		return err
-	}
-	if err := b.w.exec(`INSERT INTO ab_reaction (guid, name, instigator, targets_mask, bind_hit, bind_effect, bind_ability, bind_projectile, bind_zone, bind_movement,
-		bind_fishing, bind_stat, global_limit, instigator_limit, eval_applying_hit, proc_on_apply, trigger_expr) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.Guid, r.Name, instigator, mask, bind[0], bind[1], bind[2], bind[3], bind[4], bind[5], bind[6], bind[7], global, perInstigator, b2i(evalApplying), b2i(onApply), tid); err != nil {
-		return err
-	}
-	for i, h := range hits {
-		if err := b.w.exec(`INSERT INTO ab_reaction_hit (reaction_guid, ord, hit_guid) VALUES (?, ?, ?)`, r.Guid, i, h); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// abilityByName matches GetAbilityRecordByName("Name") in a ModifyCooldownRecord's TargetCooldownAbility.
-var abilityByName = regexp.MustCompile(`GetAbilityRecordByName\(\s*"([^"]+)"\s*\)`)
-
-// writeModifyCooldown writes a ModifyCooldownRecordBase: the abilities it names (the design data writes them as GetAbilityRecordByName("Name")) are
-// resolved to guids.
-func (b *abBuilder) writeModifyCooldown(r *designdb.Row) error {
-	f := newFields(fmt.Sprintf("ModifyCooldown %s (%d)", r.Name, r.Guid), r.Fields)
-	delta, trig := f.str("DeltaSeconds"), f.str("ShouldTriggerCooldown")
-	names := f.list("TargetCooldownAbility")
-	if f.err != nil {
-		return f.err
-	}
-	guids := []int64{}
-	for i, v := range names {
-		s, ok := v.(string)
-		if !ok {
-			return fmt.Errorf("%s: TargetCooldownAbility[%d] is %T", f.where, i, v)
-		}
-		g := int64(0)
-		if m := abilityByName.FindStringSubmatch(s); m != nil {
-			g = b.exprs.named["Ability"][m[1]]
-		}
-		guids = append(guids, g)
-	}
-	did, err := b.exprs.id(delta, nil)
-	if err != nil {
-		return err
-	}
-	tid, err := b.exprs.id(trig, nil)
-	if err != nil {
-		return err
-	}
-	return b.w.exec(`INSERT INTO ab_modify_cooldown (guid, name, delta_expr, trigger_expr, abilities) VALUES (?, ?, ?, ?, ?)`, r.Guid, r.Name, did, tid, jsonOf(guids))
-}
-
-// plainJSON turns a decoded design value into plain JSON data (maps, lists, numbers, strings): a text is its source, a map a list of {k, v}.
-func plainJSON(v designdb.Value) any {
-	switch x := v.(type) {
-	case designdb.Struct:
-		m := make(map[string]any, len(x))
-		for k, e := range x {
-			m[k] = plainJSON(e)
-		}
-		return m
-	case []designdb.Value:
-		l := make([]any, len(x))
-		for i, e := range x {
-			l[i] = plainJSON(e)
-		}
-		return l
-	case designdb.Pairs:
-		l := make([]any, len(x))
-		for i, p := range x {
-			l[i] = map[string]any{"k": plainJSON(p.Key), "v": plainJSON(p.Value)}
-		}
-		return l
-	case designdb.Text:
-		if x.Source != "" {
-			return x.Source
-		}
-		return x.Key
-	case float32:
-		return plainJSON(float64(x))
-	case float64:
-		if math.IsNaN(x) || math.IsInf(x, 0) {
-			return 0.0
-		}
-		return x
-	}
-	return v
-}
-
-// writeTargetingDef writes an AbilityTargetingRecordBase a recursive hit uses: its volumes, lock-on and contextual targets as JSON, the first volume's
-// shape, radius and angle as columns, and its sorting entries with the expression ids of their filter and score.
-func (b *abBuilder) writeTargetingDef(r *designdb.Row) error {
-	f := newFields(fmt.Sprintf("AbilityTargeting %s (%d)", r.Name, r.Guid), r.Fields)
-	hurt := newFields(f.where+": HurtBoxInfo", f.strukt("HurtBoxInfo"))
-	vols := hurt.list("TargetingVolumes")
-	lock := f.strukt("LockOnInfo")
-	ctxv, _ := f.get("ContextualTargets")
-	sorting := f.list("Sorting")
-	if f.err != nil {
-		return f.err
-	}
-	if hurt.err != nil {
-		return hurt.err
-	}
-	shape, radius, angle := "", 0.0, 0.0
-	if len(vols) > 0 {
-		vs, ok := vols[0].(designdb.Struct)
-		if !ok {
-			return fmt.Errorf("%s: TargetingVolumes[0] is %T", f.where, vols[0])
-		}
-		vf := newFields(f.where+": TargetingVolumes[0]", vs)
-		shape, radius, angle = vf.str("id"), vf.float("SphereRadius"), vf.float("Angle")
-		if vf.err != nil {
-			return vf.err
-		}
-	}
-	type sortEntry struct {
-		Filter int64  `json:"filter"`
-		Method string `json:"method"`
-		Score  int64  `json:"score"`
-	}
-	entries := []sortEntry{}
-	for i, sv := range sorting {
-		ss, ok := sv.(designdb.Struct)
-		if !ok {
-			return fmt.Errorf("%s: Sorting[%d] is %T", f.where, i, sv)
-		}
-		sf := newFields(fmt.Sprintf("%s: Sorting[%d]", f.where, i), ss)
-		filter, method, score := sf.str("Filter"), sf.str("Method"), sf.str("Score")
-		if sf.err != nil {
-			return sf.err
-		}
-		fid, err := b.exprs.id(filter, nil)
-		if err != nil {
-			return err
-		}
-		sid, err := b.exprs.id(score, nil)
-		if err != nil {
-			return err
-		}
-		entries = append(entries, sortEntry{fid, strings.TrimPrefix(method, "ETargetSortingMethod::"), sid})
-	}
-	return b.w.exec(`INSERT INTO ab_targeting_def (guid, name, shape, radius, angle, volumes, lock_on, sorting, contextual) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.Guid, r.Name, shape, radius, angle, jsonOf(plainJSON(vols)), jsonOf(plainJSON(lock)), jsonOf(entries), jsonOf(plainJSON(ctxv)))
 }
