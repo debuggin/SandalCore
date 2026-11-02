@@ -29,6 +29,10 @@ config/*.local.json
 ics_auth_token.txt
 
 # TLS / Certificates (do not commit private keys or generated certs)
+*.key
+.key
+*.pem
+.pem
 certs/*.key
 certs/*.pem
 certs/*.crt
