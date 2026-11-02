@@ -106,12 +106,16 @@ add_library(world_core STATIC
     net/endpoint.h
     net/udp_socket.cpp
     net/udp_socket.h
+    quest/bootstrap_objects.cpp
     quest/quest_log.cpp
     quest/quest_log.h
     quest/quest_service.cpp
     quest/quest_service.h
     quest/quest_wire.cpp
     quest/quest_wire.h
+    quest/session_handin.cpp
+    quest/session_objects.cpp
+    respawn/bootstrap_embersprings.cpp
     session/abilities.cpp
     session/abilities.h
     session/actor_view.cpp

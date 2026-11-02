@@ -2789,7 +2789,5 @@ std::optional<Send> PlayerBootstrap::correction(float time_stamp, const repl::Ve
     return finish(Role::Pawn, false, "ClientAdjustPosition", repl::call_rpc(pawn_, nullptr, "ClientAdjustPosition", params, {}, acks_));
 }
 
-#include "respawn/bootstrap_embersprings.inc"
-#include "quest/bootstrap_objects.inc"
 
 }  // namespace aoc::worldd::bootstrap

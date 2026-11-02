@@ -7513,7 +7513,5 @@ void PlayerSession::on_gm_node_rpc(const repl::ClientRpc& rpc, Clock::time_point
 #include "respawn/session_embersprings.inc"
 #include "quest/session_quests2.inc"
 #include "quest/session_givers.inc"
-#include "quest/session_objects.inc"
-#include "quest/session_handin.inc"
 
 }}  // namespace aoc::worldd
