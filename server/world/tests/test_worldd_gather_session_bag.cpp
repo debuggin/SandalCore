@@ -495,7 +495,7 @@ int main() {
   spdlog::set_default_logger(logger);
   const char *path = db_path();
   if (!path) {
-    std::printf("[skip] test_worldd_gather_session_part2: no content.db (set "
+    std::printf("[skip] test_worldd_gather_session_bag: no content.db (set "
                 "AOC_CONTENT_DB, or build dist/content/content.db)\n");
     return 0;
   }

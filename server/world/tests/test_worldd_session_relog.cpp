@@ -619,12 +619,7 @@ static void test_request_budget() {
 }
 // [C O A x C-Y-B]
 
-int main() {
-  auto logger = std::make_shared<spdlog::logger>(
-      "test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
-  logger->set_level(spdlog::level::debug);
-  spdlog::set_default_logger(logger);
-
+void run_session_relog() {
   test_possession_bunch_and_requests();
   test_join_waits_for_the_window();
   test_window_full();
@@ -633,7 +628,4 @@ int main() {
   test_lost_export();
   test_lost_then_resent();
   test_request_budget();
-
-  std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
-  return g_fail == 0 ? 0 : 1;
 }

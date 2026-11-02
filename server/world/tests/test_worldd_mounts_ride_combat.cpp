@@ -538,7 +538,23 @@ void test_sprint_does_not_ride() {
 
 } // namespace
 
-void run_mounts_ride_part2() {
+int main() {
+    spdlog::set_level(std::getenv("AOC_TEST_LOG") ? spdlog::level::debug : spdlog::level::off);
+    std::string error;
+    {
+        auto real = content::ContentDb::open(real_db_path(), error);
+        const auto data = real ? real->mount_data(error) : std::nullopt;
+        if (!data) {
+            std::printf("  [FAIL] the real content.db has no mount tables (%s): %s\n", real_db_path().c_str(), error.c_str());
+            return 2;
+        }
+        for (const content::MountRow& r : data->mounts) {
+            if (r.item_name == "Mount_Grounded_TerrorBird_0") g_mount_record = r.item;
+            if (r.item_name == "Mount_Grounded_Horse_0") g_other_mount_record = r.item;
+            if (r.kind == "aquatic" && !g_aquatic_record) g_aquatic_record = r.item;
+            if (r.kind == "flying" && !g_flying_record) g_flying_record = r.item;
+        }
+    }
     test_roads();
     test_repeats_and_desummon();
     test_mounted_combat();
@@ -549,4 +565,6 @@ void run_mounts_ride_part2() {
     test_flyers_and_aquatic_on_the_ground();
     test_sprint_does_not_ride();
     test_hostile();
+    std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
+    return g_fail == 0 ? 0 : 1;
 }

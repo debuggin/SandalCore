@@ -3,8 +3,20 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #pragma once
 
-#include "session/player_world_deps_a.h"
-#include "session/player_world_deps_b.h"
+#include "bootstrap/bootstrap.h"
+#include "combat/aftermath.h"
+#include "foliage/foliage.h"
+#include "npc/area_npcs.h"
+#include "protocol/server_guid_allocator.h"
+#include "quest/engine.h"
+#include "quest/quest_service.h"
+#include "session/actor_view.h"
+#include "session/position_saver.h"
+#include "session/riding.h"
+#include "spawns/gm_garden.h"
+#include "spawns/node_populations.h"
+#include "vendor/town_shops.h"
+#include "warehouse/warehouse.h"
 #include "world/node_control.h"
 #include "world/node_scenery.h"
 #include "world/places.h"

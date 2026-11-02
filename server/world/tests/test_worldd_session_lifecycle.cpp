@@ -491,12 +491,7 @@ static void test_real_content_db() {
   }
 }
 
-int main() {
-  auto logger = std::make_shared<spdlog::logger>(
-      "test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
-  logger->set_level(spdlog::level::debug);
-  spdlog::set_default_logger(logger);
-
+void run_session_lifecycle() {
   test_client_driven_log_lines();
   test_two_players();
   test_kicked_session_answers_nothing();
@@ -504,7 +499,4 @@ int main() {
   test_acks_before_requests();
   test_login_tail();
   test_real_content_db();
-
-  std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
-  return g_fail == 0 ? 0 : 1;
 }

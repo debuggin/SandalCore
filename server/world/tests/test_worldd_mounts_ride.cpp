@@ -531,9 +531,6 @@ int main() {
     test_dash_gate();
     test_dash_survives_a_resummon();
     test_pace_bank_survives_a_dismount();
-    run_mounts_ride_part2();
-    run_mounts_ride_part3();
-    run_mounts_ride_part4();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

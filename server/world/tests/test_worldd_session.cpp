@@ -773,12 +773,13 @@ static void test_phase_in_and_moves() {
   test_moves_and_mangled(h, pawn_ch);
 }
 
+void run_session_relog();
+void run_session_lifecycle();
+
 int main() {
-  auto logger = std::make_shared<spdlog::logger>(
-      "test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
+  auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
   logger->set_level(spdlog::level::debug);
   spdlog::set_default_logger(logger);
-
   test_identity();
   test_content_missing();
   test_content_built_before_b2();
@@ -788,7 +789,8 @@ int main() {
   test_channels();
   test_join_and_acks();
   test_phase_in_and_moves();
-
+  run_session_relog();
+  run_session_lifecycle();
   std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }
