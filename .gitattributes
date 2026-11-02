@@ -1,52 +1,239 @@
-# Default: treat text as CRLF on checkout for Windows devs; LF in repo.
-* text=auto
+# =============================================================================
+# 1. DEFAULT AUTO-DETECTION
+# =============================================================================
+# --- Repository-wide fallback normalization ---
+*                           text=auto
 
-# Source code — always LF in repo, CRLF on Windows checkout (normal)
-*.cpp     text
-*.h       text
-*.c       text
-*.hpp     text
-*.cs      text
-*.py      text
-*.md      text
-*.json    text
-*.jsonl   text
-*.proto   text eol=lf
-*.cmake   text
-CMakeLists.txt text
-*.yml     text
-*.yaml    text
-*.toml    text
-*.idc     text
+# =============================================================================
+# 2. POLYGLOT SOURCE CODE & SEMANTIC DIFF DRIVERS
+# =============================================================================
+# --- C / C++ ---
+*.c                         text diff=cpp
+*.cc                        text diff=cpp
+*.cpp                       text diff=cpp
+*.cppm                      text diff=cpp
+*.cxx                       text diff=cpp
+*.h                         text diff=cpp
+*.hh                        text diff=cpp
+*.hpp                       text diff=cpp
+*.hxx                       text diff=cpp
+*.idc                       text diff=cpp
+*.inc                       text diff=cpp
+*.inl                       text diff=cpp
+*.ipp                       text diff=cpp
+*.ixx                       text diff=cpp
 
-# Shell scripts — LF always (even on Windows; some tools care)
-*.sh      text eol=lf
+# --- C# / .NET / Avalonia ---
+*.axaml                     text
+*.cs                        text diff=csharp
+*.csproj                    text
+*.csx                       text diff=csharp
+*.nuspec                    text
+*.props                     text
+*.resx                      text
+*.targets                   text
+*.xaml                      text
 
-# Windows scripts — CRLF always
-*.bat     text eol=crlf
-*.cmd     text eol=crlf
-*.ps1     text eol=crlf
+# --- Python ---
+*.pxd                       text diff=python
+*.py                        text diff=python
+*.pyi                       text diff=python
+*.pyx                       text diff=python
 
-# Binary fixtures — never normalise
-*.bin     binary
-*.pem     binary
-*.key     binary
-*.crt     binary
-*.p12     binary
-*.pdf     binary
-*.png     binary
-*.jpg     binary
-*.zip     binary
-*.dll     binary
-*.exe     binary
+# --- Rust ---
+*.rs                        text diff=rust
+Cargo.lock                  text
+Cargo.toml                  text
+rust-toolchain.toml         text
 
-# Regression-gate data (scripts/run_tests.ps1) — compared exactly
-fixtures/test-baseline.txt  -text
+# --- Node.js / TypeScript / Web ---
+*.cjs                       text
+*.css                       text
+*.cts                       text
+*.html                      text
+*.js                        text
+*.jsx                       text
+*.mjs                       text
+*.mts                       text
+*.scss                      text
+*.svg                       text
+*.ts                        text
+*.tsx                       text
 
-# Generated Go code from proto/internal (buf generate)
-services/gen/** linguist-generated=true text eol=lf
+# --- CMake, SQL, Data, Configs & Documentation ---
+*.cmake                     text
+*.cmake.in                  text
+*.csv                       text
+*.hex                       text
+*.json                      text
+*.jsonl                     text
+*.md                        text diff=markdown
+*.sha256                    text
+*.sql                       text
+*.toml                      text
+*.tsv                       text
+*.txt                       text
+*.xml                       text
+*.yaml                      text
+*.yml                       text
+CMakeLists.txt              text
+LICENSE                     text
+NOTICE                      text
 
-# Go sources stay LF on Windows checkouts (core.autocrlf would make gofmt flag them)
-*.go   text eol=lf
-go.mod text eol=lf
-go.sum text eol=lf
+# =============================================================================
+# 3. STRICT LF TEXT FILES (GO, PROTOCOLS, SHELL, CONTAINERS & DOTFILES)
+# =============================================================================
+# --- Go (WHY: enforce LF so Windows core.autocrlf never triggers gofmt diffs) ---
+*.go                        text eol=lf diff=golang
+go.mod                      text eol=lf
+go.sum                      text eol=lf
+go.work                     text eol=lf
+go.work.sum                 text eol=lf
+
+# --- Protobuf, FlatBuffers & Buf ---
+*.fbs                       text eol=lf
+*.proto                     text eol=lf
+buf.gen.yaml                text eol=lf
+buf.lock                    text eol=lf
+buf.yaml                    text eol=lf
+
+# --- POSIX Shell, Make & Containers ---
+*.bash                      text eol=lf
+*.dockerfile                text eol=lf
+*.sh                        text eol=lf
+*.zsh                       text eol=lf
+.dockerignore               text eol=lf
+Dockerfile                  text eol=lf
+Dockerfile.*                text eol=lf
+GNUmakefile                 text eol=lf
+Justfile                    text eol=lf
+Makefile                    text eol=lf
+
+# --- Repository Dotfiles ---
+.editorconfig               text eol=lf
+.gitattributes              text eol=lf
+.gitignore                  text eol=lf
+.graphifyignore             text eol=lf
+
+# =============================================================================
+# 4. STRICT CRLF WINDOWS SCRIPTS & VISUAL STUDIO FILES
+# =============================================================================
+# --- Windows Batch & PowerShell ---
+*.bat                       text eol=crlf
+*.cmd                       text eol=crlf
+*.ps1                       text eol=crlf
+*.ps1xml                    text eol=crlf
+*.psd1                      text eol=crlf
+*.psm1                      text eol=crlf
+
+# --- Visual Studio Solutions & C++ Projects ---
+*.sln                       text eol=crlf
+*.slnx                      text eol=crlf
+*.vcxproj                   text eol=crlf
+*.vcxproj.filters           text eol=crlf
+*.vcxproj.user              text eol=crlf
+
+# =============================================================================
+# 5. BINARY ARTIFACTS, CERTIFICATES, ARCHIVES & GAME ASSETS
+# =============================================================================
+# --- PKI Certificates & Private Keys ---
+*.cer                       binary
+*.crl                       binary
+*.crt                       binary
+*.der                       binary
+*.key                       binary
+*.p12                       binary
+*.pem                       binary
+*.pfx                       binary
+*.srl                       binary
+
+# --- Executables, Libraries, Symbols & Dumps ---
+*.a                         binary
+*.bin                       binary
+*.dll                       binary
+*.dmp                       binary
+*.dylib                     binary
+*.etl                       binary
+*.exe                       binary
+*.exp                       binary
+*.idb                       binary
+*.ilk                       binary
+*.ipdb                      binary
+*.lib                       binary
+*.mdmp                      binary
+*.o                         binary
+*.obj                       binary
+*.pcap                      binary
+*.pcapng                    binary
+*.pdb                       binary
+*.so                        binary
+
+# --- Engine, Game Assets & Databases ---
+*.adt                       binary
+*.anim                      binary
+*.blp                       binary
+*.bone                      binary
+*.db                        binary
+*.db2                       binary
+*.dbc                       binary
+*.duckdb                    binary
+*.m2                        binary
+*.mpq                       binary
+*.pak                       binary
+*.parquet                   binary
+*.phys                      binary
+*.skin                      binary
+*.sqlite                    binary
+*.sqlite3                   binary
+*.uasset                    binary
+*.ucas                      binary
+*.umap                      binary
+*.usmap                     binary
+*.utoc                      binary
+*.wdt                       binary
+*.wmo                       binary
+
+# --- Archives, Documents, Images & Fonts ---
+*.7z                        binary
+*.gif                       binary
+*.gz                        binary
+*.ico                       binary
+*.jpeg                      binary
+*.jpg                       binary
+*.otf                       binary
+*.pdf                       binary
+*.png                       binary
+*.tar                       binary
+*.tgz                       binary
+*.ttf                       binary
+*.webp                      binary
+*.woff                      binary
+*.woff2                     binary
+*.xz                        binary
+*.zip                       binary
+*.zst                       binary
+
+# =============================================================================
+# 6. EXACT BYTE-PRESERVED REGRESSION FIXTURES
+# =============================================================================
+# --- WHY: Must appear after *.txt text so exact byte comparison is preserved ---
+fixtures/test-baseline.txt                  -text
+
+# =============================================================================
+# 7. GITHUB LINGUIST VENDORED & GENERATED OVERRIDES
+# =============================================================================
+# --- Vendored third-party vs. first-party domain overrides (last-match-wins) ---
+server/worldd/vendor/**                     linguist-vendored=false
+third_party/**                              linguist-vendored=true
+
+# --- Generated protocol, schema & designer code ---
+*.designer.cs                               linguist-generated=true
+*.g.cs                                      linguist-generated=true
+*.generated.*                               linguist-generated=true
+*.pb.cc                                     linguist-generated=true
+*.pb.go                                     linguist-generated=true text eol=lf
+*.pb.h                                      linguist-generated=true
+*_gen.go                                    linguist-generated=true text eol=lf
+*_grpc.pb.go                                linguist-generated=true text eol=lf
+libs/aocnet/protocol/schema/generated/**    linguist-generated=true
+services/gen/**                             linguist-generated=true text eol=lf
