@@ -66,6 +66,7 @@ param(
     [int]      $NavThreads = 0
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })     # powershell -File hands over "a,b" as one string
 $Skip = @($Skip | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
@@ -146,9 +147,9 @@ function Get-CodeHash([string[]]$paths) {
         $files = if ((Get-Item -LiteralPath $full).PSIsContainer) {
             Get-ChildItem -LiteralPath $full -Recurse -File | Where-Object { $_.FullName -notmatch '\\(bin|obj|__pycache__)\\' -and $_.Name -notmatch '_test\.go$|\.md$|\.pyc$|^region_rects\.tsv$' }
         } else { Get-Item -LiteralPath $full }
-        foreach ($f in ($files | Sort-Object FullName)) {
+        $sub = New-Object System.Collections.Generic.List[string]; foreach ($f in $files) {
             $rel = $f.FullName.Substring($repoRoot.Length).TrimStart('\')
-            $lines.Add("$rel $(Get-FileSha $f.FullName)")
+            $sub.Add("$rel $(Get-FileSha $f.FullName)"); }; $sub.Sort([System.StringComparer]::OrdinalIgnoreCase); $lines.AddRange($sub); if ($false) {
         }
     }
     $h = Get-TextHash ($lines -join "`n")
@@ -364,7 +365,10 @@ if (($exeLen -eq $Supported.ExeBytes) -and ($dbcLen -eq $Supported.DbcBytes)) {
 }
 
 # what identifies the player's game files: names, sizes and write times of the containers, the exe and the design database
-$paks = Get-ChildItem -LiteralPath $gamePaks -File | Sort-Object Name | ForEach-Object { '{0} {1} {2}' -f $_.Name, $_.Length, $_.LastWriteTimeUtc.Ticks }
+# WHY: OrdinalIgnoreCase keeps stamp hashes identical across Windows PowerShell 5.1 (NLS) and PowerShell 7 (ICU).
+$paks = New-Object System.Collections.Generic.List[string]
+foreach ($pak in (Get-ChildItem -LiteralPath $gamePaks -File)) { $paks.Add(('{0} {1} {2}' -f $pak.Name, $pak.Length, $pak.LastWriteTimeUtc.Ticks)) }
+$paks.Sort([System.StringComparer]::OrdinalIgnoreCase)
 $gameId = Get-TextHash (($paks -join "`n") + "`n" + ('exe {0} {1}' -f $exeLen, $exeTicks) + "`n" + ('dbc {0} {1}' -f $dbcLen, $dbcItem.LastWriteTimeUtc.Ticks))
 
 $python = Find-Python
@@ -389,6 +393,7 @@ function Get-CodeMapc     { Get-CodeHash @('tools\mapc') }
 function Get-CodeContentc { Get-CodeHash @('services\cmd\contentc', 'services\internal\content', 'services\internal\designdb', 'services\internal\usmap', 'services\internal\aocexpr', 'services\internal\chardef', 'services\internal\statprog', 'services\go.mod', 'services\go.sum') }
 function Get-CodeNpcAbilities { Get-CodeHash @('tools\npcabilities') }
 function Get-CodeItemNames { Get-CodeHash @('tools\itemnames') }
+# WHY: CMakeLists.txt is intentionally excluded from Get-CodeGens, Get-CodeNav, and Get-CodeLayouts so CMake topology edits never invalidate game data stamps.
 function Get-CodeGens     { Get-CodeHash @('tools\capture\gen_zoi_surface.py', 'tools\capture\gen_region_rects.py', 'tools\capture\gen_region.py', 'tools\capture\gen_node_constants.py', 'tools\capture\gen_gm_garden.py', 'tools\capture\gen_tooltips.py', 'tools\worldd\gen_gear_fixture.py', 'tools\worldd\gen_talent_fixture.py') }
 function Get-CodeNav      { Get-CodeHash @('server\worldd\nav', 'third_party\recastnavigation', 'vcpkg.json') }
 # The level each node starts at in the server's seed file (deploy\citynode_seed.json): the towns' buildings are listed at those levels (tools\capture\gen_town_layouts.py), so a change of a
@@ -399,7 +404,8 @@ function Get-SeedLevels {
     try { $seed = [IO.File]::ReadAllText($path) | ConvertFrom-Json } catch { return 'seed file unreadable' }
     $pairs = New-Object System.Collections.Generic.List[string]
     if ($seed.nodes) { foreach ($p in $seed.nodes.PSObject.Properties) { $pairs.Add(('{0}={1}' -f $p.Name, $p.Value.level)) } }
-    return (($pairs | Sort-Object) -join ';')
+    $pairs.Sort([System.StringComparer]::OrdinalIgnoreCase)
+    return ($pairs -join ';')
 }
 function Get-CodeLayouts  { (Get-CodeHash @('tools\capture\gen_town_layouts.py')) + ' ' + (Get-SeedLevels) }
 $ids = @{}
@@ -434,7 +440,7 @@ function Get-Stamp([string]$step) {
 }
 
 function Test-Current($s) {
-    if ($s.Always) { return $false }
+    if ($s['Always']) { return $false }
     $st = Get-Stamp $s.Name
     if (-not $st -or $st.inputs -ne (Get-Id $s.Name)) { return $false }
     foreach ($o in $s.Outputs) {
@@ -571,12 +577,12 @@ $selected = @($steps | Where-Object { ($Only.Count -eq 0 -or $Only -contains $_.
 # ---------------------------------------------------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------------------------------------------------
-function Test-Todo($s) { $Force -or $s.Always -or -not (Test-Current $s) }
+function Test-Todo($s) { $Force -or $s['Always'] -or -not (Test-Current $s) }
 
 if ($CheckOnly) {
     Say ''
     foreach ($s in $selected) {
-        $state = if ($s.Always) { 'builds the tools when a later step runs' } elseif (Test-Todo $s) { 'would run' } else { 'up to date' }
+        $state = if ($s['Always']) { 'builds the tools when a later step runs' } elseif (Test-Todo $s) { 'would run' } else { 'up to date' }
         Say ('  {0,-9} {1}' -f $s.Name, $state)
     }
     exit 0
@@ -594,13 +600,13 @@ Set-Content -LiteralPath $lockFile -Value $PID -Encoding ASCII
 
 $summary = New-Object System.Collections.Generic.List[object]
 $total = [Diagnostics.Stopwatch]::StartNew()
-$anyWork = (@($selected | Where-Object { -not $_.Always -and (Test-Todo $_) }).Count -gt 0) -or ($Only -contains 'tools')
+$anyWork = (@($selected | Where-Object { -not $_['Always'] -and (Test-Todo $_) }).Count -gt 0) -or ($Only -contains 'tools')
 $index = 0
 $ran = 0
 try {
     foreach ($s in $selected) {
         $index++
-        if ($s.Always -and -not $anyWork) { continue }
+        if ($s['Always'] -and -not $anyWork) { continue }
         if (-not (Test-Todo $s)) { $summary.Add([pscustomobject]@{ Step = $s.Name; State = 'up to date'; Seconds = 0.0; PeakGB = 0.0 }); continue }
         Say ''
         Say ("[{0}/{1}] {2}" -f $index, $selected.Count, $s.Title) 'Cyan'

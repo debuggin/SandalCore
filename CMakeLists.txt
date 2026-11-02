@@ -65,6 +65,9 @@ endif()
 # world generates the gRPC stubs of the internal services it calls (server/worldd/CMakeLists.txt, from proto/internal) with the PROTOC
 # and GRPC_CPP_PLUGIN found above.  The Go services generate theirs from proto/ (services/buf.gen.yaml).
 
+# ── libaocproto: unified C++ protobuf & gRPC stubs ──────────────────────────
+add_subdirectory(libs/aocproto)
+
 # ── libaocnet: protocol library (wire / emit / schema / NetGUIDs) ──────────
 add_subdirectory(libs/aocnet)
 

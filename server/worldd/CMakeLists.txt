@@ -14,49 +14,7 @@
 
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
-# ── gRPC stubs for the internal services world calls ────────────────────────
-set(WORLD_PROTO_DIR "${PROJECT_SOURCE_DIR}/proto/internal")
-set(WORLD_PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-file(MAKE_DIRECTORY ${WORLD_PROTO_GEN_DIR})
-set(WORLD_PROTOS
-    aoc/character/v1/character.proto
-    aoc/citynode/v1/citynode.proto
-    aoc/gateway/v1/gateway.proto
-    aoc/mesh/v1/mesh.proto
-    aoc/quest/v1/quest.proto
-    aoc/worldadmin/v1/worldadmin.proto
-)
-set(WORLD_PROTO_SRCS "")
-foreach(rel ${WORLD_PROTOS})
-    string(REGEX REPLACE "[.]proto$" "" base ${rel})
-    set(outs
-        "${WORLD_PROTO_GEN_DIR}/${base}.pb.cc"
-        "${WORLD_PROTO_GEN_DIR}/${base}.pb.h"
-        "${WORLD_PROTO_GEN_DIR}/${base}.grpc.pb.cc"
-        "${WORLD_PROTO_GEN_DIR}/${base}.grpc.pb.h")
-    add_custom_command(
-        OUTPUT ${outs}
-        COMMAND ${PROTOC}
-            "--proto_path=${WORLD_PROTO_DIR}"
-            "--cpp_out=${WORLD_PROTO_GEN_DIR}"
-            "--grpc_out=${WORLD_PROTO_GEN_DIR}"
-            "--plugin=protoc-gen-grpc=${GRPC_CPP_PLUGIN}"
-            "${WORLD_PROTO_DIR}/${rel}"
-        DEPENDS "${WORLD_PROTO_DIR}/${rel}"
-        COMMENT "Generating protobuf/gRPC stubs for ${rel}"
-    )
-    list(APPEND WORLD_PROTO_SRCS ${outs})
-endforeach()
-
-add_library(world_protos STATIC ${WORLD_PROTO_SRCS})
-target_include_directories(world_protos PUBLIC "${WORLD_PROTO_GEN_DIR}")
-target_link_libraries(world_protos PUBLIC protobuf::libprotobuf gRPC::grpc++)
-if(MSVC)
-    target_compile_options(world_protos PRIVATE /W0)
-else()
-    target_compile_options(world_protos PRIVATE -w)
-endif()
-set_target_properties(world_protos PROPERTIES FOLDER "Servers/world")
+# ── gRPC stubs come from unified libs/aocproto (world_protos ALIAS aocproto) ──
 
 # ── stats: the stat engine (plan B3), a library of its own (no other world or net code) ──────────────────
 add_library(world_stats STATIC
@@ -345,8 +303,8 @@ add_library(world_core STATIC
 target_include_directories(world_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(world_core PUBLIC
     aocnet
+    aocproto
     world_nav
-    world_protos
     world_stats
     world_ability_content
     spdlog::spdlog

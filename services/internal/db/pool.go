@@ -8,11 +8,13 @@ package db
 import (
 	"cmp"
 	"context"
-	"embed"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,8 +24,36 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed migrations/*.sql
-var migrations embed.FS
+var migrations = newSQLMigrationsFS()
+
+type sqlMigrationsFS struct {
+	root fs.FS
+}
+
+func newSQLMigrationsFS() sqlMigrationsFS {
+	for _, candidate := range []string{"sql", "../sql", "../../sql", "../../../sql"} {
+		if info, err := os.Stat(filepath.Join(candidate, "migrations")); err == nil && info.IsDir() {
+			return sqlMigrationsFS{root: os.DirFS(candidate)}
+		}
+	}
+	if _, callerFile, _, ok := runtime.Caller(0); ok {
+		repoSQL := filepath.Clean(filepath.Join(filepath.Dir(callerFile), "..", "..", "..", "sql"))
+		return sqlMigrationsFS{root: os.DirFS(repoSQL)}
+	}
+	return sqlMigrationsFS{root: os.DirFS("sql")}
+}
+
+func (s sqlMigrationsFS) Open(name string) (fs.File, error) {
+	return s.root.Open(name)
+}
+
+func (s sqlMigrationsFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	return fs.ReadDir(s.root, name)
+}
+
+func (s sqlMigrationsFS) ReadFile(name string) ([]byte, error) {
+	return fs.ReadFile(s.root, name)
+}
 
 // migrationLock is the advisory-lock key that serialises Migrate across
 // services starting together.
