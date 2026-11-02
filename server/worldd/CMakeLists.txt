@@ -331,6 +331,11 @@ foreach(t
 )
     world_add_test(${t})
 endforeach()
+target_sources(test_world_area_session PRIVATE
+    tests/test_worldd_area_dialogue.cpp
+    tests/test_worldd_quest_session_a.cpp
+    tests/test_worldd_quest_session_b.cpp
+)
 # Gathering stage 2: the session tests of the professions and the GM artisan scrolls run on the real content.db of the working tree (they skip without it)
 target_compile_definitions(test_world_items_session PRIVATE
     PROFESSIONS_REAL_DB="${PROJECT_SOURCE_DIR}/dist/content/content.db")
@@ -476,6 +481,13 @@ target_compile_definitions(test_world_spawn_filter PRIVATE
 
 # the combat core (plan E1, stage 3): NPC stats, damage and the hit rules on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
 world_add_test(test_world_combat)
+target_sources(test_world_combat PRIVATE
+    tests/test_worldd_combat_cast_grem.cpp
+    tests/test_worldd_combat_gates.cpp
+    tests/test_worldd_combat_lunge_chase.cpp
+    tests/test_worldd_combat_projectiles.cpp
+    tests/test_worldd_combat_generic.cpp
+)
 target_compile_definitions(test_world_combat PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")

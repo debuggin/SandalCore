@@ -1,10 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// The listed differences of test_worldd_ability_npc.cpp (included inside its anonymous namespace): the ability, the capture, the problem's text (as the
-// test words it), why.  Exact: a problem that is not here fails the test.  Written from a run of the test with the table empty: each problem is given
-// its reason by its tag and the hit's name (see the R_ constants); a fix of the runtime that removes a problem leaves its line here harmlessly.
-const Known kKnown[] = {
+#pragma once
+
+namespace sandal::worldd::tests {
+
+inline constexpr const char* R_STATE = "the ability's activation requirement reads a state the capture's character had from before the capture or that a summoned pet, a stealth, a stack or an enchant gives (GetEffectCount, GetEffectCountByTag on the caster or the target): the replay starts each capture's character fresh and stage 3 has no pets";
+inline constexpr const char* R_CHARGES = "the capture's character had talents or gear that give the ability more charges or a shorter cooldown than its formula's base (the test infers only the talents the formulas name): the replay's charges run out where retail's did not";
+inline constexpr const char* R_MOD = "retail's Mana cost carries a talent or gear modifier the capture does not name (the level comes from the first cost, the talents from the cooldowns)";
+inline constexpr const char* R_SHIELD = "retail's reply lists a TempHealth shield the replay's pawn does not have: a shield whose amount follows the damage the hit did or the caster's gear and talents; not resolved";
+inline constexpr const char* R_REACT = "retail applies the effect on the caster through a reaction (an effect's or a hit's ReactionsIds: stored, not followed) or through a state the replay's character lacks (Vengeance, a Ranger's dash, Advantage, a combo's step); not run";
+inline constexpr const char* R_NPCFX = "an effect the hit puts on the creature (a damage over time, a snare, a debuff: Burning, Bleeding, Hemorrhage, Conflagration ...) is not run: stage 3 puts only shields on an NPC, so that effect's periodic hits and what depends on its stacks are not made";
+inline constexpr const char* R_AREA = "an area hit at a ground point or around a target that the replay does not reach (the client's aim point is not in the call, retail had more creatures around): the hit is not made or finds nobody here";
+inline constexpr const char* R_ALLY = "the hit needs an ally, a party member or a second creature that retail's cast reached and the replay (one creature, no ally) does not have";
+inline constexpr const char* R_CONFX = "our confirmation rule confirms a hit that retail did not confirm in this cast (the caster counts as an ally of its own heal, a second step of a chain, another number of creatures hit)";
+inline constexpr const char* R_CONE = "the cast finds its own targets in a cone ahead of the caster (the server gathers them: the trigger names none) and the replay's creature stands in it, where retail's cast found nobody in front (it confirmed the ground arrows only) or was held until the charge was full (the talent Concentrated, which the replay's character lacks: the charged shot hit)";
+inline constexpr const char* R_GROUND = "the arrow's own hit names the piece of ground it struck as its target in retail (a world component, not an actor); ours confirms it on the caster, so the replay sees no actor hit";
+inline constexpr const char* R_ARROWS = "the cast's other projectiles (arcing arrows that only show where they land, their hit has no stat mod) are not made";
+inline constexpr const char* R_CHAN = "a channelled, toggled or chained ability that the client re-triggers or the server ends early in retail; the early end is not matched";
+inline constexpr const char* R_UNRES = "not resolved in stage 3";
+inline constexpr const char* R_KILL = "the replay's creature (a level-1 Wolf, 34.9 Health, where the capture's target is another actor of unknown level) dies of the ability's first hit since the E1 review's stat fix gave a level-1 creature retail's MaxHealth (a fifth less): the hits after the kill are not confirmed; retail's target survived";
+inline constexpr const char* R_JITTER = "the cost step comes the median of the ability's recorded offsets after the montage's jump (Mortal Blast: 199 ms); in this capture it came sooner (165 ms), 5 ms before the next call ended the replay's window for the cast, so the step lands 34 ms after that window and in the next cast's window (its Mana, its Cooldowns item)";
+
+struct Known {
+    const char* ability;
+    int         capture;
+    const char* tag;
+    const char* why;
+};
+
+inline constexpr Known kKnown[] = {
     {"Ranger_AirStrike", 2, "HIT:nobody Ranger_AirStrike", R_GROUND},
     {"Ranger_Headshot", 13, "EFF:missing Ranger_Dash_Remove", R_REACT},
     {"Ranger_Headshot", 13, "SHIELD:missing", R_SHIELD},
@@ -316,3 +341,5 @@ const Known kKnown[] = {
     {"Tank_GroundPound", 1065, "SHIELD:missing", R_SHIELD},
     {"Tank_ShieldSlam", 1065, "COST:mana 45.130859 (51.500000)", R_MOD},
 };
+
+}  // namespace sandal::worldd::tests
