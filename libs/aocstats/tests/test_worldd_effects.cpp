@@ -194,19 +194,79 @@ struct Corpus {
     std::vector<FxCase> cases;
 };
 
+const char* parse_host_line(FxCase& cur, const std::vector<std::string>& w) {
+    if (w[1] == "seed") cur.host.rng.state = std::stoull(w[2]);
+    else if (w[1] == "progress") cur.host.progress[w[2] == "-" ? std::string() : w[2]] = bits_to_double(hex64(w[3]));
+    else if (w[1] == "inst") cur.host.inst[{std::stoull(w[2]), std::stoll(w[3])}] = bits_to_double(hex64(w[4]));
+    else if (w[1] == "hittag") cur.host.tags.insert(w[2]);
+    else if (w[1] == "hitflag") cur.host.flags.insert(w[2]);
+    else if (w[1] == "targets") cur.host.targets = bits_to_double(hex64(w[2]));
+    else if (w[1] == "xpdebt") cur.host.xp_debt = bits_to_double(hex64(w[2]));
+    else if (w[1] == "fn") cur.host.fns[w[2] + "|" + (w[3] == "-" ? std::string() : w[3])] = bits_to_double(hex64(w[4]));
+    else return "unknown host line";
+    return nullptr;
+}
+
+const char* parse_state_line(TableState& s, const std::vector<std::string>& w) {
+    const std::string& what = w[1];
+    if (what == "effect") s.effects[{std::stoull(w[2]), std::stoll(w[3])}] = bits_to_double(hex64(w[4]));
+    else if (what == "tag") s.tags[w[2]] = bits_to_double(hex64(w[3]));
+    else if (what == "skill") s.skills.insert({std::stoull(w[2]), std::stoll(w[3]), std::stoull(w[4]), std::stoll(w[5])});
+    else if (what == "combat") s.combat = true;
+    else if (what == "moving") s.moving_ = true;
+    else if (what == "unkillable") s.unkillable_ = true;
+    else if (what == "actor") s.actor = bits_to_double(hex64(w[2]));
+    else if (what == "prof") s.professions[w[2]] = bits_to_double(hex64(w[3]));
+    else if (what == "consumed") s.consumed[{std::stoull(w[2]), std::stoll(w[3])}] = bits_to_double(hex64(w[4]));
+    else if (what == "npc") s.npc = bits_to_double(hex64(w[2]));
+    else if (what == "dist") {
+        const int i = std::stoi(w[2]);
+        if (i < 0 || i >= 8) return "state dist: there are 8 stats";
+        s.dist[i] = bits_to_double(hex64(w[3]));
+    } else return "unknown state line";
+    return nullptr;
+}
+
+const char* parse_fxcase_line(FxCase& cur, StatInputs& in_t, TableState& st_t, const std::vector<std::string>& w) {
+    const std::string& k = w[0];
+    if (k == "mod") in_t.mods.push_back({std::stoll(w[1]), bits_to_double(hex64(w[2]))});
+    else if (k == "tag") in_t.equipped.push_back({w[1], w[2]});
+    else if (k == "want") cur.want.push_back({std::stoll(w[1]), hex64(w[2])});
+    else if (k == "digest") {
+        cur.digest = hex64(w[1]);
+        cur.members = std::stoul(w[2]);
+        cur.faults = std::stoi(w[3]);
+        cur.ignored = std::stoi(w[4]);
+    } else if (k == "fx") {
+        ActiveEffect e;
+        e.effect = {std::stoull(w[1]), std::stoll(w[2])};
+        e.stacks = std::stoi(w[3]);
+        in_t.effects.push_back(std::move(e));
+    } else if (k == "fxtag") in_t.effects.back().tags.push_back(w[1]);
+    else if (k == "fxmod") in_t.effects.back().mods.push_back({std::stoll(w[1]), bits_to_double(hex64(w[2]))});
+    else if (k == "rank") in_t.ranks.push_back({{std::stoull(w[1]), std::stoll(w[2])}, {std::stoull(w[3]), std::stoll(w[4])}});
+    else if (k == "ignoredfx") cur.ignored_fx = std::stoi(w[1]);
+    else if (k == "evalfaults") cur.eval_faults = std::stoi(w[1]);
+    else if (k == "host") return parse_host_line(cur, w);
+    else if (k == "prog") cur.progs.push_back({std::stoll(w[1]), hex64(w[2])});
+    else if (k == "retail") {
+        if (w[1] == "prog") cur.retail.push_back({true, std::stoll(w[2]), bits_to_double(hex64(w[3])), 0});
+        else if (w[1] == "stat") cur.retail.push_back({false, std::stoll(w[2]), bits_to_double(hex64(w[3])), std::stoi(w[4])});
+        else return "unknown retail line";
+    } else if (k == "state") return parse_state_line(st_t, w);
+    else return "unknown fxcase line";
+    return nullptr;
+}
+
 bool load_corpus(const std::string& path, Corpus& c, std::string& err) {
     std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        err = "cannot open " + path;
-        return false;
-    }
+    if (!f) { err = "cannot open " + path; return false; }
     std::string line, cur_bundle, b64;
     size_t bundle_len = 0, line_no = 0;
     FxCase* cur = nullptr;
-    StatInputs* in_t = nullptr;   // where the lines of the inputs go: the case's, or the actor's inside an actor block
+    StatInputs* in_t = nullptr;
     TableState* st_t = nullptr;
-    bool in_actor = false;
-    bool skipping = false;  // a plain case: test_worldd_stats reads those
+    bool in_actor = false, skipping = false;
     while (std::getline(f, line)) {
         ++line_no;
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
@@ -214,130 +274,47 @@ bool load_corpus(const std::string& path, Corpus& c, std::string& err) {
         std::istringstream is(line);
         std::vector<std::string> w;
         for (std::string x; is >> x;) w.push_back(x);
-        auto bad = [&](const char* m) {
-            err = "line " + std::to_string(line_no) + ": " + m;
-            return false;
-        };
+        auto bad = [&](const char* m) { err = "line " + std::to_string(line_no) + ": " + m; return false; };
         if (!cur_bundle.empty()) {
             if (w[0] == "endbundle") {
                 std::vector<uint8_t> raw = base64_decode(b64);
                 if (raw.size() != bundle_len) return bad("bundle length");
                 c.bundles[cur_bundle] = std::move(raw);
                 cur_bundle.clear();
-            } else {
-                b64 += w[0];
-            }
+            } else b64 += w[0];
             continue;
         }
         const std::string& k = w[0];
-        if (skipping) {
-            if (k == "end") skipping = false;
-            continue;
-        }
+        if (skipping) { if (k == "end") skipping = false; continue; }
         if (k == "bundle") {
             if (w.size() != 3) return bad("bundle NAME LEN");
-            cur_bundle = w[1];
-            bundle_len = std::stoul(w[2]);
-            b64.clear();
+            cur_bundle = w[1]; bundle_len = std::stoul(w[2]); b64.clear();
         } else if (k == "derive") {
             if (w.size() != 4) return bad("derive");
             c.derived.push_back({w[1], w[2]});
-        } else if (k == "case" || k == "nodehost" || k == "gatherhost") {   // a plain case and a gatherhost block are test_worldd_stats's; a nodehost block is test_worldd_city_nodes's
+        } else if (k == "case" || k == "nodehost" || k == "gatherhost") {
             skipping = true;
         } else if (k == "fxcase") {
             if (w.size() != 5) return bad("fxcase");
-            c.cases.emplace_back();
-            cur = &c.cases.back();
-            cur->name = w[1];
-            cur->bundle = w[2];
-            cur->in.class_enum = std::stoi(w[3]);
-            cur->in.level = std::stoi(w[4]);
-            in_t = &cur->in;
-            st_t = &cur->state;
+            c.cases.emplace_back(); cur = &c.cases.back();
+            cur->name = w[1]; cur->bundle = w[2];
+            cur->in.class_enum = std::stoi(w[3]); cur->in.level = std::stoi(w[4]);
+            in_t = &cur->in; st_t = &cur->state;
         } else if (k == "end") {
             cur = nullptr;
         } else if (k == "actor" && cur) {
             if (w.size() != 4) return bad("actor ROLE CLASS LEVEL");
             cur->actors.push_back(std::make_shared<FxActor>());
             FxActor& a = *cur->actors.back();
-            a.role = std::stoi(w[1]);
-            a.in.class_enum = std::stoi(w[2]);
-            a.in.level = std::stoi(w[3]);
-            in_t = &a.in;
-            st_t = &a.state;
-            in_actor = true;
+            a.role = std::stoi(w[1]); a.in.class_enum = std::stoi(w[2]); a.in.level = std::stoi(w[3]);
+            in_t = &a.in; st_t = &a.state; in_actor = true;
         } else if (k == "endactor" && cur) {
-            in_t = &cur->in;
-            st_t = &cur->state;
-            in_actor = false;
+            in_t = &cur->in; st_t = &cur->state; in_actor = false;
         } else if (cur) {
-            if (k == "mod") in_t->mods.push_back({std::stoll(w[1]), bits_to_double(hex64(w[2]))});
-            else if (k == "tag") in_t->equipped.push_back({w[1], w[2]});
-            else if (k == "want") cur->want.push_back({std::stoll(w[1]), hex64(w[2])});
-            else if (k == "digest") {
-                cur->digest = hex64(w[1]);
-                cur->members = std::stoul(w[2]);
-                cur->faults = std::stoi(w[3]);
-                cur->ignored = std::stoi(w[4]);
-            } else if (k == "fx") {
-                ActiveEffect e;
-                e.effect = {std::stoull(w[1]), std::stoll(w[2])};
-                e.stacks = std::stoi(w[3]);
-                in_t->effects.push_back(std::move(e));
-            } else if (k == "fxtag") {
-                in_t->effects.back().tags.push_back(w[1]);
-            } else if (k == "fxmod") {
-                in_t->effects.back().mods.push_back({std::stoll(w[1]), bits_to_double(hex64(w[2]))});
-            } else if (k == "rank") {
-                in_t->ranks.push_back({{std::stoull(w[1]), std::stoll(w[2])}, {std::stoull(w[3]), std::stoll(w[4])}});
-            } else if (k == "ignoredfx") {
-                cur->ignored_fx = std::stoi(w[1]);
-            } else if (k == "evalfaults") {
-                cur->eval_faults = std::stoi(w[1]);
-            } else if (k == "host") {
-                if (w[1] == "seed") cur->host.rng.state = std::stoull(w[2]);
-                else if (w[1] == "progress") cur->host.progress[w[2] == "-" ? std::string() : w[2]] = bits_to_double(hex64(w[3]));
-                else if (w[1] == "inst") cur->host.inst[{std::stoull(w[2]), std::stoll(w[3])}] = bits_to_double(hex64(w[4]));
-                else if (w[1] == "hittag") cur->host.tags.insert(w[2]);
-                else if (w[1] == "hitflag") cur->host.flags.insert(w[2]);
-                else if (w[1] == "targets") cur->host.targets = bits_to_double(hex64(w[2]));
-                else if (w[1] == "xpdebt") cur->host.xp_debt = bits_to_double(hex64(w[2]));
-                else if (w[1] == "fn") cur->host.fns[w[2] + "|" + (w[3] == "-" ? std::string() : w[3])] = bits_to_double(hex64(w[4]));
-                else return bad("unknown host line");
-            } else if (k == "prog") {
-                cur->progs.push_back({std::stoll(w[1]), hex64(w[2])});
-            } else if (k == "retail") {
-                if (w[1] == "prog") cur->retail.push_back({true, std::stoll(w[2]), bits_to_double(hex64(w[3])), 0});
-                else if (w[1] == "stat") cur->retail.push_back({false, std::stoll(w[2]), bits_to_double(hex64(w[3])), std::stoi(w[4])});
-                else return bad("unknown retail line");
-            } else if (k == "state") {
-                TableState& s = *st_t;
-                const std::string& what = w[1];
-                if (what == "effect") s.effects[{std::stoull(w[2]), std::stoll(w[3])}] = bits_to_double(hex64(w[4]));
-                else if (what == "tag") s.tags[w[2]] = bits_to_double(hex64(w[3]));
-                else if (what == "skill") s.skills.insert({std::stoull(w[2]), std::stoll(w[3]), std::stoull(w[4]), std::stoll(w[5])});
-                else if (what == "combat") s.combat = true;
-                else if (what == "moving") s.moving_ = true;
-                else if (what == "unkillable") s.unkillable_ = true;
-                else if (what == "actor") s.actor = bits_to_double(hex64(w[2]));
-                else if (what == "prof") s.professions[w[2]] = bits_to_double(hex64(w[3]));
-                else if (what == "consumed") s.consumed[{std::stoull(w[2]), std::stoll(w[3])}] = bits_to_double(hex64(w[4]));
-                else if (what == "npc") s.npc = bits_to_double(hex64(w[2]));
-                else if (what == "dist") {
-                    const int i = std::stoi(w[2]);
-                    if (i < 0 || i >= 8) return bad("state dist: there are 8 stats");
-                    s.dist[i] = bits_to_double(hex64(w[3]));
-                } else return bad("unknown state line");
-            } else {
-                return bad("unknown fxcase line");
-            }
+            if (const char* m = parse_fxcase_line(*cur, *in_t, *st_t, w)) return bad(m);
         }
-        // other top-level lines (derive, refuse, fuzz, hostile) are test_worldd_stats's
     }
-    if (!cur_bundle.empty() || cur || skipping || in_actor) {
-        err = "unterminated bundle or case";
-        return false;
-    }
+    if (!cur_bundle.empty() || cur || skipping || in_actor) { err = "unterminated bundle or case"; return false; }
     return true;
 }
 // C | O | A : Cyb
@@ -373,7 +350,15 @@ uint64_t digest(const StatResult& r) {
     return h;
 }
 
-void test_corpus(Corpus& c, std::map<std::string, StatBundle>& bundles) {
+struct CorpusCounts {
+    size_t ncase = 0;
+    size_t nwant = 0;
+    size_t nprog = 0;
+    size_t nretail = 0;
+    size_t nactors = 0;
+};
+
+void load_corpus_bundles(Corpus& c, std::map<std::string, StatBundle>& bundles) {
     std::printf("bundles\n");
     for (const auto& [name, raw] : c.bundles) {
         StatBundle b;
@@ -387,7 +372,7 @@ void test_corpus(Corpus& c, std::map<std::string, StatBundle>& bundles) {
         CHECKF(it != c.bundles.end(), "derive %s: no bundle %s", name.c_str(), of.c_str());
         if (it == c.bundles.end()) continue;
         std::vector<uint8_t> raw = it->second;
-        raw[6] = 2;  // FlagDouble
+        raw[6] = 2;
         raw[7] = 0;
         StatBundle b;
         std::string err;
@@ -395,83 +380,91 @@ void test_corpus(Corpus& c, std::map<std::string, StatBundle>& bundles) {
         CHECKF(ok && b.mode == Mode::Double, "derived bundle %s: %s", name.c_str(), err.c_str());
         if (ok) bundles[name] = std::move(b);
     }
+}
+
+void check_fxcase_progs(const StatBundle& b, FxCase& cs, const StatResult& res, CorpusCounts& counts) {
+    ExprEvaluator ev(b, cs.in, cs.state, res);
+    CHECKF(ev.ok(), "fxcase %s: %s", cs.name.c_str(), ev.error().c_str());
+    if (!ev.ok()) return;
+    std::vector<StatResult> actor_results(cs.actors.size());
+    bool actors_ok = true;
+    for (size_t i = 0; i < cs.actors.size(); ++i) {
+        FxActor& a = *cs.actors[i];
+        std::string aerr;
+        const bool aran = run_stats(b, a.in, a.state, actor_results[i], aerr) && ev.set_actor(a.role, a.in, a.state, actor_results[i], aerr);
+        CHECKF(aran, "fxcase %s: actor %d: %s", cs.name.c_str(), a.role, aerr.c_str());
+        actors_ok = actors_ok && aran;
+    }
+    if (!actors_ok) return;
+    counts.nactors += cs.actors.size();
+    std::map<int64_t, double> value_of;
+    for (const auto& [prog, want] : cs.progs) {
+        double v = 0;
+        std::string e;
+        const bool good = ev.eval(prog, cs.host, v, e);
+        value_of[prog] = v;
+        ++counts.nprog;
+        CHECKF(good && double_bits(v) == want, "fxcase %s: program %lld gives %016llx (%s), Go has %016llx", cs.name.c_str(), static_cast<long long>(prog),
+               static_cast<unsigned long long>(double_bits(v)), e.c_str(), static_cast<unsigned long long>(want));
+    }
+    CHECKF(ev.faults() == cs.eval_faults, "fxcase %s: %d evaluation faults, Go has %d", cs.name.c_str(), ev.faults(), cs.eval_faults);
+    for (const FxCase::Retail& r : cs.retail) {
+        if (!r.is_prog) continue;
+        const auto at = value_of.find(r.id);
+        CHECKF(at != value_of.end() && at->second == r.value, "fxcase %s: the retail value %g of program %lld", cs.name.c_str(), r.value, static_cast<long long>(r.id));
+        ++counts.nretail;
+    }
+}
+
+void check_fxcase(const StatBundle& b, FxCase& cs, CorpusCounts& counts) {
+    StatResult res;
+    std::string err;
+    const bool ran = run_stats(b, cs.in, cs.state, res, err);
+    CHECKF(ran, "fxcase %s: %s", cs.name.c_str(), err.c_str());
+    if (!ran) return;
+    ++counts.ncase;
+    CHECKF(res.stats.size() == cs.members && res.faults == cs.faults && res.ignored_mods == cs.ignored && res.ignored_effect_mods == cs.ignored_fx,
+           "fxcase %s: %zu stats, %d faults, %d ignored mods, %d ignored effect mods; the corpus has %zu, %d, %d, %d", cs.name.c_str(),
+           res.stats.size(), res.faults, res.ignored_mods, res.ignored_effect_mods, cs.members, cs.faults, cs.ignored, cs.ignored_fx);
+    bool values_ok = cs.want.empty() || cs.want.size() == res.stats.size();
+    for (size_t i = 0; values_ok && i < cs.want.size(); ++i) {
+        ++counts.nwant;
+        if (cs.want[i].first != res.stats[i].guid || cs.want[i].second != double_bits(res.stats[i].value)) {
+            values_ok = false;
+            std::printf("    stat %lld is %016llx, Go has %016llx\n", static_cast<long long>(res.stats[i].guid),
+                        static_cast<unsigned long long>(double_bits(res.stats[i].value)), static_cast<unsigned long long>(cs.want[i].second));
+        }
+    }
+    CHECKF(values_ok, "fxcase %s: the values differ from the Go engine's", cs.name.c_str());
+    CHECKF(digest(res) == cs.digest, "fxcase %s: digest %016llx, Go has %016llx", cs.name.c_str(),
+           static_cast<unsigned long long>(digest(res)), static_cast<unsigned long long>(cs.digest));
+    CHECKF(res.values.size() == b.stats.size(), "fxcase %s: the run holds every stat's value", cs.name.c_str());
+    for (const FxCase::Retail& r : cs.retail) {
+        if (r.is_prog) continue;
+        const auto at = b.by_guid.find(r.id);
+        const double p = std::pow(10.0, r.digits);
+        CHECKF(at != b.by_guid.end() && std::round(res.values[at->second] * p) / p == r.value,
+               "fxcase %s: the retail value %g of stat %lld", cs.name.c_str(), r.value, static_cast<long long>(r.id));
+        ++counts.nretail;
+    }
+    if (!cs.progs.empty()) check_fxcase_progs(b, cs, res, counts);
+}
+
+void test_corpus(Corpus& c, std::map<std::string, StatBundle>& bundles) {
+    load_corpus_bundles(c, bundles);
     std::printf("fxcases\n");
-    size_t ncase = 0, nwant = 0, nprog = 0, nretail = 0, nactors = 0;
+    CorpusCounts counts;
     for (FxCase& cs : c.cases) {
         auto it = bundles.find(cs.bundle);
         CHECKF(it != bundles.end(), "fxcase %s: no bundle %s", cs.name.c_str(), cs.bundle.c_str());
-        if (it == bundles.end()) continue;
-        const StatBundle& b = it->second;
-        StatResult res;
-        std::string err;
-        const bool ran = run_stats(b, cs.in, cs.state, res, err);
-        CHECKF(ran, "fxcase %s: %s", cs.name.c_str(), err.c_str());
-        if (!ran) continue;
-        ++ncase;
-        CHECKF(res.stats.size() == cs.members && res.faults == cs.faults && res.ignored_mods == cs.ignored && res.ignored_effect_mods == cs.ignored_fx,
-               "fxcase %s: %zu stats, %d faults, %d ignored mods, %d ignored effect mods; the corpus has %zu, %d, %d, %d", cs.name.c_str(),
-               res.stats.size(), res.faults, res.ignored_mods, res.ignored_effect_mods, cs.members, cs.faults, cs.ignored, cs.ignored_fx);
-        bool values_ok = cs.want.empty() || cs.want.size() == res.stats.size();
-        for (size_t i = 0; values_ok && i < cs.want.size(); ++i) {
-            ++nwant;
-            if (cs.want[i].first != res.stats[i].guid || cs.want[i].second != double_bits(res.stats[i].value)) {
-                values_ok = false;
-                std::printf("    stat %lld is %016llx, Go has %016llx\n", static_cast<long long>(res.stats[i].guid),
-                            static_cast<unsigned long long>(double_bits(res.stats[i].value)), static_cast<unsigned long long>(cs.want[i].second));
-            }
-        }
-        CHECKF(values_ok, "fxcase %s: the values differ from the Go engine's", cs.name.c_str());
-        CHECKF(digest(res) == cs.digest, "fxcase %s: digest %016llx, Go has %016llx", cs.name.c_str(),
-               static_cast<unsigned long long>(digest(res)), static_cast<unsigned long long>(cs.digest));
-        CHECKF(res.values.size() == b.stats.size(), "fxcase %s: the run holds every stat's value", cs.name.c_str());
-        for (const FxCase::Retail& r : cs.retail) {
-            if (r.is_prog) continue;
-            const auto at = b.by_guid.find(r.id);
-            const double p = std::pow(10.0, r.digits);
-            CHECKF(at != b.by_guid.end() && std::round(res.values[at->second] * p) / p == r.value, "fxcase %s: the retail value %g of stat %lld", cs.name.c_str(), r.value,
-                   static_cast<long long>(r.id));
-            ++nretail;
-        }
-        if (!cs.progs.empty()) {
-            ExprEvaluator ev(b, cs.in, cs.state, res);
-            CHECKF(ev.ok(), "fxcase %s: %s", cs.name.c_str(), ev.error().c_str());
-            if (!ev.ok()) continue;
-            // the other actors of the hit, each run on its own (their results live as long as the evaluator is used)
-            std::vector<StatResult> actor_results(cs.actors.size());
-            bool actors_ok = true;
-            for (size_t i = 0; i < cs.actors.size(); ++i) {
-                FxActor& a = *cs.actors[i];
-                std::string aerr;
-                const bool aran = run_stats(b, a.in, a.state, actor_results[i], aerr) && ev.set_actor(a.role, a.in, a.state, actor_results[i], aerr);
-                CHECKF(aran, "fxcase %s: actor %d: %s", cs.name.c_str(), a.role, aerr.c_str());
-                actors_ok = actors_ok && aran;
-            }
-            if (!actors_ok) continue;
-            nactors += cs.actors.size();
-            std::map<int64_t, double> value_of;
-            for (const auto& [prog, want] : cs.progs) {
-                double v = 0;
-                std::string e;
-                const bool good = ev.eval(prog, cs.host, v, e);
-                value_of[prog] = v;
-                ++nprog;
-                CHECKF(good && double_bits(v) == want, "fxcase %s: program %lld gives %016llx (%s), Go has %016llx", cs.name.c_str(), static_cast<long long>(prog),
-                       static_cast<unsigned long long>(double_bits(v)), e.c_str(), static_cast<unsigned long long>(want));
-            }
-            CHECKF(ev.faults() == cs.eval_faults, "fxcase %s: %d evaluation faults, Go has %d", cs.name.c_str(), ev.faults(), cs.eval_faults);
-            for (const FxCase::Retail& r : cs.retail) {
-                if (!r.is_prog) continue;
-                const auto at = value_of.find(r.id);
-                CHECKF(at != value_of.end() && at->second == r.value, "fxcase %s: the retail value %g of program %lld", cs.name.c_str(), r.value, static_cast<long long>(r.id));
-                ++nretail;
-            }
-        }
+        if (it != bundles.end()) check_fxcase(it->second, cs, counts);
     }
-    std::printf("  %zu fxcases, %zu values, %zu expression results and %zu retail numbers checked\n", ncase, nwant, nprog, nretail);
-    CHECK(ncase >= 14, "the corpus has its fxcases");
-    CHECK(nactors >= 6, "the corpus has the other actors of a hit");
-    CHECK(nprog >= 3000, "the corpus has its expression results");
-    CHECK(nretail >= 12, "the corpus has the retail numbers: the Mana costs, the Sprint, Glee and Note_Comedy");
+    std::printf("  %zu fxcases, %zu values, %zu expression results and %zu retail numbers checked\n",
+                counts.ncase, counts.nwant, counts.nprog, counts.nretail);
+    CHECK(counts.ncase >= 14, "the corpus has its fxcases");
+    CHECK(counts.nactors >= 6, "the corpus has the other actors of a hit");
+    CHECK(counts.nprog >= 3000, "the corpus has its expression results");
+    CHECK(counts.nretail >= 12, "the corpus has the retail numbers: the Mana costs, the Sprint, Glee and Note_Comedy");
 }
 
 // ---- by hand, on the tiny graph (the guids are statprog.TinyGraph's: 1000 + n) ----------------------------------------------
@@ -489,7 +482,7 @@ const StatOut* find(const StatResult& r, int n) {
 
 double f32(double x) { return static_cast<double>(static_cast<float>(x)); }
 
-void test_forms_by_hand(const StatBundle& b) {
+void test_forms_by_hand_mods(const StatBundle& b) {
     std::printf("the three forms of an effect mod\n");
     StatInputs in;
     in.class_enum = 2;
@@ -511,15 +504,19 @@ void test_forms_by_hand(const StatBundle& b) {
     e3.mods = {{1019, 100}};
     in.effects = {e1, e2, e3};
     CHECK(run_stats(b, in, StatState{}, res, err), "with effects");
-    CHECKF(res.ignored_effect_mods == 1 && res.faults == bare.faults, "a mod for a stat the bundle does not have is ignored and counted, and the effects add no fault (%d ignored, %d faults, bare %d)", res.ignored_effect_mods, res.faults, bare.faults);
+    CHECKF(res.ignored_effect_mods == 1 && res.faults == bare.faults,
+           "a mod for a stat the bundle does not have is ignored and counted, and the effects add no fault (%d ignored, %d faults, bare %d)",
+           res.ignored_effect_mods, res.faults, bare.faults);
     const double speed0 = find(bare, 19)->value, heal0 = find(bare, 20)->value, compl0 = find(bare, 17)->value;
     CHECK(speed0 == 1 && heal0 == f32(1 + 80.0 / 4000.0) && compl0 == f32(1 - 80.0 / 1000.0), "the bare values");
     CHECK(find(res, 19)->value == f32(1 + 0.25 * 2 + 0.125), "an additive stat adds the mod times the stacks");
     CHECK(find(res, 20)->value == f32(heal0 * 1.05 * 1.05 * 1.1), "a multiplying stat multiplies once per stack");
     CHECK(find(res, 17)->value == f32(compl0 * (1 - 0.1) * (1 - 0.1) * (1 - 0.5)), "a complement stat multiplies by one minus the mod, once per stack");
     CHECK(find(res, 1)->value == find(bare, 1)->value && find(res, 3)->value == find(bare, 3)->value, "a stat no effect names is untouched");
+}
 
-    // the retail values: Mitigation 0.9652 -> 0.9362 under 0.03 (x (1 - v)); HealingMult 1.1025 -> 1.1576 under 1.05 (x v)
+void test_forms_by_hand_retail_and_limits(const StatBundle& b) {
+    std::string err;
     StatInputs m;
     m.class_enum = 2;
     m.level = 20;
@@ -528,7 +525,7 @@ void test_forms_by_hand(const StatBundle& b) {
     glee.effect = effect_ref(1);
     glee.stacks = 1;
     glee.mods = {{1017, 0.03}};
-    StatResult before, after;
+    StatResult before, after, res;
     CHECK(run_stats(b, m, StatState{}, before, err) && std::fabs(find(before, 17)->value - 0.9652) < 1e-6, "Mitigation 0.9652");
     m.effects = {glee};
     CHECK(run_stats(b, m, StatState{}, after, err) && std::round(find(after, 17)->value * 1e4) / 1e4 == 0.9362 &&
@@ -546,7 +543,6 @@ void test_forms_by_hand(const StatBundle& b) {
     CHECK(run_stats(b, h, StatState{}, after, err) && std::round(find(after, 20)->value * 1e4) / 1e4 == 1.1576 &&
               std::fabs(find(after, 20)->value - 1.1025 * 1.05) < 1e-6, "...is 1.1576 under 1.05");
 
-    // the limits bind the result
     StatInputs big;
     big.class_enum = 2;
     big.level = 20;
@@ -558,7 +554,6 @@ void test_forms_by_hand(const StatBundle& b) {
     CHECK(run_stats(b, big, StatState{}, res, err) && find(res, 19)->value == 10 && find(res, 17)->value >= 0 && find(res, 17)->value < 1e-30,
           "Speed stops at its maximum 10, a complement after 4096 stacks of 0.999 is near 0");
 
-    // effects feed what reads the stat
     StatInputs feed;
     feed.class_enum = 1;
     feed.level = 20;
@@ -572,6 +567,11 @@ void test_forms_by_hand(const StatBundle& b) {
     CHECK(run_stats(b, feed, StatState{}, withfx, err) && find(withfx, 1)->value == find(nofx, 1)->value + 10 && find(withfx, 2)->value != find(nofx, 2)->value,
           "Str + 10 moves Dex, which reads it");
     CHECK(find(withfx, 1)->equip == 0 && find(withfx, 1)->base == find(nofx, 1)->base, "the equipment and base of a stat are not the effects'");
+}
+
+void test_forms_by_hand(const StatBundle& b) {
+    test_forms_by_hand_mods(b);
+    test_forms_by_hand_retail_and_limits(b);
 }
 // Cyb - C O A
 
