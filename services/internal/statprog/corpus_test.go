@@ -12,8 +12,8 @@ import (
 	"testing"
 )
 
-// The corpus file is shared with the C++ test: server/worldd/stats/testdata/corpus.txt.
-var corpusPath = filepath.Join("..", "..", "..", "server", "worldd", "stats", "testdata", "corpus.txt")
+// The corpus file is shared with the C++ test: libs/aocstats/testdata/corpus.txt.
+var corpusPath = filepath.Join("..", "..", "..", "libs", "aocstats", "testdata", "corpus.txt")
 
 // TestCorpusReplay runs the committed corpus through the Go engine, as the C++ test runs it through
 // its own: it needs no content.db.
@@ -54,7 +54,7 @@ func TestCorpusReplay(t *testing.T) {
 
 // TestCorpusUpToDate fails when the file is not what the compiler and the engine produce now. Regenerate it with
 //
-//	go run ./internal/statprog/cmd/statprog corpus --out ../server/worldd/stats/testdata/corpus.txt
+//	go run ./internal/statprog/cmd/statprog corpus --out ../libs/aocstats/testdata/corpus.txt
 func TestCorpusUpToDate(t *testing.T) {
 	path := contentDBPath(t)
 	want, err := BuildCorpus(path)

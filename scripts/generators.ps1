@@ -3,7 +3,7 @@
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
 # ============================================================================
-#  generators.ps1 - run every generated-file check of tools/capture (plan E1 review I2)
+#  generators.ps1 - run every generated-file check of tools/schemagen (plan E1 review I2)
 #
 #  Usage (PowerShell, from anywhere):
 #      .\scripts\generators.ps1                       # every gen_*.py --check whose inputs are at hand; exit 1 on a change or a failure
@@ -91,7 +91,7 @@ try {
             Push-Location (Join-Path $root 'services')
             try { & $goExe @($g.go) 2>&1 | ForEach-Object { "$_" } | Write-Host; $code = $LASTEXITCODE } finally { Pop-Location }
         } else {
-            $script = Join-Path $root ("tools\capture\" + $(if ($g.script) { $g.script } else { $g.name }) + ".py")
+            $script = Join-Path $root ("tools\schemagen\" + $(if ($g.script) { $g.script } else { $g.name }) + ".py")
             Write-Host ("== $($g.name) " + ($g.args -join ' '))
             & $python $script @($g.args) 2>&1 | ForEach-Object { "$_" } | Write-Host
             $code = $LASTEXITCODE

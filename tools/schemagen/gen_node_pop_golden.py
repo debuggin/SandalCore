@@ -22,7 +22,7 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+sys.path[:0] = [HERE, os.path.join(HERE, '..', 'capture')]
 import node_pop_oracle as N  # noqa: E402
 import pop_oracle as P  # noqa: E402
 

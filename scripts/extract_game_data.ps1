@@ -394,9 +394,9 @@ function Get-CodeContentc { Get-CodeHash @('services\cmd\contentc', 'services\in
 function Get-CodeNpcAbilities { Get-CodeHash @('tools\npcabilities') }
 function Get-CodeItemNames { Get-CodeHash @('tools\itemnames') }
 # WHY: CMakeLists.txt is intentionally excluded from Get-CodeGens, Get-CodeNav, and Get-CodeLayouts so CMake topology edits never invalidate game data stamps.
-function Get-CodeGens     { Get-CodeHash @('tools\capture\gen_zoi_surface.py', 'tools\capture\gen_region_rects.py', 'tools\capture\gen_region.py', 'tools\capture\gen_node_constants.py', 'tools\capture\gen_gm_garden.py', 'tools\capture\gen_tooltips.py', 'tools\worldd\gen_gear_fixture.py', 'tools\worldd\gen_talent_fixture.py') }
+function Get-CodeGens     { Get-CodeHash @('tools\schemagen\gen_zoi_surface.py', 'tools\schemagen\gen_region_rects.py', 'tools\schemagen\gen_region.py', 'tools\schemagen\gen_node_constants.py', 'tools\schemagen\gen_gm_garden.py', 'tools\schemagen\gen_tooltips.py', 'tools\schemagen\gen_gear_fixture.py', 'tools\schemagen\gen_talent_fixture.py') }
 function Get-CodeNav      { Get-CodeHash @('libs\aocnav', 'tools\navbuild', 'third_party\recastnavigation', 'vcpkg.json') <# server\worldd\nav #> }
-# The level each node starts at in the server's seed file (deploy\citynode_seed.json): the towns' buildings are listed at those levels (tools\capture\gen_town_layouts.py), so a change of a
+# The level each node starts at in the server's seed file (deploy\citynode_seed.json): the towns' buildings are listed at those levels (tools\schemagen\gen_town_layouts.py), so a change of a
 # level there changes the list and the navigation mesh.  Only "nodes" counts: the workshops and the comment do not change what the map holds.
 function Get-SeedLevels {
     $path = Join-Path $repoRoot 'deploy\citynode_seed.json'
@@ -407,7 +407,7 @@ function Get-SeedLevels {
     $pairs.Sort([System.StringComparer]::OrdinalIgnoreCase)
     return ($pairs -join ';')
 }
-function Get-CodeLayouts  { (Get-CodeHash @('tools\capture\gen_town_layouts.py')) + ' ' + (Get-SeedLevels) }
+function Get-CodeLayouts  { (Get-CodeHash @('tools\schemagen\gen_town_layouts.py')) + ' ' + (Get-SeedLevels) }
 $ids = @{}
 
 # A step's id says what its output is a function of: the player's game files, the code that makes it and the ids of the steps it reads.
@@ -500,13 +500,13 @@ $steps = @(
     @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'fixtures\region\riverlands_rects.json', 'fixtures\region\riverlands_zoi_rects.json', 'server\worldd\spawns\region_data.h', 'tools\mapc\region_rects.tsv'); Run = {
         Assert-Files @('dist\content\content.db', 'tools\mapc\bin\Release\net8.0\mapc.dll') 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'export-zoi', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_zoi'
-        $gen = Join-Path $repoRoot 'tools\capture'
+        $gen = Join-Path $repoRoot 'tools\schemagen'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_region_rects.py'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', (Join-Path $outDir 'content.db'))) 'gen_region_rects'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_region.py'))) 'gen_region'
     } },
     @{ Name = 'headers'; Title = "Generate worldd's tables and the citynode constants"; Outputs = @('server\worldd\world\zoi_surface_table.h', 'server\worldd\world\node_constants.h', 'services\internal\citynode\constants_gen.go', 'server\worldd\spawns\garden_defs.h'); Run = {
         Assert-Files @('dist\content\content.db', 'dist\content\zoi_chunks', 'dist\content\client_config\DefaultAoCRecordConstants.ini') 'run the earlier steps first'
-        $gen = Join-Path $repoRoot 'tools\capture'
+        $gen = Join-Path $repoRoot 'tools\schemagen'
         $db = Join-Path $outDir 'content.db'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_zoi_surface.py'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', $db)) 'gen_zoi_surface'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_node_constants.py'), '--ini', (Join-Path $outDir 'client_config\DefaultAoCRecordConstants.ini'))) 'gen_node_constants'
@@ -517,9 +517,9 @@ $steps = @(
         $db = Join-Path $outDir 'content.db'
         New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'libs\aocstats\testdata') | Out-Null
         Invoke-Checked $statprog @('corpus', '--db', $db, '--out', (Join-Path $repoRoot 'libs\aocstats\testdata\corpus.txt')) 'statprog_corpus'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\worldd\gen_talent_fixture.py'), $db)) 'gen_talent_fixture'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\worldd\gen_gear_fixture.py'), $db)) 'gen_gear_fixture'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\capture\gen_tooltips.py'), '--db', $db)) 'gen_tooltips'
+        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_talent_fixture.py'), $db)) 'gen_talent_fixture'
+        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_gear_fixture.py'), $db)) 'gen_gear_fixture'
+        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_tooltips.py'), '--db', $db)) 'gen_tooltips'
     } },
     @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++; the first build also builds the C++ libraries with vcpkg)'; Outputs = @('dist\Release\aoc_navbuild.exe'); Run = {
         Assert-Files @('server\worldd\world\zoi_surface_table.h', 'server\worldd\spawns\region_data.h', 'server\worldd\spawns\garden_defs.h') 'run the earlier steps first'
@@ -539,7 +539,7 @@ $steps = @(
     } },
     @{ Name = 'townlayouts'; Title = 'Read the buildings, walls and terraces of the five towns (a list from content.db, then the meshes it names from the game, mapc; a few seconds)'; Outputs = @('dist\content\town_layout_items.tsv', 'dist\content\town_layouts.bin'); Run = {
         Assert-Files @('dist\content\content.db', 'tools\mapc\bin\Release\net8.0\mapc.dll') 'run the tools and database steps first'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\capture\gen_town_layouts.py'), '--content-db', (Join-Path $outDir 'content.db'), '--out', (Join-Path $outDir 'town_layout_items.tsv'))) 'gen_town_layouts'
+        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_town_layouts.py'), '--content-db', (Join-Path $outDir 'content.db'), '--out', (Join-Path $outDir 'town_layout_items.tsv'))) 'gen_town_layouts'
         Invoke-Checked $dotnet @($mapcDll, 'town-layouts', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir, '--min-free-gb', '8') 'mapc_town_layouts'
     } },
     @{ Name = 'npcabilities'; Title = 'Read the creature Blueprints and animation montages that give the creatures their attacks, what every creature notices and how far it follows, and the humanoid Blueprints and records that dress and name the people (tools/npcabilities; about two minutes)'; Outputs = @('dist\content\npc_abilities.tsv', 'dist\content\npc_montages.tsv', 'dist\content\npc_targeting.tsv', 'dist\content\npc_senses.tsv', 'dist\content\npc_aggro_curves.tsv', 'dist\content\npc_looks.tsv', 'dist\content\npc_appearances.tsv', 'dist\content\npc_names.tsv', 'dist\content\npc_trees.tsv'); Run = {

@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-// Package quests keeps the saved quest log of each character (quests milestone, slice 1, "take a quest"): the quests it took and has not finished, how often
+// Package quest keeps the saved quest log of each character (quests milestone, slice 1, "take a quest"): the quests it took and has not finished, how often
 // it finished each, its quest variables, and the inbox of GM commands for it. worldd is the only writer of a log while its character plays: it loads the
 // log at login and saves the whole log whenever it changes. The rules of the quests (what a quest needs, what it does) are worldd's; this package stores
 // and validates what it is told, and removes a character's rows with the character (the tables cascade).
-package quests
+package quest
 
 import (
 	"context"

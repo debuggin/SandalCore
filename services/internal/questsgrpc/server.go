@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-// Package questsgrpc serves aoc.quest.v1.QuestService over internal/quests.
+// Package questsgrpc serves aoc.quest.v1.QuestService over internal/quest.
 package questsgrpc
 
 import (
@@ -15,20 +15,20 @@ import (
 	"google.golang.org/grpc/status"
 
 	questv1 "aocrop/services/gen/aoc/quest/v1"
-	"aocrop/services/internal/quests"
+	"aocrop/services/internal/quest"
 )
 
 // Server implements questv1.QuestServiceServer.
 type Server struct {
 	questv1.UnimplementedQuestServiceServer
-	svc *quests.Service
+	svc *quest.Service
 }
 
 // NewServer serves svc.
-func NewServer(svc *quests.Service) *Server { return &Server{svc: svc} }
+func NewServer(svc *quest.Service) *Server { return &Server{svc: svc} }
 
 // New serves svc.
-func New(svc *quests.Service) *Server { return NewServer(svc) }
+func New(svc *quest.Service) *Server { return NewServer(svc) }
 
 func (s *Server) LoadLog(ctx context.Context, r *questv1.LoadLogRequest) (*questv1.LoadLogResponse, error) {
 	log, err := s.svc.LoadLog(ctx, r.GetCharacterId())
@@ -64,9 +64,9 @@ func (s *Server) TakeCommands(ctx context.Context, r *questv1.TakeCommandsReques
 // toStatus maps a service error to the gRPC code a caller can act on.
 func toStatus(ctx context.Context, err error) error {
 	switch {
-	case errors.Is(err, quests.ErrNotFound):
+	case errors.Is(err, quest.ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, quests.ErrInvalid):
+	case errors.Is(err, quest.ErrInvalid):
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {

@@ -2,13 +2,8 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-// quests serves aoc.quest.v1.QuestService, the saved quest log of each character (quests milestone, slice 1): the quests it took, the ones it finished,
-// its quest variables, and the inbox of GM commands for it. worldd and questctl call it.
-//
-//	quests
-//
-// It uses the same database as the other services (AOC_DATABASE_URL; migration 0016 makes its tables) and the same service token
-// (AOC_SERVICE_TOKEN_FILE). AOC_QUESTS_GRPC_ADDR (default 127.0.0.1:50058) sets the address.
+// Command quest serves aoc.quest.v1.QuestService over gRPC.
+
 package main
 
 import (
@@ -25,7 +20,7 @@ import (
 	questv1 "aocrop/services/gen/aoc/quest/v1"
 	"aocrop/services/internal/config"
 	"aocrop/services/internal/db"
-	"aocrop/services/internal/quests"
+	"aocrop/services/internal/quest"
 	"aocrop/services/internal/questsgrpc"
 	"aocrop/services/internal/svcauth"
 )
@@ -60,7 +55,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	srv := newServer(token, quests.New(pool))
+	srv := newServer(token, quest.New(pool))
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(lis) }()
@@ -77,14 +72,12 @@ func run() error {
 	return err
 }
 
-// newServer is the gRPC server world and questctl call. It requires the service token.
-func newServer(token svcauth.Token, svc *quests.Service) *grpc.Server {
+func newServer(token svcauth.Token, svc *quest.Service) *grpc.Server {
 	s := grpc.NewServer(token.ServerOptions()...)
 	questv1.RegisterQuestServiceServer(s, questsgrpc.NewServer(svc))
 	return s
 }
 
-// startupErr is nil when the stop signal is what ended startup.
 func startupErr(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return nil
