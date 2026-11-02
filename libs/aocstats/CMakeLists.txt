@@ -15,7 +15,10 @@ target_include_directories(aocstats PUBLIC
     "${PROJECT_SOURCE_DIR}/server/worldd"
 )
 
-add_executable(test_world_stats tests/test_worldd_stats.cpp)
+add_executable(test_world_stats
+    tests/test_worldd_stats.cpp
+    tests/test_worldd_stats_combat.cpp
+)
 target_link_libraries(test_world_stats PRIVATE aocstats)
 target_compile_definitions(test_world_stats PRIVATE
     STATS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/testdata/corpus.txt"
