@@ -42,7 +42,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# ── Resolve paths from script location ──────────────────────────────────
+# -- Resolve paths from script location ----------------------------------
 $repoRoot   = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $buildDir   = Join-Path $repoRoot 'build\x64'
 $distDir    = Join-Path $repoRoot "dist\$Config"
@@ -51,7 +51,7 @@ Write-Host "Repo root: $repoRoot"
 Write-Host "Build dir: $buildDir"
 Write-Host "Config   : $Config"
 
-# ── Find vswhere (used below to help locate cmake) ──────────────────────
+# -- Find vswhere (used below to help locate cmake) ----------------------
 $vswhere = "$env:ProgramFiles (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) {
     $vswhere = "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -72,14 +72,14 @@ if (-not $cmake) {
 }
 Write-Host "cmake    : $cmake"
 
-# ── Clean ────────────────────────────────────────────────────────────────
+# -- Clean ----------------------------------------------------------------
 if ($Clean -and (Test-Path $buildDir)) {
     Write-Host "Removing $buildDir ..."
     Remove-Item -Recurse -Force $buildDir
 }
 # == C | O | A | Cyb ==
 
-# ── Locate vcpkg ────────────────────────────────────────────────────────
+# -- Locate vcpkg --------------------------------------------------------
 # Check $env:VCPKG_ROOT first, then fall back to common locations including
 # the VS2022-integrated vcpkg.
 function Find-Vcpkg {
@@ -111,7 +111,7 @@ if ($vcpkgRoot) {
     Write-Warning "vcpkg not found. Install from https://github.com/microsoft/vcpkg or set VCPKG_ROOT."
 }
 
-# ── Configure (CMake) if needed ─────────────────────────────────────────
+# -- Configure (CMake) if needed -----------------------------------------
 # A build folder copied along with the repo still points at the old folder; start it fresh.
 $cacheFile = Join-Path $buildDir 'CMakeCache.txt'
 if (Test-Path $cacheFile) {
@@ -155,7 +155,7 @@ if (-not $needConfigure -and $vcpkgRoot -and (Test-Path $cacheFile) -and
     Write-Host "Note: this build folder still runs vcpkg's DLL copy after every program; build.ps1 -Configure switches it off (it works either way)."
 }
 
-# ── Build target(s) ──────────────────────────────────────────────────────
+# -- Build target(s) ------------------------------------------------------
 $targets = if ($Target -eq 'all') {
     @('tether_server','launcher','worldd')
 } else {
@@ -182,7 +182,7 @@ foreach ($t in $targets) {
     }
 }
 
-# ── Runtime DLLs ─────────────────────────────────────────────────────────
+# -- Runtime DLLs ---------------------------------------------------------
 # The programs load vcpkg's DLLs from their own folder. With vcpkg's per-program copy off (see the header), copy them once here: the ones that
 # are missing in dist\<Config>, older than the vcpkg copy, or of another size. The folder is read from the CMake cache.
 $vcpkgInstalled = $null
@@ -208,7 +208,7 @@ if ($dllSource -and (Test-Path $dllSource)) {
     Write-Host "Runtime DLLs: $copied copied, $kept already up to date ($dllSource)"
 }
 
-# ── Run tests if requested ──────────────────────────────────────────────
+# -- Run tests if requested ----------------------------------------------
 # Delegate to run_tests.ps1: it builds every CMake target (including the
 # aocnet library and every libs/aocnet/tests + src/tools test executable,
 # not just the target(s) built above) and then runs every dist\<Config>\

@@ -9,7 +9,7 @@ function Read-SandalConfigValue {
         [Parameter(Mandatory)][AllowEmptyString()][string]$CurrentValue,
         [scriptblock]$PromptReader = $null
     )
-    $promptText = "WSL2 $Key [current: $CurrentValue] — press Enter to keep, or type new value:"
+    $promptText = "WSL2 $Key [current: $CurrentValue] -- press Enter to keep, or type new value:"
     $raw = if ($null -ne $PromptReader) {
         & $PromptReader $promptText $Key $CurrentValue
     } else {
