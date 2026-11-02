@@ -160,8 +160,8 @@ func TestRealGatherTables(t *testing.T) {
 			t.Errorf("placed nodes %v: %d, want %d", k, placedBy[k], want)
 		}
 	}
-	// the GM garden's 10 (server/worldd/spawns/garden_defs.h)
-	header, err := os.ReadFile(repoFile("server", "worldd", "spawns", "garden_defs.h"))
+	// the GM garden's 10 (server/world/spawns/garden_defs.h)
+	header, err := os.ReadFile(repoFile("server", "world", "spawns", "garden_defs.h"))
 	if err != nil {
 		t.Skipf("no garden defs: %v", err)
 	}

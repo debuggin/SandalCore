@@ -12,7 +12,7 @@ add_library(aocstats STATIC
 add_library(world_stats ALIAS aocstats)
 target_include_directories(aocstats PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${PROJECT_SOURCE_DIR}/server/worldd"
+    "${PROJECT_SOURCE_DIR}/server/world"
 )
 
 add_executable(test_world_stats

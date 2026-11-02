@@ -12,7 +12,7 @@
 #
 #  Usage:
 #      .\scripts\build.ps1                  # build all default targets
-#      .\scripts\build.ps1 -Target worldd
+#      .\scripts\build.ps1 -Target world
 #      .\scripts\build.ps1 -Config Debug
 #      .\scripts\build.ps1 -Clean           # clean first
 #      .\scripts\build.ps1 -Test            # build, then run scripts\run_tests.ps1
@@ -157,7 +157,7 @@ if (-not $needConfigure -and $vcpkgRoot -and (Test-Path $cacheFile) -and
 
 # -- Build target(s) ------------------------------------------------------
 $targets = if ($Target -eq 'all') {
-    @('tether_server','launcher','worldd')
+    @('tether_server','launcher','world')
 } else {
     @($Target)
 }

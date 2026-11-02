@@ -497,14 +497,14 @@ $steps = @(
                 '--artisan-curves', (Join-Path $outDir 'artisan_curves.tsv'), '--item-names', (Join-Path $outDir 'item_names.tsv'), '--out', (Join-Path $outDir 'content.db')) 'contentc'
         } finally { $env:GOMEMLIMIT = $savedLimit }
     } },
-    @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'fixtures\region\riverlands_rects.json', 'fixtures\region\riverlands_zoi_rects.json', 'server\worldd\spawns\region_data.h', 'tools\mapc\region_rects.tsv'); Run = {
+    @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'fixtures\region\riverlands_rects.json', 'fixtures\region\riverlands_zoi_rects.json', 'server\world\spawns\region_data.h', 'tools\mapc\region_rects.tsv'); Run = {
         Assert-Files @('dist\content\content.db', 'tools\mapc\bin\Release\net8.0\mapc.dll') 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'export-zoi', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_zoi'
         $gen = Join-Path $repoRoot 'tools\schemagen'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_region_rects.py'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', (Join-Path $outDir 'content.db'))) 'gen_region_rects'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_region.py'))) 'gen_region'
     } },
-    @{ Name = 'headers'; Title = "Generate worldd's tables and the citynode constants"; Outputs = @('server\worldd\world\zoi_surface_table.h', 'server\worldd\world\node_constants.h', 'services\internal\citynode\constants_gen.go', 'server\worldd\spawns\garden_defs.h'); Run = {
+    @{ Name = 'headers'; Title = "Generate worldd's tables and the citynode constants"; Outputs = @('server\world\world\zoi_surface_table.h', 'server\world\world\node_constants.h', 'services\internal\citynode\constants_gen.go', 'server\world\spawns\garden_defs.h'); Run = {
         Assert-Files @('dist\content\content.db', 'dist\content\zoi_chunks', 'dist\content\client_config\DefaultAoCRecordConstants.ini') 'run the earlier steps first'
         $gen = Join-Path $repoRoot 'tools\schemagen'
         $db = Join-Path $outDir 'content.db'
@@ -512,7 +512,7 @@ $steps = @(
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_node_constants.py'), '--ini', (Join-Path $outDir 'client_config\DefaultAoCRecordConstants.ini'))) 'gen_node_constants'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_gm_garden.py'), '--content-db', $db)) 'gen_gm_garden'
     } },
-    @{ Name = 'fixtures'; Title = 'Generate the test fixtures'; Outputs = @('libs\aocstats\testdata\corpus.txt', 'server\worldd\tests\talent_fixture.sql', 'server\worldd\tests\gear_fixture.h', 'server\worldd\tests\tooltip_key.h'); Run = {
+    @{ Name = 'fixtures'; Title = 'Generate the test fixtures'; Outputs = @('libs\aocstats\testdata\corpus.txt', 'server\world\tests\talent_fixture.sql', 'server\world\tests\gear_fixture.h', 'server\world\tests\tooltip_key.h'); Run = {
         Assert-Files @('dist\content\content.db', 'dist\tools\statprog.exe') 'run the earlier steps first'
         $db = Join-Path $outDir 'content.db'
         New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'libs\aocstats\testdata') | Out-Null
@@ -522,7 +522,7 @@ $steps = @(
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_tooltips.py'), '--db', $db)) 'gen_tooltips'
     } },
     @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++; the first build also builds the C++ libraries with vcpkg)'; Outputs = @('dist\Release\aoc_navbuild.exe'); Run = {
-        Assert-Files @('server\worldd\world\zoi_surface_table.h', 'server\worldd\spawns\region_data.h', 'server\worldd\spawns\garden_defs.h') 'run the earlier steps first'
+        Assert-Files @('server\world\world\zoi_surface_table.h', 'server\world\spawns\region_data.h', 'server\world\spawns\garden_defs.h') 'run the earlier steps first'
         Invoke-Checked 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $repoRoot 'scripts\build.ps1'), '-Target', 'aoc_navbuild', '-Jobs', "$Jobs") 'build_navbuild'
     } },
     @{ Name = 'roads'; Title = 'Read the road splines of the Riverlands (mapc) and resolve them (contentc)'; Outputs = @('dist\content\roads_raw.tsv', 'dist\content\roads.tsv', 'dist\content\roads_levels.tsv'); Run = {

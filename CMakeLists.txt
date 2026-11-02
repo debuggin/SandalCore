@@ -24,14 +24,14 @@ message(STATUS "AshesOfCreation dist/ root: ${AOC_DIST_ROOT}")
 # ── Game data the build includes ─────────────────────────────────────────
 # scripts/extract_game_data.ps1 (extract_game_data.bat) makes these from your own Ashes of Creation install; they are git-ignored.
 set(AOC_GENERATED_FILES
-    server/worldd/world/zoi_surface_table.h
-    server/worldd/world/node_constants.h
-    server/worldd/spawns/region_data.h
-    server/worldd/spawns/garden_defs.h
+    server/world/world/zoi_surface_table.h
+    server/world/world/node_constants.h
+    server/world/spawns/region_data.h
+    server/world/spawns/garden_defs.h
     libs/aocstats/testdata/corpus.txt
-    server/worldd/tests/talent_fixture.sql
-    server/worldd/tests/gear_fixture.h
-    server/worldd/tests/tooltip_key.h
+    server/world/tests/talent_fixture.sql
+    server/world/tests/gear_fixture.h
+    server/world/tests/tooltip_key.h
 )
 set(AOC_MISSING_GENERATED "")
 foreach(f ${AOC_GENERATED_FILES})
@@ -62,7 +62,7 @@ if(NOT PROTOC)
 endif()
 
 # ── Proto codegen ───────────────────────────────────────────────────────────
-# world generates the gRPC stubs of the internal services it calls (server/worldd/CMakeLists.txt, from proto/internal) with the PROTOC
+# world generates the gRPC stubs of the internal services it calls (server/world/CMakeLists.txt, from proto/internal) with the PROTOC
 # and GRPC_CPP_PLUGIN found above.  The Go services generate theirs from proto/ (services/buf.gen.yaml).
 
 # ── libaocproto: unified C++ protobuf & gRPC stubs ──────────────────────────
@@ -79,7 +79,7 @@ add_subdirectory(libs/aocnav)
 add_subdirectory(tools/navbuild)
 
 # ── world: the C++ world server (plan A4) ──────────────────────────────────
-add_subdirectory(server/worldd)
+add_subdirectory(server/world)
 
 # ── Tether server (standalone UDP ARQ executable) ───────────────────────────
 add_executable(tether
