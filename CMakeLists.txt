@@ -119,6 +119,8 @@ set_target_properties(tether PROPERTIES FOLDER "Servers")
 if(WIN32)
     add_executable(launcher WIN32
         launcher/SandalLauncher/launcher_main.cpp
+        launcher/SandalLauncher/launcher_auth.cpp
+        launcher/SandalLauncher/launcher_ui.cpp
         server/tether/services/tether/ics_token_acl.cpp
     )
     add_custom_target(SandalLauncher DEPENDS launcher)
