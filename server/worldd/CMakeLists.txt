@@ -35,6 +35,11 @@ add_library(world_core STATIC
     bootstrap/ability_replication.h
     bootstrap/bootstrap.cpp
     bootstrap/bootstrap.h
+    bootstrap/bootstrap_abilities.cpp
+    bootstrap/bootstrap_economy.cpp
+    bootstrap/bootstrap_internal.h
+    bootstrap/bootstrap_join.cpp
+    bootstrap/bootstrap_world.cpp
     bootstrap/captured_abilities.h
     bootstrap/captured_bits.h
     bootstrap/captured_character.h
@@ -46,6 +51,7 @@ add_library(world_core STATIC
     bootstrap/captured_stats.h
     bootstrap/character_setup.cpp
     bootstrap/character_setup.h
+    bootstrap/character_setup_appearance.cpp
     bootstrap/constants.cpp
     bootstrap/constants.h
     bootstrap/gather_wire.cpp
@@ -58,6 +64,8 @@ add_library(world_core STATIC
     combat/combat_data.h
     combat/combat_world.cpp
     combat/combat_world.h
+    combat/combat_world_ai.cpp
+    combat/combat_world_attacks.cpp
     combat/fighter.h
     combat/hit_context.cpp
     combat/hit_context.h
@@ -72,6 +80,14 @@ add_library(world_core STATIC
     combat/rewards.h
     content/content_db.cpp
     content/content_db.h
+    content/content_db_craft.cpp
+    content/content_db_economy.cpp
+    content/content_db_internal.h
+    content/content_db_loot_mounts.cpp
+    content/content_db_npcs.cpp
+    content/content_db_progression.cpp
+    content/content_db_quests.cpp
+    content/content_db_talents.cpp
     foliage/foliage.cpp
     foliage/foliage.h
     foliage/foliage_cells.cpp
@@ -90,6 +106,7 @@ add_library(world_core STATIC
     gather/rules.h
     items/inventory.cpp
     items/inventory.h
+    items/inventory_ops.cpp
     items/resource_grid.cpp
     items/resource_grid.h
     login/login_service.cpp
@@ -127,6 +144,11 @@ add_library(world_core STATIC
     session/ability_catalog.h
     session/ability_pipeline.cpp
     session/ability_pipeline.h
+    session/ability_pipeline_cast.cpp
+    session/ability_pipeline_damage.cpp
+    session/ability_pipeline_hits.cpp
+    session/ability_pipeline_internal.h
+    session/ability_pipeline_zones.cpp
     session/ability_reactions.cpp
     session/action_bar.cpp
     session/action_bar.h
@@ -144,15 +166,27 @@ add_library(world_core STATIC
     session/player_gather.cpp
     session/player_session.cpp
     session/player_session.h
+    session/player_session_artisan.cpp
+    session/player_session_combat.cpp
+    session/player_session_guild.cpp
     session/player_session_internal.h
+    session/player_session_items.cpp
     session/player_session_lifecycle.cpp
+    session/player_session_loot.cpp
     session/player_session_mount.cpp
     session/player_session_movement.cpp
+    session/player_session_quests.cpp
+    session/player_session_quick_craft.cpp
     session/player_session_state.h
     session/player_session_types.h
+    session/player_session_vendor.cpp
     session/player_session_zone.cpp
     session/player_world.cpp
     session/player_world.h
+    session/player_world_deps_a.h
+    session/player_world_deps_b.h
+    session/player_world_relevancy.cpp
+    session/player_world_spawns.cpp
     session/position_saver.cpp
     session/position_saver.h
     session/professions.cpp
@@ -245,6 +279,7 @@ add_library(world_core STATIC
     npc/mover.h
     npc/npc_world.cpp
     npc/npc_world.h
+    npc/npc_world_orders.cpp
 )
 target_include_directories(world_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(world_core PUBLIC
@@ -298,6 +333,17 @@ function(world_add_test name)
     set_target_properties(${name} PROPERTIES FOLDER "Tests/world")
 endfunction()
 
+function(world_add_test_shards parent_target)
+    get_target_property(parent_defs ${parent_target} COMPILE_DEFINITIONS)
+    foreach(shard_src IN LISTS ARGN)
+        string(REGEX REPLACE "^tests/test_worldd_(.*)\\.cpp$" "test_world_\\1" shard_target "${shard_src}")
+        add_executable(${shard_target} ${shard_src})
+        target_link_libraries(${shard_target} PRIVATE world_core)
+        target_include_directories(${shard_target} PRIVATE ${PROJECT_SOURCE_DIR}/libs/aocnet/tests)
+        set_target_properties(${shard_target} PROPERTIES COMPILE_DEFINITIONS "${parent_defs}" FOLDER "Tests/world")
+    endforeach()
+endfunction()
+
 foreach(t
     test_world_abilities
     test_world_ability_session
@@ -336,9 +382,39 @@ target_sources(test_world_area_session PRIVATE
     tests/test_worldd_quest_session_a.cpp
     tests/test_worldd_quest_session_b.cpp
 )
+target_sources(test_world_bootstrap PRIVATE tests/test_worldd_bootstrap_part2.cpp)
+target_sources(test_world_character_setup PRIVATE tests/test_worldd_character_setup_part2.cpp)
+target_sources(test_world_movement PRIVATE
+    tests/test_worldd_movement_part2.cpp
+    tests/test_worldd_movement_part3.cpp
+)
+target_sources(test_world_talents PRIVATE
+    tests/test_worldd_talents_part2.cpp
+    tests/test_worldd_talents_part3.cpp
+    tests/test_worldd_talents_part4.cpp
+)
+world_add_test_shards(test_world_abilities
+    tests/test_worldd_abilities_part2.cpp
+    tests/test_worldd_abilities_part3.cpp
+)
+world_add_test_shards(test_world_items
+    tests/test_worldd_items_part2.cpp
+    tests/test_worldd_items_part3.cpp
+)
+world_add_test_shards(test_world_session
+    tests/test_worldd_session_part2.cpp
+    tests/test_worldd_session_part3.cpp
+)
 # Gathering stage 2: the session tests of the professions and the GM artisan scrolls run on the real content.db of the working tree (they skip without it)
 target_compile_definitions(test_world_items_session PRIVATE
     PROFESSIONS_REAL_DB="${PROJECT_SOURCE_DIR}/dist/content/content.db")
+world_add_test_shards(test_world_items_session
+    tests/test_worldd_items_session_part2.cpp
+    tests/test_worldd_items_session_part3.cpp
+    tests/test_worldd_items_session_part4.cpp
+    tests/test_worldd_items_session_part5.cpp
+    tests/test_worldd_items_session_part6.cpp
+)
 
 # the ability tables' reader (plan D2) on the content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB), with the stat engine
 world_resolve_test_src(TEST_WORLD_ABILITY_CONTENT_SRC "tests" "test_world_ability_content")
@@ -350,6 +426,7 @@ set_target_properties(test_world_ability_content PROPERTIES FOLDER "Tests/world"
 
 # the living area (plan E1) on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
 world_add_test(test_world_area)
+target_sources(test_world_area PRIVATE tests/test_worldd_area_part2.cpp)
 target_compile_definitions(test_world_area PRIVATE
     AREA_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 
@@ -360,6 +437,7 @@ target_compile_definitions(test_world_gather PRIVATE
 world_add_test(test_world_gather_session)
 target_compile_definitions(test_world_gather_session PRIVATE
     GATHER_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
+world_add_test_shards(test_world_gather_session tests/test_worldd_gather_session_part2.cpp)
 
 # Resource storage (Gathering stage 3): the grid against the captured slots, the routing, the top-up, the full container, the moves and the login's repair on a fixture, and the flags of every
 # item of the real content.db of the working tree
@@ -377,6 +455,10 @@ world_add_test(test_world_foliage_session)
 target_compile_definitions(test_world_foliage_session PRIVATE
     GATHER_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     FOLIAGE_TSV_PATH="${PROJECT_SOURCE_DIR}/dist/content/region_foliage.tsv")
+world_add_test_shards(test_world_foliage_session
+    tests/test_worldd_foliage_session_part2.cpp
+    tests/test_worldd_foliage_session_part3.cpp
+)
 
 # Hunting (Gathering stage 3): the huntable creature's template, the 53 hunting interactions and their rewards, and the corpse's wire against the retail capture, on the real content.db of the working tree
 world_add_test(test_world_hunting)
@@ -385,6 +467,7 @@ target_compile_definitions(test_world_hunting PRIVATE
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
 
 world_add_test(test_world_hunting_session)
+target_sources(test_world_hunting_session PRIVATE tests/test_worldd_hunting_session_part2.cpp)
 target_compile_definitions(test_world_hunting_session PRIVATE
     GATHER_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
@@ -409,11 +492,19 @@ target_compile_definitions(test_world_region_load PRIVATE
 
 # the mounts (the mounts milestone, stage 2): the mount actor, its controller and the session on the real content.db of the working tree
 world_add_test(test_world_mounts)
+target_sources(test_world_mounts PRIVATE
+    tests/test_worldd_mounts_part2.cpp
+    tests/test_worldd_mounts_part3.cpp
+)
 target_compile_definitions(test_world_mounts PRIVATE
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_SPEEDS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_speeds.tsv"
     MOUNT_RIDERS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_riders.tsv")
 world_add_test(test_world_mounts_session)
+target_sources(test_world_mounts_session PRIVATE
+    tests/test_worldd_mounts_session_part2.cpp
+    tests/test_worldd_mounts_session_part3.cpp
+)
 target_compile_definitions(test_world_mounts_session PRIVATE
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_RIDERS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_riders.tsv")
@@ -422,6 +513,11 @@ target_compile_definitions(test_world_mounts_fly PRIVATE
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_SPEEDS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_speeds.tsv")
 world_add_test(test_world_mounts_ride)
+target_sources(test_world_mounts_ride PRIVATE
+    tests/test_worldd_mounts_ride_part2.cpp
+    tests/test_worldd_mounts_ride_part3.cpp
+    tests/test_worldd_mounts_ride_part4.cpp
+)
 target_compile_definitions(test_world_mounts_ride PRIVATE
     MOUNT_ROADS_PATH="${PROJECT_SOURCE_DIR}/dist/content/roads.tsv"
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
@@ -433,6 +529,10 @@ world_add_test(test_world_gm_travel)
 target_compile_definitions(test_world_gm_travel PRIVATE
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_SPEEDS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_speeds.tsv")
+world_add_test_shards(test_world_gm_travel
+    tests/test_worldd_gm_travel_part2.cpp
+    tests/test_worldd_gm_travel_part3.cpp
+)
 
 # the city nodes (Nodes 1, stage 1): the registry and the whole-world ZOI lookup on the real content.db of the working tree, the node reads against the shared corpus's
 # nodehost blocks, the seed fallback, and the citynode feed against an in-process fake of the service
@@ -444,6 +544,7 @@ target_compile_definitions(test_world_city_nodes PRIVATE
 # the nodes the client is told of (Nodes 1, stage 2): the maps, summaries and sieges of the registry's levels against the retail capture's, the session's answers (their order, the
 # live update, the GM console) and the GM control over gRPC against an in-process fake of the node service
 world_add_test(test_world_node_state)
+target_sources(test_world_node_state PRIVATE tests/test_worldd_node_state_part2.cpp)
 target_compile_definitions(test_world_node_state PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json"
@@ -456,6 +557,7 @@ world_add_test(test_world_node_layout)
 target_compile_definitions(test_world_node_layout PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json")
+world_add_test_shards(test_world_node_layout tests/test_worldd_node_layout_part2.cpp)
 
 # the towns' people (Nodes 1, stage 3b): the selection of each node's NPCs at each level against the Python oracle's golden counts (tests/node_pop_golden.h), the live manager (a level change
 # spawns and despawns the right sets, a respawn follows the level, the ground's pending rules), the any-of siege rule and the roads by node level, on the real content.db
@@ -465,6 +567,10 @@ target_compile_definitions(test_world_node_pop PRIVATE
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json"
     NODES_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv"
     NODES_ROADS_LEVELS_PATH="${PROJECT_SOURCE_DIR}/dist/content/roads_levels.tsv")
+world_add_test_shards(test_world_node_pop
+    tests/test_worldd_node_pop_part2.cpp
+    tests/test_worldd_node_pop_part3.cpp
+)
 
 # the towns' real ground: the platform reader and sampler on bytes made in the test, the frames, and - when dist/content/town_platforms.bin exists (mapc town-floors) - the real
 # platforms at the real node records and the world's ground queries on them; AOC_REAL_GROUND=1 adds the baked pit
@@ -508,6 +614,7 @@ target_compile_definitions(test_world_rewards PRIVATE
 world_add_test(test_world_ability_pipeline)
 target_compile_definitions(test_world_ability_pipeline PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
+world_add_test_shards(test_world_ability_pipeline tests/test_worldd_ability_pipeline_part2.cpp)
 world_add_test(test_world_ability_retail)
 target_compile_definitions(test_world_ability_retail PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
@@ -526,3 +633,11 @@ target_compile_definitions(test_world_ability_npc PRIVATE
 target_compile_definitions(test_world_ability_session PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
+world_add_test_shards(test_world_ability_session
+    tests/test_worldd_ability_session_part2.cpp
+    tests/test_worldd_ability_session_part3.cpp
+    tests/test_worldd_ability_session_part4.cpp
+    tests/test_worldd_ability_session_part5.cpp
+    tests/test_worldd_ability_session_part6.cpp
+    tests/test_worldd_ability_session_part7.cpp
+)

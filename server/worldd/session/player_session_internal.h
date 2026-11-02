@@ -8,11 +8,6 @@
 #include "protocol/repl/rpc_fields.h"
 #include "session/gm_travel.h"
 
-#include <algorithm>
-#include <cctype>
-#include <cmath>
-#include <cstdio>
-
 namespace sandal::worldd::session::detail {
 
 namespace bootstrap = ::aoc::worldd::bootstrap;
@@ -125,6 +120,29 @@ inline const char* gm_refusal(PlayerSession::GmMoveResult::Status s) {
     return "moved";
 }
 
+struct StackSpec {
+    int64_t record = 0;
+    int32_t count = 0;
+    int64_t created_ms = 0;
+    int32_t quality = 0;
+};
+
+inline void stacks_of(const StackSpec& spec, const ::aoc::worldd::content::ItemRecord& rec,
+                      std::vector<svc::InventoryItem>& out) {
+    const int32_t stack = rec.max_stack_size > 0 ? rec.max_stack_size : 1;
+    for (int32_t left = spec.count; left > 0;) {
+        svc::InventoryItem it;
+        it.container = svc::ItemContainer::Backpack;
+        it.item_record_id = spec.record;
+        it.quantity = std::min(left, stack);
+        it.quality = spec.quality > 0 ? spec.quality : rec.default_quality;
+        it.durability = rec.max_durability_at(it.quality);
+        it.created_at_ms = spec.created_ms;
+        left -= it.quantity;
+        out.push_back(std::move(it));
+    }
+}
+
 }  // namespace sandal::worldd::session::detail
 
 namespace aoc {
@@ -176,6 +194,7 @@ private:
 };
 
 struct PlayerSessionTypes::SessionInternal {
+  using SlotCoord = std::pair<int, int>;
   static uint64_t enrich_join_setup(PlayerWorld& world, const svc::Character& character, bootstrap::CharacterSetupResult& built);
   static void init_joined_state(PlayerSession& p, PlayerWorld& world, const svc::Character& character, bootstrap::CharacterSetupResult& built, uint64_t nodes_version);
   static void init_mounts_and_view(PlayerSession& p, PlayerWorld& world);

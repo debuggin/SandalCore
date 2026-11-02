@@ -1,89 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  session/player_world.h
-//
-//  What every player session of one worldd shares (plan A5): the content
-//  database, how much of the GameState is sent, worldd's ServerId and GUID
-//  allocator, the world's one GameState GUID, and the PlayerId counter.  The
-//  Endpoint hands it to each PlayerSession it starts after NMT_Join.
-//
-//  The GameState is the world's, not the player's: one GUID for the whole worldd
-//  run, minted from the allocator before any player's (so a client's GameState
-//  channel always names the same object; each connection opens its own channel
-//  for it).  Everything else of a joining player is minted per session in the
-//  capture's order (bootstrap::mint_session_guids).
-//
-//  Plan A6 adds what the movement checks and the saving of positions need: the limits the
-//  checks use (--max-move-speed lowers the speed), how often a position is saved (60 s) and
-//  the PositionSink the sessions hand positions to (worldd's CharacterSaver; none: nothing
-//  is saved).
-//
-//  Plan B2 adds the item catalog the equip rules ask (content.db's item and item_equip_slot; set_item_catalog replaces it in a
-//  test) and a PositionSink that also saves inventories (position_saver.h).
-//
-//  Plan B3 adds the stat program: content.db's stat_program row is parsed and verified once, here, and every class is run bare as a
-//  check (it must run, without faults, and give the stats the ability runtime needs); with the items' stat data
-//  (content::ContentGearCatalog) it is what every session computes its character's stats with (stat_context()). A content.db
-//  without a usable stat program is not ready: no login until it is rebuilt.
-//
-//  content.db is optional at startup.  When it did not open, ready() is false and
-//  content_problem() says why: worldd still runs, and the Endpoint refuses every
-//  login with login_text::kContentMissing (a character cannot be valued without
-//  it, spec section 5), logging how to build the file.
-// ============================================================================
 #pragma once
 
-#include "bootstrap/bootstrap.h"
-#include "bootstrap/character_setup.h"
-#include "combat/aftermath.h"
-#include "combat/combat_world.h"
-#include "combat/rewards.h"
-#include "content/content_db.h"
-#include "foliage/foliage.h"
-#include "gather/gathering.h"
-#include "items/currency.h"
-#include "items/inventory.h"
-#include "items/rarity.h"
-#include "nav/area_nav.h"
-#include "npc/area_npcs.h"
-#include "protocol/server_guid_allocator.h"
-#include "quest/quest_book.h"
-#include "quest/quest_service.h"
-#include "session/ability_catalog.h"
-#include "session/leveling.h"
-#include "session/move_checker.h"
-#include "session/position_saver.h"
-#include "session/professions.h"
-#include "session/actor_view.h"
-#include "session/talents.h"
-#include "session/weapon_lines.h"
-#include "spawns/area.h"
-#include "spawns/area_loader.h"
-#include "spawns/captured_spawns.h"
-#include "spawns/generic_npc.h"
-#include "spawns/gm_garden.h"
-#include "spawns/mount_spawn.h"
-#include "spawns/node_population.h"
-#include "spawns/node_populations.h"
-#include "spawns/npc_looks.h"
-#include "stats/stat_program.h"
-#include "vendor/gm_vendor.h"
-#include "vendor/town_shops.h"
-#include "warehouse/warehouse.h"
-#include "world/actor_registry.h"
-#include "world/city_nodes.h"
+#include "session/player_world_deps_a.h"
+#include "session/player_world_deps_b.h"
 #include "world/node_control.h"
-#include "dialogue/requirement.h"
-#include "world/node_layout_data.h"
 #include "world/node_scenery.h"
-#include "world/node_wire.h"
 #include "world/places.h"
-#include "world/roads.h"
 #include "world/town_floor.h"
 #include "world/town_platform.h"
-// [C.O.A - Cyb]
 
 #include <chrono>
 #include <cstdint>
@@ -91,550 +17,408 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace aoc { namespace worldd {
 
-class GmPort;   // session/gm_travel.h
+class GmPort;
 
-/// How the sessions check moves and save positions (plan A6).
 struct MovementConfig {
-    MoveLimits                limits;
-    std::chrono::seconds      save_interval{60};   // a changed position is saved this often, and when the session ends
+    MoveLimits           limits;
+    std::chrono::seconds save_interval{60};
 };
 
 class PlayerWorld {
 public:
-    /// `content` is null when content.db did not open (`content_problem` then says why). `guids` must outlive
-    /// this object and mint under `server_id`, the id mesh gave worldd.
     PlayerWorld(const content::ContentDb* content, std::string content_problem, bootstrap::GameStateMode mode,
                 uint32_t server_id, protocol::ServerGuidAllocator& guids);
+    ~PlayerWorld();
 
     bool ready() const { return content_ != nullptr; }
     const content::ContentDb* content() const { return content_; }
     const std::string& content_problem() const { return content_problem_; }
-    /// Plan A7: the ability runtime's numbers (content.db's ability_runtime rows, read once at startup). Always set when
-    /// ready(): a content.db whose rows this worldd cannot run is not ready, and says why in content_problem().
     const content::AbilityRules* ability_rules() const { return rules_ ? &*rules_ : nullptr; }
-    /// Plan B2: what the equip rules ask of an item record: content.db's, unless a test replaced it. Null when content.db is not loaded.
     const items::ItemCatalog* item_catalog() const { return catalog_override_ ? catalog_override_ : catalog_ ? &*catalog_ : nullptr; }
     void set_item_catalog(const items::ItemCatalog* catalog) { catalog_override_ = catalog; }
-    /// Plan B3: the verified stat program and where the items' stat data comes from; a context with null members when the world is not ready.
-    /// `stat_rounding` is how an item's interpolated value is made whole (the research's best fit, half up).
     bootstrap::StatContext stat_context() const {
         return {bundle_ ? &*bundle_ : nullptr, gear_ ? &*gear_ : nullptr, stats::Rounding::HalfUp, curve_ ? &*curve_ : nullptr, curve_ ? &grants_ : nullptr,
                 talents_ ? &*talents_ : nullptr, mounts_ ? &mounts_->data() : nullptr, professions_ ? &*professions_ : nullptr, weapon_lines_ ? &*weapon_lines_ : nullptr};
     }
-    /// Plan D1: the Adventuring level curve (content.db's leveling_type and leveling_curve) and the Universal tree's auto-granted nodes, read once
-    /// at startup; a content.db without them is not ready. Null when the world is not ready.
     const leveling::LevelCurve*            level_curve() const { return curve_ ? &*curve_ : nullptr; }
     const std::vector<content::AutoGrant>& auto_grants() const { return grants_; }
     const content::LevelingType*           leveling_type() const { return leveling_type_ ? &*leveling_type_ : nullptr; }
-    /// Plan D1, stage 2: the skill trees, nodes and ranks (content.db's skill_* tables), read once at startup; a content.db without them is not
-    /// ready. Null when the world is not ready.
     const talents::Catalog*                talents() const { return talents_ ? &*talents_ : nullptr; }
-    const stats::StatBundle* stat_bundle() const { return bundle_ ? &*bundle_ : nullptr; }
-    /// Gathering stage 2: the 22 professions with their level-up curves and the five certification levels (content.db's profession, certification_level and
-    /// action_certification, read once at startup). Null when the file has none of those tables (an older fixture): characters then have no professions.
-    const professions::Book* professions() const { return professions_ ? &*professions_ : nullptr; }
-    /// Weapon XP: the 21 weapon lines (content.db's leveling types named Weapon_<line>) and the one curve they share, read once at startup. Null when the file has none (an older fixture):
-    /// characters then hold no weapon XP and a weapon tree is judged at the character's level.
-    const weaponxp::Lines* weapon_lines() const { return weapon_lines_ ? &*weapon_lines_ : nullptr; }
-    /// Glint tiers (contentc version 24): the currency tiers and their kinds (content.db's currency_tier and currency_def, read once at startup): which item is the next kind of a Glint
-    /// certificate, and how a reward of Glint is split into kinds.  Null when the file has none of those tables (an older file or fixture): no stack of Glint changes kind and a reward
-    /// is paid as it is rolled.
-    const items::CurrencyTable* currencies() const { return currencies_ ? &*currencies_ : nullptr; }
-    /// Plan D2: every ability, hit, effect and expression of content.db's ab_* tables, read once at startup: what the generic ability runtime
-    /// runs. Null when the file has none (an older fixture) or they did not read: then only Sprint, Dodge and Rest run, and the log says why.
+    const stats::StatBundle*               stat_bundle() const { return bundle_ ? &*bundle_ : nullptr; }
+    const professions::Book*               professions() const { return professions_ ? &*professions_ : nullptr; }
+    const weaponxp::Lines*                 weapon_lines() const { return weapon_lines_ ? &*weapon_lines_ : nullptr; }
+    const items::CurrencyTable*            currencies() const { return currencies_ ? &*currencies_ : nullptr; }
     const abilities::Catalog* ability_catalog() const { return catalog_override_set_ ? ability_catalog_override_ : ability_catalog_ ? &*ability_catalog_ : nullptr; }
     void set_ability_catalog(const abilities::Catalog* catalog) {
         ability_catalog_override_ = catalog;
         catalog_override_set_ = true;
     }
-    /// The mounts milestone: the mount tables of content.db and the captured donors (null when the file has none: no mount can be summoned).
     const spawns::MountBook* mounts() const { return mounts_ ? &*mounts_ : nullptr; }
-    /// A test's mounts (the real ones come from content.db at construction).
     void set_mounts(spawns::MountBook book) { mounts_ = std::move(book); }
-    /// Reads the Blueprints' speeds (dist/content/mount_speeds.tsv): a mount runs at its Blueprint's speed when it is desummoned. False, with `error`, for a missing
-    /// or broken file (the mounts then use 600 cm/s times the item's ground percentage).
     bool load_mount_speeds(const std::string& path, std::string& error);
-    /// Reads the rider AnimBPs of the mount Blueprints (dist/content/mount_riders.tsv, tools/mapc `mount-speeds` writes it): the mount's interaction data names the AnimBP
-    /// the rider's mesh is put on. False, with `error`, for a missing or broken file (each mount then names its kind's captured AnimBP).
     bool load_mount_riders(const std::string& path, std::string& error);
-    /// The mounts milestone, stage 3: the roads of the area (dist/content/roads.tsv; no extractor yet): a mount on a road rides faster. An empty map (no file) is no roads.
     const world::RoadMap& roads() const { return roads_; }
     world::RoadMap&       roads() { return roads_; }
-    /// Reads the roads file. False, with `error`, for a missing or broken file (the map then holds nothing it did not hold before the call).
     bool load_roads(const std::string& path, std::string& error);
     bootstrap::GameStateMode gamestate_mode() const { return mode_; }
     uint32_t server_id() const { return server_id_; }
     const protocol::emit::FIntrepidNetworkGUID& game_state_guid() const { return game_state_; }
-    /// Plan D2, review: a fresh GUID of worldd's allocator (a lingering zone's actor and its subobjects, minted while a session runs).
     protocol::emit::FIntrepidNetworkGUID mint_guid() const { return guids_.next(); }
 
-    /// Plan A6: the movement limits and the save interval of every session started from now on.
     void                  set_movement(const MovementConfig& config) { movement_ = config; }
     const MovementConfig& movement() const { return movement_; }
-    /// Where the sessions hand positions to be saved; null (the default) saves nothing. Must outlive the sessions.
     void          set_position_sink(PositionSink* sink) { sink_ = sink; }
     PositionSink* position_sink() const { return sink_; }
 
-    /// The per-connection values of one joining player: ServerId, `world_time` (seconds), the next PlayerId and a
-    /// fresh set of GUIDs.
     bootstrap::SessionValues new_session(double world_time);
 
-    // ---- plan E1: the living area ------------------------------------------------------------------------------------------
-    /// The world's other actors (NPCs, resource nodes, a player's effects): what every session's ActorView draws from. Empty until load_area().
     world::ActorRegistry&       registry() { return registry_; }
     const world::ActorRegistry& registry() const { return registry_; }
-    /// Fills the registry with the area around the login spot (spawns/area_loader.h): content.db's population chain, the retail captures' NPCs and
-    /// nodes, and the GM vendors. False, with `error`, when content.db is not loaded or lacks the version-7 tables (the registry stays empty). Once.
     bool load_area(const spawns::AreaConfig& area, std::string& error);
-    /// Plan E1, stage 2 fix: the NPCs no capture opened (spawns/generic_npc.h).  Before load_area: the Blueprint table (npc_motion.tsv: false, with
-    /// `error`, when it is missing or broken: then only the Blueprints a capture opened spawn, and the report says how many points that loses) and the
-    /// generic NPCs' switches (the kill switch by name, or all of them off).
     bool load_blueprints(const std::string& motion_path, std::string& error);
-    /// The creature attack animations (tools/npcabilities: the ability tasks of the creature Blueprints and the animation montages): a creature whose Blueprint the tables list attacks with
-    /// its own animation.  Before the fights start (load_ground); false, with `error`, for a table that cannot be read.
     bool load_npc_abilities(const std::string& abilities_path, const std::string& montages_path, const std::string& targeting_path, std::string& error);
-    /// What each creature notices and how far it follows (tools/npcabilities: the intelligence settings of the creature Blueprints and the aggro level curve): a creature whose Blueprint the table lists
-    /// notices and leashes by them.  Before the fights start (load_ground); false, with `error`, for a table that cannot be read (every creature then keeps the flat radius and leash).
     bool load_npc_senses(const std::string& senses_path, const std::string& curves_path, std::string& error);
     void set_generic_npcs(spawns::GenericConfig config) { generic_config_ = std::move(config); }
-    /// Plan E1, stage 3: what this world is for the conditions a spawn names (spawns/spawn_filter.h); before load_area.  `enabled = false` is the kill switch.
     void set_spawn_context(spawns::SpawnContext context) { spawn_context_ = std::move(context); }
     const spawns::SpawnContext& spawn_context() const { return spawn_context_; }
-    const npc::MotionTable& blueprints() const { return motion_; }
-    const spawns::GenericNpcs* generic_npcs() const { return generic_ ? &*generic_ : nullptr; }
-    const spawns::AreaReport*     area_report() const { return area_report_ ? &*area_report_ : nullptr; }
-    /// Embersprings: the area's Emberspring, the book the session asks (null before the area is loaded).
-    const respawn::ShrineBook*    shrines() const { return area_report_ ? &area_report_->shrines : nullptr; }
-    const spawns::AreaConfig&     area() const { return area_; }
-    const vendor::GmVendors*      gm_vendors() const { return gm_ ? &*gm_ : nullptr; }
-    /// Quests, slice 0: the NPC conversations (dialogue/requirement.h), read with the area; null for a content.db older than contentc version 17 (the NPCs answer as before).
-    const dialogue::Book*         dialogue() const { return dialogue_ ? &*dialogue_ : nullptr; }
-    /// A test's conversations (load_area reads the real ones).
-    void                          set_dialogue(dialogue::Book book) { dialogue_ = std::move(book); }
-    /// Quests, slice 1: the quests of the data (quest/quest_book.h), read with the area; null for a content.db older than contentc version 21 (the NPCs offer nothing).
-    const quest::QuestBook*       quests() const { return quests_ ? &*quests_ : nullptr; }
-    /// A test's quests (load_area reads the real ones).
-    void                          set_quests(quest::QuestBook book) { quests_ = std::move(book); }
-    /// Quests part 3, slice 1: the definitions of the quest objects (content::ObjectData), read with the area; null for a content.db older than contentc version 36 (no quest object is made).
-    const content::ObjectData*    objects() const { return objects_ ? &*objects_ : nullptr; }
-    /// A quest object was used and leaves the world: notes that it is made again after its instance's own respawn time (`now_seconds` is the world clock; the caller removes the actor from the
-    /// registry).  False when the actor is no quest object of this world.
-    bool                          prop_gone(uint64_t actor_id, double now_seconds) const;
-    /// Makes the quest objects whose time has come (called by tick_world).
-    void                          tick_props(double now_seconds);
-    /// The worker that saves the quest logs and takes the GM commands (null: no quest service; the characters play without quests).  Not owned.
-    quest::QuestWorker*           quest_worker() const { return quest_worker_; }
-    void                          set_quest_worker(quest::QuestWorker* worker) { quest_worker_ = worker; }
-    /// Vendors, step 0: the towns' shops (vendor/town_shops.h), read with the area; null for a content.db older than contentc version 18 (the NPCs answer as before).
-    const vendor::TownShops*      town_shops() const { return shops_ ? &*shops_ : nullptr; }
-    /// A test's shops (load_area reads the real ones).
-    void                          set_town_shops(vendor::TownShops shops) { shops_ = std::move(shops); }
-    /// Storage clerks, step 0: the towns' warehouse defs, tabs and item chunks (warehouse/warehouse.h), read with the area; null for a content.db older than contentc version 22 (the clerk
-    /// answers as before).
-    const warehouse::Book*        warehouses() const { return warehouses_ ? &*warehouses_ : nullptr; }
-    /// A test's warehouses (load_area reads the real ones).
-    void                          set_warehouses(warehouse::Book book) { warehouses_ = std::move(book); }
-    /// Crafting, step 0: the station definitions (content.db, contentc version 20), read with the area; null for an older file (the stations still stand and open, with the default tax).
+    const npc::MotionTable&     blueprints() const { return motion_; }
+    const spawns::GenericNpcs*  generic_npcs() const { return generic_ ? &*generic_ : nullptr; }
+    const spawns::AreaReport*   area_report() const { return area_report_ ? &*area_report_ : nullptr; }
+    const respawn::ShrineBook*  shrines() const { return area_report_ ? &area_report_->shrines : nullptr; }
+    const spawns::AreaConfig&   area() const { return area_; }
+    const vendor::GmVendors*    gm_vendors() const { return gm_ ? &*gm_ : nullptr; }
+    const dialogue::Book*       dialogue() const { return dialogue_ ? &*dialogue_ : nullptr; }
+    void                        set_dialogue(dialogue::Book book) { dialogue_ = std::move(book); }
+    const quest::QuestBook*     quests() const { return quests_ ? &*quests_ : nullptr; }
+    void                        set_quests(quest::QuestBook book) { quests_ = std::move(book); }
+    const content::ObjectData*  objects() const { return objects_ ? &*objects_ : nullptr; }
+    bool                        prop_gone(uint64_t actor_id, double now_seconds) const;
+    void                        tick_props(double now_seconds);
+    quest::QuestWorker*         quest_worker() const { return quest_worker_; }
+    void                        set_quest_worker(quest::QuestWorker* worker) { quest_worker_ = worker; }
+    const vendor::TownShops*    town_shops() const { return shops_ ? &*shops_ : nullptr; }
+    void                        set_town_shops(vendor::TownShops shops) { shops_ = std::move(shops); }
+    const warehouse::Book*      warehouses() const { return warehouses_ ? &*warehouses_ : nullptr; }
+    void                        set_warehouses(warehouse::Book book) { warehouses_ = std::move(book); }
     const content::CraftStationData* station_data() const { return stations_ ? &*stations_ : nullptr; }
-    /// Crafting, step 1: the recipes, their inputs and costs (null with an older content.db).
-    const content::CraftRecipeData* craft_recipes() const { return recipes_ ? &*recipes_ : nullptr; }
-    /// Reads the station definitions and the recipes from content.db (load_area does it; once).
+    const content::CraftRecipeData*  craft_recipes() const { return recipes_ ? &*recipes_ : nullptr; }
     void load_crafting_data();
 
-    /// Crafting, step 0 (the GM command): a station of an artisan building on a free service plot of a Village or a Town.
     enum class StationStatus : uint8_t { Ok, NotFound, Invalid, Refused };
     struct StationResult {
         StationStatus status = StationStatus::Ok;
-        std::string   message;     // why it was refused
+        std::string   message;
         uint64_t      actor = 0;
-        std::string   node;        // the node's display name
-        std::string   plot;        // the plot's record name
-        std::string   station;     // the station's Blueprint (placed) or the one that stood there (removed)
-        std::string   building;    // the artisan building whose station it is
+        std::string   node;
+        std::string   plot;
+        std::string   station;
+        std::string   building;
         double        x = 0, y = 0, z = 0;
     };
-    /// Puts the station `station` (an asset's or a definition's name) on the free plot `plot` of the node `node`.  The actor stands until remove_station, until the node drops below a Village
-    /// or loses the plot, or until worldd stops; nothing is saved.
     StationResult place_station(const std::string& node, const std::string& plot, const std::string& station, const std::string& by);
     StationResult remove_station(const std::string& node, const std::string& plot, const std::string& by);
     size_t        placed_station_count() const { return placed_stations_.size(); }
-    /// G1 stage 1: the GM garden (spawns/gm_garden.h), off by default.  `set_gm_garden(true)` before load_area; the garden is placed once the ground is known
-    /// (load_ground), or by place_gm_garden() when there is no ground file.  Once.
-    void                          set_gm_garden(bool on) { gm_garden_ = on; }
-    bool                          gm_garden_requested() const { return gm_garden_; }
-    void                          place_gm_garden();
-    const spawns::GardenReport*   garden_report() const { return garden_report_ ? &*garden_report_ : nullptr; }
-    /// A test's catalog of GM vendors (load_area makes the real one).
-    void                          set_gm_vendors(vendor::GmVendors gm) { gm_ = std::move(gm); }
-    // ---- plan E1, stage 2: the ground and the NPCs' movement ---------------------------------------------------------------------
-    /// Loads the ground (`nav_path`: area_nav.bin, tools/mapc) and the NPC motion table (`motion_path`: npc_motion.tsv), stands every NPC of the area on
-    /// it and starts its life (wandering, patrolling): npc/area_npcs.h.  False, with `error`, when the navmesh does not load (the NPCs then stand
-    /// where the loader put them, as in stage 1); a missing or broken motion table only means the Blueprint defaults (the log says so).  Call after
-    /// load_area; once.
-    bool load_ground(const std::string& nav_path, const std::string& motion_path, std::string& error);
-    /// Takes a ground that is already built (a test's, or load_ground's after it read the file): the NPCs' world and the fights start over it. The registry's NPCs
-    /// are not placed (populate is load_ground's); a test adds its own to `npcs()`. False, with `error`, when there is one already.
-    bool                         adopt_ground(std::unique_ptr<nav::AreaNav> nav, std::string& error);
-    const nav::AreaNav*          nav() const { return nav_.get(); }
-    npc::NpcWorld*               npcs() { return npcs_.get(); }
-    const npc::GroundReport*     ground_report() const { return ground_report_ ? &*ground_report_ : nullptr; }
-    /// The world clock the last tick set (seconds): what the aftermath's corpses and respawns run on.
-    double                       world_clock() const { return world_clock_; }
-    /// Advances the NPCs to `now_seconds` (the endpoint's clock, every tick of worldd).
-    void                         tick_world(double now_seconds);
-    /// A session says where its player stands (every tick); the NPCs near it are awake.
-    void                         note_player(uint64_t player_id, double x, double y);
-    void                         forget_player(uint64_t player_id);
-    /// G1 stage 1: how many times a player walked out of the region (the ground file's footprint) since the start; each exit is logged once.
-    uint64_t                     region_exits() const { return region_exits_; }
-    /// True while the player's last noted position is beyond the region's edge.
-    bool                         outside_region(uint64_t player_id) const { const auto it = outside_.find(player_id); return it != outside_.end() && it->second; }
+    void                        set_gm_garden(bool on) { gm_garden_ = on; }
+    bool                        gm_garden_requested() const { return gm_garden_; }
+    void                        place_gm_garden();
+    const spawns::GardenReport* garden_report() const { return garden_report_ ? &*garden_report_ : nullptr; }
+    void                        set_gm_vendors(vendor::GmVendors gm) { gm_ = std::move(gm); }
 
-    // ---- plan E1, stage 3: the fights ---------------------------------------------------------------------------------------------
-    /// The combat world's switches (the kill switch `enabled`, the AI's defaults); before load_ground.
+    bool                     load_ground(const std::string& nav_path, const std::string& motion_path, std::string& error);
+    bool                     adopt_ground(std::unique_ptr<nav::AreaNav> nav, std::string& error);
+    const nav::AreaNav*      nav() const { return nav_.get(); }
+    npc::NpcWorld*           npcs() { return npcs_.get(); }
+    const npc::GroundReport* ground_report() const { return ground_report_ ? &*ground_report_ : nullptr; }
+    double                   world_clock() const { return world_clock_; }
+    void                     tick_world(double now_seconds);
+    void                     note_player(uint64_t player_id, double x, double y);
+    void                     forget_player(uint64_t player_id);
+    uint64_t                 region_exits() const { return region_exits_; }
+    bool                     outside_region(uint64_t player_id) const {
+        const auto it = outside_.find(player_id);
+        return it != outside_.end() && it->second;
+    }
+
     void set_combat_config(combat::CombatWorldConfig config) { combat_config_ = std::move(config); }
     const combat::CombatWorldConfig& combat_config() const { return combat_config_; }
-    /// The fights of the area (combat/combat_world.h): null until load_ground made the NPCs' ground, and when combat is off or its data is not in the file.
     combat::CombatWorld* combat() { return combat_.get(); }
-// (C_Y_B + C.O.A)
 
-    /// Plan E1, stage 3, part 2: what follows a death (combat/aftermath.h): the experience, the loot, the corpse's life and the respawn.  The switches
-    /// (the kill switch `enabled`, the corpse's and the respawn's numbers); before load_ground.
     void set_aftermath_config(combat::AftermathConfig config) { aftermath_config_ = std::move(config); }
     const combat::AftermathConfig& aftermath_config() const { return aftermath_config_; }
-    /// Nodes 1, stage 1: the city node registry (world/city_nodes.h), set by main before load_ground; null in a world with no nodes.  The loot rolls in the zone of
-    /// influence where the creature died.  The pointer must outlive this object.
     void set_city_nodes(world::CityNodes* nodes) { city_nodes_ = nodes; }
     world::CityNodes* city_nodes() const { return city_nodes_; }
-    /// Nodes 1, stage 2: what the client is told about the nodes (world/node_wire.h; built from content.db and the registry), set by main with the registry; null in a world
-    /// with no nodes (a GameStateMode::Tier3 join then lists none).  The pointer must outlive this object.
     void set_node_wire(const world::NodeWire* wire) { node_wire_ = wire; }
     const world::NodeWire* node_wire() const { return node_wire_; }
-    /// Nodes 1, stage 2: the client's GM console reaches the node service through this (world/node_control.h); null: the node GM RPCs are logged and say the node service is
-    /// unavailable.  The pointer must outlive this object.
     void set_node_control(world::NodeControl* control) { node_control_ = control; }
     world::NodeControl* node_control() const { return node_control_; }
-    /// Nodes 1, stage 3a: the towns' scenery.  The items of every town's replicator come from this (world/node_layout_data.h; null: no scenery); the pointer must outlive this object.
     void set_node_layout_data(const world::NodeLayoutData* data) { node_layout_data_ = data; }
-    /// Makes the replicator of every node that has something to draw at its level (world/node_scenery.h) in the registry, and has tick_world follow the nodes' levels from then on.
-    /// Needs the city nodes, the node wire and the layout data; the number of actors made (0 with `config.enabled` false or without those).  Once.
     size_t start_scenery(const world::NodeScenery::Config& config);
     const world::NodeScenery* scenery() const { return scenery_.get(); }
-    // ---- Nodes 1, stage 3b: the towns' people and the roads by node level ---------------------------------------------------------------
-    /// The node tables the towns' people are selected from (spawns/node_population.h); null: no town has people.  The pointer must outlive this object.
     void set_node_population_data(const spawns::NodePopulationData* data) { node_pop_data_ = data; }
-    /// Makes the people of every node inside the area at its level (spawns/node_populations.h), and has tick_world follow the nodes' levels from then on.  Needs the area, the city nodes, the
-    /// node wire and the node population data (call it after load_area and load_ground); the NPCs made (0 with `config.enabled` false or without those).  Once.
     size_t start_node_people(const spawns::NodePopulations::Config& config);
     const spawns::NodePopulations* node_people() const { return node_pops_.get(); }
 
-    /// Gathering stage 2, "Harvesting": the resource nodes' harvest (gather/gathering.h): the gather tables, the nodes' reward tables and the shared node state.  False, with `error`,
-    /// when content.db has no gather tables or the ability catalog is not there; the world then has nodes that can be seen and not harvested (their interaction is ignored, and logged).
-    bool start_gathering(const gather::Config& config, std::string& error);
+    bool                     start_gathering(const gather::Config& config, std::string& error);
     gather::Gathering*       gathering() { return gathering_.get(); }
     const gather::Gathering* gathering() const { return gathering_.get(); }
-    /// Gathering stage 3, "Foliage gathering": the painted trees, plants and stones (foliage/foliage.h): the map, the state of every instance and the cell actors that show it.  After
-    /// start_gathering (its interactions and reward tables).  False, with `error`, when gathering is off, content.db has no foliage tables or the map does not load; the world then has
-    /// foliage that is seen and not harvested (the interaction is logged once).
-    bool start_foliage(const foliage::Config& config, std::string& error);
+    bool                     start_foliage(const foliage::Config& config, std::string& error);
     foliage::Foliage*        foliage() { return foliage_.get(); }
     const foliage::Foliage*  foliage() const { return foliage_.get(); }
-    /// Gathering stage 2: the stacks of a harvest that a full bag could not take, as a pile where the player stands (the aftermath's public loot pile, the one a death makes).
-    /// The pile's actor id; 0, with `error`, when the world has no loot piles (--no-loot, or no area).  `pile_hook` replaces the aftermath in a test that has none.
-    uint64_t drop_harvest_pile(double x, double y, double z, const protocol::repl::GuidValue& owner, const std::string& name, std::vector<combat::LootStack> stacks, std::string& error);
+    struct HarvestPileDrop {
+        double                          x = 0, y = 0, z = 0;
+        protocol::repl::GuidValue       owner{};
+        std::string                     name;
+        std::vector<combat::LootStack>  stacks;
+    };
+    uint64_t drop_harvest_pile(HarvestPileDrop drop, std::string& error);
+    uint64_t drop_harvest_pile(double x, double y, double z, const protocol::repl::GuidValue& owner, const std::string& name, std::vector<combat::LootStack> stacks, std::string& error) {
+        return drop_harvest_pile(HarvestPileDrop{x, y, z, owner, name, std::move(stacks)}, error);
+    }
     using PileHook = std::function<uint64_t(double x, double y, double z, const protocol::repl::GuidValue& owner, const std::string& name, const std::vector<combat::LootStack>& stacks)>;
     void set_pile_hook(PileHook hook) { pile_hook_ = std::move(hook); }
-    /// The node level a road of a zone that has no node of its own (a starting area) is worth what it is at (worldd's --spawn-node-level).
     void set_road_default_level(int level) { road_default_level_ = level; }
-    /// Sets every by-level road (the roads_levels.tsv file) to the level its zone's node has now.  load_roads and tick_world call it; the number of roads that changed.
     size_t apply_road_levels();
-    /// Null until load_ground made the fights (and when combat is off).
     combat::Aftermath*        aftermath() { return aftermath_.get(); }
     const combat::RewardBook* rewards() const { return rewards_ ? &*rewards_ : nullptr; }
-    /// Makes the NPC of a spawn point again (the registry gets a new actor; the NPCs' world its life): the new actor id, 0 when it could not.
     uint64_t respawn_npc(uint32_t spawn_ref, double now);
-    /// Where a dead player comes back (research/combat 5): the nearest respawn shrine of the area to `(from_x, from_y)`, else the login spot.  The height is the
-    /// ground's under the spot plus the player's capsule's half height (98 cm) when the world has ground, else the spot's own.  `nearest_point` false: always the login spot (the
-    /// Embersprings' plain Respawn of a character that discovered none).
     struct RespawnSpot {
         double      x = 0, y = 0, z = 0, yaw = 0;
         bool        shrine = false;
         std::string name;
     };
     RespawnSpot respawn_spot(double from_x, double from_y, bool nearest_point = true) const;
-    /// Review A I4: the height a player is put at over (x, y) when the data says `data_z`: the ground's under the spot plus the capsule's half height (98 cm) when the ground's
-    /// chunk is here, the data's own height when it is not (a chunk that is not here has none of its navmesh floors: grounding on the terrain alone would put a shrine on a bridge, or
-    /// a platform, under it).  `grounded` (optional) says which.  A world without ground gives the data's.
     static double spot_height(const nav::AreaNav* nav, double x, double y, double data_z, bool* grounded = nullptr);
-    /// The height a player is put at over a spawn point (a respawn shrine) whose data height is `data_z`: inside the footprint of a bowl whose platform is read, the platform's floor plus the
-    /// capsule and kBowlSlackCm; anywhere else spot_height().  `grounded` says whether a ground or a floor was found.
     double spawn_height(double x, double y, double data_z, bool* grounded = nullptr) const;
-    /// The default quality of an item record, cached (the loot's stacks).
     int item_quality(int64_t item) const;
-    /// The rarity the client shows for a quality of an item record (items/rarity.h: the band of the record's curve held inside its RarityMin..RarityMax), its facts cached.
     int item_rarity(int64_t item, int quality) const;
-    /// The facts that rule works from (the record's quality curve and RarityMin..RarityMax), cached; the common curve with no bound for a record the data does not hold.  The reference stays valid.
     const items::ItemRarityFacts& item_rarity_facts(int64_t item) const;
-    /// The name of an item record ("Certificate_T1_Glint"), cached; empty when content.db has none (the log's loot lines).
     std::string item_name(int64_t item) const;
 
-    // ---- the GM travel tools (session/gm_travel.h) ---------------------------------------------------------------------------------
-    /// The client's own GM teleport RPCs (ServerTeleportXYZ, ServerTeleport, ServerTeleportPlayer) are answered only when this is on (--gm-commands / AOC_GM_COMMANDS=1; off by
-    /// default).  The admin API (worldctl) does not depend on it: it is the operator's, behind the service token.
-    void set_gm_commands(bool on) { gm_commands_ = on; }
-    bool gm_commands() const { return gm_commands_; }
-    /// The game's reactions (a weapon's finisher effects, the Bard's Resonance and melodies) run unless this is turned off (--no-reactions / AOC_NO_REACTIONS=1).
-    void set_reactions_enabled(bool on) { reactions_enabled_ = on; }
-    bool reactions_enabled() const { return reactions_enabled_; }
-    /// What a session asks of the rest of the world for a GM command that names other characters (ServerTeleportPlayer); null: only the session itself can be moved.  Not owned.
-    void   set_gm_port(GmPort* port) { gm_port_ = port; }
+    void    set_gm_commands(bool on) { gm_commands_ = on; }
+    bool    gm_commands() const { return gm_commands_; }
+    void    set_reactions_enabled(bool on) { reactions_enabled_ = on; }
+    bool    reactions_enabled() const { return reactions_enabled_; }
+    void    set_gm_port(GmPort* port) { gm_port_ = port; }
     GmPort* gm_port() const { return gm_port_; }
-    /// The places a GM can send a player to by name (world/places.h): the city nodes that have a place on the Verra map, and the login spot.
     world::Places places() const;
-    /// The ground a player is stood on at (x, y) when the server has ground there (the area's navmesh and terrain); nullopt otherwise.  The landscape's height, except inside a city node's bowl
-    /// (below): the town's floor plus kBowlSlackCm.
     std::optional<double> ground_at(double x, double y) const;
 
-    // ---- the five city nodes' bowls (world/town_floor.h) ------------------------------------------------------------------------------
-    // The baked terrain under Winstead, Joeva, New Aela, Halcyon and Miraleth is a pit about 50.6 m under the town's floor: a player put by the terrain (a GM teleport, a login, the position
-    // saved for a rider in the air) would be 50 m under the town.  The floor is known from the heights the town's people stand at.
-    /// A put-down inside a town's bowl lands this far (cm) above the modelled floor: the model is within 1.7 m on retail's anchors, so the player falls the last stretch.
+    // Baked terrain under the five city bowls is ~50.6 m below the town platform; kBowlSlackCm prevents spawning under the floor.
     static constexpr double kBowlSlackCm = 200.0;
-    /// The town floors.  Built from the node people's heights the first time it is asked after they changed (world/town_floor.h); a world with no node people leaves the table alone, so a
-    /// test fills it.
     world::TownFloor& town_floor() const;
     struct TownGround {
         int64_t node = 0;
-        double  z = 0;   // the town's floor (where a player's feet are; no slack): the platform's, or for a node whose layout is not read the baked ground plus its lift
-        bool    platform = false;   // true: the layout's own platform (world/town_platform.h); false: the interim model (world/town_floor.h)
-        bool    raised = false;     // true: a floor over the street (a terrace, the floor of a building, a roof: the walking map's), found by town_ground_at(x, y, z); false: the street itself
+        double  z = 0;
+        bool    platform = false;
+        bool    raised = false;
     };
-    /// The floor of the town whose bowl holds (x, y): inside the footprint of a node whose platform is read, the platform's (never the baked pit); for the other nodes the interim model's
-    /// (it needs the server's ground there); none outside every bowl.
     std::optional<TownGround> town_ground_at(double x, double y) const;
-    /// Only the platform's floor (the five bowls whose layouts mapc read): the street of a bowl.
     std::optional<TownGround> bowl_floor_at(double x, double y) const;
 
-    // ---- the floors of a place (the layers of the walking map: street, terrace, floor of a building, roof, tower) -------------------------------------------
-    /// A body whose feet are over a floor by no more than this (cm) stands on it: the step of a stair, the rounding of the map's surface.
     static constexpr double kFloorReachCm = 150.0;
-    /// How far from a wall (cm) the walking map may lack a polygon at a place: it keeps the agent's radius (35 cm) off an obstacle, and its cells are 25 cm.  A person who stands closer than
-    /// that to a wall takes the floor of the nearest polygon within this radius instead of having none.
     static constexpr double kNearWallCm = 100.0;
-    /// Every floor at (x, y) from z_lo to z_hi (cm), highest first, floors within 25 cm of each other once: the walking map's polygons there (a terrace, a roof, the floor of a building, the street, the
-    /// pit's terrain) and, inside a bowl whose platform is read, the platform's street (whether or not the map has it: a tile that is not loaded yet).  Where the map has no polygon at the exact place
-    /// (within kNearWallCm of a wall) the floor of the nearest polygon within that radius stands in for it.
-    std::vector<double> floors_at(double x, double y, double z_lo, double z_hi) const;
-    /// The floor a body whose feet are at z stands over: the highest floor of floors_at that is at most `above` cm over z and at most `below` cm under it (a trace down from `above` over the feet);
-    /// none when there is none.
-    std::optional<double> floor_under(double x, double y, double z, double below, double above = kFloorReachCm) const;
-    /// The town's floor under a body whose feet are at z: inside a bowl whose platform is read, the floor it stands over (a terrace, the floor of a building, a roof: floor_under, searched 600 m down,
-    /// `raised`) when that is higher than the street; else what town_ground_at(x, y) says.
+    std::vector<double>       floors_at(double x, double y, double z_lo, double z_hi) const;
+    std::optional<double>     floor_under(double x, double y, double z, double below, double above = kFloorReachCm) const;
     std::optional<TownGround> town_ground_at(double x, double y, double z) const;
     struct BowlLift {
         int64_t node = 0;
-        double  z = 0;          // where to put the character (its origin): the town's floor + the capsule's half height + kBowlSlackCm
-        double  under_cm = 0;   // how far under the town's floor it was saved
+        double  z = 0;
+        double  under_cm = 0;
     };
-    /// A position saved on the baked ground under a town (the floor of its bowl is kBowlCm = 15 m or more over the character with the interim model, kPlatformUnderCm = 25 m with the
-    /// platform): where to put the character instead; none otherwise.
     std::optional<BowlLift> lift_out_of_bowl(double x, double y, double z) const;
-    /// The platform floors: `mapc town-floors`' file read and each bowl's platform stood at its node record (city nodes must be set); false with `error`
-    /// when the file is missing or wrong.  A test's own platforms go in with set_town_platforms.
     bool load_town_platforms(const std::string& path, std::string& error);
     void set_town_platforms(std::unique_ptr<world::TownPlatforms> platforms) { platforms_ = std::move(platforms); }
     const world::TownPlatforms* town_platforms() const { return platforms_.get(); }
-    /// A character saved more than this far under a platform floor (cm) joins on it, and one that stands on the baked ground that far under it is put back (floor_rescue): that is the
-    /// pit under the town.  On the five footprints the baked ground is 45 to 55 m under the platform for 69 % of the area, 25 to 45 m (the pit's inner slope) for 13 %, and under 25 m
-    /// for the outer ring (15 %): the natural slope at the foot of the town's rim, where a character can stand outside the walls, so that is not under the town.
     static constexpr double kPlatformUnderCm = 2500.0;
-    /// ... a player stands on the baked ground when its feet are within this of it.
     static constexpr double kPitStandCm = 300.0;
-    /// The floor net.  The client has no kill plane of its own: a pawn put where the client has no collision yet (a long teleport into a town whose floor it has
-    /// not streamed) falls without end.  A player below kKillPlaneCm anywhere, or more than kBelowFloorCm
-    /// under the floor of a bowl, or has stood on the pit under one (see kPlatformUnderCm: a pawn that fell through a town with no floor yet and was caught by the landscape's collision
-    /// 50 m down), is put back on the floor (or the ground) with the same slack a teleport has.
     static constexpr double kKillPlaneCm = -10000.0;
     static constexpr double kBelowFloorCm = 10000.0;
     struct FloorRescue {
-        double      x = 0, y = 0, z = 0;   // where to put the character (its origin)
-        int64_t     node = 0;              // the bowl whose floor it is (0: the ground, or the login spot)
-        std::string where;                 // for the log
+        double      x = 0, y = 0, z = 0;
+        int64_t     node = 0;
+        std::string where;
     };
     std::optional<FloorRescue> floor_rescue(double x, double y, double z) const;
-    /// A player's capsule is this far from its feet to its origin (cm): where a player stands on the ground, its origin is this much above it.
     static constexpr double kCapsuleHalfHeightCm = 98.0;
-    /// A named place stands this far above its recorded z where the server has no ground (a short fall, never a place under the ground).
     static constexpr double kPlaceLiftCm = 150.0;
-    /// The height a player sent to `place` is put at: the ground under it plus the capsule's half height where the server has ground, else the place's z plus kPlaceLiftCm.
     double place_height(const world::Place& place) const;
 
-    /// How each session's ActorView runs (the rings, the tick, the opens cap): the defaults are retail's; a test changes them before a session joins.
-    void                          set_view_config(const ActorView::Config& config) { view_config_ = config; }
-    const ActorView::Config&      view_config() const { return view_config_; }
-// built by Cyb with C | O | A
+    void                     set_view_config(const ActorView::Config& config) { view_config_ = config; }
+    const ActorView::Config& view_config() const { return view_config_; }
 
-private:
-    void log_npc_types() const;
-    void log_huntables() const;
-    void log_hunting_kinds();
-    /// Rebuilds the town floors from the node people when those changed since the last build (town_floor()).
-    void refresh_town_floor() const;
-    /// G1 stage 1: a chunked ground's window (nav/area_nav.h): the blocking read of the login spot's chunks at start, and the per-tick drive (interest, pump, the NPCs of new chunks).
-    void preload_window();
-    void check_ground_covers_area() const;
-    void drive_window(double now_seconds);
-    void log_window(double now_seconds, const nav::WindowStats& w);
-    /// The towns' check: one line for each city node's people once they are on the ground and their numbers have been still for a few seconds: the level, how many stand
-    /// on a floor within 30 cm of where the data puts them, how many on a floor farther away, how many have none, how many of those have no walkable ground near either (in a wall, a stall, under a floor or in the air) and how many would walk if they had ground.  It runs again for a node
-    /// whose level or people changed (a level change brings other people, and its line comes as soon as they are on the ground), at most once a minute for the same level.
-    void check_towns(double now_seconds);
-    /// Crafting, step 0: what a station of a node's people knows of itself: the node, plot and building its plot component names (the window's town), its definition and tax tag.
-    /// `building` (when not 0) is the building the plot component names instead of the plot's own (a station a game master put on a free plot).
-    void describe_station(uint64_t id, const world::CityNodeInfo& node, int64_t plot, int64_t building = 0);
-    /// ... and puts it on the ground like the town's people (a post that never moves).
-    void finish_station(uint64_t id, const world::CityNodeInfo& node, int64_t plot, int64_t building = 0);
-    /// The placed stations of nodes that dropped below a Village, or whose plot is gone, leave (checked when the nodes' levels move).
-    void reap_placed_stations();
-    struct TownCheck {
-        int    level = -1;
-        size_t people = 0, ready = 0;       // what the check saw last: the NPCs the NPC world holds and how many of them have their ground
-        double changed_at = 0;              // when the numbers last changed
-        double logged_at = -1.0e9;
-        int    logged_level = -1;           // the level of the last line
-        bool   logged = true;               // the numbers it saw have been logged
-    };
-    std::map<int64_t, TownCheck>         town_checks_;
-    double                               last_town_check_ = -1.0e9;
-    static constexpr double kTownCheckSeconds = 2.0, kTownSettleSeconds = 4.0, kTownRelogSeconds = 60.0;
-public:
-    /// G1 stage 1: what driving the ground window cost the world tick (the longest of each part, ms) since the start: the interest set, the pump (the net thread's share of the
-    /// loading), and standing the NPCs of the chunks that arrived on their ground.  The load test and the log read it.
     struct WindowCost {
         double max_interest_ms = 0, max_pump_ms = 0, max_ground_ms = 0;
-        double max_npcs_ms = 0, max_combat_ms = 0, max_aftermath_ms = 0;   // the rest of tick_world: the NPC world's step, the fights, the corpses and respawns
-        double max_people_ms = 0;   // Nodes 1, stage 3b: the towns' people following the nodes' levels
+        double max_npcs_ms = 0, max_combat_ms = 0, max_aftermath_ms = 0;
+        double max_people_ms = 0;
         size_t grounded_chunks = 0;
     };
     const WindowCost& window_cost() const { return window_cost_; }
+
 private:
+    bool init_core_tables(std::string& problem);
+    bool init_progression_tables(std::string& problem);
+    void init_optional_tables();
+    void reset_on_content_error(const std::string& problem);
+    void load_area_quests_and_props();
+    void load_area_economy_and_looks();
+    void log_area_loaded() const;
+    void log_npc_types() const;
+    void log_huntables() const;
+    void log_hunting_kinds();
+    void refresh_town_floor() const;
+    void preload_window();
+    void check_ground_covers_area() const;
+    void drive_window(double now_seconds);
+    void log_window_errors_and_repairs(const nav::WindowStats& w);
+    void log_window(double now_seconds, const nav::WindowStats& w);
+    void check_town_node(int64_t node, const spawns::NodePopulations::Entry& entry, double now_seconds);
+    void check_towns(double now_seconds);
+    void tick_town_people_and_roads(double now_seconds);
+    bool station_placement_ready() const;
+    const world::PlotRow* find_free_station_plot(const world::CityNodeInfo& node, int level, const std::string& plot_name,
+                                                 const std::vector<world::PlotRow>& rows, StationResult& out) const;
+    void describe_station(uint64_t id, const world::CityNodeInfo& node, int64_t plot, int64_t building = 0);
+    void finish_station(uint64_t id, const world::CityNodeInfo& node, int64_t plot, int64_t building = 0);
+    void reap_placed_stations();
+    void setup_node_shopkeeper(uint64_t id, const world::CityNodeInfo& node);
+    void on_node_person_spawned(uint64_t id, const content::NpcInstanceRow* instance, const content::NpcRouteRow* route,
+                                const world::CityNodeInfo& node, int64_t plot);
+    void start_combat();
+    std::set<int64_t> collect_reward_roots(size_t& quest_tables) const;
+    void init_reward_book();
+    void start_aftermath();
+    void log_spawn_filter() const;
+    npc::SpeedModel speeds() const;
+
+    struct TownCheck {
+        int    level = -1;
+        size_t people = 0, ready = 0;
+        double changed_at = 0;
+        double logged_at = -1.0e9;
+        int    logged_level = -1;
+        bool   logged = true;
+    };
+    std::map<int64_t, TownCheck> town_checks_;
+    double                       last_town_check_ = -1.0e9;
+    static constexpr double kTownCheckSeconds = 2.0, kTownSettleSeconds = 4.0, kTownRelogSeconds = 60.0;
+
     WindowCost window_cost_;
     static constexpr double kWindowBudgetMs = 3.0;
-    /// The window is driven at the world's 20 Hz, not once per network datagram (review A I2): ticks closer than this are skipped.
+    // Window is driven at 20 Hz rather than per network datagram.
     static constexpr double kWindowPeriodSeconds = 0.045;
-    /// The window's state goes to the log at info this often (world seconds): the next in-game test can be read from it.
     static constexpr double kWindowLogSeconds = 30.0;
     double last_window_drive_ = -1.0e9;
     double last_window_log_ = -1.0e9;
-    void start_combat();
-    void start_aftermath();
-    void log_spawn_filter() const;
 
-    const content::ContentDb*            content_;
-    std::string                          content_problem_;
-    std::optional<content::AbilityRules> rules_;
-    std::optional<items::ContentItemCatalog> catalog_;
-    std::optional<stats::StatBundle>         bundle_;
+    const content::ContentDb*                  content_;
+    std::string                                content_problem_;
+    std::optional<content::AbilityRules>       rules_;
+    std::optional<items::ContentItemCatalog>   catalog_;
+    std::optional<stats::StatBundle>           bundle_;
     std::optional<content::ContentGearCatalog> gear_;
-    std::optional<content::LevelingType>     leveling_type_;   // plan D1
-    std::optional<leveling::LevelCurve>      curve_;
-    std::vector<content::AutoGrant>          grants_;          // the Universal tree's, by level
-    std::optional<talents::Catalog>          talents_;         // plan D1, stage 2
-    std::optional<professions::Book>         professions_;     // Gathering stage 2
-    std::optional<weaponxp::Lines>           weapon_lines_;    // weapon XP: the 21 weapon lines and their one curve
-    std::optional<items::CurrencyTable>      currencies_;      // Glint tiers
-    std::optional<abilities::Catalog>        ability_catalog_;  // plan D2
-    std::optional<spawns::MountBook>         mounts_;           // the mounts milestone
-    world::RoadMap                           roads_;            // the mounts milestone, stage 3
-    const abilities::Catalog*                ability_catalog_override_ = nullptr;
-    bool                                     catalog_override_set_ = false;
-    const items::ItemCatalog*            catalog_override_ = nullptr;
-    bootstrap::GameStateMode             mode_;
-    uint32_t                             server_id_;
-    protocol::ServerGuidAllocator&       guids_;
-    protocol::emit::FIntrepidNetworkGUID game_state_;
-    int32_t                              next_player_id_ = 1;
-    MovementConfig                       movement_;
-    PositionSink*                        sink_ = nullptr;
-    world::ActorRegistry                 registry_;
-    spawns::AreaConfig                   area_;
-    std::optional<spawns::CapturedData>  captured_;
-    std::optional<vendor::GmVendors>     gm_;
-    std::optional<spawns::AreaReport>    area_report_;
-    bool                                 gm_garden_ = false;
-    std::optional<spawns::GardenReport>  garden_report_;
-    ActorView::Config                    view_config_;
-    std::unique_ptr<nav::AreaNav>        nav_;
-    npc::MotionTable                     motion_;
-    bool                                 motion_loaded_ = false;
-    spawns::GenericConfig                generic_config_;
-    /// How the area's NPCs walk, with the huntable creatures standing (Gathering stage 3: npc/area_npcs.h SpeedModel).
-    npc::SpeedModel speeds() const;
-    spawns::SpawnContext                 spawn_context_;
-    std::optional<spawns::SpawnFilter>   spawn_filter_;
-    std::optional<spawns::GenericNpcs>   generic_;
-    std::unique_ptr<spawns::NpcLooks>    looks_;       // how the people look and what they are called (spawns/npc_looks.h); null: the recorded looks only
-    std::set<std::string>                standing_archetypes_;   // the Blueprints whose state tree has no task to wander or patrol with (npc/area_npcs.h)
-    std::string                          looks_dir_;   // where npc_looks.tsv and its siblings are (the Blueprint table's folder)
-    std::unique_ptr<npc::NpcWorld>       npcs_;
-    std::optional<npc::GroundReport>     ground_report_;
-    combat::CombatWorldConfig            combat_config_;
-    combat::NpcAbilityData               npc_abilities_;   // before combat_: it holds a pointer to it
-    npc::SensesTable                     npc_senses_;      // before combat_: it holds a pointer to it
-    std::optional<combat::NpcStatBook>   npc_book_;
-    std::optional<combat::CombatData>    combat_data_;
-    std::unique_ptr<combat::CombatWorld> combat_;     // after npcs_ and the ground: it is destroyed first
-    combat::AftermathConfig              aftermath_config_;
-    std::optional<combat::RewardBook>    rewards_;
-    std::unique_ptr<combat::Aftermath>   aftermath_;   // after combat_: it is destroyed first (it holds the death hook's `this`)
-    world::CityNodes*                    city_nodes_ = nullptr;
-    const world::NodeWire*               node_wire_ = nullptr;
-    world::NodeControl*                  node_control_ = nullptr;
-    std::optional<dialogue::Book>        dialogue_;
-    std::optional<quest::QuestBook>      quests_;          // quests, slice 1
-    std::optional<content::ObjectData>   objects_;         // quests part 3, slice 1: the quest objects' definitions
-    struct PropSlot { uint64_t actor = 0; double due = 0; };   // actor 0: gone, made again at `due`
-    mutable std::vector<PropSlot>        prop_slots_;      // by PropRecipe (spawns::AreaReport::props)
-    mutable size_t                       props_gone_ = 0;
-    quest::QuestWorker*                  quest_worker_ = nullptr;
-    std::optional<vendor::TownShops>     shops_;
-    std::optional<warehouse::Book>       warehouses_;   // storage clerks, step 0
-    std::optional<content::CraftStationData> stations_;   // crafting, step 0: the station definitions and which asset is whose station
-    std::optional<content::CraftRecipeData>  recipes_;    // crafting, step 1: the recipes
-    std::map<std::pair<int64_t, int64_t>, uint64_t> placed_stations_;   // (node, plot) -> the actor of a station a game master placed
-    uint64_t                             placed_seen_version_ = 0;
-    const world::NodeLayoutData*         node_layout_data_ = nullptr;
-    std::unique_ptr<world::NodeScenery>  scenery_;
-    const spawns::NodePopulationData*    node_pop_data_ = nullptr;
-    std::unique_ptr<spawns::NodePopulations> node_pops_;   // after the NPC world, the fights and the aftermath: their hooks point at them
-    std::unique_ptr<gather::Gathering>   gathering_;       // Gathering stage 2: the registry's nodes' harvest
-    std::unique_ptr<foliage::Foliage>    foliage_;         // Gathering stage 3: the painted foliage (after gathering_: it points into it)
-    PileHook                             pile_hook_;
-    int                                  road_default_level_ = 0;
-    uint64_t                             roads_seen_version_ = ~0ull;
-    std::unique_ptr<world::TownPlatforms> platforms_;            // the five bowls' platforms at their node records (load_town_platforms); null: the interim model only
-    mutable world::TownFloor             town_floor_;           // the towns in a bowl (town_floor())
-    mutable uint64_t                     town_floor_stamp_ = ~0ull;   // the node people it was built from (their made + removed counts)
-    bool                                 gm_commands_ = false;
-    bool                                 reactions_enabled_ = true;
-    GmPort*                              gm_port_ = nullptr;
-    uint64_t                             respawns_made_ = 0;
-    mutable std::map<int64_t, int>       quality_cache_;
+    std::optional<content::LevelingType>       leveling_type_;
+    std::optional<leveling::LevelCurve>        curve_;
+    std::vector<content::AutoGrant>            grants_;
+    std::optional<talents::Catalog>            talents_;
+    std::optional<professions::Book>           professions_;
+    std::optional<weaponxp::Lines>             weapon_lines_;
+    std::optional<items::CurrencyTable>        currencies_;
+    std::optional<abilities::Catalog>          ability_catalog_;
+    std::optional<spawns::MountBook>           mounts_;
+    world::RoadMap                             roads_;
+    const abilities::Catalog*                  ability_catalog_override_ = nullptr;
+    bool                                       catalog_override_set_ = false;
+    const items::ItemCatalog*                  catalog_override_ = nullptr;
+    bootstrap::GameStateMode                   mode_;
+    uint32_t                                   server_id_;
+    protocol::ServerGuidAllocator&             guids_;
+    protocol::emit::FIntrepidNetworkGUID       game_state_;
+    int32_t                                    next_player_id_ = 1;
+    MovementConfig                             movement_;
+    PositionSink*                              sink_ = nullptr;
+    world::ActorRegistry                       registry_;
+    spawns::AreaConfig                         area_;
+    std::optional<spawns::CapturedData>        captured_;
+    std::optional<vendor::GmVendors>           gm_;
+    std::optional<spawns::AreaReport>          area_report_;
+    bool                                       gm_garden_ = false;
+    std::optional<spawns::GardenReport>        garden_report_;
+    ActorView::Config                          view_config_;
+    std::unique_ptr<nav::AreaNav>              nav_;
+    npc::MotionTable                           motion_;
+    bool                                       motion_loaded_ = false;
+    spawns::GenericConfig                      generic_config_;
+    spawns::SpawnContext                       spawn_context_;
+    std::optional<spawns::SpawnFilter>         spawn_filter_;
+    std::optional<spawns::GenericNpcs>         generic_;
+    std::unique_ptr<spawns::NpcLooks>          looks_;
+    std::set<std::string>                      standing_archetypes_;
+    std::string                                looks_dir_;
+    std::unique_ptr<npc::NpcWorld>             npcs_;
+    std::optional<npc::GroundReport>           ground_report_;
+    combat::CombatWorldConfig                  combat_config_;
+    combat::NpcAbilityData                     npc_abilities_;
+    npc::SensesTable                           npc_senses_;
+    std::optional<combat::NpcStatBook>         npc_book_;
+    std::optional<combat::CombatData>          combat_data_;
+    // Declaration order preserves teardown safety: aftermath_ and node_pops_ outlive nothing they reference in combat_/npcs_.
+    std::unique_ptr<combat::CombatWorld>       combat_;
+    combat::AftermathConfig                    aftermath_config_;
+    std::optional<combat::RewardBook>          rewards_;
+    std::unique_ptr<combat::Aftermath>         aftermath_;
+    world::CityNodes*                          city_nodes_ = nullptr;
+    const world::NodeWire*                     node_wire_ = nullptr;
+    world::NodeControl*                        node_control_ = nullptr;
+    std::optional<dialogue::Book>              dialogue_;
+    std::optional<quest::QuestBook>            quests_;
+    std::optional<content::ObjectData>         objects_;
+    struct PropSlot {
+        uint64_t actor = 0;
+        double   due = 0;
+    };
+    mutable std::vector<PropSlot>              prop_slots_;
+    mutable size_t                             props_gone_ = 0;
+    quest::QuestWorker*                        quest_worker_ = nullptr;
+    std::optional<vendor::TownShops>           shops_;
+    std::optional<warehouse::Book>             warehouses_;
+    std::optional<content::CraftStationData>   stations_;
+    std::optional<content::CraftRecipeData>    recipes_;
+    std::map<std::pair<int64_t, int64_t>, uint64_t> placed_stations_;
+    uint64_t                                   placed_seen_version_ = 0;
+    const world::NodeLayoutData*               node_layout_data_ = nullptr;
+    std::unique_ptr<world::NodeScenery>        scenery_;
+    const spawns::NodePopulationData*          node_pop_data_ = nullptr;
+    std::unique_ptr<spawns::NodePopulations>   node_pops_;
+    std::unique_ptr<gather::Gathering>         gathering_;
+    std::unique_ptr<foliage::Foliage>          foliage_;
+    PileHook                                   pile_hook_;
+    int                                        road_default_level_ = 0;
+    uint64_t                                   roads_seen_version_ = ~0ull;
+    std::unique_ptr<world::TownPlatforms>      platforms_;
+    mutable world::TownFloor                   town_floor_;
+    mutable uint64_t                           town_floor_stamp_ = ~0ull;
+    bool                                       gm_commands_ = false;
+    bool                                       reactions_enabled_ = true;
+    GmPort*                                    gm_port_ = nullptr;
+    uint64_t                                   respawns_made_ = 0;
+    mutable std::map<int64_t, int>             quality_cache_;
     mutable std::map<int64_t, items::ItemRarityFacts> rarity_cache_;
-    mutable std::map<int64_t, std::string> name_cache_;
-    double                               world_clock_ = 0;
-    std::unordered_map<uint64_t, bool>   outside_;     // per player: beyond the region's edge at the last note
-    std::unordered_map<uint64_t, double> outside_logged_at_;   // per player: the world time of its last logged exit (review A M2: a rate limit; the exits are counted all the same)
-    std::unordered_map<uint64_t, bool>   exit_loud_;           // per player: the exit it is outside after was logged (its re-entry is then logged too)
+    mutable std::map<int64_t, std::string>     name_cache_;
+    double                                     world_clock_ = 0;
+    std::unordered_map<uint64_t, bool>         outside_;
+    std::unordered_map<uint64_t, double>       outside_logged_at_;
+    std::unordered_map<uint64_t, bool>         exit_loud_;
     static constexpr double kRegionLogSeconds = 30.0;
-    uint64_t                             region_exits_ = 0;
-    uint64_t                             window_failures_logged_ = 0;
-    nav::TileRepair                      window_repairs_logged_;   // the tile repairs already named in the log (nav/tile_repair.h)
+    uint64_t                                   region_exits_ = 0;
+    uint64_t                                   window_failures_logged_ = 0;
+    nav::TileRepair                            window_repairs_logged_;
 };
 
 }}  // namespace aoc::worldd
