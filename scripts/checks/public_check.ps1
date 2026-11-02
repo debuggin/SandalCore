@@ -59,6 +59,7 @@ function Test-SandalContentLeaks {
     $pemRegex = 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
     $peBaseRegex = '0x140[0-9A-Fa-f]{6}'
     $scanDirs = @(
+        (Join-Path $RootPath 'config'),
         (Join-Path $RootPath 'tests'),
         (Join-Path $RootPath 'scripts\checks')
     )
@@ -79,10 +80,33 @@ function Test-SandalContentLeaks {
     }
 }
 
+function Test-SandalEnvSchemaTemplates {
+    param(
+        [Parameter(Mandatory)][string]$RootPath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations
+    )
+    $configDir = Join-Path $RootPath 'config'
+    $examplePath = Join-Path $configDir 'sandal.env.example'
+    $profilesDir = Join-Path $configDir 'profiles'
+    $schemaKeys = @([regex]::Matches([System.IO.File]::ReadAllText($examplePath), '(?m)^(?:AOC|SANDAL)_[A-Z0-9_]+(?==)') | ForEach-Object { $_.Value })
+    if ($schemaKeys.Count -ne 72) {
+        $Violations.Add("sandal.env.example expected 72 keys, found $($schemaKeys.Count)")
+    }
+    foreach ($name in @('local-dev.env', 'docker-single.env', 'prod-mesh.env')) {
+        $profilePath = Join-Path $profilesDir $name
+        if (-not (Test-Path -LiteralPath $profilePath)) {
+            $Violations.Add("Missing profile template: $profilePath")
+        } elseif ($name -ieq 'prod-mesh.env' -and ([System.IO.File]::ReadAllText($profilePath) -match 'aoc:aoc@|sslmode=disable')) {
+            $Violations.Add("Unredacted dev credentials or disabled TLS in $profilePath")
+        }
+    }
+}
+
 $violations = [System.Collections.Generic.List[string]]::new()
 Test-SandalTestsDirectoryBounds -RootPath $RepoRoot -Violations $violations
 Test-SandalGitTrackedAssets -RootPath $RepoRoot -Violations $violations
 Test-SandalContentLeaks -RootPath $RepoRoot -Violations $violations
+Test-SandalEnvSchemaTemplates -RootPath $RepoRoot -Violations $violations
 
 if ($violations.Count -gt 0) {
     foreach ($violation in $violations) {
