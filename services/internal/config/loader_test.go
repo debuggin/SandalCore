@@ -5,6 +5,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -15,7 +17,7 @@ func TestDefaults(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	c := Load()
-	if c.DatabaseURL != "postgres://aoc:aoc@127.0.0.1:5432/aoc?sslmode=disable" {
+	if c.DatabaseURL != "postgres://aoc:aoc@127.0.0.1:5433/aoc?sslmode=disable" {
 		t.Errorf("DatabaseURL = %q", c.DatabaseURL)
 	}
 	if c.AuthHTTPAddr != "127.0.0.1:8081" || c.AuthGRPCAddr != "127.0.0.1:50051" ||
@@ -77,10 +79,10 @@ func TestGatewayAndMeshDefaults(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	c := Load()
-	if c.MeshGRPCAddr != "127.0.0.1:50053" || c.MeshStaticWorld != "" || c.MeshHeartbeatTTL != 15*time.Second {
+	if c.MeshGRPCAddr != "127.0.0.1:50054" || c.MeshStaticWorld != "" || c.MeshHeartbeatTTL != 15*time.Second {
 		t.Errorf("mesh = %q %q %v", c.MeshGRPCAddr, c.MeshStaticWorld, c.MeshHeartbeatTTL)
 	}
-	if c.GatewayICSAddr != "127.0.0.1:443" || c.GatewayGRPCAddr != "127.0.0.1:50054" {
+	if c.GatewayICSAddr != "127.0.0.1:443" || c.GatewayGRPCAddr != "127.0.0.1:50050" {
 		t.Errorf("gateway addresses = %q %q", c.GatewayICSAddr, c.GatewayGRPCAddr)
 	}
 	if c.GatewayTLSCert != "certs/server.pem" || c.GatewayTLSKey != "certs/server.key" {
@@ -164,5 +166,35 @@ func TestWorldAdminSettings(t *testing.T) {
 	t.Setenv("AOC_WORLD_ADMIN_ADDR", "127.0.0.1:9056")
 	if c := Load(); c.WorldAdminAddr != "127.0.0.1:9056" {
 		t.Errorf("override = %q", c.WorldAdminAddr)
+	}
+}
+
+func TestRedactAndValidate(t *testing.T) {
+	if got := RedactDSN("postgres://aoc:secret@127.0.0.1:5433/aoc"); got != "postgres://aoc:***REDACTED***@127.0.0.1:5433/aoc" {
+		t.Errorf("RedactDSN = %q", got)
+	}
+	if err := (Config{Env: "production", DatabaseURL: "postgres://aoc:aoc@127.0.0.1:5433/aoc"}).Validate(); err == nil {
+		t.Error("expected Validate to reject default password in production")
+	}
+	if err := (Config{Env: "production", DatabaseURL: "postgres://aoc:strong@127.0.0.1:5433/aoc", GMStarterSet: true}).Validate(); err == nil {
+		t.Error("expected Validate to reject GMStarterSet in production")
+	}
+}
+
+func TestLoadWithEnvFileAndPrecedence(t *testing.T) {
+	if _, err := LoadWithEnvFile("nonexistent_sandal.env"); err != nil {
+		t.Fatalf("missing env file: %v", err)
+	}
+	envPath := filepath.Join(t.TempDir(), "sandal.env")
+	data := []byte("AOC_DATABASE_URL=postgres://file\nAOC_AUTH_HTTP_ADDR=127.0.0.1:8181\nAOC_WORLD_ADMIN_ADDR=127.0.0.1:9956\n")
+	if err := os.WriteFile(envPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SANDAL_DATABASE_URL", "postgres://sandal")
+	t.Setenv("AOC_AUTH_HTTP_ADDR", "127.0.0.1:8282")
+	t.Setenv("AOC_WORLD_ADMIN_ADDR", "")
+	c, err := LoadWithEnvFile(envPath)
+	if err != nil || c.DatabaseURL != "postgres://sandal" || c.AuthHTTPAddr != "127.0.0.1:8282" || c.WorldAdminAddr != "127.0.0.1:9956" {
+		t.Fatalf("err=%v db=%q auth=%q admin=%q", err, c.DatabaseURL, c.AuthHTTPAddr, c.WorldAdminAddr)
 	}
 }

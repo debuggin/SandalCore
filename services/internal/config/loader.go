@@ -7,11 +7,16 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
 type Config struct {
+	Env               string        // SANDAL_ENV / AOC_ENV
+	MeshMode          string        // SANDAL_MESH_MODE / AOC_MESH_MODE
 	DatabaseURL       string        // AOC_DATABASE_URL
 	AuthHTTPAddr      string        // AOC_AUTH_HTTP_ADDR: the launcher's login API
 	AuthGRPCAddr      string        // AOC_AUTH_GRPC_ADDR: internal token validation
@@ -39,8 +44,18 @@ type Config struct {
 }
 
 func Load() Config {
+	cfg, _ := LoadWithEnvFile(os.Getenv("SANDAL_CONFIG_FILE"))
+	return cfg
+}
+
+func LoadWithEnvFile(path string) (Config, error) {
+	envFile, err := readEnvFile(path)
+	str := func(key, def string) string { return resolve(envFile, strings.TrimPrefix(key, "AOC_"), def) }
+	duration := func(key string, def time.Duration) time.Duration { return parseDur(str(key, ""), def) }
 	return Config{
-		DatabaseURL:       str("AOC_DATABASE_URL", "postgres://aoc:aoc@127.0.0.1:5432/aoc?sslmode=disable"),
+		Env:               str("AOC_ENV", "development"),
+		MeshMode:          str("AOC_MESH_MODE", "standalone"),
+		DatabaseURL:       str("AOC_DATABASE_URL", "postgres://aoc:aoc@127.0.0.1:5433/aoc?sslmode=disable"),
 		AuthHTTPAddr:      str("AOC_AUTH_HTTP_ADDR", "127.0.0.1:8081"),
 		AuthGRPCAddr:      str("AOC_AUTH_GRPC_ADDR", "127.0.0.1:50051"),
 		CharacterGRPCAddr: str("AOC_CHARACTER_GRPC_ADDR", "127.0.0.1:50052"),
@@ -52,32 +67,64 @@ func Load() Config {
 		TokenTTL:          duration("AOC_TOKEN_TTL", 24*time.Hour),
 		ServiceTokenFile:  str("AOC_SERVICE_TOKEN_FILE", "dist/services/service.token"),
 		ContentDB:         str("AOC_CONTENT_DB", "dist/content/content.db"),
-		GMStarterSet:      os.Getenv("AOC_GM_STARTER_SET") == "1",
+		GMStarterSet:      str("AOC_GM_STARTER_SET", "") == "1" || strings.EqualFold(str("AOC_GM_STARTER_SET", ""), "true"),
 
-		MeshGRPCAddr:     str("AOC_MESH_GRPC_ADDR", "127.0.0.1:50053"),
+		MeshGRPCAddr:     str("AOC_MESH_GRPC_ADDR", "127.0.0.1:50054"),
 		MeshStaticWorld:  str("AOC_MESH_STATIC_WORLD", ""),
 		MeshHeartbeatTTL: duration("AOC_MESH_HEARTBEAT_TTL", 15*time.Second),
 
 		GatewayICSAddr:    str("AOC_GATEWAY_ICS_ADDR", "127.0.0.1:443"),
-		GatewayGRPCAddr:   str("AOC_GATEWAY_GRPC_ADDR", "127.0.0.1:50054"),
-		GatewayGRPCPublic: os.Getenv("AOC_GATEWAY_GRPC_PUBLIC") == "1",
+		GatewayGRPCAddr:   str("AOC_GATEWAY_GRPC_ADDR", "127.0.0.1:50050"),
+		GatewayGRPCPublic: str("AOC_GATEWAY_GRPC_PUBLIC", "") == "1",
 		GatewayTLSCert:    str("AOC_GATEWAY_TLS_CERT", "certs/server.pem"),
 		GatewayTLSKey:     str("AOC_GATEWAY_TLS_KEY", "certs/server.key"),
 		TicketTTL:         duration("AOC_TICKET_TTL", 2*time.Minute),
-	}
+	}, err
 }
 
-// == C:Y:B | C O A ==
+func (c Config) Validate() error {
+	if c.Env != "development" && c.Env != "staging" && c.Env != "production" {
+		return fmt.Errorf("invalid env %q: must be development, staging, or production", c.Env)
+	}
+	if c.Env == "production" && (strings.Contains(c.DatabaseURL, "aoc:aoc@") || strings.Contains(c.DatabaseURL, "sslmode=disable") || c.GMStarterSet || strings.TrimSpace(c.ServiceTokenFile) == "") {
+		return errors.New("production config forbids default/non-TLS database URL, GMStarterSet, and empty ServiceTokenFile")
+	}
+	return nil
+}
 
-func str(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+func readEnvFile(path string) (map[string]string, error) {
+	if path == "" {
+		path = resolve(nil, "CONFIG_FILE", "config/sandal.env")
+	}
+	out := make(map[string]string)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, nil
+		}
+		return out, err
+	}
+	for _, raw := range strings.Split(string(b), "\n") {
+		if line := strings.TrimSpace(raw); line != "" && !strings.HasPrefix(line, "#") {
+			if k, v, ok := strings.Cut(strings.TrimPrefix(line, "export "), "="); ok {
+				out[strings.TrimSpace(k)] = strings.Trim(strings.TrimSpace(v), `"'`)
+			}
+		}
+	}
+	return out, nil
+}
+
+func resolve(envFile map[string]string, suffix, def string) string {
+	for _, v := range [4]string{os.Getenv("SANDAL_" + suffix), os.Getenv("AOC_" + suffix), envFile["SANDAL_"+suffix], envFile["AOC_"+suffix]} {
+		if v != "" {
+			return v
+		}
 	}
 	return def
 }
 
-func duration(key string, def time.Duration) time.Duration {
-	if d, err := time.ParseDuration(os.Getenv(key)); err == nil && d > 0 {
+func parseDur(raw string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
 		return d
 	}
 	return def
