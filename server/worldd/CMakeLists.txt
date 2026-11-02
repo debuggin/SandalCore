@@ -144,6 +144,13 @@ add_library(world_core STATIC
     session/player_gather.cpp
     session/player_session.cpp
     session/player_session.h
+    session/player_session_internal.h
+    session/player_session_lifecycle.cpp
+    session/player_session_mount.cpp
+    session/player_session_movement.cpp
+    session/player_session_state.h
+    session/player_session_types.h
+    session/player_session_zone.cpp
     session/player_world.cpp
     session/player_world.h
     session/position_saver.cpp
