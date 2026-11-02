@@ -50,6 +50,8 @@ add_library(aocnet STATIC
     protocol/repl/value.cpp
     protocol/repl/rep_state.cpp
     protocol/repl/codecs.cpp
+    protocol/repl/codecs_containers.cpp
+    protocol/repl/codecs_movement.cpp
     protocol/repl/rep_block.cpp
     protocol/repl/fast_array.cpp
     protocol/repl/rpc.cpp
@@ -74,8 +76,10 @@ add_library(aocnet STATIC
     protocol/repl/node_rpc.cpp
     protocol/repl/node_layout.cpp
     protocol/repl/value.h
+    protocol/repl/value_types.h
     protocol/repl/rep_state.h
     protocol/repl/codecs.h
+    protocol/repl/codecs_internal.h
     protocol/repl/rep_block.h
     protocol/repl/fast_array.h
     protocol/repl/rpc.h
@@ -104,6 +108,7 @@ add_library(aocnet STATIC
     protocol/repl/warehouse_rpc.h
     # emit
     protocol/emit/actor_builder.cpp
+    protocol/emit/actor_builder_pc.cpp
     protocol/emit/package_map_exporter.cpp
     protocol/emit/name_update_bunch.cpp
     protocol/emit/actor_builder.h
