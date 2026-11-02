@@ -1,38 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  libs/aocnet/tests/test_repl_rep_block.cpp
-//
-//  RepState, RepShadow and the RepLayout block (protocol/repl/) against the
-//  blocks the original server sent (capture_blocks.h, fixtures/replay_data.bin):
-//    - every captured block reads to its last bit (read_rep_block), and the
-//      state it gives writes back the exact bits (write_rep_block into an empty
-//      shadow): PlayerController open, CharacterLoadTracker updates, settings and
-//      attachment rotation (ch 3 pkt#22, #46, #72, #620, #7706), pawn open
-//      (ch 19 pkt#78, FRepMovement), the pawn's possession, unhide and view pitch
-//      updates (pkt#107, #2523, #7706), the PlayerState open and attachment (ch 193
-//      pkt#434, #491), and pawn / NPC component blocks (UPlayerInfo,
-//      UPlayerCombatInfo, UOwnerInfoComponent, UAoCAbilityComponent with arrays of
-//      57 and 58 elements);
-//    - the same small blocks built from scratch with RepState::set;
-//    - the shadow: no change writes nothing, one change writes that handle;
-//    - the field loop header that follows a block (UPlayerInfo HeldItems);
-//    - hostile input: array counts (a bounded number of elements however large they say),
-//      element handles that do not fit or do not ascend;
-//    - what RepState::set accepts is what the writer writes (quantized components, ids,
-//      strings), an element value that is gone is sent as its zero, the parent mask.
-// ============================================================================
-#include "capture_blocks.h"
-#include "protocol/repl/rep_block.h"
-#include "protocol/schema/generated/index.h"
-
-#include <bit>
-#include <cstdio>
-#include <cstdlib>
-#include <new>
-#include <string>
-#include <vector>
+#include "test_repl_rep_block_common.h"
 
 using namespace aoc::protocol;
 using namespace aoc::protocol::repl;
@@ -40,81 +9,6 @@ using emit::BunchWriter;
 namespace schema = aoc::protocol::schema;
 namespace gen = aoc::protocol::schema::gen;
 using capture_blocks::Block;
-
-static int g_pass = 0, g_fail = 0;
-#define CHECK(cond, msg) do { \
-    if (cond) { std::printf("  [ok ] %s\n", msg); g_pass++; } \
-    else { std::printf("  [FAIL] %s\n", msg); g_fail++; } \
-} while (0)
-
-static const schema::ClassSchema& schema_of(const Block& b) {
-    const schema::ClassSchema* s = gen::find_class_schema(b.class_name);
-    if (!s) { std::printf("  [FAIL] no schema %s\n", b.class_name); std::exit(2); }
-    return *s;
-}
-
-/// The bytes of a block and its decoded state.
-struct Decoded {
-    std::vector<uint8_t> bytes;
-    std::optional<RepState> state;
-    size_t pos = 0;
-};
-// C:Y:B x C O A
-
-static Decoded decode(const Block& b, const CodecOptions& opts = {}) {
-    Decoded d;
-    d.bytes = capture_blocks::bytes_of(b.hex);
-    d.state = read_rep_block(schema_of(b), d.bytes.data(), b.bits, d.pos, opts);
-    return d;
-}
-
-/// True when writing `state` into an empty shadow gives the first `bits` bits of `expect`.
-static bool writes_exactly(const schema::ClassSchema& s, const RepState& state, const uint8_t* expect, size_t bits,
-                           const CodecOptions& opts = {}) {
-    BunchWriter w;
-    RepShadow shadow;
-    const size_t n = write_rep_block(s, state, shadow, w, opts);
-    size_t diff = 0;
-    if (n != bits || w.bit_pos() != bits) {
-        std::printf("    wrote %zu bits, expected %zu\n", n, bits);
-        return false;
-    }
-    if (!capture_blocks::same_bit_range(w.data(), expect, bits, &diff)) {
-        std::printf("    first differing bit %zu\n", diff);
-        return false;
-    }
-    return true;
-}
-
-/// `n` bits of `bytes` from bit `start`, as a buffer starting at bit 0.
-static std::vector<uint8_t> slice_bits(const std::vector<uint8_t>& bytes, size_t start, size_t n) {
-    std::vector<uint8_t> out((n + 7) / 8, 0);
-    for (size_t i = 0; i < n; ++i) out[i >> 3] |= ((bytes[(start + i) >> 3] >> ((start + i) & 7)) & 1) << (i & 7);
-    return out;
-}
-
-static emit::FIntrepidNetworkGUID guid(uint64_t id) {
-    emit::FIntrepidNetworkGUID g;
-    g.ObjectId = id;
-    g.ServerId = 60;
-    g.Randomizer = 0x6ee87ee4;
-    return g;
-}
-
-static void round_trip_block(const Block& b, const CodecOptions& opts = {}) {
-    const std::string name = std::string(b.name) + " (" + b.class_name + ", " + std::to_string(b.rep_bits) + " bits)";
-    const Decoded d = decode(b, opts);
-    CHECK(d.state && d.pos == b.rep_bits, (name + ": reads to the last bit of the RepLayout block").c_str());
-    if (!d.state) return;
-    CHECK(writes_exactly(schema_of(b), *d.state, d.bytes.data(), b.rep_bits, opts),
-          (name + ": the decoded state writes back the exact bits").c_str());
-    BunchWriter w;
-    RepShadow shadow;
-    write_rep_block(schema_of(b), *d.state, shadow, w, opts);
-    const size_t before = w.bit_pos();
-    CHECK(write_rep_block(schema_of(b), *d.state, shadow, w, opts) == 0 && w.bit_pos() == before,
-          (name + ": a second write of the same state writes nothing").c_str());
-}
 
 static void test_captured_blocks() {
     std::printf("captured blocks: read to the last bit, written back bit for bit\n");
@@ -137,8 +31,7 @@ static void test_captured_blocks() {
     round_trip_block(capture_blocks::kAbilityNpc);
 }
 
-static void test_decoded_values() {
-    std::printf("what the captured blocks decode to\n");
+static void test_decoded_values_actors() {
     {
         const Block& b = capture_blocks::kPcOpenProps;
         const Decoded d = decode(b);
@@ -175,6 +68,9 @@ static void test_decoded_values() {
         const Value* t = d.state->get(s, "CurrentBreathingTime");
         CHECK(t && t->get_if<float>() && *t->get_if<float>() == 30.0f, "CurrentBreathingTime 30");
     }
+}
+
+static void test_decoded_values_components() {
     {
         const Block& b = capture_blocks::kPlayerInfoPossessed;
         const Decoded d = decode(b);
@@ -210,11 +106,14 @@ static void test_decoded_values() {
               "a record's Name is the hardcoded FName None (EName 0)");
     }
 }
-// ~ C | O | A - C | Y | B ~
 
-/// The PlayerController's open block built with set().
-static void test_built_from_scratch() {
-    std::printf("blocks built from scratch with RepState::set\n");
+static void test_decoded_values() {
+    std::printf("what the captured blocks decode to\n");
+    test_decoded_values_actors();
+    test_decoded_values_components();
+}
+
+static void test_built_from_scratch_pawn_pc() {
     {
         const Block& b = capture_blocks::kPawnPossessed107;
         const auto& s = schema_of(b);
@@ -253,6 +152,9 @@ static void test_built_from_scratch() {
         const auto bytes = capture_blocks::bytes_of(b->hex);
         CHECK(ok && writes_exactly(s, st, bytes.data(), 823), b == &capture_blocks::kPcLoadTracker72 ? "PC pkt#72 CharacterLoadTracker: 823 bits" : "PC pkt#46 CharacterLoadTracker: 823 bits");
     }
+}
+
+static void test_built_from_scratch_movement_ps() {
     {
         const Block& b = capture_blocks::kPawnOpenActor;
         const auto& s = schema_of(b);
@@ -288,7 +190,12 @@ static void test_built_from_scratch() {
         CHECK(ok && writes_exactly(s, st, bytes.data(), 967), "PlayerState open pkt#434 with FUniqueNetIdRepl and strings: 967 bits");
     }
 }
-// built by Cyb with C.O.A
+
+static void test_built_from_scratch() {
+    std::printf("blocks built from scratch with RepState::set\n");
+    test_built_from_scratch_pawn_pc();
+    test_built_from_scratch_movement_ps();
+}
 
 static void test_shadow() {
     std::printf("the shadow: what the client already has is not sent again\n");
@@ -307,7 +214,6 @@ static void test_shadow() {
     CHECK(first == 477 && shadow.sent.size() == 6, "the first send writes every set handle (477 bits) and records them in the shadow");
     CHECK(write_rep_block(s, st, shadow, w) == 0 && w.bit_pos() == 477, "a second write with no change writes nothing");
 
-    // pkt#2523: bHidden cleared: exactly that handle.
     st.set(s, "bHidden", Value::boolean(false));
     BunchWriter unhide;
     const size_t n = write_rep_block(s, st, shadow, unhide);
@@ -316,7 +222,6 @@ static void test_shadow() {
           "changing bHidden writes that handle alone: the 18 bits of pkt#2523");
     CHECK(write_rep_block(s, st, shadow, unhide) == 0, "and then nothing more");
 
-    // pkt#7706: RemoteViewPitch16 set later.
     st.set(s, "RemoteViewPitch16", Value::u64(61115));
     BunchWriter pitch;
     const size_t m = write_rep_block(s, st, shadow, pitch);
@@ -324,7 +229,6 @@ static void test_shadow() {
     CHECK(m == 33 && capture_blocks::same_bit_range(pitch.data(), pkt7706.data(), 33, nullptr),
           "a value set later is written alone: the 33 bits of pkt#7706");
 
-    // Setting the same value again is not a change; a new connection starts empty.
     st.set(s, "RemoteViewPitch16", Value::u64(61115));
     BunchWriter again;
     CHECK(write_rep_block(s, st, shadow, again) == 0 && again.bit_pos() == 0, "setting the same value again writes nothing");
@@ -336,7 +240,6 @@ static void test_shadow() {
     BunchWriter nothing;
     CHECK(write_rep_block(s, none, empty, nothing) == 0 && nothing.bit_pos() == 0, "an empty state writes nothing");
 
-    // Float and double changes compare by bit pattern.
     const auto& pc = schema_of(capture_blocks::kPcOpenProps);
     RepState f;
     f.set(pc, "SummonCooldownTimer", Value::f32(0.0f));
@@ -356,14 +259,12 @@ static void test_array_diff() {
     BunchWriter w;
     write_rep_block(s, *d.state, shadow, w);
 
-    // Element 1 of ResourceContainers gets an object: only that element goes out.
     RepState st = *d.state;
     ArrayValue a = *st.get(s, "ResourceContainers")->get_if<ArrayValue>();
     a.elements[1].values[1] = Value(guid(10341599));
     st.set(s, "ResourceContainers", Value(a));
     BunchWriter delta;
     const size_t bits = write_rep_block(s, st, shadow, delta);
-    // bDoChecksum + SIP(66) + count(16) + SIP(2) + GUID(128) + SIP(0) + SIP(0)
     CHECK(bits == 1 + 8 + 16 + 8 + 128 + 8 + 8, "one changed element: its handle and value, after the array count");
     size_t pos = 0;
     const auto back = read_rep_block(s, delta.data(), delta.bit_pos(), pos);
@@ -372,7 +273,6 @@ static void test_array_diff() {
               got->elements[1].values.size() == 1 && got->elements[2].values.empty(),
           "it reads back as count 3 with element 1 alone (the other properties and elements are not repeated)");
 
-    // Growing the array sends the count and the new element only.
     ArrayValue grown = a;
     grown.elements.resize(4);
     grown.elements[3].values[1] = Value(guid(10341600));
@@ -380,15 +280,12 @@ static void test_array_diff() {
     BunchWriter grow;
     const size_t g = write_rep_block(s, st, shadow, grow);
     CHECK(g == 1 + 8 + 16 + 8 + 128 + 8 + 8, "a fourth element: the count and that element's handle 4");
-    // Shrinking sends the count.
     grown.elements.resize(1);
     st.set(s, "ResourceContainers", Value(grown));
     BunchWriter shrink;
     CHECK(write_rep_block(s, st, shadow, shrink) == 1 + 8 + 16 + 8 + 8, "shrinking to one element: the count and no element");
     CHECK(write_rep_block(s, st, shadow, shrink) == 0, "and the shadow then holds the one-element array");
-// C:Y:B.CoA
 
-    // A nested array in an element compares recursively.
     const Block& pb = capture_blocks::kPlayerInfoPossessed;
     const auto& ps = schema_of(pb);
     Decoded pd = decode(pb);
@@ -403,7 +300,6 @@ static void test_array_diff() {
     pst.set(ps, "WorldAttunements.AttunedBlocks", Value(outer));
     BunchWriter pd2;
     const size_t nb = write_rep_block(ps, pst, pshadow, pd2);
-    // bDoChecksum + SIP(58) + outer count(16) + SIP(1) + inner count(16) + SIP(1) + uint8 value + SIP(0) x3
     CHECK(nb == 1 + 8 + 16 + 8 + 16 + 8 + 8 + 8 + 8 + 8, "a changed value inside a nested array writes the path of handles down to it");
 }
 
@@ -452,7 +348,7 @@ static void test_write_failure() {
     std::printf("a value the wire cannot carry\n");
     const auto& s = schema_of(capture_blocks::kPawnOpenActor);
     RepMovement m;
-    m.rotation = Rot{0, 300, 0};   // beyond a byte component
+    m.rotation = Rot{0, 300, 0};
     RepState st;
     st.set(s, "AuthServerIDReplicated", Value::u64(0));
     st.set(s, "ReplicatedMovement", Value(m));
@@ -467,10 +363,8 @@ static void test_write_failure() {
     failed = true;
     CHECK(write_rep_block(s, st, shadow, w, shorts, &failed) > 0 && !failed, "with short rotation components it is written");
 }
-// ~ Cyb :: C O A ~
 
-static void test_read_refusals() {
-    std::printf("read_rep_block refuses malformed blocks\n");
+static void test_read_refusals_malformed() {
     const auto& s = schema_of(capture_blocks::kPawnPossessed107);
     auto attempt = [&](const BunchWriter& w, size_t cut = 0) {
         size_t pos = 0;
@@ -479,7 +373,7 @@ static void test_read_refusals() {
     };
     {
         BunchWriter w;
-        w.write_bit(1);          // bDoChecksum
+        w.write_bit(1);
         w.write_sip(0);
         CHECK(!attempt(w).first, "a set bDoChecksum bit");
     }
@@ -487,7 +381,7 @@ static void test_read_refusals() {
         BunchWriter w;
         w.write_bit(0);
         w.write_sip(3); w.write_bit(1);
-        w.write_sip(2); w.write_bit(1);   // not ascending
+        w.write_sip(2); w.write_bit(1);
         w.write_sip(0);
         CHECK(!attempt(w).first, "handles that do not ascend");
     }
@@ -502,7 +396,7 @@ static void test_read_refusals() {
         const auto& stats = *gen::find_class_schema("UAoCStatsComponent");
         BunchWriter w;
         w.write_bit(0);
-        w.write_sip(4);                 // StatRepInt32Owner.Items: custom delta
+        w.write_sip(4);
         w.write_bits(0, 16); w.write_sip(0); w.write_sip(0);
         size_t pos = 0;
         CHECK(!read_rep_block(stats, w.data(), w.bit_pos(), pos).has_value(), "a custom-delta handle (fast array)");
@@ -510,9 +404,13 @@ static void test_read_refusals() {
     {
         BunchWriter w;
         w.write_bit(0);
-        w.write_sip(3); w.write_bit(1);   // no closing handle 0
+        w.write_sip(3); w.write_bit(1);
         CHECK(!attempt(w).first, "a block without its closing handle 0");
     }
+}
+
+static void test_read_refusals_bounds() {
+    const auto& s = schema_of(capture_blocks::kPawnPossessed107);
     {
         const auto bytes = capture_blocks::bytes_of(capture_blocks::kPawnPossessed107.hex);
         size_t pos = 0;
@@ -523,7 +421,6 @@ static void test_read_refusals() {
         CHECK(!read_rep_block(s, bytes.data(), 477, pos).has_value(), "no block at the end of the data");
     }
     {
-        // A block that starts mid-buffer (as content blocks do): pkt#2523's 18 bits after 5 padding bits.
         const auto bytes = capture_blocks::bytes_of(capture_blocks::kPawnUnhide2523.hex);
         BunchWriter w;
         w.write_bits(0x15, 5);
@@ -532,6 +429,12 @@ static void test_read_refusals() {
         const auto r = read_rep_block(s, w.data(), w.bit_pos(), pos);
         CHECK(r && pos == 23 && r->get(s, "bHidden") && *r->get(s, "bHidden") == Value::boolean(false), "a block at a bit offset reads and leaves pos after it");
     }
+}
+
+static void test_read_refusals() {
+    std::printf("read_rep_block refuses malformed blocks\n");
+    test_read_refusals_malformed();
+    test_read_refusals_bounds();
 }
 
 static void test_field_loop() {
@@ -570,460 +473,10 @@ static void test_field_loop() {
     size_t p3 = 0;
     CHECK(!read_field_header(s, over.data(), over.bit_pos(), p3).has_value() && p3 == 0, "a payload that runs past the block is refused");
     BunchWriter beyond;
-    beyond.write_serialize_int(s.num_fields(), s.field_max());   // field_max - 1: the value NumFields names no field
+    beyond.write_serialize_int(s.num_fields(), s.field_max());
     beyond.write_sip(0);
     size_t p4 = 0;
     CHECK(!read_field_header(s, beyond.data(), beyond.bit_pos(), p4).has_value(), "field number NumFields is refused");
-}
-
-// ---- hostile counts, handles and values ----------------------------------------------------------------------------------
-
-static const schema::ClassSchema& schema_named(const char* name) {
-    const schema::ClassSchema* s = gen::find_class_schema(name);
-    if (!s) { std::printf("  [FAIL] no schema %s\n", name); std::exit(2); }
-    return *s;
-}
-
-// Live and peak allocation, for the amplification test: every allocation of this executable goes through here.
-static size_t g_live = 0, g_peak = 0;
-// (C O A + C_Y_B)
-
-void* operator new(size_t n) {
-    void* p = std::malloc(n + 16);
-    if (!p) throw std::bad_alloc();
-    *static_cast<size_t*>(p) = n;
-    g_live += n;
-    if (g_live > g_peak) g_peak = g_live;
-    return static_cast<char*>(p) + 16;
-}
-void operator delete(void* q) noexcept {
-    if (!q) return;
-    char* p = static_cast<char*>(q) - 16;
-    g_live -= *reinterpret_cast<size_t*>(p);
-    std::free(p);
-}
-void operator delete(void* q, size_t) noexcept { operator delete(q); }
-
-static void test_hostile_counts() {
-    std::printf("a hostile array count builds a bounded number of elements\n");
-    const schema::ClassSchema& info = schema_named("UPlayerInfo");
-    const schema::RepCommand* attuned = info.command("WorldAttunements.AttunedBlocks");
-    CHECK(attuned && attuned->type == schema::PropType::DynamicArray && info.elements(*attuned).size() == 1 &&
-              info.elements(*attuned)[0].type == schema::PropType::DynamicArray,
-          "WorldAttunements.AttunedBlocks: an array whose element is an array");
-    if (!attuned) return;
-    // review B's probe: an outer array of `outer` elements, then `nested` of them each with an inner array of `inner` elements
-    auto block = [&](uint64_t outer, uint64_t inner, size_t nested) {
-        BunchWriter w;
-        w.write_bit(0);
-        w.write_sip(attuned->handle);
-        w.write_bits(outer, 16);
-        for (size_t k = 0; k < nested; ++k) {
-            w.write_sip(k + 1);     // element k, local handle 1 (AttunedIndices)
-            w.write_bits(inner, 16);
-            w.write_sip(0);         // closes the inner array
-        }
-        w.write_sip(0);             // closes the outer array
-        w.write_sip(0);             // closes the block
-        return w;
-    };
-    struct Result { bool ok; size_t peak; };
-    auto attempt = [&](const schema::ClassSchema& cls, const BunchWriter& w) {
-        size_t pos = 0;
-        const size_t base = g_live;
-        g_peak = base;
-        const bool ok = read_rep_block(cls, w.data(), w.bit_pos(), pos).has_value();
-        return Result{ok, g_peak - base};
-    };
-    {
-        const BunchWriter w = block(65535, 65535, 20);   // 86 bytes: without the budget it asks for ~370 MB
-        const Result r = attempt(info, w);
-        std::printf("    %zu bytes of input: peak allocation %zu bytes\n", w.byte_size(), r.peak);
-        CHECK(!r.ok && r.peak < (1u << 20), "86 bytes of 65535-element arrays within 65535-element arrays: refused without the allocation");
-    }
-    {
-        const BunchWriter w = block(65535, 65535, 4000);   // 16 KB: without the budget it asks for tens of GB and a minute
-        const Result r = attempt(info, w);
-        CHECK(!r.ok && r.peak < (1u << 20), "16 KB of the same: refused, quickly");
-    }
-    {
-        const BunchWriter w = block(kMaxBlockElements, kMaxBlockElements, 500);   // the outer array fits the budget, no inner one does
-        const Result r = attempt(info, w);
-        std::printf("    %zu bytes of input: peak allocation %zu bytes\n", w.byte_size(), r.peak);
-        CHECK(!r.ok && r.peak < (8u << 20), "an outer array that uses the whole budget leaves none for the inner ones: refused, at most one array built");
-    }
-    // The budget is one block's, all its arrays together.
-    const schema::ClassSchema& owner = schema_named("UOwnerInfoComponent");
-    const schema::RepCommand* containers = owner.command("ResourceContainers");
-    const schema::RepCommand* attackers = owner.command("NpcAttackers");
-    CHECK(containers && attackers && containers->type == schema::PropType::DynamicArray && attackers->type == schema::PropType::DynamicArray,
-          "UOwnerInfoComponent has the arrays ResourceContainers and NpcAttackers");
-    if (!containers || !attackers) return;
-    auto two_arrays = [&](uint64_t first, uint64_t second) {
-        BunchWriter w;
-        w.write_bit(0);
-        const schema::RepCommand* lo = containers->handle < attackers->handle ? containers : attackers;
-        const schema::RepCommand* hi = lo == containers ? attackers : containers;
-        w.write_sip(lo->handle);
-        w.write_bits(lo == containers ? first : second, 16);
-        w.write_sip(0);
-        w.write_sip(hi->handle);
-        w.write_bits(hi == containers ? first : second, 16);
-        w.write_sip(0);
-        w.write_sip(0);
-        return w;
-    };
-    CHECK(attempt(owner, two_arrays(kMaxBlockElements / 2, kMaxBlockElements / 2)).ok, "two arrays that together fit the budget read");
-    CHECK(!attempt(owner, two_arrays(kMaxBlockElements / 2, kMaxBlockElements / 2 + 1)).ok, "one element more in all: refused");
-    CHECK(attempt(owner, two_arrays(kMaxBlockElements, 0)).ok && !attempt(owner, two_arrays(kMaxBlockElements + 1, 0)).ok,
-          "an array of exactly kMaxBlockElements reads, one more does not");
-    {   // read_value on its own, outside any block, has a budget of its own
-        ArrayValue three;
-        three.elements.resize(3);
-        three.elements[1].values[1] = Value(guid(10341599));
-        BunchWriter w;
-        const bool wrote = write_value(*containers, owner.element_commands, Value(three), w);
-        wire::PacketReader r(w.data(), w.byte_size(), w.bit_pos());
-        const auto v = wrote ? read_value(*containers, owner.element_commands, r) : std::nullopt;
-        CHECK(v && *v == Value(three) && r.pos() == w.bit_pos(), "read_value reads an array on its own");
-    }
-}
-
-// ---- T5: array element handles in a RepLayout block ------------------------------------------------------------------------------
-static void t5_array_element_handles() {
-    std::printf("array element handles that do not fit the count or do not ascend\n");
-    const schema::ClassSchema& owner = schema_named("UOwnerInfoComponent");
-    const schema::RepCommand* arr = owner.command("ResourceContainers");
-    auto block = [&](uint64_t count, std::initializer_list<uint64_t> handles) {
-        BunchWriter w;
-        w.write_bit(0);
-        w.write_sip(arr->handle);
-        w.write_bits(count, 16);
-        for (uint64_t h : handles) {
-            w.write_sip(h);
-            emit::write_intrepid_guid(w, guid(10341599));
-        }
-        w.write_sip(0);   // closes the array
-        w.write_sip(0);   // closes the block
-        return w;
-    };
-    auto reads = [&](const BunchWriter& w) {
-        size_t pos = 0;
-        return read_rep_block(owner, w.data(), w.bit_pos(), pos).has_value();
-    };
-    CHECK(arr && arr->type == schema::PropType::DynamicArray && arr->elem_end - arr->elem_begin == 1, "ResourceContainers: an array of one command per element");
-    CHECK(reads(block(3, {1, 3})), "control: elements 0 and 2 of 3");
-    CHECK(!reads(block(2, {3})), "element 2 of 2 (handle 3): refused");
-    CHECK(!reads(block(0, {1})), "element 0 of an empty array: refused");
-    CHECK(!reads(block(3, {2, 1})), "element handles 2 then 1 (descending): refused");
-    CHECK(!reads(block(3, {2, 2})), "element handle 2 twice: refused");
-}
-
-// ---- T7: RepState::set bounds an array at 65535 elements ---------------------------------------------------------------------
-static void t7_array_bound() {
-    std::printf("an array of 65536 elements\n");
-    const schema::ClassSchema& owner = schema_named("UOwnerInfoComponent");
-    ArrayValue big;
-    big.elements.resize(65536);
-    RepState st;
-    CHECK(!st.set(owner, "ResourceContainers", Value(big)), "65536 elements do not fit the 16-bit count");
-    big.elements.resize(65535);
-    CHECK(st.set(owner, "ResourceContainers", Value(big)), "65535 do");
-}
-
-// ---- RepState::set accepts what the writer writes ---------------------------------------------------------------------------------
-static void test_set_matches_writer() {
-    std::printf("RepState::set accepts exactly what the writer can write\n");
-    const auto& loc = schema_named("PlayerPawn_C");   // AttachmentReplication.LocationOffset: FVector_NetQuantize100
-    const auto& info = schema_named("UPlayerInfo");   // CharacterName: FString
-    const auto& ps = schema_named("AoCPlayerStateBP_C");
-    const schema::RepCommand* unique_id = ps.command("UniqueId");
-    // The value is accepted by set and then written and read back; or refused by set.
-    auto trips = [&](const schema::ClassSchema& cls, const char* path, const Value& v) {
-        RepState st;
-        if (!st.set(cls, path, v)) return false;
-        BunchWriter w;
-        RepShadow sh;
-        bool failed = true;
-        const size_t n = write_rep_block(cls, st, sh, w, {}, &failed);
-        size_t pos = 0;
-        const auto back = failed || !n ? std::nullopt : read_rep_block(cls, w.data(), w.bit_pos(), pos);
-        return back && *back == st;
-    };
-    auto refused = [&](const schema::ClassSchema& cls, const char* path, const Value& v) { return !RepState().set(cls, path, v); };
-    const char* offset = "AttachmentReplication.LocationOffset";
-// (C:Y:B | CoA)
-
-    // quantized vectors: at most 63 bits a component (UE::Net::WriteQuantizedVector)
-    const int64_t big63 = (int64_t(1) << 62) - 1;
-    CHECK(trips(loc, offset, Value(QuantVec{QuantVec::Mode::Scaled, big63, -(int64_t(1) << 62), 5})), "a quantized component of 63 bits is written and read back");
-    CHECK(refused(loc, offset, Value(QuantVec{QuantVec::Mode::Scaled, INT64_MAX, 0, 0})), "INT64_MAX (64 bits) is refused");
-    CHECK(refused(loc, offset, Value(QuantVec{QuantVec::Mode::Scaled, INT64_MIN, 0, 0})), "INT64_MIN is refused");
-    CHECK(refused(loc, offset, Value(QuantVec{QuantVec::Mode::Unscaled, int64_t(1) << 62, 0, 0})), "2^62 (64 bits) is refused");
-    CHECK(refused(loc, offset, Value(QuantVec{QuantVec::Mode::Scaled, 0, -(int64_t(1) << 62) - 1, 0})), "-2^62 - 1 is refused");
-    BunchWriter scratch;
-    CHECK(!write_quantized_vector(scratch, QuantVec{QuantVec::Mode::Scaled, INT64_MAX, 0, 0}) && scratch.bit_pos() == 0 &&
-              !quant_vec_fits(QuantVec{QuantVec::Mode::Scaled, INT64_MAX, 0, 0}) && quant_vec_fits(QuantVec{QuantVec::Mode::Scaled, big63, 0, 0}),
-          "the writer refuses the same values and writes nothing");
-    CHECK(trips(loc, offset, Value(QuantVec{QuantVec::Mode::RawDouble, INT64_MIN, 0, INT64_MAX})), "full precision doubles carry any bits");
-    CHECK(trips(loc, offset, Value(QuantVec{QuantVec::Mode::RawFloat, 0x3f800000, 0, UINT32_MAX})), "a full precision float vector carries 32 bits");
-    CHECK(refused(loc, offset, Value(QuantVec{QuantVec::Mode::RawFloat, int64_t(UINT32_MAX) + 1, 0, 0})), "a float component beyond 32 bits is refused");
-    CHECK(refused(loc, offset, Value(QuantVec{QuantVec::Mode::RawFloat, -1, 0, 0})), "and a negative one");
-
-    // FRepMovement: the embedded vectors
-    RepMovement m;
-    m.location = QuantVec{QuantVec::Mode::Scaled, 100, 200, 300};
-    CHECK(trips(loc, "ReplicatedMovement", Value(m)), "an FRepMovement with small vectors is written and read back");
-    RepMovement wide = m;
-    wide.location.x = INT64_MAX;
-    CHECK(refused(loc, "ReplicatedMovement", Value(wide)), "a 64-bit location component is refused");
-    wide = m;
-    wide.linear_velocity.z = INT64_MIN;
-    CHECK(refused(loc, "ReplicatedMovement", Value(wide)), "a 64-bit velocity component is refused");
-    wide = m;
-    wide.rep_physics = true;
-    wide.angular_velocity.y = INT64_MAX;
-    CHECK(refused(loc, "ReplicatedMovement", Value(wide)), "a 64-bit angular velocity is refused when it goes out (bRepPhysics)");
-    wide = m;
-    wide.acceleration = QuantVec{QuantVec::Mode::Scaled, 0, 0, INT64_MAX};
-    CHECK(refused(loc, "ReplicatedMovement", Value(wide)), "a 64-bit acceleration is refused");
-    wide = m;
-    wide.rotation = Rot{0, 300, 0};
-    RepState bytes_rotation;
-    BunchWriter rw;
-    RepShadow rs;
-    bool failed = false;
-    CHECK(bytes_rotation.set(loc, "ReplicatedMovement", Value(wide)) && write_rep_block(loc, bytes_rotation, rs, rw, {}, &failed) == 0 && failed,
-          "a rotation beyond a byte stays a write-time failure: set cannot know the object's rotation quantization");
-
-    // FUniqueNetIdRepl: a non-V2 encoded id has a byte for its length
-    CHECK(unique_id != nullptr, "AoCPlayerStateBP_C.UniqueId");
-    if (unique_id) {
-        UniqueNetId id;
-        id.flags = 1 | (5 << 3);
-        id.bytes.assign(255, 7);
-        CHECK(trips(ps, "UniqueId", Value(id)), "an encoded id of 255 bytes is written and read back");
-        id.bytes.assign(256, 7);
-        CHECK(refused(ps, "UniqueId", Value(id)), "256 bytes are refused (the length is a byte)");
-        id.flags = 1 | (30 << 3);   // TypeHash_V2: an int32 length
-        id.services = 3;
-        id.bytes.assign(300, 7);
-        CHECK(trips(ps, "UniqueId", Value(id)), "a V2 id of 300 bytes is fine");
-        UniqueNetId named;
-        named.flags = 1 | (31 << 3);
-        named.type = std::string("a\0b", 3);
-        CHECK(refused(ps, "UniqueId", Value(named)), "a type name with a NUL is refused");
-        UniqueNetId text;
-        text.flags = 8;
-        text.id = std::string("x\0y", 3);
-        CHECK(refused(ps, "UniqueId", Value(text)), "an unencoded id string with a NUL is refused");
-        text.id = "DESKTOP-EXAMPLE1-US-0123456789ABCDEF0123456789ABCDEF";
-        CHECK(trips(ps, "UniqueId", Value(text)), "and a plain one is fine");
-        // what the flags say is not written is not checked
-        UniqueNetId empty;
-        empty.flags = 3;   // encoded and empty
-        empty.bytes.assign(1000, 1);
-        CHECK(struct_accepts("FUniqueNetIdRepl", Value(empty)), "an empty id has no bytes on the wire: its leftover bytes do not matter");
-    }
-
-    // strings: no NUL, at most 65,535 characters
-    CHECK(trips(info, "CharacterName", Value::str(std::string(65535, 'x'))), "a string of 65,535 characters is written and read back");
-    CHECK(refused(info, "CharacterName", Value::str(std::string(65536, 'x'))), "65,536 characters are refused");
-    CHECK(refused(info, "CharacterName", Value::str(std::string("ab\0cd", 5))), "a string with an embedded NUL is refused");
-    std::string accents;
-    for (int i = 0; i < 65535; ++i) accents += "\xC3\xA9";   // U+00E9: two bytes, one UCS-2 unit
-    CHECK(trips(info, "CharacterName", Value::str(accents)), "65,535 two-byte characters (131,070 bytes: the limit counts characters) are fine");
-    accents += "\xC3\xA9";
-    CHECK(refused(info, "CharacterName", Value::str(accents)), "and 65,536 are not");
-    std::string faces;
-    for (int i = 0; i < 32768; ++i) faces += "\xF0\x9F\x98\x80";   // U+1F600: a surrogate pair, two units
-    CHECK(refused(info, "CharacterName", Value::str(faces)), "32,768 surrogate pairs (65,536 UCS-2 units) are refused");
-    CHECK(refused(info, "CharacterName", Value::str(std::string("\xC3\xA9\0", 3))), "a NUL after a non-ASCII character is refused too");
-    BunchWriter sw;
-    CHECK(!write_fstring(sw, std::string(65536, 'x')) && !write_fstring(sw, std::string("a\0b", 3)) && sw.bit_pos() == 0 &&
-              write_fstring(sw, std::string(65535, 'x')),
-          "write_fstring refuses the same and writes nothing");
-
-    // names, texts, soft objects and tags by their commands
-    schema::RepCommand cmd{};
-    cmd.type = schema::PropType::Name;
-    const std::string nul("n\0m", 3);
-    CHECK(!value_matches(cmd, {}, Value(NameValue::plain(nul))) && value_matches(cmd, {}, Value(NameValue::plain("ok"))) &&
-              !value_matches(cmd, {}, Value(NameValue::plain(std::string(65536, 'n')))),
-          "an FName with a NUL or a string of 65,536 characters is refused");
-    NameValue hard = NameValue::hardcoded_name(5);
-    hard.text = nul;
-    CHECK(value_matches(cmd, {}, Value(hard)), "a hardcoded name has no text on the wire: its leftover text does not matter");
-    cmd.type = schema::PropType::Text;
-    TextValue t;
-    t.history = 0;
-    t.ns = "UI";
-    t.key = "Key";
-    t.source = "text";
-    CHECK(value_matches(cmd, {}, Value(t)), "an FText of the Base history");
-    t.key = nul;
-    CHECK(!value_matches(cmd, {}, Value(t)), "with a NUL in its key is refused");
-    t.key = "Key";
-    t.history = 3;
-    CHECK(!value_matches(cmd, {}, Value(t)), "a history that is not decoded is refused");
-    TextValue none;
-    none.history = 0xFF;
-    none.has_string = true;
-    none.source = std::string(65536, 's');
-    CHECK(!value_matches(cmd, {}, Value(none)), "an FText string of 65,536 characters is refused");
-    none.has_string = false;
-    CHECK(value_matches(cmd, {}, Value(none)), "and is not checked when it does not go out");
-    cmd.type = schema::PropType::SoftObject;
-    SoftObjectValue so;
-    so.is_path = true;
-    so.path = nul;
-    CHECK(!value_matches(cmd, {}, Value(so)), "a soft object path with a NUL is refused");
-    so.path = "/Game/A";
-    CHECK(value_matches(cmd, {}, Value(so)), "and a plain one is fine");
-    CHECK(!struct_accepts("FGameplayTag", Value(GameplayTag{NameValue::plain(nul)})) &&
-              !struct_accepts("FGameplayTagContainer", Value(GameplayTagContainer{{NameValue::plain("ok"), NameValue::plain(nul)}})) &&
-              struct_accepts("FGameplayTagContainer", Value(GameplayTagContainer{{NameValue::plain("ok")}})),
-          "a gameplay tag or a tag of a container with a NUL is refused");
-}
-// [C.O.A - C.Y.B]
-
-// ---- an element value that is gone ---------------------------------------------------------------------------------------------------
-static void test_removed_element_values() {
-    std::printf("an array element value that was sent and is gone is sent as its zero\n");
-    const schema::ClassSchema& owner = schema_named("UOwnerInfoComponent");
-    ArrayValue a;
-    a.elements.resize(3);
-    a.elements[1].values[1] = Value(guid(10341599));
-    RepState st;
-    RepShadow shadow;
-    BunchWriter w;
-    st.set(owner, "ResourceContainers", Value(a));
-    // bDoChecksum + SIP(66) + count(16) + SIP(2) + GUID(128) + SIP(0) + SIP(0)
-    CHECK(write_rep_block(owner, st, shadow, w) == 1 + 8 + 16 + 8 + 128 + 8 + 8, "the first send: element 1 alone");
-    a.elements[1].values.clear();   // the server clears it: the client still holds the GUID
-    st.set(owner, "ResourceContainers", Value(a));
-    BunchWriter cleared;
-    bool failed = true;
-    const size_t bits = write_rep_block(owner, st, shadow, cleared, {}, &failed);
-    CHECK(bits == 1 + 8 + 16 + 8 + 128 + 8 + 8 && !failed, "clearing it writes the element again, as the null object");
-    size_t pos = 0;
-    const auto back = read_rep_block(owner, cleared.data(), cleared.bit_pos(), pos);
-    const Value* arr = back ? back->get(owner, "ResourceContainers") : nullptr;
-    const ArrayValue* got = arr ? arr->get_if<ArrayValue>() : nullptr;
-    CHECK(got && got->elements.size() == 3 && got->elements[1].values.size() == 1 &&
-              got->elements[1].values.at(1) == Value(emit::FIntrepidNetworkGUID{}),
-          "it reads back as element 1 = the null object (the client no longer keeps the stale GUID)");
-    CHECK(write_rep_block(owner, st, shadow, cleared) == 0, "and then nothing more: the client has the zero");
-
-    // A zero that was sent is not sent again when the value goes.
-    ArrayValue z;
-    z.elements.resize(2);
-    z.elements[0].values[1] = Value(emit::FIntrepidNetworkGUID{});
-    RepState zs;
-    RepShadow zsh;
-    BunchWriter zw;
-    zs.set(owner, "ResourceContainers", Value(z));
-    write_rep_block(owner, zs, zsh, zw);
-    z.elements[0].values.clear();
-    zs.set(owner, "ResourceContainers", Value(z));
-    CHECK(write_rep_block(owner, zs, zsh, zw) == 0, "a value that was the zero and is gone sends nothing");
-
-    // A nested array that is gone goes out empty.
-    const schema::ClassSchema& info = schema_named("UPlayerInfo");
-    ArrayValue inner;   // WorldAttunements.AttunedBlocks = [{AttunedIndices = [1]}]
-    inner.elements.resize(1);
-    inner.elements[0].values[1] = Value::u64(1);
-    ArrayValue outer;
-    outer.elements.resize(1);
-    outer.elements[0].values[1] = Value(inner);
-    RepState is;
-    RepShadow ish;
-    BunchWriter iw;
-    is.set(info, "WorldAttunements.AttunedBlocks", Value(outer));
-    write_rep_block(info, is, ish, iw);
-    outer.elements[0].values.clear();
-    is.set(info, "WorldAttunements.AttunedBlocks", Value(outer));
-    BunchWriter ow;
-    // bDoChecksum + SIP(58) + outer count(16) + SIP(1) + inner count 0 (16) + SIP(0) inner + SIP(0) outer + SIP(0)
-    CHECK(write_rep_block(info, is, ish, ow) == 1 + 8 + 16 + 8 + 16 + 8 + 8 + 8, "a removed inner array goes out as count 0");
-
-    // A type without a known zero cannot be reset: the write fails and nothing changes.
-    const schema::ClassSchema& look = schema_named("UCharacterAppearanceComponent");
-    ArrayValue ids;
-    ids.elements.resize(1);
-    ids.elements[0].values[1] = Value(AppearanceId{1, 2, 3, 4});
-    RepState ls;
-    RepShadow lsh;
-    BunchWriter lw;
-    ls.set(look, "AppearanceIDs", Value(ids));
-    CHECK(write_rep_block(look, ls, lsh, lw) > 0, "AppearanceIDs: one element sent");
-    ids.elements[0].values.clear();
-    ls.set(look, "AppearanceIDs", Value(ids));
-    const RepShadow before = lsh;
-    BunchWriter lw2;
-    failed = false;
-    CHECK(write_rep_block(look, ls, lsh, lw2, {}, &failed) == 0 && failed && lw2.bit_pos() == 0 && lsh.sent == before.sent,
-          "an FAppearanceId has no known zero: removing it fails the write, the shadow untouched");
-    CHECK(zero_value(*look.command("AppearanceIDs")).has_value() && !zero_value(look.elements(*look.command("AppearanceIDs"))[0]).has_value(),
-          "(the array's zero is empty, the struct's is unknown)");
-}
-
-// ---- per-connection conditions, at the RepLayout level ---------------------------------------------------------------------------------
-static void test_parent_mask() {
-    std::printf("the parent mask: an inactive parent is left out of the block and the shadow\n");
-    const auto& s = schema_named("PlayerPawn_C");
-    RepState st;
-    st.set(s, "bHidden", Value::boolean(true));
-    RepMovement m;
-    m.location = QuantVec{QuantVec::Mode::Scaled, 1, 2, 3};
-    st.set(s, "ReplicatedMovement", Value(m));
-    const schema::RepCommand* movement = s.command("ReplicatedMovement");
-    const schema::RepCommand* hidden = s.command("bHidden");
-// ~ C | O | A & C.Y.B ~
-
-    ParentMask mask;
-    CHECK(mask.all_active() && mask.active(movement->parent), "everything is active until the caller says otherwise");
-    CHECK(mask.set_active(s, "ReplicatedMovement", false) && !mask.all_active() && !mask.active(movement->parent) && mask.active(hidden->parent),
-          "set_active by path turns one parent off");
-    RepShadow shadow;
-    BunchWriter w;
-    RepShadowUndo undo;
-    bool failed = true;
-    const size_t bits = write_rep_block(s, st, shadow, w, {}, &failed, &mask, &undo);
-    size_t pos = 0;
-    const auto back = bits ? read_rep_block(s, w.data(), w.bit_pos(), pos) : std::nullopt;
-    CHECK(!failed && back && back->values().size() == 1 && back->get(hidden->handle) && shadow.sent.size() == 1 && shadow.sent.count(hidden->handle),
-          "only the active parent's handle is written and recorded");
-    CHECK(undo.entries.size() == 1 && undo.entries[0].first == hidden->handle && !undo.entries[0].second,
-          "the undo record has that handle, which the shadow did not hold");
-    undo.apply(shadow);
-    CHECK(shadow.empty(), "applying it puts the shadow back");
-
-    // everything inactive: nothing to write
-    mask.set_active(s, "bHidden", false);
-    BunchWriter none;
-    CHECK(write_rep_block(s, st, shadow, none, {}, &failed, &mask) == 0 && !failed && none.bit_pos() == 0 && shadow.empty(), "every parent inactive: nothing");
-    mask.reset();
-    BunchWriter all;
-    CHECK(write_rep_block(s, st, shadow, all, {}, &failed, &mask) > 0 && shadow.sent.size() == 2, "reset: everything is active again");
-
-    // the undo of an overwrite gives the old value back
-    RepState st2 = st;
-    st2.set(s, "bHidden", Value::boolean(false));
-    RepShadowUndo undo2;
-    BunchWriter again;
-    CHECK(write_rep_block(s, st2, shadow, again, {}, &failed, nullptr, &undo2) > 0 && *shadow.sent.at(hidden->handle).get_if<bool>() == false,
-          "an update that changes bHidden");
-    undo2.apply(shadow);
-    CHECK(shadow.sent.size() == 2 && *shadow.sent.at(hidden->handle).get_if<bool>() == true, "its undo restores the old value");
-
-    // An empty array on a first send goes out as count 0 (a few bits the client does not need; UE leaves it out).
-    const auto& owner = schema_named("UOwnerInfoComponent");
-    RepState es;
-    es.set(owner, "ResourceContainers", Value(ArrayValue{}));
-    RepShadow esh;
-    BunchWriter ew;
-    CHECK(write_rep_block(owner, es, esh, ew) == 1 + 8 + 16 + 8 + 8, "an empty array on a first send: count 0");
 }
 
 int main() {
@@ -1036,12 +489,7 @@ int main() {
     test_write_failure();
     test_read_refusals();
     test_field_loop();
-    test_hostile_counts();
-    t5_array_element_handles();
-    t7_array_bound();
-    test_set_matches_writer();
-    test_removed_element_values();
-    test_parent_mask();
+    run_repl_rep_block_part2();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

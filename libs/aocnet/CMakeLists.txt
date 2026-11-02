@@ -161,3 +161,9 @@ add_subdirectory(tests)
 target_sources(test_repl_actor_open PRIVATE
     tests/test_repl_actor_open_part2.cpp
 )
+target_sources(test_repl_items PRIVATE
+    tests/test_repl_items_part2.cpp
+)
+target_sources(test_repl_rep_block PRIVATE
+    tests/test_repl_rep_block_part2.cpp
+)
