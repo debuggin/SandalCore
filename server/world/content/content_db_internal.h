@@ -5,6 +5,7 @@
 #pragma once
 
 #include "content/content_db.h"
+#include "content/glaze_schemas.h"
 
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>

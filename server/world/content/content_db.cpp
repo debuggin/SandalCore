@@ -582,19 +582,10 @@ bool guid_list(sqlite3* db, GuidQuery query, int64_t parent, std::vector<int64_t
     while ((step = q.step()) == SQLITE_ROW) out.push_back(sqlite3_column_int64(q.get(), 0));
     return check_done(db, step, std::string(query.what) + " query failed", error);
 }
-int64_t json_int(const nlohmann::json& o, std::string_view key) {
-    const auto it = o.find(key);
-    return it != o.end() && it->is_number_integer() ? it->get<int64_t>() : int64_t(0);
-}
-double json_num(const nlohmann::json& o, std::string_view key) {
-    const auto it = o.find(key);
-    return it != o.end() && it->is_number() ? it->get<double>() : 0.0;
-}
-bool json_flag(const nlohmann::json& o, std::string_view key) { return json_int(o, key) != 0; }
-std::string json_str(const nlohmann::json& o, std::string_view key) {
-    const auto it = o.find(key);
-    return it != o.end() && it->is_string() ? it->get<std::string>() : std::string();
-}
+int64_t json_int(const nlohmann::json& o, std::string_view key) { return glaze::extract_int(o, key); }
+double json_num(const nlohmann::json& o, std::string_view key) { return glaze::extract_num(o, key); }
+bool json_flag(const nlohmann::json& o, std::string_view key) { return glaze::extract_flag(o, key); }
+std::string json_str(const nlohmann::json& o, std::string_view key) { return glaze::extract_str(o, key); }
 
 ContentDb::ContentDb(ContentDb&& other) noexcept
     : db_(std::exchange(other.db_, nullptr)),

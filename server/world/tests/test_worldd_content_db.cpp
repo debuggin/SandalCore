@@ -27,6 +27,8 @@
 // ============================================================================
 #include "bootstrap/captured_setup.h"
 #include "content/content_db.h"
+#include "content/content_db_internal.h"
+#include "content/glaze_schemas.h"
 #include "content_db_fixture.h"
 #include "stats/stat_program.h"
 
@@ -591,12 +593,63 @@ static void test_real_content_db() {
     CHECK(!db->primary_attributes(kBard, 51, error) && !error.empty(), "level 51 has none");
 }
 
+void test_glaze_compile_time_json_reflection_parity(const fs::path& dir) {
+    std::printf("--- test_glaze_compile_time_json_reflection_parity ---\n");
+    namespace gz = aoc::worldd::content::glaze;
+    static_assert(gz::Schema<gz::QuestObjectiveJson>::fields.size() == 7 && glz::meta<gz::QuestObjectiveJson>::value.size() == 7);
+    static_assert(gz::Schema<gz::QuestRewardItemJson>::fields.size() == 4 && gz::Schema<gz::LootDropEntryJson>::fields.size() == 4);
+    static_assert(gz::Schema<gz::CraftIngredientJson>::fields.size() == 7 && gz::Schema<gz::NpcScheduleWaypointJson>::fields.size() == 6);
+    static_assert(gz::Schema<gz::ProgressionTierJson>::fields.size() == 6 && gz::Schema<gz::QuestObjectiveJson>::fields.keys()[0] == "guid");
+    CHECK(gz::Schema<gz::QuestObjectiveJson>::fields.size() == 7 && gz::Schema<gz::ProgressionTierJson>::fields.keys()[5] == "limited",
+          "constexpr Schema<T>::fields and glz::meta<T> expose field counts and keys");
+
+    const gz::QuestObjectiveJson obj_in{101, 5, "Cull Wolves", "Kill", 45.5, true, false};
+    const gz::QuestRewardItemJson rew_in{200, 300, 3, true};
+    const gz::LootDropEntryJson loot_in{400, 2, 10, 0.25};
+    const gz::CraftIngredientJson ing_in{500, 12, 4, 2, "Metal,Ore", true, true};
+    const gz::NpcScheduleWaypointJson wp_in{12.5, -34.0, 56.25, 3.5, true, "Idle_Patrol"};
+    const gz::ProgressionTierJson tier_in{900, 3, 10, 20, "Journeyman", true};
+    gz::QuestObjectiveJson obj_out{};
+    gz::QuestRewardItemJson rew_out{};
+    gz::LootDropEntryJson loot_out{};
+    gz::CraftIngredientJson ing_out{};
+    gz::NpcScheduleWaypointJson wp_out{};
+    gz::ProgressionTierJson tier_out{};
+    CHECK(gz::read_json(gz::write_json(obj_in), obj_out) && obj_out == obj_in, "QuestObjectiveJson round-trip parity");
+    CHECK(gz::read_json(gz::write_json(rew_in), rew_out) && rew_out == rew_in, "QuestRewardItemJson round-trip parity");
+    CHECK(gz::read_json(gz::write_json(loot_in), loot_out) && loot_out == loot_in, "LootDropEntryJson round-trip parity");
+    CHECK(gz::read_json(gz::write_json(ing_in), ing_out) && ing_out == ing_in, "CraftIngredientJson round-trip parity");
+    CHECK(gz::read_json(gz::write_json(wp_in), wp_out) && wp_out == wp_in, "NpcScheduleWaypointJson round-trip parity");
+    CHECK(gz::read_json(gz::write_json(tier_in), tier_out) && tier_out == tier_in, "ProgressionTierJson round-trip parity");
+
+    gz::QuestObjectiveJson tol_out{};
+    CHECK(gz::read_json(R"({"guid":77,"name":"Scout","unknown_extra":999,"nested":{"a":1},"show_dialogue":1,"count":"bad_type"})", tol_out) &&
+              tol_out.guid == 77 && tol_out.name == "Scout" && tol_out.count == 1 && tol_out.show_dialogue,
+          "unknown fields tolerated, integer flags accepted, and mismatched types fall back to defaults");
+    const gz::QuestRewardItemJson sentinel{9, 8, 7, true};
+    gz::QuestRewardItemJson bad_out = sentinel;
+    CHECK(!gz::read_json("", bad_out) && !gz::read_json(R"({"table":1)", bad_out) &&
+              !gz::read_json("{invalid}", bad_out) && !gz::read_json("[1,2,3]", bad_out) && bad_out == sentinel,
+          "malformed, truncated, or non-object JSON rejected without mutating output");
+
+    const auto sample = nlohmann::json::parse(R"({"i":-42,"f":3.125,"b1":1,"b0":0,"s":"ok","bad":"x"})");
+    CHECK(content::json_int(sample, "i") == gz::extract_int(sample, "i") && content::json_int(sample, "bad") == 0 &&
+              content::json_num(sample, "f") == gz::extract_num(sample, "f") && content::json_num(sample, "missing") == 0.0 &&
+              content::json_flag(sample, "b1") && !content::json_flag(sample, "b0") && content::json_str(sample, "s") == "ok",
+          "json_int/json_num/json_flag/json_str parity with glaze typed extractors");
+    std::string err;
+    write_db(dir / "glaze_parity.db");
+    const auto db = content::ContentDb::open((dir / "glaze_parity.db").string(), err);
+    CHECK(db && db->class_for_archetype(17747, err).has_value() && db->primary_attributes(kBard, 1, err).has_value(), "end-to-end ContentDb load parity");
+}
+
 int main() {
     const fs::path dir = content_fixture::make_temp_dir("aoc_worldd_content_db_test_");
     test_open_refusals(dir);
     test_queries(dir);
     test_stat_content(dir);
     test_mount_content(dir);
+    test_glaze_compile_time_json_reflection_parity(dir);
     std::error_code ec;
     fs::remove_all(dir, ec);
     test_real_content_db();
