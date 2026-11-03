@@ -1,0 +1,64 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:SandalLauncher.ViewModels"
+             x:Class="SandalLauncher.Views.ServerControlView"
+             x:DataType="vm:LaunchPresetsViewModel"
+             x:CompileBindings="True"
+             Background="{DynamicResource SurfacePrimaryBrush}"
+             Foreground="{DynamicResource TextPrimaryBrush}"
+             AutomationProperties.Name="Realm Telemetry Pill, Launch Presets, and Local Server Stack Control">
+
+  <StackPanel Spacing="14">
+
+    <!-- 1. 5-State Realm Status Pill & Binary SHA-256 Verification Badge (UX-02, UX-05) -->
+    <Border x:Name="RealmStatusPillBorder" Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="1" CornerRadius="8" Padding="16,12" AutomationProperties.Name="Realm Status Pill" AutomationProperties.LiveSetting="Polite">
+      <Grid ColumnDefinitions="Auto,16,Auto,16,Auto,*,Auto">
+        <Border Grid.Column="0" Background="{DynamicResource SurfaceOverlayBrush}" CornerRadius="6" Padding="10,6">
+          <TextBlock Text="{Binding RealmPill.StatusLabel}" Foreground="{DynamicResource AccentGoldBrush}" FontWeight="Bold" FontSize="13" />
+        </Border>
+        <StackPanel Grid.Column="2" Spacing="2" VerticalAlignment="Center">
+          <TextBlock Text="RTT LATENCY" Foreground="{DynamicResource TextMutedBrush}" FontSize="10" FontWeight="Bold" />
+          <TextBlock Text="{Binding RealmPill.LatencyLabel}" Foreground="{DynamicResource TextPrimaryBrush}" FontSize="13" FontWeight="SemiBold" FontFeatures="tnum" />
+        </StackPanel>
+        <StackPanel Grid.Column="4" Spacing="2" VerticalAlignment="Center">
+          <TextBlock Text="POPULATION" Foreground="{DynamicResource TextMutedBrush}" FontSize="10" FontWeight="Bold" />
+          <TextBlock Text="{Binding RealmPill.PopulationLabel}" Foreground="{DynamicResource TextPrimaryBrush}" FontSize="13" FontWeight="SemiBold" FontFeatures="tnum" />
+        </StackPanel>
+        <TextBlock Grid.Column="5" Text="{Binding RealmPill.DiagnosticSummary}" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" VerticalAlignment="Center" Margin="16,0" TextTrimming="CharacterEllipsis" />
+        <Border Grid.Column="6" Background="{DynamicResource SurfaceOverlayBrush}" CornerRadius="6" Padding="10,6" VerticalAlignment="Center" AutomationProperties.Name="Binary SHA-256 Verification Badge">
+          <TextBlock Text="{Binding BinaryHashBadgeText}" Foreground="{DynamicResource StatusOnlineBrush}" FontSize="11" FontWeight="SemiBold" FontFeatures="tnum" />
+        </Border>
+      </Grid>
+    </Border>
+
+    <!-- 2. Quick-Launch Preset Selector & Effective UE5 CLI Preview (UX-01, UX-04) -->
+    <Border Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="1" CornerRadius="8" Padding="16,12">
+      <StackPanel Spacing="10">
+        <TextBlock Text="QUICK-LAUNCH PRESETS &amp; SHIPPING CLIENT FLAGS" Foreground="{DynamicResource AccentGoldBrush}" FontSize="11" FontWeight="Bold" />
+        <Grid ColumnDefinitions="220,16,Auto,16,Auto,16,Auto,*">
+          <ComboBox Grid.Column="0" ItemsSource="{Binding AvailablePresets}" SelectedItem="{Binding SelectedPreset}" MinHeight="44" HorizontalAlignment="Stretch" TabIndex="1" AutomationProperties.Name="Launch Preset Selector" />
+          <CheckBox Grid.Column="2" Content="Use EOS" IsChecked="{Binding UseEos}" MinHeight="44" TabIndex="2" AutomationProperties.Name="Preset Use EOS Toggle" />
+          <CheckBox Grid.Column="4" Content="Verbose Log (-Log)" IsChecked="{Binding EnableDebugLog}" MinHeight="44" TabIndex="3" AutomationProperties.Name="Preset Verbose Log Toggle" />
+          <CheckBox Grid.Column="6" Content="Windowed (1920x1080)" IsChecked="{Binding WindowedMode}" MinHeight="44" TabIndex="4" AutomationProperties.Name="Preset Windowed Mode Toggle" />
+        </Grid>
+        <TextBlock Text="{Binding EffectiveArgumentsPreview}" Foreground="{DynamicResource TextMutedBrush}" FontSize="11" TextWrapping="Wrap" AutomationProperties.Name="Effective Launch Arguments Preview" />
+      </StackPanel>
+    </Border>
+
+    <!-- 3. Embedded Local Server Stack Control Panel (Start / Restart / Stop with Inverse Fitts Separation) -->
+    <Border Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="1" CornerRadius="8" Padding="16,12">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Grid.Column="0" Spacing="4" VerticalAlignment="Center">
+          <TextBlock Text="LOCAL VERRA SERVER STACK LIFECYCLE" Foreground="{DynamicResource AccentGoldBrush}" FontSize="11" FontWeight="Bold" />
+          <TextBlock Text="{Binding StackStatusText}" Foreground="{DynamicResource TextPrimaryBrush}" FontSize="12" AutomationProperties.LiveSetting="Polite" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+          <Button Content="Start Stack" Command="{Binding StartStackCommand}" IsEnabled="{Binding CanStartStack}" Background="{DynamicResource AccentGoldBrush}" Foreground="{DynamicResource SurfacePrimaryBrush}" FontWeight="Bold" MinHeight="44" Padding="16,10" TabIndex="5" AutomationProperties.Name="Start Local Server Stack" />
+          <Button Content="Restart Stack" Command="{Binding RestartStackCommand}" IsEnabled="{Binding CanRestartStack}" MinHeight="44" Padding="14,10" TabIndex="6" AutomationProperties.Name="Restart Local Server Stack" />
+          <Button Content="Stop Stack" Command="{Binding StopStackCommand}" IsEnabled="{Binding CanStopStack}" Background="{DynamicResource StatusOfflineBrush}" Foreground="{DynamicResource TextPrimaryBrush}" FontWeight="SemiBold" MinHeight="44" Padding="14,10" TabIndex="7" AutomationProperties.Name="Stop Local Server Stack" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+  </StackPanel>
+</UserControl>
