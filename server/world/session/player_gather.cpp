@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 SandalCore contributors.
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+#include "bootstrap/character_setup.h"
 #include "bootstrap/constants.h"
+#include "content/content_db.h"
 #include "gather/rules.h"
 #include "items/acquired.h"
-#include "session/player_session_internal.h"
+#include "session/player_session.h"
 #include "world/interaction_state.h"
 namespace aoc {
 namespace worldd {

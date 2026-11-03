@@ -45,10 +45,7 @@ inline const aoc::worldd::svc::ItemContainer Worn = aoc::worldd::svc::ItemContai
 
 inline const aoc::protocol::schema::ClassSchema& class_named(const char* name) {
     const aoc::protocol::schema::ClassSchema* c = aoc::protocol::schema::gen::find_class_schema(name);
-    if (!c) {
-        std::printf("  [FAIL] no schema %s\n", name);
-        std::exit(2);
-    }
+    if (!c) { std::printf("  [FAIL] no schema %s\n", name); std::exit(2); }
     return *c;
 }
 
@@ -60,14 +57,8 @@ inline std::string guid_n(uint32_t n) {
 
 inline aoc::worldd::svc::InventoryItem make_item(aoc::worldd::svc::ItemContainer c, int slot, int64_t record, uint32_t n, int32_t quantity = 1) {
     aoc::worldd::svc::InventoryItem it;
-    it.container = c;
-    it.slot = slot;
-    it.item_record_id = record;
-    it.instance_guid = guid_n(n);
-    it.quantity = quantity;
-    it.quality = 1;
-    it.durability = 11;
-    it.created_at_ms = 1'771'299'474'000ll;
+    it.container = c; it.slot = slot; it.item_record_id = record; it.instance_guid = guid_n(n);
+    it.quantity = quantity; it.quality = 1; it.durability = 11; it.created_at_ms = 1'771'299'474'000ll;
     return it;
 }
 
@@ -83,8 +74,7 @@ inline std::vector<aoc::worldd::svc::InventoryItem> kit() {
     out.push_back(make_item(Bag, kSwordSlot, fi::kSword2H, 200));
     out.push_back(make_item(Bag, kPotionSlot, fi::kPotion, 201, 5));
     aoc::worldd::svc::InventoryItem a = make_item(Bag, kMountSlot, g_mount_record, 300);
-    a.persisted_health = 3572;
-    a.persisted_mana = 1;
+    a.persisted_health = 3572; a.persisted_mana = 1;
     out.push_back(a);
     out.push_back(make_item(Bag, kOtherMountSlot, g_other_mount_record, 301));
     aoc::worldd::svc::InventoryItem locked = make_item(Bag, kLockedSlot, g_mount_record, 302);
@@ -97,17 +87,9 @@ inline std::vector<aoc::worldd::svc::InventoryItem> kit() {
 
 inline aoc::worldd::svc::Character cyb_record(std::vector<aoc::worldd::svc::InventoryItem> items = kit()) {
     aoc::worldd::svc::Character c;
-    c.id = kCyb;
-    c.account_id = 3;
-    c.name = "cyb";
-    c.race_id = 0;
-    c.gender_id = 0;
-    c.class_id = 2;
-    c.archetype_id = 17747;
-    c.class_name = "Bard";
-    c.appearance_json = cyb::kAppearanceJsonb;
-    c.level = 1;
-    c.items = std::move(items);
+    c.id = kCyb; c.account_id = 3; c.name = "cyb"; c.race_id = 0; c.gender_id = 0;
+    c.class_id = 2; c.archetype_id = 17747; c.class_name = "Bard";
+    c.appearance_json = cyb::kAppearanceJsonb; c.level = 1; c.items = std::move(items);
     return c;
 }
 
@@ -140,34 +122,20 @@ struct Fixture {
         if (!content_fixture::make_db(db)) std::exit(2);
         std::string error;
         content = aoc::worldd::content::ContentDb::open(db.string(), error);
-        if (!content) {
-            std::printf("  [FAIL] the content.db does not open: %s\n", error.c_str());
-            std::exit(2);
-        }
+        if (!content) { std::printf("  [FAIL] the content.db does not open: %s\n", error.c_str()); std::exit(2); }
         real = aoc::worldd::content::ContentDb::open(real_db_path(), error);
-        if (!real) {
-            std::printf("  [FAIL] the real content.db does not open (%s): %s\n", real_db_path().c_str(), error.c_str());
-            std::exit(2);
-        }
+        if (!real) { std::printf("  [FAIL] the real content.db does not open (%s): %s\n", real_db_path().c_str(), error.c_str()); std::exit(2); }
         world = std::make_unique<aoc::worldd::PlayerWorld>(&*content, "", aoc::worldd::bootstrap::GameStateMode::Tier2, kServerId, guids);
         auto book = aoc::worldd::spawns::MountBook::load(*real, error);
-        if (!book) {
-            std::printf("  [FAIL] the mounts do not load: %s\n", error.c_str());
-            std::exit(2);
-        }
+        if (!book) { std::printf("  [FAIL] the mounts do not load: %s\n", error.c_str()); std::exit(2); }
         std::string speeds_error;
-        if (!book->load_speeds(MOUNT_SPEEDS_PATH, speeds_error)) {
-            std::printf("  [FAIL] the mount speeds do not load: %s\n", speeds_error.c_str());
-            std::exit(2);
-        }
+        if (!book->load_speeds(MOUNT_SPEEDS_PATH, speeds_error)) { std::printf("  [FAIL] the mount speeds do not load: %s\n", speeds_error.c_str()); std::exit(2); }
         world->set_mounts(std::move(*book));
     }
     Fixture(const Fixture&) = delete;
     Fixture& operator=(const Fixture&) = delete;
     ~Fixture() {
-        world.reset();
-        content.reset();
-        real.reset();
+        world.reset(); content.reset(); real.reset();
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
     }
@@ -206,10 +174,7 @@ struct Harness {
         fx.world->set_position_sink(&sink);
         if (setup) setup(*fx.world);
         s = aoc::worldd::PlayerSession::join(conn, *fx.world, record, identity(), world_time_at(t), error);
-        if (!s) {
-            std::printf("  [FAIL] the session does not join: %s\n", error.c_str());
-            std::exit(2);
-        }
+        if (!s) { std::printf("  [FAIL] the session does not join: %s\n", error.c_str()); std::exit(2); }
         pawn_ch = s->channel_of(aoc::worldd::bootstrap::Role::Pawn);
         pc_ch = s->channel_of(aoc::worldd::bootstrap::Role::PlayerController);
     }
@@ -217,10 +182,7 @@ struct Harness {
     void flush() {
         for (auto& pkt : conn.flush(t)) {
             const auto r = client.receive(pkt);
-            for (const auto& d : r.delivered) {
-                got.push_back(d);
-                got_at.push_back(t);
-            }
+            for (const auto& d : r.delivered) { got.push_back(d); got_at.push_back(t); }
         }
     }
     void client_sends(std::vector<fake::Bunch> bunches) {
@@ -300,12 +262,8 @@ inline aoc::protocol::emit::BunchWriter trigger_on(Harness& h, const aoc::protoc
              aoc::protocol::repl::set_rpc_param(*rpc, p, "ItemData.ItemInstance", aoc::protocol::repl::Value(inst)) &&
              aoc::protocol::repl::set_rpc_param(*rpc, p, "ItemData.Location", aoc::protocol::repl::Value::u64(item_arg.location));
     }
-    if (!ok) {
-        std::printf("  [FAIL] the trigger's parameters do not fit\n");
-        return aoc::protocol::emit::BunchWriter();
-    }
-    aoc::protocol::emit::BunchWriter out;
-    aoc::protocol::emit::BunchWriter field;
+    if (!ok) { std::printf("  [FAIL] the trigger's parameters do not fit\n"); return aoc::protocol::emit::BunchWriter(); }
+    aoc::protocol::emit::BunchWriter out, field;
     bool failed = false;
     if (aoc::protocol::repl::write_rpc_field(cls, *rpc, p, field, {}, &failed) == 0 || failed) {
         std::printf("  [FAIL] ServerTriggerAbility does not write\n");
@@ -327,13 +285,6 @@ inline aoc::protocol::emit::BunchWriter summon_trigger(Harness& h, int32_t clien
 inline aoc::protocol::emit::BunchWriter desummon_rpc() { return actor_rpc(class_named("AoCPlayerControllerBP_C"), "ServerDesummonMount", {}); }
 inline aoc::protocol::emit::BunchWriter dismount_rpc() { return actor_rpc(class_named("AoCPlayerControllerBP_C"), "ServerDismountInteraction", {}); }
 
-inline aoc::protocol::emit::BunchWriter possession_ack(const aoc::protocol::emit::FIntrepidNetworkGUID& actor) {
-    const aoc::protocol::schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
-    aoc::protocol::repl::RpcParams p;
-    aoc::protocol::repl::set_rpc_param(*pc.rpc("ServerAcknowledgePossession"), p, "P", aoc::protocol::repl::Value(actor));
-    return actor_rpc(pc, "ServerAcknowledgePossession", p);
-}
-
 inline aoc::protocol::emit::FIntrepidNetworkGUID component_of(const aoc::worldd::world::WorldActor& m, uint64_t object_id) {
     aoc::protocol::emit::FIntrepidNetworkGUID g = m.actor.guid;
     g.ObjectId = object_id;
@@ -344,9 +295,7 @@ inline aoc::protocol::emit::BunchWriter interact_with(const aoc::protocol::emit:
     const aoc::protocol::schema::ClassSchema& pawn = class_named("PlayerPawn_C");
     const aoc::protocol::schema::RpcSchema* rpc = pawn.rpc("ServerInteractWithInteractableComponent");
     aoc::protocol::repl::InteractRequest r;
-    r.interactable = component;
-    r.counter = 1;
-    r.zone = 2;
+    r.interactable = component; r.counter = 1; r.zone = 2;
     const auto params = aoc::protocol::repl::interact_params(*rpc, r);
     return params ? actor_rpc(pawn, "ServerInteractWithInteractableComponent", *params) : aoc::protocol::emit::BunchWriter();
 }
@@ -370,14 +319,11 @@ inline aoc::protocol::repl::NetworkMove falling_move_at(float ts, double x, doub
 inline aoc::protocol::emit::BunchWriter client_move(const char* cls_name, const aoc::protocol::repl::NetworkMove& m) {
     const aoc::protocol::schema::ClassSchema& cls = class_named(cls_name);
     const aoc::protocol::schema::NetField* f = cls.field("ServerMovePacked");
-    aoc::protocol::emit::BunchWriter out;
+    aoc::protocol::emit::BunchWriter out, params, field;
     if (!f) return out;
     aoc::protocol::repl::MovePacked p;
     p.new_move = m;
-    aoc::protocol::emit::BunchWriter params;
-    if (!aoc::protocol::repl::write_move_packed(params, p)) return out;
-    aoc::protocol::emit::BunchWriter field;
-    if (aoc::protocol::repl::write_field(cls, f->index, params, field) == 0) return out;
+    if (!aoc::protocol::repl::write_move_packed(params, p) || aoc::protocol::repl::write_field(cls, f->index, params, field) == 0) return out;
     aoc::protocol::repl::BlockHeader header;
     aoc::protocol::repl::write_content_block(out, header, field, /*server_form=*/false);
     return out;
@@ -402,10 +348,7 @@ inline void desummon_with(Harness& h, int slot) {
 
 inline void get_on(Harness& h) {
     const aoc::worldd::world::WorldActor* m = h.mount();
-    if (!m) {
-        std::printf("  [FAIL] (no mount to get on)\n");
-        return;
-    }
+    if (!m) { std::printf("  [FAIL] (no mount to get on)\n"); return; }
     h.client_sends({h.client.actor(h.pawn_ch, interact_with(component_of(*m, m->npc.interact_component)), true)});
 }
 
@@ -443,19 +386,6 @@ inline bool ride_on(Harness& h, int slot = kMountSlot) {
     return h.s->mounted();
 }
 
-inline std::vector<aoc::protocol::repl::RpcCall> calls_of(const fake::Delivered& d, const char* cls) {
-    std::vector<aoc::protocol::repl::RpcCall> out;
-    const auto blocks = aoc::protocol::repl::read_content_blocks(d.content.data(), d.content.bit_pos(), 0);
-    if (!blocks) return out;
-    for (const auto& b : *blocks) {
-        if (b.header.has_rep_layout) continue;
-        size_t p = b.payload_pos;
-        auto calls = aoc::protocol::repl::read_rpc_fields(class_named(cls), d.content.data(), b.payload_pos + b.payload_bits, p);
-        if (calls) out.insert(out.end(), std::make_move_iterator(calls->begin()), std::make_move_iterator(calls->end()));
-    }
-    return out;
-}
-
 using States = std::map<uint64_t, aoc::protocol::repl::ObjectState>;
 inline States states_of(const fake::Delivered& d, const aoc::protocol::repl::Actor& actor) {
     States out;
@@ -464,9 +394,8 @@ inline States states_of(const fake::Delivered& d, const aoc::protocol::repl::Act
     for (const aoc::protocol::repl::BlockView& b : *blocks) {
         const aoc::protocol::schema::ClassSchema* cls = nullptr;
         uint64_t id = 0;
-        if (b.header.is_actor) {
-            cls = actor.obj.schema;
-        } else {
+        if (b.header.is_actor) cls = actor.obj.schema;
+        else {
             const aoc::protocol::repl::Subobject* sub = actor.find(b.header.object);
             cls = sub ? sub->obj.schema : nullptr;
             id = b.header.object.ObjectId;
@@ -474,8 +403,7 @@ inline States states_of(const fake::Delivered& d, const aoc::protocol::repl::Act
         if (!cls) continue;
         aoc::protocol::emit::BunchWriter w;
         w.write_bit_range(d.content.data(), b.payload_pos, b.payload_bits);
-        auto st = aoc::protocol::repl::load_object_state(*cls, w.data(), b.payload_bits, b.header.has_rep_layout);
-        if (st) out.emplace(id, std::move(*st));
+        if (auto st = aoc::protocol::repl::load_object_state(*cls, w.data(), b.payload_bits, b.header.has_rep_layout)) out.emplace(id, std::move(*st));
     }
     return out;
 }
@@ -489,13 +417,6 @@ inline std::optional<int64_t> int_of(const aoc::protocol::repl::ObjectState& o, 
     return std::nullopt;
 }
 
-inline std::optional<aoc::protocol::emit::FIntrepidNetworkGUID> object_of(const aoc::protocol::repl::ObjectState& o, const char* path) {
-    const aoc::protocol::repl::Value* v = o.schema ? o.state.get(*o.schema, path) : nullptr;
-    if (!v) return std::nullopt;
-    if (const auto* g = v->get_if<aoc::protocol::emit::FIntrepidNetworkGUID>()) return *g;
-    return std::nullopt;
-}
-
 inline std::vector<const fake::Delivered*> chains_on(const Harness& h, uint32_t channel, size_t from) {
     std::vector<const fake::Delivered*> out;
     for (size_t i = from; i < h.got.size(); ++i) {
@@ -504,24 +425,7 @@ inline std::vector<const fake::Delivered*> chains_on(const Harness& h, uint32_t 
     return out;
 }
 
-inline size_t acks_on(const Harness& h, uint32_t channel, size_t from, const char* cls = "ANPCCharacter") {
-    size_t n = 0;
-    for (const fake::Delivered* d : chains_on(h, channel, from)) {
-        for (const aoc::protocol::repl::RpcCall& c : calls_of(*d, cls)) n += c.rpc && std::string(c.rpc->name) == "ClientMoveResponsePacked";
-    }
-    return n;
-}
-
-inline size_t corrections_on(const Harness& h, uint32_t channel, size_t from, const char* cls = "ANPCCharacter") {
-    size_t n = 0;
-    for (const fake::Delivered* d : chains_on(h, channel, from)) {
-        for (const aoc::protocol::repl::RpcCall& c : calls_of(*d, cls)) n += c.rpc && std::string(c.rpc->name) == "ClientAdjustPosition";
-    }
-    return n;
-}
-
 inline size_t mount_count(const Harness& h) { return h.fx.world->registry().count(aoc::worldd::world::ActorKind::Mount); }
-inline bool within(double got, double want, double tol) { return got >= 0 && std::fabs(got - want) <= tol; }
 
 struct Rider {
     double x = 0, y = 0, z = 0;
@@ -530,20 +434,12 @@ struct Rider {
 };
 
 inline Rider start_riding(Harness& h) {
-    Rider r;
     const aoc::worldd::GoodPosition g = h.s->movement().good();
-    r.x = g.x;
-    r.y = g.y;
-    r.z = g.z;
-    r.yaw = yaw16_of(g.yaw_degrees);
-    return r;
+    return {g.x, g.y, g.z, 0.0f, yaw16_of(g.yaw_degrees)};
 }
 
 inline void ride_step_mode(Harness& h, Rider& r, aoc::protocol::repl::Vec3d delta, uint8_t mode, uint16_t pitch = 0) {
-    r.ts += 0.1f;
-    r.x += delta.x;
-    r.y += delta.y;
-    r.z += delta.z;
+    r.ts += 0.1f; r.x += delta.x; r.y += delta.y; r.z += delta.z;
     aoc::protocol::repl::NetworkMove m = move_at(r.ts, r.x, r.y, r.z, r.yaw);
     m.movement_mode = mode;
     m.control_rotation.pitch = pitch;
@@ -565,16 +461,10 @@ inline std::vector<aoc::protocol::repl::ElementState> items_of(const aoc::worldd
     const aoc::protocol::repl::Subobject* s = aoc::worldd::spawns::sub_of(m, cls);
     const aoc::protocol::schema::NetField* f = s ? s->obj.schema->field(field) : nullptr;
     const aoc::protocol::repl::FastArrayState* a = f ? s->obj.arrays.find(f->index) : nullptr;
-    if (a) {
-        for (const aoc::protocol::repl::FastArrayItem& it : a->items()) out.push_back(it.values);
-    }
+    if (a) for (const aoc::protocol::repl::FastArrayItem& it : a->items()) out.push_back(it.values);
     return out;
 }
 
 inline std::optional<double> mult_of(const aoc::worldd::world::WorldActor& m) {
     return aoc::worldd::spawns::stat_value(m, aoc::worldd::spawns::kStatMoveSpeedMult);
 }
-
-void run_mounts_ride_part2();
-void run_mounts_ride_part3();
-void run_mounts_ride_part4();

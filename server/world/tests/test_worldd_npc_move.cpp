@@ -1,13 +1,267 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-#include "test_worldd_npc_move_common.h"
+#include "nav_fixture.h"
+#include "npc/area_npcs.h"
+#include "protocol/schema/generated/index.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <set>
 
 using namespace aoc::worldd;
 namespace repl = aoc::protocol::repl;
 namespace schema = aoc::protocol::schema;
 namespace emit = aoc::protocol::emit;
 using nav::Vec3;
+
+static int g_pass = 0;
+static int g_fail = 0;
+
+#define CHECK(cond, msg)                                                           \
+    do {                                                                           \
+        if (cond) { std::printf("  [ok ] %s\n", msg); g_pass++; }                  \
+        else { std::printf("  [FAIL] %s\n", msg); g_fail++; }                      \
+    } while (0)
+
+static const schema::ClassSchema &schema_named(const char *name) {
+    const schema::ClassSchema *s = schema::gen::find_class_schema(name);
+    if (!s) { std::printf("  [FAIL] no schema %s\n", name); std::exit(2); }
+    return *s;
+}
+
+static emit::FIntrepidNetworkGUID guid(uint64_t id) {
+    emit::FIntrepidNetworkGUID g;
+    g.ObjectId = id; g.ServerId = 60; g.Randomizer = 0x6ee87ee4u;
+    return g;
+}
+
+static world::WorldActor make_npc(uint64_t id, double x, double y, double z, world::ActorKind kind = world::ActorKind::Npc) {
+    world::WorldActor w;
+    w.id = id; w.kind = kind; w.x = x; w.y = y; w.z = z;
+    repl::Actor &a = w.actor;
+    a.guid = guid(id);
+    a.obj.schema = &schema_named("ANPCCharacter");
+    repl::RepMovement m;
+    m.location = repl::quantize_location(a.obj.opts, x, y, z);
+    m.rotation = repl::Rot{0, 64, 0};
+    m.linear_velocity = repl::QuantVec{repl::QuantVec::Mode::Scaled, 0, 0, 0};
+    a.obj.state.set(*a.obj.schema, "ReplicatedMovement", repl::Value(m));
+    a.obj.state.set(*a.obj.schema, "ReplicatedServerLastTransformUpdateTimeStamp", repl::Value::f32(0.f));
+    a.obj.state.set(*a.obj.schema, "CurrentMovementInput", repl::Value(repl::PlayerMovementInput{0}));
+    a.open.spawn.location = repl::quantize_vector(10, x, y, z);
+    a.open.spawn.rotation = repl::Rot{0, 11000, 0};
+    w.npc.name = "test npc";
+    return w;
+}
+
+struct Rm {
+    Vec3 loc, vel;
+    int yaw8 = 0, input = -1;
+    float stamp = 0;
+};
+
+static void read_rm_loc(const repl::ObjectState &o, Rm &r) {
+    const repl::Value *v = o.state.get(*o.schema, "ReplicatedMovement");
+    const auto *m = v ? v->get_if<repl::RepMovement>() : nullptr;
+    if (!m) return;
+    const auto l = repl::dequantize_location(o.opts, m->location);
+    const auto vel = repl::dequantize_velocity(o.opts, m->linear_velocity);
+    r.loc = {l.x, l.y, l.z}; r.vel = {vel.x, vel.y, vel.z}; r.yaw8 = m->rotation.yaw;
+}
+
+static Rm read_rm(const world::WorldActor &w) {
+    Rm r;
+    const repl::ObjectState &o = w.actor.obj;
+    read_rm_loc(o, r);
+    if (const repl::Value *v = o.state.get(*o.schema, "ReplicatedServerLastTransformUpdateTimeStamp")) {
+        if (const auto *f = v->get_if<float>()) r.stamp = *f;
+    }
+    if (const repl::Value *v = o.state.get(*o.schema, "CurrentMovementInput")) {
+        if (const auto *p = v->get_if<repl::PlayerMovementInput>()) r.input = p->bits;
+    }
+    return r;
+}
+
+static npc::NpcMotionSetup wander_setup(double radius = 1500.0) {
+    npc::NpcMotionSetup s;
+    s.ambient = npc::Ambient::Wander; s.foot_offset = 96.0;
+    s.wander_min = 200.0; s.wander_max = radius;
+    s.walk_speed = 150.0; s.run_speed = 300.0;
+    s.wander_delay = 0.4; s.wander_delay_deviation = 0.1;
+    return s;
+}
+
+template <class F>
+static double run(npc::NpcWorld &w, double t0, double seconds, Vec3 player_pos, F &&each) {
+    double t = t0;
+    const double end = t0 + seconds;
+    while (t < end) {
+        t += 1.0 / 15.0;
+        w.note_player(1, player_pos.x, player_pos.y, t);
+        w.tick(t);
+        each(t);
+    }
+    return t;
+}
+
+static double run_idle(npc::NpcWorld &w, double t0, double seconds) {
+    double t = t0;
+    const double end = t0 + seconds;
+    while (t < end) { t += 1.0 / 15.0; w.tick(t); }
+    return t;
+}
+
+static double dist2(const world::WorldActor &a, const Vec3 &b) {
+    return std::hypot(a.x - b.x, a.y - b.y);
+}
+
+static void put_snap_npc(world::ActorRegistry &reg, uint64_t id, Vec3 pos_feet, bool snaps, bool flies) {
+    world::WorldActor a = make_npc(id, pos_feet.x, pos_feet.y, pos_feet.z + 96.0);
+    a.npc.ground_by_data = true;
+    a.npc.snaps_to_ground = snaps;
+    a.npc.flies = flies;
+    reg.add(std::move(a));
+}
+
+struct WanderStat {
+    double max_dist = 0, worst_ground = 0, max_speed = 0, walk_time = 0, idle_time = 0;
+    double last_stamp = -1, max_step = 0, px = 1000, py = 1000;
+    size_t input_mismatch = 0, legs = 0, steps = 0;
+    bool was_moving = false, stamp_back = false;
+};
+
+static void record_wander_tick(WanderStat &st, const nav::AreaNav &n, const world::WorldActor &a) {
+    st.max_dist = std::max(st.max_dist, dist2(a, {1000, 1000, 1000}));
+    double tz = 0;
+    n.terrain_height(a.x, a.y, &tz);
+    st.worst_ground = std::max(st.worst_ground, std::fabs(a.z - 96.0 - tz));
+    const double step = std::hypot(a.x - st.px, a.y - st.py);
+    st.max_step = std::max(st.max_step, step);
+    st.px = a.x; st.py = a.y;
+    const Rm r = read_rm(a);
+    const double sp = std::hypot(r.vel.x, r.vel.y);
+    st.max_speed = std::max(st.max_speed, sp);
+    const bool moving = sp > 1.0;
+    if (moving) st.walk_time += 1.0 / 15.0;
+    else st.idle_time += 1.0 / 15.0;
+    if (moving && !st.was_moving) ++st.legs;
+    st.was_moving = moving;
+    const bool bad_walk = moving && r.input != 1;
+    const bool bad_idle = !moving && r.input == 1 && step == 0;
+    if (bad_walk || bad_idle) ++st.input_mismatch;
+    if (r.stamp < st.last_stamp - 1e-6f) st.stamp_back = true;
+    st.last_stamp = r.stamp;
+    ++st.steps;
+}
+
+static void record_patrol_wp(const world::WorldActor &a, const std::vector<Vec3> &route, std::vector<int> &order, int &last_wp, double *pause_t) {
+    for (size_t i = 0; i < route.size(); ++i) {
+        if (dist2(a, route[i]) < 8.0 && static_cast<int>(i) != last_wp) {
+            order.push_back(static_cast<int>(i));
+            last_wp = static_cast<int>(i);
+            if (pause_t) *pause_t = 0;
+        }
+    }
+}
+
+static world::WorldActor town_person(uint64_t id, double x, double y, double feet) {
+    world::WorldActor p = make_npc(id, x, y, feet + 96.0);
+    p.npc.ground_by_data = true;
+    return p;
+}
+
+static nav::AreaNav &map_without_buildings() {
+    static std::unique_ptr<nav::AreaNav> n = [] {
+        nav::Geometry g = navfix::test_geometry();
+        g.placements.erase(g.placements.begin() + 1);
+        nav::BuildOptions opt;
+        opt.threads = 2; opt.nav_margin_cm = 3000;
+        nav::NavFile f; nav::BuildStats st; std::string err;
+        if (!nav::build_nav(g, 7, opt, &f, &st, &err)) {
+            std::printf("  [FAIL] the map does not build: %s\n", err.c_str()); std::exit(2);
+        }
+        auto p = nav::AreaNav::from_file(f, &err);
+        if (!p) {
+            std::printf("  [FAIL] the map does not load: %s\n", err.c_str()); std::exit(2);
+        }
+        return p;
+    }();
+    return *n;
+}
+
+static size_t count_raised_on_floor(nav::AreaNav &map) {
+    const double xs[] = {8400, 8700, 9000, 9300, 9600};
+    const double ys[] = {-5600, -5300, -5000, -4700, -4400};
+    world::ActorRegistry reg;
+    std::vector<uint64_t> ids;
+    for (int i = 0; i < 5; ++i) {
+        reg.add(town_person(4000 + 2 * i, xs[i], ys[i], 1540.0));
+        ids.push_back(4000 + 2 * i);
+    }
+    npc::NpcWorld w(reg, &map);
+    npc::NpcMotionSetup stand = wander_setup();
+    stand.ambient = npc::Ambient::Stationary;
+    for (const uint64_t id : ids) w.add(id, stand);
+    return w.stand_report(ids).on_floor;
+}
+
+static bool step_on_ground(const nav::AreaNav &map, const Vec3 &a, const Vec3 &b) {
+    const Vec3 fa{a.x, a.y, a.z - 96.0}, fb{b.x, b.y, b.z - 96.0};
+    if (map.raycast(fa, fb)) return true;
+    return map.on_navmesh({(fa.x + fb.x) / 2, (fa.y + fb.y) / 2, (fa.z + fb.z) / 2}, 40.0, 80.0);
+}
+
+struct Track {
+    Vec3 last;
+    bool have = false;
+    size_t rays = 0, blocked = 0, inside = 0;
+    double min_x = 1e18, max_x = -1e18;
+};
+
+static void record_walker_step(const nav::AreaNav &n, const world::WorldActor &a, Track &t) {
+    const Vec3 p{a.x, a.y, a.z};
+    if (std::fabs(a.x + 3000.0) < 100.0 - 1.0 && std::fabs(a.y) < 2000.0) ++t.inside;
+    t.min_x = std::min(t.min_x, a.x); t.max_x = std::max(t.max_x, a.x);
+    if (t.have && std::hypot(p.x - t.last.x, p.y - t.last.y) > 0.5) {
+        ++t.rays;
+        if (!step_on_ground(n, t.last, p)) ++t.blocked;
+    }
+    t.last = p; t.have = true;
+}
+
+static void test_pathfind_budget(const nav::AreaNav &n) {
+    world::ActorRegistry reg;
+    npc::NpcWorldConfig cfg;
+    cfg.max_pathfinds_per_step = 3;
+    npc::NpcWorld w(reg, &n, cfg);
+    std::vector<uint64_t> wanderers;
+    for (int i = 0; i < 30; ++i) {
+        const uint64_t id = 2000 + 2 * static_cast<uint64_t>(i);
+        reg.add(make_npc(id, 500 + 40.0 * i, 800, 1096));
+        npc::NpcMotionSetup s;
+        if (i < 12) {
+            s.ambient = npc::Ambient::Patrol; s.foot_offset = 96.0;
+            s.route = {{-8400, 6600, 1000}, {-8500, 6600, 1000}, {-8600, 6600, 1000}};
+            s.pauses = {0, 0, 0}; s.patrol_speed = 200.0;
+        } else {
+            s = wander_setup(900);
+            wanderers.push_back(id);
+        }
+        w.add(id, s);
+    }
+    std::set<uint64_t> walked;
+    run(w, 0, 60, {1000, 1000, 0}, [&](double) {
+        for (const uint64_t id : wanderers) {
+            if (std::hypot(reg.find(id)->x - (500 + 40.0 * ((id - 2000) / 2)), reg.find(id)->y - 800) > 100.0) walked.insert(id);
+        }
+    });
+    const auto st = w.stats();
+    CHECK(st.patrol_no_path > 0, "(control) the patrols found no path");
+    CHECK(walked.size() == wanderers.size(), "every wanderer was asked and walked, whatever the patrols spent: the budget goes round");
+}
 
 static void test_standing() {
     std::printf("standing\n");
@@ -31,7 +285,21 @@ static void test_standing() {
     CHECK(w.add(1002, s, &found) && found && std::fabs(reg.find(1002)->z - (1400.0 + 96.0)) < 0.5, "on the hill: the terrain's height");
     CHECK(w.add(1004, s, &found) && found && std::fabs(reg.find(1004)->z - (1540.0 + 96.0)) < 12.0, "on the platform: its top (the navmesh's, within 10 cm)");
     CHECK(w.add(1006, s, &found) && found && std::fabs(reg.find(1006)->z - 1096.0) < 0.5, "a height no surface is near (a placement drawn at the wrong height): the terrain's is the ground, the NPC stands on the plain");
-    check_standing_invalid(w, reg, s);
+    CHECK(w.add(1008, s, &found) && !found, "far outside the terrain: no ground, stands");
+    CHECK(!w.add(1010, s), "a gatherable is not an NPC");
+    CHECK(!w.add(9999, s), "an unknown actor is refused");
+    CHECK(!w.add(1000, s), "a second add is refused");
+    npc::NpcMotionSetup nan = s;
+    nan.walk_speed = std::nan("");
+    reg.add(make_npc(1012, 0, 0, 1000));
+    CHECK(!w.add(1012, nan), "a setup with a NaN is refused");
+    nan = s;
+    nan.foot_offset = 1e9;
+    CHECK(!w.add(1012, nan), "a half height of 1e9 is refused");
+    CHECK(w.size() == 5, "five NPCs under its care");
+    const uint32_t version_before = reg.find(1000)->version;
+    w.tick(5000.0);
+    CHECK(read_rm(*reg.find(1000)).stamp == 5000.0f && reg.find(1000)->version == version_before, "the first tick sets every NPC's timestamp to the clock without a change to send");
 }
 
 static void test_ground_by_data() {
@@ -59,7 +327,10 @@ static void test_ground_by_data() {
     CHECK(std::fabs(reg.find(1100)->z - 9000.0) < 0.01 && std::fabs(read_rm(*reg.find(1100)).loc.z - 9000.0) < 0.02 && w.stands(1100), "...it keeps the height the data gave it (not the terrain's 1,096), here and in the replicated movement, and it stands (a wanderer has no navmesh to wander on)");
     CHECK(w.add(1102, s, &found) && found && std::fabs(reg.find(1102)->z - 1096.0) < 0.5, "a surface within reach of its height: it stands on it as any NPC does");
     CHECK(w.add(1104, s, &found) && found && std::fabs(reg.find(1104)->z - 1096.0) < 0.5, "the open world's NPC (no flag) at the first one's height: still moved to the terrain");
-    check_ground_by_data_window(w, reg, s);
+    CHECK(w.add(1106, s, &found) && !found && std::fabs(reg.find(1106)->z - 1700.0) < 0.01, "a node's person 5 m over the only surface: the tight window does not reach it, it keeps its height (no snap down to the pit's ground)");
+    CHECK(w.add(1108, s, &found) && !found && std::fabs(reg.find(1108)->z - 800.0) < 0.01, "a surface more than 150 cm over its feet is not its floor either");
+    CHECK(w.add(1110, s, &found) && found && std::fabs(reg.find(1110)->z - 1096.0) < 0.5, "the open world's NPC at the roof's height: the 15 m window still stands it on the plain");
+    CHECK(npc::NpcWorldConfig{}.data_ground_below_cm == 300.0 && npc::NpcWorldConfig{}.data_ground_above_cm == 150.0, "the window is 300 cm under and 150 cm over");
 }
 
 static void test_snap_to_ground() {
@@ -82,7 +353,12 @@ static void test_snap_to_ground() {
     CHECK(w.add(1302, s, &found) && found && std::fabs(reg.find(1302)->z - 1096.0) < 0.5, "a wolf drawn 5 m under the street comes up onto it");
     CHECK(w.add(1304, s, &found) && !found && std::fabs(reg.find(1304)->z - 2296.0) < 0.01 && w.stands(1304), "a guard on a tower, 12 m up, stays where the data put it");
     CHECK(w.add(1306, s, &found) && !found && std::fabs(reg.find(1306)->z - 2296.0) < 0.01, "a bird 12 m over the street keeps its height");
-    check_snap_to_ground_more(w, reg, s);
+    CHECK(w.add(1308, s, &found) && found && std::fabs(reg.find(1308)->z - 1096.0) < 0.5, "a bird drawn 5 m under the street is lifted out of the ground onto it");
+    CHECK(w.add(1310, s, &found) && !found && std::fabs(reg.find(1310)->z - 5096.0) < 0.01, "a wolf 40 m over the street, out of the open world's reach, keeps its height");
+    CHECK(w.add(1312, s, &found) && found && std::fabs(reg.find(1312)->z - (1540.0 + 96.0)) < 12.0, "a wolf with a floor in the tight reach stands on that floor (the platform), not on the plain");
+    CHECK(w.add(1314, s, &found) && found && std::fabs(reg.find(1314)->z - 1096.0) < 0.5, "a wolf 1 m over the street stands on it, as it did before");
+    const npc::NpcWorld::StandReport r = w.stand_report({1300, 1302, 1304, 1306, 1308, 1310});
+    CHECK(r.people == 6 && r.moved == 3 && r.no_floor == 3 && r.stuck == 3 && r.max_moved_cm > 1100.0, "the report counts the three that came to the street as moved (12 m at the most) and the three that kept their height as without a floor");
 }
 
 static void test_dormant() {
@@ -97,8 +373,7 @@ static void test_dormant() {
     const uint32_t v0 = reg.find(1000)->version;
     double t = run_idle(w, 0, 120);
     CHECK(reg.find(1000)->x == x0 && reg.find(1000)->y == y0 && reg.find(1000)->version == v0, "no player anywhere: 120 s later it has not moved and nothing was written");
-    t = run(w, t, 60, {100000, 100000, 0}, [](double) {
-    });
+    t = run(w, t, 60, {100000, 100000, 0}, [](double) {});
     CHECK(reg.find(1000)->x == x0 && reg.find(1000)->y == y0, "a player 1.4 km away: still still");
     size_t moved = 0;
     t = run(w, t, 60, {1000, 9000, 0}, [&](double) {
@@ -177,9 +452,7 @@ static void test_budget_and_legs() {
     s.wander_delay_deviation = 0.05;
     w.add(1000, s);
     std::vector<double> legs;
-    double max_home = 0;
-    double sx = 0;
-    double sy = 0;
+    double max_home = 0, sx = 0, sy = 0;
     bool was_moving = false;
     run(w, 0, 1500, {1000, 1000, 0}, [&](double) {
         const world::WorldActor &a = *reg.find(1000);
@@ -211,8 +484,7 @@ static void test_patrol_loop(const nav::AreaNav &n, npc::NpcMotionSetup s) {
     w.add(1000, s);
     std::vector<int> order;
     int last_wp = -1;
-    double pause_t = 0;
-    double pause_max = 0;
+    double pause_t = 0, pause_max = 0;
     run(w, 0, 140, {0, 5000, 0}, [&](double) {
         const world::WorldActor &a = *reg.find(1000);
         record_patrol_wp(a, s.route, order, last_wp, &pause_t);
@@ -283,14 +555,12 @@ static void check_service_refusals(npc::NpcWorld &w, world::ActorRegistry &reg, 
     CHECK(!w.order_move(1000, {900000, 0, 0}, 300), "a point far outside the navmesh: refused");
     CHECK(!w.order_move(1000, {std::nan(""), 0, 0}, 300), "a NaN destination: refused");
     CHECK(!w.order_move(1000, {0, 0, 1000}, 0) && !w.order_move(1000, {0, 0, 1000}, -5) && !w.order_move(1000, {0, 0, 1000}, std::nan("")), "a speed of zero, negative or NaN: refused");
-    run(w, t, 5, {1000, 1000, 0}, [](double) {
-    });
+    run(w, t, 5, {1000, 1000, 0}, [](double) {});
     CHECK(reg.find(1000)->x == x1, "nothing moved");
     CHECK(!w.order_move(7777, {0, 0, 1000}, 300) && !w.release(7777) && !w.order_return_home(7777), "orders to an unknown NPC are refused");
     CHECK(!w.order_move(1002, {0, 0, 1000}, 300), "an NPC inside the closed pen cannot be sent out: no path");
     CHECK(w.order_move(1002, {-8000, 6800, 1000}, 300), "but it can walk inside the pen");
-    t = run(w, t, 10, {-8400, 6600, 0}, [](double) {
-    });
+    t = run(w, t, 10, {-8400, 6600, 0}, [](double) {});
     CHECK(dist2(*reg.find(1002), {-8000, 6800, 0}) < 150.0 || !w.mover(1002)->moving(), "and did");
     CHECK(w.release(1002) && !w.release(1002), "released once");
 }
@@ -302,8 +572,7 @@ static void check_service_wanderer_home(npc::NpcWorld &w, world::ActorRegistry &
     w.add(1004, ws);
     const auto returns0 = w.stats().returns_home;
     CHECK(w.order_move(1004, {-1000, 3000, 1000}, 600), "a wanderer is ordered 66 m from home");
-    t = run(w, t, 30, {1000, -3000, 0}, [](double) {
-    });
+    t = run(w, t, 30, {1000, -3000, 0}, [](double) {});
     CHECK(dist2(*reg.find(1004), {-1000, 3000, 0}) < 5.0, "it got there");
     CHECK(w.release(1004), "released");
     double max_speed = 0;
@@ -322,8 +591,7 @@ static void check_service_wanderer_home(npc::NpcWorld &w, world::ActorRegistry &
     CHECK(w.set_home(1004, {-8400, 6600, 1000}) && w.home_of(1004).x == -8400, "a home is re-set");
     CHECK(!w.set_home(1004, {std::nan(""), 0, 0}) && !w.set_home(7777, {0, 0, 0}), "a home that is not a number, or of an unknown NPC, is refused");
     CHECK(!w.order_return_home(1004), "an unreachable home: the order is refused");
-    run(w, t, 5, {1000, -3000, 0}, [](double) {
-    });
+    run(w, t, 5, {1000, -3000, 0}, [](double) {});
     CHECK(std::hypot(reg.find(1004)->x - hx, reg.find(1004)->y - hy) < 1500.0, "and the NPC did not go anywhere in particular (its wander is about the old place only until it is far: it walks the radius it has)");
     w.set_home(1004, {hx, hy, 1000});
 }
@@ -361,8 +629,7 @@ static void test_service() {
     check_service_refusals(w, reg, t);
     check_service_wanderer_home(w, reg, t);
     CHECK(w.order_move(1000, {-1000, 3000, 1000}, 400, 300.0), "a walk that stops 300 cm short of its point");
-    t = run(w, t, 30, {1000, 1000, 0}, [](double) {
-    });
+    t = run(w, t, 30, {1000, 1000, 0}, [](double) {});
     const double d = dist2(*reg.find(1000), {-1000, 3000, 0});
     CHECK(d > 250 && d < 340, "ends about 300 cm short");
 }
@@ -493,9 +760,7 @@ static void test_cost() {
         }
     }
     CHECK(added > 800, "most of 900 NPCs found their ground on the fixture's plain (the rest stand on the wall, in the pen or off the area)");
-    double t = 0;
-    double total_us = 0;
-    double max_us = 0;
+    double t = 0, total_us = 0, max_us = 0;
     size_t ticks = 0;
     for (int i = 0; i < 900; ++i) {
         t += 1.0 / 15.0;

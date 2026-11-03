@@ -423,7 +423,7 @@ int main() {
         return g_fail == 0 ? 0 : 1;
     }
     test_a_hunt();
-    run_hunting_session_part2();
+    run_hunting_session_refusals();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

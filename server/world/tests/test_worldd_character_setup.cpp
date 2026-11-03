@@ -8,6 +8,233 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 
+static void diff_stat_array(std::vector<std::string> &d, const char *name,
+                            const bs::StatArray &a, const bs::StatArray &b) {
+  if (a.array_key != b.array_key)
+    d.push_back(std::string(name) + ".array_key");
+  if (a.items.size() != b.items.size()) {
+    d.push_back(std::string(name) + ".size");
+    return;
+  }
+  for (size_t i = 0; i < a.items.size(); ++i) {
+    const bs::StatItem &x = a.items[i], &y = b.items[i];
+    if (x.id != y.id || x.record != y.record || x.extended != y.extended ||
+        x.base != y.base || x.equipment != y.equipment) {
+      d.push_back(std::string(name) + "[" + std::to_string(i) +
+                  "].id/record/extended/base/equipment");
+    }
+    if (x.value != y.value)
+      d.push_back(std::string(name) + "[record " + std::to_string(x.record) +
+                  "].value");
+  }
+}
+
+static bool same_setup_guids(const bs::PlayerSetup &a,
+                             const bs::PlayerSetup &b) {
+  const auto &x = a.guids, &y = b.guids;
+  return std::tie(x.player_state, x.player_controller, x.global_gm_commands,
+                  x.game_state, x.pawn, x.base_character_info, x.combat_info,
+                  x.owner_info, x.backpack, x.equipment, x.quest_storage,
+                  x.reward_storage, x.appearance, x.resource_storage[0],
+                  x.resource_storage[1], x.resource_storage[2],
+                  x.collision_cylinder, x.alignment, x.ability, x.stats) ==
+         std::tie(y.player_state, y.player_controller, y.global_gm_commands,
+                  y.game_state, y.pawn, y.base_character_info, y.combat_info,
+                  y.owner_info, y.backpack, y.equipment, y.quest_storage,
+                  y.reward_storage, y.appearance, y.resource_storage[0],
+                  y.resource_storage[1], y.resource_storage[2],
+                  y.collision_cylinder, y.alignment, y.ability, y.stats);
+}
+
+static void diff_setup_arrays_and_items(std::vector<std::string> &d,
+                                        const bs::PlayerSetup &a,
+                                        const bs::PlayerSetup &b) {
+  const auto note = [&](bool same, const char *name) {
+    if (!same)
+      d.push_back(name);
+  };
+  diff_stat_array(d, "stats.owner", a.stats.owner, b.stats.owner);
+  diff_stat_array(d, "stats.owner_proxy", a.stats.owner_proxy,
+                  b.stats.owner_proxy);
+  diff_stat_array(d, "stats.everyone_proxy", a.stats.everyone_proxy,
+                  b.stats.everyone_proxy);
+  note(a.stats.float_array_key == b.stats.float_array_key,
+       "stats.float_array_key");
+  bool floats = a.stats.float_everyone_proxy.size() ==
+                b.stats.float_everyone_proxy.size();
+  for (size_t i = 0; floats && i < a.stats.float_everyone_proxy.size(); ++i) {
+    floats = a.stats.float_everyone_proxy[i].id ==
+                 b.stats.float_everyone_proxy[i].id &&
+             a.stats.float_everyone_proxy[i].record ==
+                 b.stats.float_everyone_proxy[i].record;
+  }
+  note(floats, "stats.float_everyone_proxy");
+  note(a.known_abilities == b.known_abilities, "known_abilities");
+  bool records = a.records_to_load.size() == b.records_to_load.size();
+  for (size_t i = 0; records && i < a.records_to_load.size(); ++i) {
+    records = a.records_to_load[i].guid == b.records_to_load[i].guid &&
+              a.records_to_load[i].type_id == b.records_to_load[i].type_id;
+  }
+  note(records, "records_to_load");
+  note(a.weapon_skill_line.guid == b.weapon_skill_line.guid &&
+           a.weapon_skill_line.name == b.weapon_skill_line.name,
+       "weapon_skill_line");
+  note(a.attuned_blocks == b.attuned_blocks, "attuned_blocks");
+  bool held = a.held_items.array_key == b.held_items.array_key &&
+              a.held_items.items.size() == b.held_items.items.size();
+  for (size_t i = 0; held && i < a.held_items.items.size(); ++i) {
+    const bs::HeldItem &x = a.held_items.items[i], &y = b.held_items.items[i];
+    held = std::tie(x.id, x.slot, x.item_guid, x.enchantment) ==
+           std::tie(y.id, y.slot, y.item_guid, y.enchantment);
+  }
+  note(held, "held_items");
+}
+
+std::vector<std::string> diff_setups(const bs::PlayerSetup &a,
+                                     const bs::PlayerSetup &b) {
+  std::vector<std::string> d;
+  const auto note = [&](bool same, const char *name) {
+    if (!same)
+      d.push_back(name);
+  };
+  note(a.character_guid == b.character_guid, "character_guid");
+  note(a.name == b.name, "name");
+  note(a.race == b.race, "race");
+  note(a.gender == b.gender, "gender");
+  note(a.level == b.level, "level");
+  note(a.class_record_guid == b.class_record_guid, "class_record_guid");
+  note(a.customization == b.customization, "customization");
+  note(a.shared_appearance_info_id == b.shared_appearance_info_id,
+       "shared_appearance_info_id");
+  note(std::bit_cast<uint64_t>(a.x) == std::bit_cast<uint64_t>(b.x), "x");
+  note(std::bit_cast<uint64_t>(a.y) == std::bit_cast<uint64_t>(b.y), "y");
+  note(std::bit_cast<uint64_t>(a.z) == std::bit_cast<uint64_t>(b.z), "z");
+  note(std::bit_cast<uint64_t>(a.yaw_degrees) ==
+           std::bit_cast<uint64_t>(b.yaw_degrees),
+       "yaw_degrees");
+  diff_setup_arrays_and_items(d, a, b);
+  note(a.appearance_ids == b.appearance_ids, "appearance_ids");
+  note(a.orgs_at_war_toast == b.orgs_at_war_toast, "orgs_at_war_toast");
+  note(a.login.name_option == b.login.name_option &&
+           a.login.unique_id == b.login.unique_id,
+       "login");
+  note(a.server_id == b.server_id, "server_id");
+  note(std::bit_cast<uint64_t>(a.world_time) ==
+           std::bit_cast<uint64_t>(b.world_time),
+       "world_time");
+  note(a.player_id == b.player_id, "player_id");
+  note(same_setup_guids(a, b), "guids");
+  return d;
+}
+
+static bool same_but_order(repl::CharacterCustomization a,
+                           repl::CharacterCustomization b) {
+  for (repl::CharacterCustomization *c : {&a, &b}) {
+    if (c->face_morph_weights) {
+      std::sort(c->face_morph_weights->begin(), c->face_morph_weights->end(),
+                [](const auto &x, const auto &y) {
+                  return std::tie(x.name.hardcoded, x.name.index, x.name.text,
+                                  x.name.number) <
+                         std::tie(y.name.hardcoded, y.name.index, y.name.text,
+                                  y.name.number);
+                });
+    }
+    if (c->sections_values) {
+      std::sort(c->sections_values->begin(), c->sections_values->end(),
+                [](const auto &x, const auto &y) { return x.key < y.key; });
+    }
+  }
+  return a == b;
+}
+
+static std::string lower(std::string s) {
+  for (char &c : s)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return s;
+}
+
+static std::vector<stats::WornItem> kit_worn(const gear_fixture::ClassKit &k) {
+  std::vector<stats::WornItem> w;
+  for (int i = 0; i < k.count; ++i)
+    w.push_back({k.items[i].record, 1, k.items[i].slot});
+  return w;
+}
+
+static bool same_mods_without_durability(stats::GearInputs half,
+                                         stats::GearInputs none) {
+  for (stats::GearInputs *g : {&half, &none}) {
+    g->mods.erase(std::remove_if(g->mods.begin(), g->mods.end(),
+                                 [](const stats::StatMod &m) {
+                                   return m.stat == 6064629444242636800ll;
+                                 }),
+                  g->mods.end());
+  }
+  bool whole = half.mods.size() == none.mods.size();
+  for (size_t i = 0; whole && i < half.mods.size(); ++i) {
+    whole = half.mods[i].stat == none.mods[i].stat &&
+            half.mods[i].value == none.mods[i].value;
+  }
+  return whole;
+}
+
+static bool check_class_kit_against_go(const bs::StatContext &ctx,
+                                       const stats_fixture::Corpus &corpus,
+                                       const gear_fixture::ClassKit &k) {
+  const std::string name = "kit_" + lower(k.name) + "_l1";
+  const stats_fixture::CorpusCase *c = corpus.find(name);
+  if (!c) {
+    CHECK(false, (name + " is in the corpus").c_str());
+    return false;
+  }
+  bool same_items = c->items.size() == static_cast<size_t>(k.count);
+  for (int i = 0; same_items && i < k.count; ++i) {
+    same_items = c->items[static_cast<size_t>(i)].record == k.items[i].record &&
+                 c->items[static_cast<size_t>(i)].quality == 1;
+  }
+  CHECK(same_items && !c->half_up,
+        (std::string(k.name) +
+         ": the corpus case wears this kit at quality 1, unrounded")
+            .c_str());
+  const stats::GearInputs none =
+      stats::gear_inputs(*ctx.gear, kit_worn(k), stats::Rounding::None);
+  const stats::GearInputs half =
+      stats::gear_inputs(*ctx.gear, kit_worn(k), stats::Rounding::HalfUp);
+  std::string why = mods_difference(none.mods, *c);
+  if (why.empty())
+    why = tags_difference(none.equipped, *c);
+  if (why.empty() && !matches_corpus_digest(ctx, *c, none, why))
+    why = "digest: " + why;
+  CHECK(why.empty(),
+        (std::string(k.name) +
+         ": the mods, the tags and the digest of every stat equal Go's")
+            .c_str());
+  if (!why.empty())
+    std::printf("    %s\n", why.c_str());
+  const bool whole = same_mods_without_durability(half, none);
+  CHECK(whole && none.unknown_items == 0 && none.unknown_sets == 0,
+        (std::string(k.name) +
+         ": the kit's stat values are whole, so half-up rounding gives the "
+         "same mods (but for MaxDurability's 37.5); every item is known")
+            .c_str());
+  return why.empty();
+}
+
+static void test_kits_against_go(const content::ContentDb &db) {
+  std::printf("each class's starting kit at level 1: the stats are the Go "
+              "engine's, from the real stat blocks\n");
+  const bs::StatContext &ctx = world_stats::of(db);
+  const stats_fixture::Corpus &corpus = stats_fixture::corpus();
+  int ok = 0;
+  for (const gear_fixture::ClassKit &k : gear_fixture::kClassKits) {
+    ok += check_class_kit_against_go(ctx, corpus, k);
+  }
+  CHECK(ok == 8, "all eight classes' kits equal Go's");
+}
+
+void run_kits_against_go(const content::ContentDb &db) {
+  test_kits_against_go(db);
+}
+
 static void check_race_and_gender_ids() {
   bool races = true;
   for (int32_t id = 0; id <= 7; ++id) {
@@ -617,7 +844,7 @@ int main() {
     std::string error;
     auto db = content::ContentDb::open((dir / "content.db").string(), error);
     if (db) {
-      run_character_setup_part2(*cap, *db);
+      run_character_setup_stats(*cap, *db);
       test_carried_item_abilities(*cap, *db);
       test_kits_against_go(*db);
     } else {
@@ -630,7 +857,7 @@ int main() {
   std::error_code ec;
   fs::remove_all(dir, ec);
 
-  test_real_content(*cap);
+  run_character_setup_real_content(*cap);
   std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

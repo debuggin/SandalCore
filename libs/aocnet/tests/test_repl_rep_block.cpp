@@ -10,6 +10,63 @@ namespace schema = aoc::protocol::schema;
 namespace gen = aoc::protocol::schema::gen;
 using capture_blocks::Block;
 
+namespace {
+
+const schema::ClassSchema& schema_of(const Block& b) { return schema_named(b.class_name); }
+
+struct Decoded {
+    std::vector<uint8_t> bytes;
+    std::optional<RepState> state;
+    size_t pos = 0;
+};
+
+Decoded decode(const Block& b, const CodecOptions& opts = {}) {
+    Decoded d;
+    d.bytes = capture_blocks::bytes_of(b.hex);
+    d.state = read_rep_block(schema_of(b), d.bytes.data(), b.bits, d.pos, opts);
+    return d;
+}
+
+bool writes_exactly(const schema::ClassSchema& s, const RepState& state,
+                    const uint8_t* expect, size_t bits, const CodecOptions& opts = {}) {
+    BunchWriter w;
+    RepShadow shadow;
+    const size_t n = write_rep_block(s, state, shadow, w, opts);
+    size_t diff = 0;
+    if (n != bits || w.bit_pos() != bits) {
+        std::printf("    wrote %zu bits, expected %zu\n", n, bits);
+        return false;
+    }
+    if (!capture_blocks::same_bit_range(w.data(), expect, bits, &diff)) {
+        std::printf("    first differing bit %zu\n", diff);
+        return false;
+    }
+    return true;
+}
+
+std::vector<uint8_t> slice_bits(const std::vector<uint8_t>& bytes, size_t start, size_t n) {
+    std::vector<uint8_t> out((n + 7) / 8, 0);
+    for (size_t i = 0; i < n; ++i) out[i >> 3] |= ((bytes[(start + i) >> 3] >> ((start + i) & 7)) & 1) << (i & 7);
+    return out;
+}
+
+void round_trip_block(const Block& b, const CodecOptions& opts = {}) {
+    const std::string name = std::string(b.name) + " (" + b.class_name + ", " + std::to_string(b.rep_bits) + " bits)";
+    const Decoded d = decode(b, opts);
+    CHECK(d.state && d.pos == b.rep_bits, (name + ": reads to the last bit of the RepLayout block").c_str());
+    if (!d.state) return;
+    CHECK(writes_exactly(schema_of(b), *d.state, d.bytes.data(), b.rep_bits, opts),
+          (name + ": the decoded state writes back the exact bits").c_str());
+    BunchWriter w;
+    RepShadow shadow;
+    write_rep_block(schema_of(b), *d.state, shadow, w, opts);
+    const size_t before = w.bit_pos();
+    CHECK(write_rep_block(schema_of(b), *d.state, shadow, w, opts) == 0 && w.bit_pos() == before,
+          (name + ": a second write of the same state writes nothing").c_str());
+}
+
+}  // namespace
+
 static void test_captured_blocks() {
     std::printf("captured blocks: read to the last bit, written back bit for bit\n");
     round_trip_block(capture_blocks::kPcOpenProps);
@@ -489,7 +546,7 @@ int main() {
     test_write_failure();
     test_read_refusals();
     test_field_loop();
-    run_repl_rep_block_part2();
+    run_repl_rep_block_writer();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

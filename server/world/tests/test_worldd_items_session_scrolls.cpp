@@ -1,8 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-#include "test_worldd_items_session_helpers.h"
+#include "capture_leveling.h"
+#include "test_worldd_items_session_common.h"
 using namespace aoc::worldd;
+static repl::DesignDataId adventuring_id() {
+    return repl::DesignDataId::named(content::kGuidAdventuring, content::kTypeLevelingTypeDef, "Adventuring");
+}
+static repl::DesignDataId universal_id() {
+    return tree_id(content::kGuidUniversalTree);
+}
+static size_t count_calls(const std::vector<std::string> &calls, const char *name) {
+    size_t n = 0;
+    for (const std::string &c : calls) n += c == name ? 1 : 0;
+    return n;
+}
 static void test_d1_join_has_the_tracker() {
     std::printf("plan D1: the join carries the XPTracker\n");
     Harness h(record_with_scrolls());

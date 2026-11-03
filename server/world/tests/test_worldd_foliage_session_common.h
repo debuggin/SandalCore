@@ -8,7 +8,7 @@
 #include "cyb_appearance.h"
 #include "fake_client.h"
 #include "protocol/repl/block_reader.h"
-#include "protocol/repl/move_packed.h"
+#include "protocol/repl/fname.h"
 #include "protocol/schema/generated/index.h"
 #include "session/player_session.h"
 
@@ -28,19 +28,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-
-#include <psapi.h>
-#pragma comment(lib, "psapi.lib")
-#endif
 
 namespace bs = aoc::worldd::bootstrap;
 namespace combat = aoc::worldd::combat;
@@ -94,6 +81,9 @@ inline const ItemContainer Bag = ItemContainer::Backpack;
 inline const ItemContainer Worn = ItemContainer::Equipment;
 inline const ItemContainer R0 = ItemContainer::Resource0;
 
+inline const char *g_path = nullptr;
+inline const char *g_tsv = nullptr;
+
 namespace id {
 inline constexpr int64_t kMining = 108752769996425ll, kLumberjacking = 108752769996426ll,
                          kHerbalism = 108752770061963ll;
@@ -104,6 +94,16 @@ inline constexpr int64_t kDaffodil = 6064632138835886135ll, kMoonbell = 60646314
 inline constexpr int64_t kLimestone = 6064631483017789494ll, kOakLarge2 = 6064632138726178834ll;
 inline constexpr int64_t kDaffodilItem = 6064629184431849472ll;
 } // namespace id
+
+namespace fid {
+inline constexpr int64_t kLumberjacking = 108752769996426ll;
+inline constexpr double kOakX = -1032805.5, kOakY = 495823.7, kOakZ = 12846.0;
+inline constexpr double kStandX = -1032839.01, kStandY = 495968.38, kStandZ = 12950.98;
+inline constexpr const char *kOwner = "InstancedFoliageActor_25600_-41_19_0";
+inline constexpr const char *kFismc0 = "IntrepidGatherableFISMC_0";
+inline constexpr int64_t kOakLog = 109162169652924ll;
+inline constexpr int64_t kCoal = 109162169652923ll;
+} // namespace fid
 
 inline const char *db_path() {
     const char *env = std::getenv("AOC_CONTENT_DB");
@@ -169,6 +169,15 @@ inline svc::Character record_of(const char *id_hex, const char *name, bool tools
         c.items.push_back(make_tool(Worn, 29, 6064629375589613576ll, 129, 150.0f));
         c.items.push_back(make_tool(Worn, 33, 6064629375589482502ll, 133, 150.0f));
     }
+    return c;
+}
+
+inline svc::Character record_at(const char *id_hex, const char *name, double x, double y, double z) {
+    svc::Character c = record_of(id_hex, name);
+    c.has_position = true;
+    c.position.x = x;
+    c.position.y = y;
+    c.position.z = z;
     return c;
 }
 
@@ -380,18 +389,6 @@ inline BunchWriter actor_rpc(const schema::ClassSchema &cls, const char *name, c
     return out;
 }
 
-inline BunchWriter interact(uint64_t component_object_id) {
-    const schema::ClassSchema &pawn = class_named("PlayerPawn_C");
-    const schema::RpcSchema *rpc = pawn.rpc("ServerInteractWithInteractableComponent");
-    repl::InteractRequest r;
-    r.interactable.ObjectId = component_object_id;
-    r.interactable.ServerId = kServerId;
-    r.interactable.Randomizer = kRandomizer;
-    r.counter = 1;
-    const auto params = repl::interact_params(*rpc, r);
-    return params ? actor_rpc(pawn, "ServerInteractWithInteractableComponent", *params) : BunchWriter();
-}
-
 inline BunchWriter interrupt_channel() {
     return actor_rpc(class_named("PlayerPawn_C"), "ServerInterruptChannel", {});
 }
@@ -418,100 +415,6 @@ inline BunchWriter item_used(int storage, int slot, const std::string &guid_hex)
     repl::set_rpc_param(*rpc, p, "ExpectedItem.D", repl::Value::i64(static_cast<int32_t>(gv.d)));
     repl::set_rpc_param(*rpc, p, "RequestedEquipSlot", repl::Value::i64(static_cast<int32_t>(0xFFFFFFFFu)));
     return actor_rpc(pawn, "ServerItemUsed", p);
-}
-
-inline void append_pc_block_rpcs(const schema::ClassSchema &cls, const fake::Delivered &d, const repl::BlockView &b,
-                                 std::vector<repl::RpcCall> &out) {
-    if (!b.header.is_actor || b.header.has_rep_layout) return;
-    size_t pos = b.payload_pos;
-    auto calls = repl::read_rpc_fields(cls, d.content.data(), b.payload_pos + b.payload_bits, pos);
-    if (!calls) return;
-    for (auto &c : *calls) out.push_back(std::move(c));
-}
-
-inline std::vector<repl::RpcCall> pc_calls_since(const Player &p, size_t from) {
-    std::vector<repl::RpcCall> out;
-    const schema::ClassSchema &cls = class_named("AoCPlayerControllerBP_C");
-    for (size_t i = from; i < p.got.size(); ++i) {
-        if (p.got[i].channel != p.pc_ch || p.got[i].open || p.got[i].close) continue;
-        const auto blocks = repl::read_content_blocks(p.got[i].content.data(), p.got[i].content.bit_pos(), 0);
-        if (!blocks) continue;
-        for (const auto &b : *blocks) append_pc_block_rpcs(cls, p.got[i], b, out);
-    }
-    return out;
-}
-
-inline std::vector<std::string> call_names(const std::vector<repl::RpcCall> &calls) {
-    std::vector<std::string> out;
-    for (const auto &c : calls) out.push_back(c.rpc ? c.rpc->name : "?");
-    return out;
-}
-
-inline size_t count_calls(const std::vector<repl::RpcCall> &calls, const char *name) {
-    return static_cast<size_t>(std::count_if(
-        calls.begin(), calls.end(), [&](const repl::RpcCall &c) { return c.rpc && std::string(c.rpc->name) == name; }));
-}
-
-struct NodeSeen {
-    std::vector<uint32_t> statuses;
-    bool gathered = false;
-    size_t chains = 0;
-    std::vector<std::vector<std::optional<bool>>> can_input;
-};
-
-inline void read_can_input(const repl::Value *can, NodeSeen &out) {
-    const auto *can_arr = can ? can->get_if<repl::ArrayValue>() : nullptr;
-    if (!can_arr) return;
-    std::vector<std::optional<bool>> entries;
-    for (const repl::ElementState &e : can_arr->elements) {
-        const auto w = e.values.find(1);
-        const bool *x = w == e.values.end() ? nullptr : w->second.get_if<bool>();
-        entries.push_back(x ? std::optional<bool>(*x) : std::nullopt);
-    }
-    out.can_input.push_back(std::move(entries));
-}
-
-inline void read_node_actor_block(const fake::Delivered &d, const repl::BlockView &b, NodeSeen &out) {
-    size_t pos = b.payload_pos;
-    const schema::ClassSchema &actor_class = class_named("AGatherableActor");
-    const auto st = repl::read_rep_block(actor_class, d.content.data(), b.payload_pos + b.payload_bits, pos);
-    const repl::Value *v = st ? st->get(actor_class, "bGathered") : nullptr;
-    if (v && v->get_if<bool>() && *v->get_if<bool>()) out.gathered = true;
-}
-
-inline void read_node_block(const fake::Delivered &d, const repl::BlockView &b, uint64_t comp_id, NodeSeen &out) {
-    if (!b.header.has_rep_layout) return;
-    if (b.header.is_actor) {
-        read_node_actor_block(d, b, out);
-        return;
-    }
-    if (b.header.object.ObjectId != comp_id) return;
-    size_t pos = b.payload_pos;
-    const schema::ClassSchema &inter = class_named("UInteractableComponent");
-    const auto st = repl::read_rep_block(inter, d.content.data(), b.payload_pos + b.payload_bits, pos);
-    if (!st) return;
-    read_can_input(st->get(inter, "CanInputActivate"), out);
-    const repl::Value *v = st->get(inter, "InputEffectStatuses");
-    const auto *arr = v ? v->get_if<repl::ArrayValue>() : nullptr;
-    if (!arr || arr->elements.empty()) return;
-    const auto it = arr->elements[0].values.find(1);
-    if (it != arr->elements[0].values.end() && it->second.get_if<uint64_t>())
-        out.statuses.push_back(static_cast<uint32_t>(*it->second.get_if<uint64_t>()));
-}
-
-inline NodeSeen node_seen(const Player &p, uint64_t node, size_t from) {
-    NodeSeen out;
-    const uint32_t ch = p.s->actor_view() ? p.s->actor_view()->channel_of(node) : 0;
-    const world::WorldActor *a = p.rig.world->registry().find(node);
-    if (ch == 0 || !a) return out;
-    for (size_t i = from; i < p.got.size(); ++i) {
-        if (p.got[i].channel != ch || p.got[i].open || p.got[i].close) continue;
-        const auto blocks = repl::read_content_blocks(p.got[i].content.data(), p.got[i].content.bit_pos(), 0);
-        if (!blocks) continue;
-        ++out.chains;
-        for (const auto &b : *blocks) read_node_block(p.got[i], b, a->npc.interact_component, out);
-    }
-    return out;
 }
 
 inline void read_channeling_block(size_t idx, const schema::ClassSchema &info, const fake::Delivered &d,
@@ -556,65 +459,10 @@ inline std::vector<std::pair<size_t, std::string>> pc_chain_calls(const Player &
     return out;
 }
 
-inline bool has_xp_tracker_block(const std::vector<repl::BlockView> &blocks,
-                                 const emit::FIntrepidNetworkGUID &xp_tracker) {
-    for (const auto &b : blocks) {
-        if (!b.header.is_actor && b.header.object == xp_tracker) return true;
-    }
-    return false;
-}
-
-inline size_t xp_chain_since(const Player &p, size_t from) {
-    const bs::SessionGuids &g = p.s->bootstrap().setup().guids;
-    for (size_t i = from; i < p.got.size(); ++i) {
-        if (p.got[i].channel != p.pc_ch || p.got[i].open || p.got[i].close) continue;
-        const auto blocks = repl::read_content_blocks(p.got[i].content.data(), p.got[i].content.bit_pos(), 0);
-        if (blocks && has_xp_tracker_block(*blocks, g.xp_tracker)) return i;
-    }
-    return static_cast<size_t>(-1);
-}
-
-inline bool can_input_ok(const NodeSeen &n, bool last_first) {
-    for (const auto &c : n.can_input) {
-        if (c.size() != 4) return false;
-    }
-    return !n.can_input.empty() && n.can_input.back()[0] && *n.can_input.back()[0] == last_first;
-}
-
-struct Tracker {
-    repl::LevelingState state;
-    size_t updates = 0;
-
-    void absorb_block(const fake::Delivered &d, const repl::BlockView &b,
-                      const emit::FIntrepidNetworkGUID &xp_tracker) {
-        if (b.header.is_actor || !(b.header.object == xp_tracker)) return;
-        size_t pos = b.payload_pos;
-        const size_t end = b.payload_pos + b.payload_bits;
-        const schema::ClassSchema &cls = state.schema();
-        if (b.header.has_rep_layout && !repl::read_rep_block(cls, d.content.data(), end, pos)) return;
-        if (pos >= end) return;
-        const auto fields = repl::read_fast_array_fields(cls, d.content.data(), end, pos);
-        if (!fields) return;
-        for (const repl::FastArrayField &f : *fields) state.apply(f);
-        ++updates;
-    }
-
-    void absorb(const Player &p, size_t from) {
-        const bs::SessionGuids &g = p.s->bootstrap().setup().guids;
-        for (size_t i = from; i < p.got.size(); ++i) {
-            if (p.got[i].channel != p.pc_ch || p.got[i].open || p.got[i].close) continue;
-            const auto blocks = repl::read_content_blocks(p.got[i].content.data(), p.got[i].content.bit_pos(), 0);
-            if (!blocks) continue;
-            for (const auto &b : *blocks) absorb_block(p.got[i], b, g.xp_tracker);
-        }
-    }
-};
-
-inline repl::DesignDataId leveling_id(int64_t guid) {
-    repl::DesignDataId d;
-    d.guid = guid;
-    d.type_id = content::kTypeLevelingTypeDef;
-    return d;
+inline std::vector<std::string> pc_call_names_since(const Player &p, size_t from) {
+    std::vector<std::string> out;
+    for (const auto &[chain, name] : pc_chain_calls(p, from)) out.push_back(name);
+    return out;
 }
 
 inline void play(Player &p) {
@@ -631,3 +479,138 @@ inline bool run_until(Rig &rig, const std::function<bool()> &done, milliseconds 
     }
     return done();
 }
+
+struct FoliageSeen {
+    size_t chain = 0;
+    float duration = 0;
+    double start_time = 0;
+    int64_t instance = 0;
+    std::string owner, component;
+    uint64_t state = 0;
+    int64_t tool_record = 0;
+};
+
+inline std::string name_text(const repl::Value *v) {
+    const repl::NameValue *n = v ? v->get_if<repl::NameValue>() : nullptr;
+    return n ? repl::fname_text(*n) : std::string();
+}
+
+inline void read_foliage_seen_block(size_t chain_idx, const fake::Delivered &d, const repl::BlockView &b,
+                                    const emit::FIntrepidNetworkGUID &base_info, std::vector<FoliageSeen> &out) {
+    if (b.header.is_actor || !b.header.has_rep_layout || !(b.header.object == base_info)) return;
+    const schema::ClassSchema &info = class_named("UPlayerInfo");
+    size_t pos = b.payload_pos;
+    const auto st = repl::read_rep_block(info, d.content.data(), b.payload_pos + b.payload_bits, pos);
+    if (!st) return;
+    const repl::Value *dur = st->get(info, "FoliageData.Duration");
+    if (!dur) return;
+    FoliageSeen f;
+    f.chain = chain_idx;
+    f.duration = dur->get_if<float>() ? *dur->get_if<float>() : -1.0f;
+    const repl::Value *t = st->get(info, "FoliageData.ServerStartTime");
+    f.start_time = (t && t->get_if<double>()) ? *t->get_if<double>() : -1.0;
+    const repl::Value *idx = st->get(info, "FoliageData.OriginalInstanceIndex");
+    f.instance = (idx && idx->get_if<int64_t>()) ? *idx->get_if<int64_t>() : -2;
+    f.owner = name_text(st->get(info, "FoliageData.FoliageName"));
+    f.component = name_text(st->get(info, "FoliageData.FoliageComponentUUID"));
+    const repl::Value *s = st->get(info, "FoliageData.FoliageState");
+    f.state = (s && s->get_if<uint64_t>()) ? *s->get_if<uint64_t>() : 99;
+    const repl::Value *tool = st->get(info, "FoliageData.ToolRecordId");
+    f.tool_record = (tool && tool->get_if<int64_t>()) ? *tool->get_if<int64_t>() : -1;
+    out.push_back(std::move(f));
+}
+
+inline std::vector<FoliageSeen> foliage_data_seen(const Player &p, size_t from) {
+    std::vector<FoliageSeen> out;
+    const bs::SessionGuids &g = p.s->bootstrap().setup().guids;
+    for (size_t i = from; i < p.got.size(); ++i) {
+        if (p.got[i].channel != p.pawn_ch || p.got[i].open || p.got[i].close) continue;
+        const auto blocks = repl::read_content_blocks(p.got[i].content.data(), p.got[i].content.bit_pos(), 0);
+        if (!blocks) continue;
+        for (const auto &b : *blocks) read_foliage_seen_block(i, p.got[i], b, g.base_character_info, out);
+    }
+    return out;
+}
+
+inline size_t new_actor_prefix_bits(const emit::BunchWriter &content) {
+    aoc::protocol::wire::PacketReader r(content.data(), (content.bit_pos() + 7) / 8, content.bit_pos());
+    r.set_pos(384);
+    if (r.read_bit()) {
+        if (r.read_bit()) {
+            if (!repl::read_quantized_vector(r)) return 0;
+        } else {
+            r.read_bits(64);
+            r.read_bits(64);
+            r.read_bits(64);
+        }
+    }
+    r.read_bit();
+    r.read_bit();
+    r.read_bit();
+    return r.pos();
+}
+
+inline BunchWriter foliage_start(const char *owner, const char *component, uint32_t index, uint64_t state) {
+    const schema::ClassSchema &pc = class_named("AoCPlayerControllerBP_C");
+    const schema::RpcSchema *rpc = pc.rpc("ServerStartInteractionWithFoliage");
+    repl::RpcParams p;
+    if (!rpc) return BunchWriter();
+    if (index != 0) repl::set_rpc_param(*rpc, p, "OriginalInstanceIndex", repl::Value::i64(index));
+    repl::set_rpc_param(*rpc, p, "FoliageName", repl::Value(repl::fname_parse(owner)));
+    repl::set_rpc_param(*rpc, p, "FoliageComponentUUID", repl::Value(repl::fname_parse(component)));
+    repl::set_rpc_param(*rpc, p, "FoliageState", repl::Value::u64(state));
+    return actor_rpc(pc, "ServerStartInteractionWithFoliage", p);
+}
+
+struct FRig {
+    Rig rig;
+    bool open(double regrow_mult = 0.01, bool all_cells = true) {
+        if (!rig.open(g_path)) return false;
+        std::string error;
+        foliage::Config cfg;
+        cfg.map_path = g_tsv;
+        cfg.regrow_mult = regrow_mult;
+        cfg.all_cells = all_cells;
+        if (!rig.world->start_foliage(cfg, error)) {
+            std::printf("  [FAIL] foliage does not start: %s\n", error.c_str());
+            return false;
+        }
+        return true;
+    }
+    foliage::Foliage &f() { return *rig.world->foliage(); }
+    uint32_t oak_row() { return *f().map().find(fid::kOwner, fid::kFismc0, 0); }
+};
+
+inline Player &join_at_the_oak(FRig &fr, const char *id_hex, const char *name) {
+    Player &p = fr.rig.add_player(record_at(id_hex, name, fid::kStandX, fid::kStandY, fid::kStandZ));
+    play(p);
+    return p;
+}
+
+inline bool init_foliage_session_env() {
+    auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+    const char *path = db_path();
+    if (!path) {
+        std::printf("[skip] test_worldd_foliage_session: no content.db (set "
+                    "AOC_CONTENT_DB, or build "
+                    "dist/content/content.db)\n");
+        return false;
+    }
+#ifdef FOLIAGE_TSV_PATH
+    if (fs::exists(FOLIAGE_TSV_PATH)) g_tsv = FOLIAGE_TSV_PATH;
+#endif
+    if (const char *env = std::getenv("AOC_FOLIAGE_MAP"); env && *env) g_tsv = env;
+    if (!g_tsv) {
+        std::printf("[skip] test_worldd_foliage_session: no "
+                    "dist/content/region_foliage.tsv\n");
+        return false;
+    }
+    g_path = path;
+    std::printf("content.db: %s\nmap: %s\n", path, g_tsv);
+    return true;
+}
+
+void run_foliage_unnamed_call_test();
+void run_foliage_session_wire_tests();

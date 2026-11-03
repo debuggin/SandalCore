@@ -11,6 +11,26 @@ using wire::PacketReader;
 namespace gen = aoc::protocol::schema::gen;
 namespace cap = capture_items;
 
+namespace {
+
+std::optional<ItemStorageEvent> read_event_bits(const Bits& bits, size_t* consumed = nullptr) {
+    return with_exact(bits, [&](const uint8_t* d, size_t bytes, size_t n) {
+        PacketReader r(d, bytes, n);
+        auto e = read_item_storage_event(r);
+        if (consumed) *consumed = r.pos();
+        return e;
+    });
+}
+
+Bits write_event_bits(const ItemStorageEvent& e, bool* ok = nullptr) {
+    BunchWriter w;
+    const bool wrote = write_item_storage_event(w, e);
+    if (ok) *ok = wrote;
+    return Bits(w);
+}
+
+}  // namespace
+
 static void test_event_fits_and_default(const ItemStorageEvent& e) {
     ItemStorageEvent bad = e;
     bad.targets[0].object.ObjectId = 1;
@@ -381,7 +401,7 @@ static void test_hostile_counts() {
     CHECK(read_write_read(*rpc, mbits, &mok) && !mok, "the same cut short (the columns it announced are missing): refused");
 }
 
-void run_repl_items_part2() {
+void run_repl_items_storage() {
     test_event();
     test_storage_layer();
     test_events_of_the_captures();

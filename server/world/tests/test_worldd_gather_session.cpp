@@ -11,6 +11,98 @@
 
 using namespace aoc::worldd;
 
+struct NodeSeen {
+  std::vector<uint32_t> statuses;
+  bool gathered = false;
+  size_t chains = 0;
+  std::vector<std::vector<std::optional<bool>>> can_input;
+};
+
+static void read_can_input(const repl::Value *can, NodeSeen &out) {
+  const auto *can_arr = can ? can->get_if<repl::ArrayValue>() : nullptr;
+  if (!can_arr)
+    return;
+  std::vector<std::optional<bool>> entries;
+  for (const repl::ElementState &e : can_arr->elements) {
+    const auto w = e.values.find(1);
+    const bool *x = w == e.values.end() ? nullptr : w->second.get_if<bool>();
+    entries.push_back(x ? std::optional<bool>(*x) : std::nullopt);
+  }
+  out.can_input.push_back(std::move(entries));
+}
+
+static void read_node_block(const fake::Delivered &d, const repl::BlockView &b,
+                            uint64_t comp_id, NodeSeen &out) {
+  if (!b.header.has_rep_layout)
+    return;
+  size_t pos = b.payload_pos;
+  const size_t end = b.payload_pos + b.payload_bits;
+  if (b.header.is_actor) {
+    const schema::ClassSchema &actor_class = class_named("AGatherableActor");
+    const auto st =
+        repl::read_rep_block(actor_class, d.content.data(), end, pos);
+    const repl::Value *v = st ? st->get(actor_class, "bGathered") : nullptr;
+    if (v && v->get_if<bool>() && *v->get_if<bool>())
+      out.gathered = true;
+    return;
+  }
+  if (b.header.object.ObjectId != comp_id)
+    return;
+  const schema::ClassSchema &inter = class_named("UInteractableComponent");
+  const auto st = repl::read_rep_block(inter, d.content.data(), end, pos);
+  const repl::Value *v = st ? st->get(inter, "InputEffectStatuses") : nullptr;
+  const auto *arr = v ? v->get_if<repl::ArrayValue>() : nullptr;
+  if (arr && !arr->elements.empty()) {
+    const auto it = arr->elements[0].values.find(1);
+    if (it != arr->elements[0].values.end() && it->second.get_if<uint64_t>())
+      out.statuses.push_back(
+          static_cast<uint32_t>(*it->second.get_if<uint64_t>()));
+  }
+  read_can_input(st ? st->get(inter, "CanInputActivate") : nullptr, out);
+}
+
+static NodeSeen node_seen(const Player &p, uint64_t node, size_t from) {
+  NodeSeen out;
+  const uint32_t ch =
+      p.s->actor_view() ? p.s->actor_view()->channel_of(node) : 0;
+  const world::WorldActor *a = p.rig.world->registry().find(node);
+  if (ch == 0 || !a)
+    return out;
+  for (size_t i = from; i < p.got.size(); ++i) {
+    if (p.got[i].channel != ch || p.got[i].open || p.got[i].close)
+      continue;
+    const auto blocks = repl::read_content_blocks(
+        p.got[i].content.data(), p.got[i].content.bit_pos(), 0);
+    if (!blocks)
+      continue;
+    ++out.chains;
+    for (const auto &b : *blocks)
+      read_node_block(p.got[i], b, a->npc.interact_component, out);
+  }
+  return out;
+}
+
+static bool can_input_ok(const NodeSeen &n, bool last_first) {
+  for (const auto &c : n.can_input) {
+    if (c.size() != 4)
+      return false;
+  }
+  return !n.can_input.empty() && n.can_input.back()[0] &&
+         *n.can_input.back()[0] == last_first;
+}
+
+static std::string refusals_of(const Player &p) {
+  std::string out;
+  for (const auto &[kind, n] : p.s->harvest_refusals())
+    out += (out.empty() ? "" : ", ") + kind + " x" + std::to_string(n);
+  return out.empty() ? "none" : out;
+}
+
+static size_t refusal_count(const Player &p, const char *kind) {
+  const auto it = p.s->harvest_refusals().find(kind);
+  return it == p.s->harvest_refusals().end() ? 0 : it->second;
+}
+
 static std::vector<std::string>
 call_names(const std::vector<repl::RpcCall> &calls) {
   std::vector<std::string> out;

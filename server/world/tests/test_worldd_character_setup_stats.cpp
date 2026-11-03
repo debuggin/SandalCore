@@ -4,6 +4,78 @@
 // 7: see LICENSE and NOTICE.
 #include "test_worldd_character_setup_common.h"
 
+static svc::Character
+cyb_record(int32_t race_id, int32_t gender_id,
+           const std::string &json = cyb::kAppearanceJsonb) {
+  svc::Character c;
+  c.id = "bbec5c86eb101fe5f38c87f0fa22e7d0";
+  c.account_id = 1;
+  c.name = "cyb";
+  c.race_id = race_id;
+  c.gender_id = gender_id;
+  c.class_id = 2;
+  c.archetype_id = 17747;
+  c.class_name = "Bard";
+  c.appearance_json = json;
+  c.level = 1;
+  return c;
+}
+
+static std::string cyb_json_of(const char *race, const char *gender) {
+  std::string j = replaced(cyb::kAppearanceJsonb, "\"gender\": \"Male\"",
+                           std::string("\"gender\": \"") + gender + "\"");
+  return replaced(j, "\"race\": \"Kaelar\"",
+                  std::string("\"race\": \"") + race + "\"");
+}
+
+static const char *race_name_of(int32_t race) {
+  static const char *const names[] = {"Kaelar",   "Vaelune", "Vek",   "Renkai",
+                                      "Empyrean", "Pyrai",   "Dunir", "Nikua"};
+  return names[race];
+}
+
+static void check_capture_record(const bs::PlayerSetup &cap,
+                                 const content::ContentDb &content,
+                                 const char *label) {
+  const svc::Character rec = captured_record_with_kit(cap);
+  CHECK(!rec.appearance_json.empty(),
+        (std::string(label) + ": the capture's customization has a JSON form")
+            .c_str());
+  const bs::CharacterSetupResult r = bs::build_player_setup(
+      rec, content, cap.login, session_of(cap), world_stats::of(content));
+  CHECK(r.setup.has_value() && r.error.empty(),
+        (std::string(label) + ": the capture's record builds a setup").c_str());
+  if (!r.setup) {
+    std::printf("    %s\n", r.error.c_str());
+    return;
+  }
+  const std::vector<std::string> d = diff_setups(*r.setup, cap);
+  std::string list;
+  for (const auto &x : d)
+    list += (list.empty() ? "" : ", ") + x;
+  std::printf("    differs from captured_character_setup() in: %s\n",
+              list.c_str());
+  CHECK(
+      d == std::vector<std::string>{"orgs_at_war_toast"},
+      (std::string(label) +
+       ": the capture's record wearing the Bard's kit is equal to "
+       "captured_character_setup() field by field, the 442 stats and HeldItems "
+       "and AppearanceIDs included, but for the toast flag (the record does "
+       "not carry it)")
+          .c_str());
+  CHECK(r.notes.size() == 1 && contains(r.notes[0], "13 worn"),
+        (std::string(label) + ": the one note says what the character wears")
+            .c_str());
+  const bs::CharacterSetupResult none =
+      bs::build_player_setup(captured_record(cap), content, cap.login,
+                             session_of(cap), world_stats::of(content));
+  CHECK(none.setup && none.setup->held_items.items.empty() &&
+            none.setup->appearance_ids.empty() && none.notes.empty(),
+        (std::string(label) + ": an unequipped character: no held items, no "
+                              "appearance ids, nothing to note")
+            .c_str());
+}
+
 static bool same_stat_array_layout(const bs::StatsSetup &got_s,
                                    const bs::StatsSetup &want_s) {
   const std::pair<const bs::StatArray *, const bs::StatArray *> arrays[] = {
@@ -728,7 +800,7 @@ static void check_real_content_matrix(const content::ContentDb &db,
   CHECK(r20.setup.has_value(), "the Bard at level 20 builds");
 }
 
-void test_real_content(const bs::PlayerSetup &cap) {
+static void test_real_content(const bs::PlayerSetup &cap) {
   std::printf("against the real content.db (AOC_CONTENT_DB)\n");
   const char *env = std::getenv("AOC_CONTENT_DB");
   if (!env || !*env) {
@@ -745,7 +817,7 @@ void test_real_content(const bs::PlayerSetup &cap) {
   }
   check_capture_record(cap, *db, "real content.db");
   test_setup_stats(cap, *db, "the real content.db");
-  test_kits_against_go(*db);
+  run_kits_against_go(*db);
   test_corpus_cases(*db);
 
   const bs::CharacterSetupResult r = bs::build_player_setup(
@@ -769,7 +841,11 @@ void test_real_content(const bs::PlayerSetup &cap) {
   check_real_content_matrix(*db, cap);
 }
 
-void run_character_setup_part2(const bs::PlayerSetup &cap,
+void run_character_setup_real_content(const bs::PlayerSetup &cap) {
+  test_real_content(cap);
+}
+
+void run_character_setup_stats(const bs::PlayerSetup &cap,
                                const content::ContentDb &db) {
   test_capture_record(cap, db);
   test_setup_stats(cap, db, "the small content.db");

@@ -10,6 +10,193 @@ using namespace aoc::worldd::test_node_pop;
 
 namespace {
 
+struct RoadFile {
+    struct Road {
+        int64_t zoi = 0;
+        int tiers[7] = {0};
+    };
+    std::vector<Road> roads;
+};
+static bool parse_road_level_line(const std::string &line, RoadFile::Road &r) {
+    std::vector<std::string> f;
+    std::stringstream ss(line);
+    std::string cell;
+    while (std::getline(ss, cell, '\t')) f.push_back(cell);
+    if (f.size() < 6 || f[0] != "roadn") return false;
+    r.zoi = static_cast<int64_t>(std::strtoull(f[1].c_str(), nullptr, 10));
+    std::stringstream ts(f[2]);
+    std::string t;
+    int k = 0;
+    while (std::getline(ts, t, ',') && k < 7) r.tiers[k++] = std::atoi(t.c_str());
+    return true;
+}
+static bool read_roads_levels(const std::string &path, RoadFile &out) {
+    std::ifstream in(path);
+    if (!in) return false;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        RoadFile::Road r;
+        if (!parse_road_level_line(line, r)) return false;
+        out.roads.push_back(r);
+    }
+    return true;
+}
+static void extract_stat_array(const repl::FastArrayState &arr, std::map<int64_t, float> &out) {
+    for (const repl::FastArrayItem &it : arr.items()) {
+        const auto v = it.values.values.find(1);
+        const auto *s = v == it.values.values.end() ? nullptr : v->second.get_if<repl::StatInt32Inst>();
+        if (s) out[s->record] = std::bit_cast<float>(s->value);
+    }
+}
+static std::map<int64_t, float> stat_items(const world::WorldActor &a) {
+    std::map<int64_t, float> out;
+    for (const repl::Subobject &sub : a.actor.subobjects) {
+        if (!sub.obj.schema || std::string(sub.obj.schema->name) != "UAoCStatsComponent") continue;
+        const auto *arr =
+            const_cast<repl::FastArrays &>(sub.obj.arrays).get(*sub.obj.schema, "StatRepInt32EveryoneProxy");
+        if (arr) extract_stat_array(*arr, out);
+    }
+    return out;
+}
+static bool has_full_health(const std::map<int64_t, float> &items) {
+    const auto h = items.find(content::kGuidHealth);
+    const auto m = items.find(content::kGuidMaxHealth);
+    return h != items.end() && m != items.end() && m->second > 0 && h->second == m->second;
+}
+static std::optional<std::vector<repl::BlockView>> find_chain_blocks(const fake::Delivered &d,
+                                                                     const world::WorldActor &a) {
+    const size_t end = d.content.bit_pos();
+    for (size_t start = 0; start < (d.open ? 2000u : 1u) && start < end; ++start) {
+        auto got = repl::read_content_blocks(d.content.data(), end, start);
+        if (!got || got->empty() || !(*got)[0].header.is_actor) continue;
+        if (d.open && got->size() != a.actor.subobjects.size() + 1) continue;
+        return got;
+    }
+    return std::nullopt;
+}
+static void collect_fast_array_stats(const std::vector<repl::FastArrayField> &fields, uint32_t field_idx,
+                                     std::map<int64_t, float> &out) {
+    for (const repl::FastArrayField &field : fields) {
+        if (field.field != field_idx) continue;
+        for (const auto &ch : field.delta.changed) {
+            const auto v = ch.values.values.find(1);
+            const auto *s = v == ch.values.values.end() ? nullptr : v->second.get_if<repl::StatInt32Inst>();
+            if (s) out[s->record] = std::bit_cast<float>(s->value);
+        }
+    }
+}
+static bool read_comp_stat_block(const fake::Delivered &d, const repl::Subobject &comp, const repl::BlockView &b,
+                                 std::map<int64_t, float> &out) {
+    if (b.header.is_actor || b.header.object.ObjectId != comp.guid.ObjectId) return true;
+    const size_t block_end = b.payload_pos + b.payload_bits;
+    size_t pos = b.payload_pos;
+    if (b.header.has_rep_layout &&
+        !repl::read_rep_block(*comp.obj.schema, d.content.data(), block_end, pos, comp.obj.opts)) {
+        return false;
+    }
+    if (pos >= block_end) return false;
+    const auto fields = repl::read_fast_array_fields(*comp.obj.schema, d.content.data(), block_end, pos, comp.obj.opts);
+    const auto *f = comp.obj.schema->field("StatRepInt32EveryoneProxy");
+    if (!fields || !f) return false;
+    collect_fast_array_stats(*fields, f->index, out);
+    return true;
+}
+static std::map<int64_t, float> stat_items_in_chain(const fake::Delivered &d, const world::WorldActor &a) {
+    std::map<int64_t, float> out;
+    const repl::Subobject *comp = nullptr;
+    for (const repl::Subobject &s : a.actor.subobjects) {
+        if (s.obj.schema && std::string(s.obj.schema->name) == "UAoCStatsComponent") comp = &s;
+    }
+    if (!comp || d.close) return out;
+    const auto blocks = find_chain_blocks(d, a);
+    if (!blocks) return out;
+    for (const repl::BlockView &b : *blocks) {
+        if (!read_comp_stat_block(d, *comp, b, out)) return out;
+    }
+    return out;
+}
+static void check_town_health(PlayerWorld &world, const char *when) {
+    size_t total = 0, lacking = 0, bad = 0, wizards = 0, villagers = 0, unequal = 0;
+    std::map<std::pair<std::string, int>, float> by_kind;
+    world.registry().for_each([&](const world::WorldActor &a) {
+        if (a.kind != world::ActorKind::Npc || a.npc.spawn_ref < spawns::kNodeRefBase) return;
+        ++total;
+        const std::string leaf = spawns::blueprint_leaf(a.npc.archetype);
+        wizards += leaf == "Guard_Wizard" ? 1 : 0;
+        villagers += leaf.rfind("Node_Villager", 0) == 0 ? 1 : 0;
+        const auto items = stat_items(a);
+        if (!items.count(content::kGuidHealth) || !items.count(content::kGuidMaxHealth)) {
+            ++lacking;
+            return;
+        }
+        if (!has_full_health(items)) ++bad;
+        const auto key = std::make_pair(leaf, static_cast<int>(a.npc.level));
+        const auto [it, fresh] = by_kind.emplace(key, items.at(content::kGuidMaxHealth));
+        if (!fresh && it->second != items.at(content::kGuidMaxHealth)) ++unequal;
+    });
+    for (const auto &[kind, health] : by_kind) {
+        if (kind.first == "Guard_Wizard" || kind.first == "Guard_Captain" ||
+            kind.first.rfind("Node_Villager", 0) == 0) {
+            std::printf("    %s L%d: Health %.1f\n", kind.first.c_str(), kind.second, health);
+        }
+    }
+    std::printf("    %s: %zu town people, %zu without a Health item, %zu with "
+                "Health != MaxHealth or 0, %zu guard wizards, %zu villagers\n",
+                when, total, lacking, bad, wizards, villagers);
+    CHECK(total > 0 && wizards > 0 && villagers > 0,
+          "(the town's people include guard wizards and villagers, two templates "
+          "that have no stats of their own)");
+    CHECK(lacking == 0, "after the node people start, no node NPC lacks a Health item");
+    CHECK(bad == 0, "every node NPC has Health == MaxHealth > 0");
+    CHECK(unequal == 0, "people of one Blueprint and level hold one and the same MaxHealth");
+}
+static void pump_wizard_view(ActorView &view, Connection &server, fake::Client &client, const world::WorldActor &wiz,
+                             std::vector<fake::Delivered> &got) {
+    Clock::time_point t{std::chrono::seconds(5000)};
+    auto pass = [&] {
+        t += std::chrono::milliseconds(60);
+        view.tick(server, wiz.x, wiz.y, t);
+        for (const auto &pkt : server.flush(t)) {
+            for (const auto &d : client.receive(pkt).delivered) got.push_back(d);
+        }
+        for (const auto &pkt : client.packets({})) server.receive(pkt, t);
+        for (const AckEvent &e : server.take_ack_events()) view.on_ack(e);
+    };
+    for (int i = 0; i < 400 && view.channel_of(wiz.id) == 0; ++i) pass();
+    for (int i = 0; i < 20; ++i) pass();
+}
+static void check_open_carries_health(PlayerWorld &world) {
+    const world::WorldActor *wiz = nullptr;
+    world.registry().for_each([&](const world::WorldActor &a) {
+        if (!wiz && a.kind == world::ActorKind::Npc && a.npc.spawn_ref >= spawns::kNodeRefBase &&
+            spawns::blueprint_leaf(a.npc.archetype) == "Guard_Wizard") {
+            wiz = &a;
+        }
+    });
+    CHECK(wiz != nullptr, "(a guard wizard stands in the town)");
+    if (!wiz) return;
+    const conn::OuterHeader outer{0x500c7696u, 0, 5};
+    const conn::CustomField cf{0x38, 0x21, 0xc7, 0x0d, 0x43, 0x5d};
+    const Clock::time_point t0{std::chrono::seconds(5000)};
+    Connection server{ConnectionConfig{outer, cf, 14265, 15870}, t0};
+    fake::Client client{outer, cf, 14265, 15870};
+    ActorView view(world.registry(), ActorView::Config{}, [](uint32_t i) { return i >= 3 && i <= 6; });
+    std::vector<fake::Delivered> got;
+    pump_wizard_view(view, server, client, *wiz, got);
+    const uint32_t channel = view.channel_of(wiz->id);
+    CHECK(channel != 0, "the view opens the guard wizard for a client standing at it");
+    std::map<int64_t, float> seen;
+    for (const fake::Delivered &d : got) {
+        if (d.channel != channel || !d.open) continue;
+        seen = stat_items_in_chain(d, *wiz);
+        break;
+    }
+    std::printf("    the open of the guard wizard on channel %u carries %zu stat items\n", channel, seen.size());
+    CHECK(has_full_health(seen), "the open a fake client receives for a guard "
+                                 "wizard carries Health == MaxHealth > 0");
+}
+
 struct HeightKept {
     size_t npcs = 0, moved = 0, open_moved = 0;
     double worst = 0;
@@ -458,57 +645,6 @@ static void test_roads() {
           "worth more than at Wilderness), every "
           "other road is untouched");
 }
-using FloorPerson = world::TownFloor::Person;
-static std::vector<FloorPerson> floor_grid(double cx, double cy, double lift, int half = 3) {
-    std::vector<FloorPerson> v;
-    for (int i = -half; i <= half; ++i) {
-        for (int j = -half; j <= half; ++j) {
-            v.push_back({cx + i * 2000.0, cy + j * 2000.0, 1000.0, 1000.0 + lift + ((i + j) % 3 == 0 ? 20.0 : -10.0)});
-        }
-    }
-    return v;
-}
-static void test_town_floor_class() {
-    std::printf("the town floor: a town stands over the baked ground of its bowl\n");
-    world::TownFloor tf;
-    CHECK(tf.towns() == 0 && !tf.at(0, 0, 1000), "no town: nowhere is a bowl");
-    std::vector<FloorPerson> people = floor_grid(0, 0, 5060);
-    for (int i = 0; i < 6; ++i) people.push_back({i * 1000.0, 30000.0, 1000.0, 8000.0});
-    people.push_back({500, 0, 1000.0, 3000.0});
-    people.push_back({-500, 0, 1000.0, 1100.0});
-    tf.set(7, people);
-    const std::optional<double> lift = tf.lift_of(7);
-    CHECK(tf.towns() == 1 && lift && std::fabs(*lift - 5060.0) < 25.0,
-          "the town's lift is the median of its people's heights over the ground "
-          "(50.6 m)");
-    CHECK(tf.floor_persons(7) == 49, "the floor is the people within 3 m of it: "
-                                     "not the upper floors, the wall of the "
-                                     "pit or the one on the open ground");
-    const auto in = tf.at(100, 100, 1000);
-    CHECK(in && in->node == 7 && std::fabs(in->lift - *lift) < 1e-9,
-          "a point in the town: its floor is the ground under it plus the lift, "
-          "and it names the node");
-    CHECK(!tf.at(100, 100, 3000), "...but not where the ground under the point is 20 m off the people's "
-                                  "(the wall of the pit)");
-    CHECK(tf.at(100, 100, 1000 - 900) && tf.at(100, 100, 1000 + 900), "...a ground 9 m off is inside the relief");
-    CHECK(tf.at(6000 + 7000, 0, 1000) && !tf.at(6000 + 8000, 0, 1000),
-          "the town reaches 75 m from the last person of its floor");
-    CHECK(!tf.at(20000, 20000, 1000) && !tf.at(0, 28000, 1000),
-          "...not to a point far from its floor (the upper floors 300 m off do "
-          "not make a floor)");
-    tf.set(8, floor_grid(100000, 0, 100));
-    CHECK(tf.towns() == 1 && !tf.at(100000, 0, 1000) && !tf.lift_of(8),
-          "people on the open ground (+1 m) make no town");
-    tf.set(9, floor_grid(200000, 0, 4990));
-    CHECK(tf.towns() == 2 && tf.at(200000, 0, 1000) && std::fabs(tf.at(200000, 0, 1000)->lift - 4990.0) < 25.0 &&
-              std::fabs(tf.at(0, 0, 1000)->lift - *lift) < 1e-9,
-          "two towns: each point has its own town's lift");
-    tf.set(7, floor_grid(0, 0, 100));
-    CHECK(tf.towns() == 1 && !tf.at(0, 0, 1000), "the node's people replaced by ones on the open ground: its town is "
-                                                 "gone");
-    tf.set(9, {});
-    CHECK(tf.towns() == 0, "no people: no town");
-}
 static bool compute_bowl_floor_person(PlayerWorld &world, double &median, double &px, double &py) {
     std::vector<double> overs;
     std::vector<std::array<double, 3>> people;
@@ -684,7 +820,6 @@ int main() {
     test_pending();
     test_world();
     test_roads();
-    test_town_floor_class();
     test_bowl_world();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

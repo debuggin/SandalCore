@@ -1,8 +1,165 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-#include "test_worldd_items_session_helpers.h"
+#include "test_worldd_items_session_common.h"
 using namespace aoc::worldd;
+static BunchWriter with_bits(const BunchWriter &src, size_t bits) {
+    BunchWriter w;
+    if (bits > 0) w.write_bit_range(src.data(), 0, std::min(bits, src.bit_pos()));
+    return w;
+}
+static BunchWriter flipped_bits(const BunchWriter &src, const std::vector<size_t> &at) {
+    std::vector<uint8_t> bytes(src.data(), src.data() + src.byte_size());
+    for (const size_t b : at)
+        if (b / 8 < bytes.size()) bytes[b / 8] ^= static_cast<uint8_t>(1u << (b % 8));
+    BunchWriter w;
+    w.write_bit_range(bytes.data(), 0, src.bit_pos());
+    return w;
+}
+static bool inventory_is_sane(const items::Inventory &inv, const std::set<std::string> &guids, size_t destroyed) {
+    std::string error;
+    const auto again = items::Inventory::from_items(inv.items(), error);
+    if (!again || !(*again == inv)) return false;
+    std::set<std::string> now;
+    for (const auto &it : inv.items()) now.insert(it.instance_guid);
+    if (inv.size() != now.size() || !std::includes(guids.begin(), guids.end(), now.begin(), now.end())) return false;
+    return guids.size() - now.size() <= destroyed;
+}
+static bool same_items(std::vector<svc::InventoryItem> a, std::vector<svc::InventoryItem> b) {
+    const auto less = [](const svc::InventoryItem &x, const svc::InventoryItem &y) { return std::make_pair(static_cast<int>(x.container), x.slot) < std::make_pair(static_cast<int>(y.container), y.slot); };
+    std::sort(a.begin(), a.end(), less);
+    std::sort(b.begin(), b.end(), less);
+    return a == b;
+}
+static BunchWriter bag_swap_potions_and_heavy_chest(Harness &h) {
+    return bag_move_or_swap(h, repl::StorageEventType::Swap, {32, 5}, {guid_n(201), guid_n(203)}, {3, 1});
+}
+static MoveSpec potion_move(const Harness &h) {
+    MoveSpec m;
+    m.from_object = h.s->bootstrap().setup().guids.backpack;
+    m.to_object = m.from_object;
+    return m;
+}
+static bool refused_cleanly(Harness &h, const items::Inventory &before, const char *what, const BunchWriter &bunch, uint32_t channel) {
+    h.step(milliseconds(150));
+    const size_t refused = h.s->item_requests_refused(), applied = h.s->item_requests_applied(), events = h.mirror.events.size();
+    h.request(bunch, channel);
+    const bool ok =
+        bunch.bit_pos() > 0 && h.s->item_requests_refused() == refused + 1 && h.s->item_requests_applied() == applied && h.mirror.events.size() == events && h.s->inventory() == before && !h.s->inventory_dirty() && !h.s->inventory_changed();
+    if (!ok) std::printf("    not refused cleanly: %s\n", what);
+    return ok;
+}
+static svc::Character cyb_with_a_full_bag() {
+    svc::Character c = cyb_record();
+    std::vector<svc::InventoryItem> items;
+    for (const auto &it : c.items)
+        if (it.container != Bag) items.push_back(it);
+    items.push_back(make_item(Bag, 0, fi::kSword2H, 200));
+    for (int slot = 1; slot < 70; ++slot) items.push_back(make_item(Bag, slot, fi::kPotion, 300 + slot, 1 + slot % 7));
+    c.items = items;
+    return c;
+}
+static svc::Position pos_of(double x) {
+    return {x, 0, 0, 0};
+}
+static std::vector<svc::InventoryItem> first_items(size_t n) {
+    auto all = bard_items();
+    all.resize(std::min(n, all.size()));
+    return all;
+}
+struct HostileFuzzer {
+    Harness h;
+    std::mt19937_64 rng{0xB2B2B2B2ull};
+    std::set<std::string> guids;
+    size_t applied_by_use = 0, applied_by_move = 0;
+    HostileFuzzer() {
+        for (const auto &it : h.s->inventory().items()) guids.insert(it.instance_guid);
+    }
+    size_t pick(uint64_t n) { return static_cast<size_t>(rng() % n); }
+    int number() {
+        static const int64_t extremes[] = {0, 1, -1, 2, 3, 69, 70, 71, 82, 83, 99, 100, 255, 256, 65535, INT32_MAX, INT32_MIN, INT32_MAX - 1};
+        if (pick(3) == 0) return static_cast<int>(extremes[pick(sizeof extremes / sizeof extremes[0])]);
+        return static_cast<int>(pick(90));
+    }
+    std::string some_guid(const std::vector<svc::InventoryItem> &items) {
+        if (!items.empty() && pick(3) != 0) return items[pick(items.size())].instance_guid;
+        return guid_n(static_cast<uint32_t>(900 + pick(40)));
+    }
+    void step_use(const std::vector<svc::InventoryItem> &items, size_t applied) {
+        const svc::InventoryItem *it = items.empty() ? nullptr : &items[pick(items.size())];
+        const bool real = it && pick(4) != 0;
+        const int storage = real ? (it->container == Bag ? 3 : it->container == Worn ? 4 : 18) : static_cast<int>(pick(4) == 0 ? number() & 0xFF : (pick(2) ? 3 : 4));
+        const int slot = real ? it->slot : number();
+        const std::string guid = real && pick(5) != 0 ? it->instance_guid : some_guid(items);
+        const uint32_t requested = pick(3) == 0 ? static_cast<uint32_t>(number()) : kAny;
+        h.client_sends({h.client.actor(h.pawn_ch, item_used(storage, slot, guid, requested), true)});
+        if (h.s->item_requests_applied() > applied) ++applied_by_use;
+    }
+    void step_move_source(MoveSpec &m, const std::vector<svc::InventoryItem> &items) {
+        const svc::InventoryItem *it = items.empty() ? nullptr : &items[pick(items.size())];
+        const bool real = it && pick(4) != 0;
+        m.from_slot = real ? it->slot : number();
+        m.from_count = real && pick(5) != 0 ? it->quantity : number();
+        m.source_guid = m.event_guid = real && pick(6) != 0 ? it->instance_guid : some_guid(items);
+        if (pick(10) == 0) m.event_guid = some_guid(items);
+    }
+    void step_move_target(MoveSpec &m, const std::vector<svc::InventoryItem> &items) {
+        m.to_slot = pick(2) ? static_cast<int>(pick(40)) : number();
+        const svc::InventoryItem *other = items.empty() ? nullptr : &items[pick(items.size())];
+        if (other && pick(2)) {
+            m.to_slot = other->slot;
+            m.target_guid = pick(4) ? other->instance_guid : some_guid(items);
+            m.to_count = pick(4) ? other->quantity : number();
+        }
+        m.has_source = pick(20) != 0;
+        m.targets = pick(25) == 0 ? pick(3) : 1;
+    }
+    void step_move(const std::vector<svc::InventoryItem> &items, size_t applied) {
+        const bs::SessionGuids &g = h.s->bootstrap().setup().guids;
+        MoveSpec m;
+        m.from_object = m.to_object = g.backpack;
+        if (pick(10) == 0) m.to_object = pick(2) ? g.equipment : g.quest_storage;
+        if (pick(12) == 0) m.from_object = g.equipment;
+        m.type = pick(3) == 0 ? static_cast<uint8_t>(pick(8)) : static_cast<uint8_t>(pick(2) ? 2 : 4);
+        step_move_source(m, items);
+        step_move_target(m, items);
+        h.client_sends({h.client.actor(h.pc_ch, storage_move(m), true)});
+        if (h.s->item_requests_applied() > applied) ++applied_by_move;
+    }
+    BunchWriter corrupt_bunch(const BunchWriter &base) {
+        BunchWriter bad;
+        switch (pick(3)) {
+        case 0:
+            return with_bits(base, pick(base.bit_pos() + 1));
+        case 1: {
+            std::vector<size_t> at;
+            for (size_t k = 0, n = 1 + pick(3); k < n; ++k) at.push_back(pick(std::max<size_t>(1, base.bit_pos())));
+            return flipped_bits(base, at);
+        }
+        default: {
+            for (size_t k = 0, n = pick(300); k < n; ++k) bad.write_bit(pick(2) != 0);
+            return bad;
+        }
+        }
+    }
+    void step_damaged(const std::vector<svc::InventoryItem> &items) {
+        BunchWriter base;
+        switch (pick(3)) {
+        case 0:
+            base = item_used(pick(2) ? 3 : 4, static_cast<int>(pick(4)), some_guid(items));
+            break;
+        case 1:
+            base = item_activate(pick(2) ? 3 : 4, static_cast<int>(pick(4)), some_guid(items));
+            break;
+        default:
+            base = bag_move(h, 1, 5, guid_n(201), static_cast<int>(pick(40)));
+            break;
+        }
+        const uint32_t channel = base.bit_pos() > 0 && pick(2) ? h.pawn_ch : h.pc_ch;
+        const BunchWriter bad = corrupt_bunch(base);
+        h.client_sends({h.client.actor(channel, bad, pick(2) != 0)});
+    }
+};
 static void test_join() {
     std::printf("the join: the client has the character's storages and gear\n");
     Harness h;
@@ -141,7 +298,7 @@ static void test_refusals_use(RefusalRun &r) {
     r.use("requested slot 0", 3, 0, guid_n(200), 0);
     r.use("requested slot INT32_MAX", 3, 0, guid_n(200), 0x7FFFFFFFu);
 }
-static void test_refusals_move_part1(RefusalRun &r) {
+static void test_refusals_move_bounds(RefusalRun &r) {
     Harness &h = r.h;
     const auto move = [&](const char *what, const MoveSpec &m) { r.move(what, m); };
     {
@@ -185,10 +342,9 @@ static void test_refusals_move_part1(RefusalRun &r) {
         move("an instance that is not in the source slot", m);
     }
 }
-static void test_refusals_move_part2(RefusalRun &r) {
+static void test_refusals_move_slots(RefusalRun &r) {
     Harness &h = r.h;
     const auto move = [&](const char *what, const MoveSpec &m) { r.move(what, m); };
-    const bs::SessionGuids &g = h.s->bootstrap().setup().guids;
     {
         MoveSpec m = potion_move(h);
         m.event_guid = guid_n(200);
@@ -228,10 +384,9 @@ static void test_refusals_move_part2(RefusalRun &r) {
         move("a container that is no storage of the character", m);
     }
 }
-static void test_refusals_move_part3(RefusalRun &r) {
+static void test_refusals_move_stacking(RefusalRun &r) {
     Harness &h = r.h;
     const auto move = [&](const char *what, const MoveSpec &m) { r.move(what, m); };
-    const bs::SessionGuids &g = h.s->bootstrap().setup().guids;
     {
         MoveSpec m = potion_move(h);
         m.from_object = emit::FIntrepidNetworkGUID{};
@@ -273,9 +428,9 @@ static void test_refusals() {
     std::printf("refusals: nothing changes, only the storages' payloads go out, and only a few times\n");
     RefusalRun r;
     test_refusals_use(r);
-    test_refusals_move_part1(r);
-    test_refusals_move_part2(r);
-    test_refusals_move_part3(r);
+    test_refusals_move_bounds(r);
+    test_refusals_move_slots(r);
+    test_refusals_move_stacking(r);
     Harness &h = r.h;
     const int bad = r.bad, n = r.n;
     const size_t payloads_before = r.payloads_before, held_before = r.held_before, stats_before = r.stats_before;
@@ -358,9 +513,7 @@ static void test_activate_alone() {
 static void test_wire_forms() {
     std::printf("what is on the wire\n");
     Harness h;
-    const BunchWriter used = item_used(4, 2,
-                                       "b7a32f5ffa5b7f8e82bef4bc"
-                                       "4ca1d7a9");
+    const BunchWriter used = item_used(4, 2, "b7a32f5ffa5b7f8e82bef4bc4ca1d7a9");
     CHECK(used.bit_pos() > 0, "ServerItemUsed writes");
     const BunchWriter sr = bag_move(h, 1, 5, guid_n(201), 32);
     CHECK(sr.bit_pos() > 0, "ServerRequestStorageEvent writes");

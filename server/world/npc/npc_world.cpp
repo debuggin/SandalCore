@@ -24,18 +24,6 @@ uint64_t splitmix(uint64_t& s) {
     return z ^ (z >> 31);
 }
 
-uint16_t angle16(double degrees) {
-    double d = std::fmod(degrees, 360.0);
-    if (d < 0) d += 360.0;
-    return static_cast<uint16_t>(std::lround(d / 360.0 * 65536.0) & 0xFFFF);
-}
-
-uint16_t angle8(double degrees) {
-    double d = std::fmod(degrees, 360.0);
-    if (d < 0) d += 360.0;
-    return static_cast<uint16_t>(std::lround(d / 360.0 * 256.0) & 0xFF);
-}
-
 double dist2d(const nav::Vec3& a, const nav::Vec3& b) { return std::hypot(a.x - b.x, a.y - b.y); }
 
 size_t nearest_waypoint_index(const std::vector<nav::Vec3>& route, const nav::Vec3& home) {
@@ -65,13 +53,19 @@ bool finite_setup(const NpcMotionSetup& s) {
     return s.foot_offset >= 0 && s.foot_offset < 5000 && s.wander_min >= 0 && s.wander_max >= s.wander_min && s.walk_speed >= 0 && s.patrol_speed >= 0 && s.run_speed >= 0;
 }
 
-struct RepWriteArgs {
-    double x = 0, y = 0, z = 0, yaw = 0;
-    nav::Vec3 vel{};
-    bool moving = false;
-    double stamp = 0;
-    int again = 0;
-};
+}  // namespace
+
+uint16_t angle16(double degrees) {
+    double d = std::fmod(degrees, 360.0);
+    if (d < 0) d += 360.0;
+    return static_cast<uint16_t>(std::lround(d / 360.0 * 65536.0) & 0xFFFF);
+}
+
+uint16_t angle8(double degrees) {
+    double d = std::fmod(degrees, 360.0);
+    if (d < 0) d += 360.0;
+    return static_cast<uint16_t>(std::lround(d / 360.0 * 256.0) & 0xFF);
+}
 
 // Ensure bReplicateMovement is enabled on every write because retail NPC templates do not always enable it by default.
 void write_replicated(world::WorldActor& a, const RepWriteArgs& w) {
@@ -98,8 +92,6 @@ void write_replicated(world::WorldActor& a, const RepWriteArgs& w) {
     a.actor.open.spawn.rotation = repl::Rot{0, angle16(w.yaw), 0};
     a.actor.open.spawn.velocity.reset();
 }
-
-}  // namespace
 
 NpcWorld::NpcWorld(world::ActorRegistry& registry, const nav::AreaNav* nav, NpcWorldConfig config) : registry_(registry), nav_(nav), cfg_(config) {
     remove_listener_ = registry_.on_remove([this](const world::WorldActor& a) { remove(a.id); });

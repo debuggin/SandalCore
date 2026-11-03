@@ -10,6 +10,243 @@ namespace conn = aoc::protocol::conn;
 using std::chrono::milliseconds;
 using std::chrono::seconds;
 
+static uint8_t g_counter = 1;
+static void counting_random(uint8_t* out, size_t n) {
+    for (size_t i = 0; i < n; ++i) out[i] = g_counter++;
+}
+
+template <class Pred>
+static bool wait_until(Pred pred, milliseconds limit = milliseconds(3000)) {
+    const auto until = std::chrono::steady_clock::now() + limit;
+    while (!pred()) {
+        if (std::chrono::steady_clock::now() > until) return false;
+        std::this_thread::sleep_for(milliseconds(1));
+    }
+    return true;
+}
+
+struct FakeCharacters : svc::CharacterApi {
+    struct Save {
+        std::string id;
+        svc::Position position;
+    };
+    std::mutex mu;
+    std::condition_variable cv;
+    std::vector<Save> saves;
+    std::vector<svc::CallStatus> answers;
+    std::deque<svc::CallStatus> script;
+    bool block = false;
+    milliseconds max_block{2000};
+    int running = 0;
+    bool throw_once = false;
+
+    svc::CharacterResult get_character(const std::string&) override { return {}; }
+
+    svc::CallStatus save_position(const std::string& id, const svc::Position& position) override {
+        std::unique_lock<std::mutex> lock(mu);
+        ++running;
+        cv.notify_all();
+        cv.wait_for(lock, max_block, [this] { return !block; });
+        svc::CallStatus status = svc::CallStatus::Ok;
+        if (!script.empty()) {
+            status = script.front();
+            script.pop_front();
+        }
+        --running;
+        if (throw_once) {
+            throw_once = false;
+            answers.push_back(svc::CallStatus::Failed);
+            cv.notify_all();
+            throw std::runtime_error("the fake service threw");
+        }
+        answers.push_back(status);
+        if (status == svc::CallStatus::Ok) saves.push_back({id, position});
+        cv.notify_all();
+        return status;
+    }
+
+    void hold() { std::lock_guard<std::mutex> l(mu); block = true; }
+    void release() {
+        { std::lock_guard<std::mutex> l(mu); block = false; }
+        cv.notify_all();
+    }
+    size_t calls() { std::lock_guard<std::mutex> l(mu); return answers.size(); }
+    size_t saved_count() { std::lock_guard<std::mutex> l(mu); return saves.size(); }
+    std::vector<Save> saved() { std::lock_guard<std::mutex> l(mu); return saves; }
+    bool in_flight() { std::lock_guard<std::mutex> l(mu); return running > 0; }
+};
+
+static svc::Position pos(double x, double y = 0, double z = 0, float yaw = 0) {
+    return {x, y, z, yaw};
+}
+
+static CharacterSaver::Config quick(milliseconds destructor_wait = milliseconds(2000)) {
+    CharacterSaver::Config c;
+    c.retry_delay = milliseconds(5);
+    c.destructor_wait = destructor_wait;
+    return c;
+}
+
+static void check_saver_queue_and_bounds() {
+    {
+        FakeCharacters api;
+        CharacterSaver saver(api, quick());
+        saver.save("aa", pos(1, 2, 3, 90.5f));
+        CHECK(saver.flush(seconds(3)), "a position is saved; flush says everything is");
+        const auto s = api.saved();
+        CHECK(s.size() == 1 && s[0].id == "aa" && s[0].position.x == 1 && s[0].position.y == 2 && s[0].position.z == 3 && s[0].position.yaw == 90.5f &&
+                  saver.saved() == 1 && saver.failed() == 0 && saver.queued() == 0,
+              "the character service got the id and the position as given");
+    }
+    {
+        FakeCharacters api;
+        api.hold();
+        CharacterSaver saver(api, quick());
+        saver.save("aa", pos(1));
+        CHECK(wait_until([&] { return api.in_flight(); }), "(the worker is inside the first call)");
+        saver.save("aa", pos(2));
+        saver.save("aa", pos(3));
+        saver.save("aa", pos(4));
+        saver.save("bb", pos(10));
+        CHECK(saver.queued() == 2 && saver.replaced() == 2, "while it is busy a character has one entry: later positions replace the waiting one (two replaced)");
+        api.release();
+        CHECK(saver.flush(seconds(3)), "(released)");
+        const auto s = api.saved();
+        CHECK(s.size() == 3 && s[0].id == "aa" && s[0].position.x == 1 && s[1].id == "aa" && s[1].position.x == 4 && s[2].id == "bb" && s[2].position.x == 10,
+              "the first position was already on its way, then the latest of aa (4, not 2 or 3) and bb: three calls, in the order the characters first waited");
+    }
+    {
+        FakeCharacters api;
+        api.hold();
+        CharacterSaver saver(api, quick());
+        const auto begin = std::chrono::steady_clock::now();
+        for (int i = 0; i < 20000; ++i) saver.save("c" + std::to_string(i % 50), pos(i));
+        const auto took = std::chrono::steady_clock::now() - begin;
+        CHECK(took < seconds(1) && saver.queued() <= 50, "20,000 saves for 50 characters while the service hangs return at once: at most one entry each");
+        api.release();
+        saver.flush(seconds(3));
+    }
+    {
+        FakeCharacters api;
+        api.hold();
+        CharacterSaver::Config cfg = quick();
+        cfg.max_queued = 3;
+        CharacterSaver saver(api, cfg);
+        saver.save("c0", pos(0));
+        wait_until([&] { return api.in_flight(); });
+        for (int i = 1; i <= 4; ++i) saver.save("c" + std::to_string(i), pos(i));
+        CHECK(saver.queued() == 3 && saver.dropped() == 1, "a fourth waiting character: the oldest entry (c1) is dropped and counted");
+        api.release();
+        saver.flush(seconds(3));
+        const auto s = api.saved();
+        CHECK(s.size() == 4 && s[0].id == "c0" && s[1].id == "c2" && s[2].id == "c3" && s[3].id == "c4", "c0 (in flight), c2, c3, c4 were saved; c1 was not");
+    }
+}
+
+static void check_saver_retries_and_errors() {
+    {
+        FakeCharacters api;
+        api.script = {svc::CallStatus::Unavailable, svc::CallStatus::Unavailable, svc::CallStatus::Ok};
+        CharacterSaver saver(api, quick());
+        saver.save("aa", pos(7));
+        CHECK(saver.flush(seconds(3)) && api.calls() == 3 && saver.saved() == 1 && saver.failed() == 0 && api.saved().size() == 1,
+              "an Unavailable service is tried again: two refusals then Ok is one saved position, not a failure");
+    }
+    {
+        FakeCharacters api;
+        api.script = {svc::CallStatus::Unavailable, svc::CallStatus::Unavailable, svc::CallStatus::Unavailable, svc::CallStatus::Ok};
+        CharacterSaver saver(api, quick());
+        saver.save("aa", pos(7));
+        saver.flush(seconds(3));
+        CHECK(api.calls() == 3 && saver.saved() == 0 && saver.failed() == 1 && saver.queued() == 0,
+              "three Unavailable answers (max_attempts) and the position is given up: counted as failed");
+    }
+    {
+        FakeCharacters api;
+        api.script = {svc::CallStatus::NotFound};
+        CharacterSaver saver(api, quick());
+        saver.save("aa", pos(7));
+        saver.flush(seconds(3));
+        api.script = {svc::CallStatus::Refused};
+        saver.save("bb", pos(8));
+        saver.flush(seconds(3));
+        CHECK(api.calls() == 2 && saver.failed() == 2 && saver.saved() == 0, "NotFound and Refused are final: one call each, no retry");
+    }
+    {
+        FakeCharacters api;
+        api.script = {svc::CallStatus::Unavailable, svc::CallStatus::Ok};
+        CharacterSaver::Config cfg = quick();
+        cfg.retry_delay = milliseconds(300);
+        CharacterSaver saver(api, cfg);
+        saver.save("aa", pos(1));
+        wait_until([&] { return api.calls() == 1; });
+        saver.save("aa", pos(2));
+        CHECK(!saver.flush(milliseconds(30)), "(flush does not report an empty queue while a retry is due)");
+        CHECK(saver.flush(seconds(3)), "(after the pause everything is saved)");
+        const auto s = api.saved();
+        CHECK(s.size() == 1 && s[0].position.x == 2 && api.calls() == 2, "the retry sends the newer position (2), not the old one: two calls, one saved");
+    }
+    {
+        FakeCharacters api;
+        api.throw_once = true;
+        CharacterSaver saver(api, quick());
+        saver.save("aa", pos(1));
+        saver.flush(seconds(3));
+        saver.save("bb", pos(2));
+        CHECK(saver.flush(seconds(3)) && saver.failed() == 1 && saver.saved() == 1, "a call that throws is a failure and the worker goes on: the next position is saved");
+    }
+}
+
+static void check_saver_flush_and_destructor() {
+    {
+        FakeCharacters api;
+        api.hold();
+        api.max_block = milliseconds(400);
+        CharacterSaver saver(api, quick());
+        saver.save("aa", pos(1));
+        const auto begin = std::chrono::steady_clock::now();
+        const bool done = saver.flush(milliseconds(50));
+        const auto took = std::chrono::steady_clock::now() - begin;
+        CHECK(!done && took >= milliseconds(40) && took < milliseconds(300), "flush(50 ms) on a hung service returns false after about 50 ms");
+        api.release();
+        CHECK(saver.flush(seconds(3)), "(released: flushed)");
+    }
+    {
+        FakeCharacters api;
+        {
+            CharacterSaver saver(api, quick());
+            saver.save("aa", pos(1));
+            saver.save("bb", pos(2));
+        }
+        CHECK(api.saved_count() == 2, "the destructor flushes what is queued");
+    }
+    {
+        FakeCharacters api;
+        api.hold();
+        api.max_block = milliseconds(300);
+        const auto begin = std::chrono::steady_clock::now();
+        {
+            CharacterSaver saver(api, quick(milliseconds(50)));
+            saver.save("aa", pos(1));
+            wait_until([&] { return api.in_flight(); });
+            saver.save("bb", pos(2));
+        }
+        const auto took = std::chrono::steady_clock::now() - begin;
+        const auto s = api.saved();
+        CHECK(took < seconds(2) && s.size() == 1 && s[0].id == "aa",
+              "with a hung service the destructor gives up after its bound: the call in flight finished, the waiting one was left behind");
+        spdlog::default_logger()->flush();
+        CHECK(g_log.str().find("not saved") != std::string::npos, "and it says so");
+    }
+}
+
+static void test_saver() {
+    std::printf("CharacterSaver\n");
+    check_saver_queue_and_bounds();
+    check_saver_retries_and_errors();
+    check_saver_flush_and_destructor();
+}
+
 struct FakeLogins : LoginQueue {
     std::vector<std::pair<uint64_t, LoginRequest>> submitted;
     void submit(uint64_t id, LoginRequest r) override { submitted.emplace_back(id, std::move(r)); }
@@ -329,7 +566,8 @@ static void test_saver_ordering() {
           "and every character ends with the last position submitted (latest wins; nothing dropped or given up)");
 }
 
-void run_movement_part3() {
+void run_movement_saver() {
+    test_saver();
     test_endpoint_saves();
     test_saver_ordering();
 }

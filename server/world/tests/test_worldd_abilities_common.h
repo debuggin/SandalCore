@@ -165,32 +165,6 @@ inline std::optional<float> stat_of(const bs::AbilityChange &change, int64_t rec
     return std::nullopt;
 }
 
-inline bool near_d(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
-
-struct Ref {
-    const char *name;
-    size_t bits;
-    const char *hex;
-};
-template <class B> inline Ref ref(const B &b) { return {b.name, b.bits, b.hex}; }
-
-inline bool same_as(const aoc::protocol::emit::BunchWriter &w, const Ref &b) {
-    const auto want = capture_blocks::bytes_of(b.hex);
-    size_t diff = 0;
-    if (w.bit_pos() != b.bits) {
-        std::printf("    wrote %zu bits, expected %zu (%s)", w.bit_pos(), b.bits, b.name);
-        const size_t n = w.bit_pos() < b.bits ? w.bit_pos() : b.bits;
-        if (!capture_blocks::same_bit_range(w.data(), want.data(), n, &diff)) std::printf("; first differing bit %zu", diff);
-        std::printf("\n");
-        return false;
-    }
-    if (!capture_blocks::same_bit_range(w.data(), want.data(), b.bits, &diff)) {
-        std::printf("    first differing bit %zu (%s)\n", diff, b.name);
-        return false;
-    }
-    return true;
-}
-
 inline aoc::protocol::repl::CodecOptions stat_options() {
     aoc::protocol::repl::CodecOptions o;
     o.stat_int32_extended = [](int64_t record) {
@@ -239,45 +213,6 @@ inline bs::PlayerSetup captured_setup_with_owner_key(int32_t owner_key) {
     return std::move(*setup);
 }
 
-template <class B> inline double captured_start_time(const B &b, const bs::PlayerSetup &setup) {
-    aoc::protocol::emit::BunchWriter w;
-    const auto bytes = capture_blocks::bytes_of(b.hex);
-    w.write_bit_range(bytes.data(), 0, b.bits);
-    const auto fields = fast_fields(w, setup.guids.stats, "UAoCStatsComponent");
-    const aoc::protocol::repl::FastArrayField *fx = fields ? field_named(*fields, "UAoCStatsComponent", "CurrentEffects") : nullptr;
-    if (!fx || fx->delta.changed.size() != 1) return 0;
-    const auto it = fx->delta.changed[0].values.values.find(3);
-    return it != fx->delta.changed[0].values.values.end() && it->second.get_if<double>() ? *it->second.get_if<double>() : 0;
-}
-
-inline bs::ActiveAbilityItem rest_item(int64_t instance, int32_t counter, float position = 0, bool jump = false) {
-    bs::ActiveAbilityItem a;
-    a.ability_guid = content::kGuidRest;
-    a.server_instance_id = instance;
-    a.targets_self = true;
-    a.montage_path = std::string(bs::kRestMontagePath);
-    a.montage_position = position;
-    a.may_jump_to_position = jump;
-    a.animation_counter = counter;
-    return a;
-}
-
-inline bs::EffectItem rest_effect(int64_t id, double start) {
-    bs::EffectItem e;
-    e.effect_id = id;
-    e.effect_guid = kRestEffect;
-    e.start_time = start;
-    e.duration = aoc::worldd::AbilityRuntime::kInfiniteDuration;
-    e.tick_time = 0;
-    e.stacks = 1;
-    return e;
-}
-
-inline void regen_to(bs::AbilityChange &c, float v) {
-    c.stats.push_back({kHealthRegen, v});
-    c.stats.push_back({kManaRegen, v});
-}
-
 struct Pawn {
     bs::PlayerBootstrap pb;
     explicit Pawn(int32_t owner_key = 690) : pb(captured_setup_with_owner_key(owner_key), bs::GameStateMode::Tier2) {
@@ -297,15 +232,6 @@ struct Pawn {
     }
 };
 
-inline std::map<int64_t, double> stats_of(const bs::PlayerSetup &setup) {
-    std::map<int64_t, double> stats;
-    for (const bs::StatArray *a : {&setup.stats.owner, &setup.stats.owner_proxy, &setup.stats.everyone_proxy}) {
-        for (const bs::StatItem &it : a->items)
-            stats[it.record] = std::bit_cast<float>(it.value);
-    }
-    return stats;
-}
-
 inline const aoc::protocol::repl::Value *item_value(const aoc::protocol::repl::ElementState &e, uint16_t handle) {
     const auto it = e.values.find(handle);
     return it == e.values.end() ? nullptr : &it->second;
@@ -317,47 +243,3 @@ template <class T> inline T item_get(const aoc::protocol::repl::ElementState &e,
     return p ? *p : def;
 }
 
-inline std::vector<aoc::protocol::repl::FastArrayDelta::Changed> items_of(const std::optional<bs::Send> &s, const aoc::protocol::emit::FIntrepidNetworkGUID &object, const char *cls, const char *field) {
-    const auto fields = s ? fast_fields(s->emission.payload, object, cls) : std::nullopt;
-    const aoc::protocol::repl::FastArrayField *f = fields ? field_named(*fields, cls, field) : nullptr;
-    return f ? f->delta.changed : std::vector<aoc::protocol::repl::FastArrayDelta::Changed>{};
-}
-
-inline bool same_guid(const aoc::protocol::repl::Value *v, uint64_t id) {
-    const aoc::protocol::emit::FIntrepidNetworkGUID *g = v ? v->get_if<aoc::protocol::emit::FIntrepidNetworkGUID>() : nullptr;
-    return g && g->ObjectId == id;
-}
-
-struct RetailItemSpec {
-    int64_t ability = 0;
-    const char *group = "";
-    uint64_t montage = 0;
-    uint16_t yaw = 0;
-};
-
-inline bool empty_array_field(const aoc::protocol::repl::ElementState &e, uint16_t handle) {
-    const aoc::protocol::repl::Value *v = item_value(e, handle);
-    if (!v) return true;
-    const auto *arr = v->get_if<aoc::protocol::repl::ArrayValue>();
-    return arr && arr->elements.empty();
-}
-
-inline bool retail_item_defaults(const aoc::protocol::repl::ElementState &e) {
-    return empty_array_field(e, 3) && empty_array_field(e, 4) && !item_get<bool>(e, 5) && item_get<int64_t>(e, 6) == 0 && item_get<float>(e, 7) == 0.0f && item_get<float>(e, 8) == 0.0f && item_get<bool>(e, 9) &&
-           item_get<float>(e, 12) == 1.0f && item_get<float>(e, 13) == 0.0f && !item_get<bool>(e, 14);
-}
-
-inline bool retail_item_shape(const aoc::protocol::repl::ElementState &e, const bs::PlayerSetup &setup, const RetailItemSpec &spec) {
-    const auto *g = item_value(e, 10) ? item_value(e, 10)->get_if<aoc::protocol::repl::NameValue>() : nullptr;
-    const auto *who = item_value(e, 17) ? item_value(e, 17)->get_if<aoc::protocol::emit::FIntrepidNetworkGUID>() : nullptr;
-    return retail_item_defaults(e) && item_get<int64_t>(e, 1) == spec.ability && g && g->text == spec.group && same_guid(item_value(e, 11), spec.montage) && item_get<uint64_t>(e, 16) == spec.yaw && who && *who == setup.guids.pawn;
-}
-
-inline bool retail_effect_shape(const aoc::protocol::repl::ElementState &e, const bs::PlayerSetup &setup, int64_t guid, float duration, float tick) {
-    bool same_character = true;
-    for (uint16_t i = 0; i < 4; ++i) {
-        const int64_t word = static_cast<int32_t>(setup.character_guid[i]);
-        same_character = same_character && item_get<int64_t>(e, static_cast<uint16_t>(7 + i)) == word && item_get<int64_t>(e, static_cast<uint16_t>(11 + i)) == word;
-    }
-    return item_get<int64_t>(e, 2) == guid && item_get<float>(e, 4) == duration && item_get<float>(e, 5) == tick && item_get<int64_t>(e, 6) == 1 && same_character && !item_get<bool>(e, 15) && item_get<int64_t>(e, 16) == 0;
-}

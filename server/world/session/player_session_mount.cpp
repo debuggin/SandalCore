@@ -1,9 +1,29 @@
-#include "session/player_session_internal.h"
+#include "content/content_db.h"
+#include "protocol/repl/move_packed.h"
+#include "protocol/repl/rpc_fields.h"
+#include "session/player_session.h"
 
 namespace aoc {
 namespace worldd {
 
-using namespace ::sandal::worldd::session::detail;
+namespace {
+
+struct NoCatalog : items::ItemCatalog {
+    std::optional<items::ItemInfo> info(int64_t) const override { return std::nullopt; }
+};
+
+FIntrepidNetworkGUID component_guid_of(const world::WorldActor& a, uint64_t object_id) {
+    FIntrepidNetworkGUID g = a.actor.guid;
+    g.ObjectId = object_id;
+    return g;
+}
+
+}  // namespace
+
+struct PlayerSession::SessionInternal {
+    static bool begin_mount_possession(PlayerSession& s, const world::WorldActor& a, const content::MountRow& row, double t);
+    static void finish_mount_up(PlayerSession& s, Connection& conn, const world::WorldActor& a, const content::MountRow& row, double t);
+};
 
 std::vector<bootstrap::ItemEvent> item_events_for(const items::Outcome& outcome) {
     std::vector<bootstrap::ItemEvent> out;
@@ -238,7 +258,7 @@ void PlayerSession::on_mount_interact(Connection& conn, const world::WorldActor&
     mount_up(conn, a, now);
 }
 
-bool PlayerSessionTypes::SessionInternal::begin_mount_possession(PlayerSession& s, const world::WorldActor& a, const content::MountRow& row, double t) {
+bool PlayerSession::SessionInternal::begin_mount_possession(PlayerSession& s, const world::WorldActor& a, const content::MountRow& row, double t) {
     const bootstrap::SessionGuids& g = s.pb_.setup().guids;
     const spawns::MountBook& book = s.mounts_->book();
     const spawns::DashBar dash = book.dash_bar(row);
@@ -297,7 +317,7 @@ bool PlayerSessionTypes::SessionInternal::begin_mount_possession(PlayerSession& 
     return true;
 }
 
-void PlayerSessionTypes::SessionInternal::finish_mount_up(PlayerSession& s, Connection& conn, const world::WorldActor& a, const content::MountRow& row, double t) {
+void PlayerSession::SessionInternal::finish_mount_up(PlayerSession& s, Connection& conn, const world::WorldActor& a, const content::MountRow& row, double t) {
     const spawns::DashBar dash = s.mounts_->book().dash_bar(row);
     GoodPosition start;
     start.x = a.x;

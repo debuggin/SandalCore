@@ -8,6 +8,265 @@ namespace repl = aoc::protocol::repl;
 namespace schema = aoc::protocol::schema;
 using aoc::protocol::emit::FIntrepidNetworkGUID;
 
+namespace {
+
+std::string handle_path_or_id(const schema::ClassSchema& s, uint16_t h) {
+    const schema::RepCommand* cmd = nullptr;
+    for (const schema::RepCommand& c : s.commands) if (c.handle == h) cmd = &c;
+    return cmd ? cmd->path : "#" + std::to_string(h);
+}
+
+void add_fast_array_diffs(const repl::ObjectState& a, const repl::ObjectState& b, std::set<std::string>& out) {
+    for (const auto& [field, arr] : a.arrays.all()) {
+        const repl::FastArrayState* other = b.arrays.find(field);
+        std::vector<repl::ElementState> x, y;
+        for (const auto& it : arr.items()) x.push_back(it.values);
+        if (other) for (const auto& it : other->items()) y.push_back(it.values);
+        if (x != y) out.insert(std::string("[") + a.schema->fields[field].name + "]");
+    }
+    for (const auto& [field, arr] : b.arrays.all()) {
+        if (!a.arrays.find(field) && !arr.items().empty()) out.insert(std::string("[") + b.schema->fields[field].name + "]");
+    }
+}
+
+std::set<std::string> differing(const repl::ObjectState& a, const repl::ObjectState& b) {
+    std::set<std::string> out;
+    std::set<uint16_t> handles;
+    for (const auto& [h, v] : a.state.values()) handles.insert(h);
+    for (const auto& [h, v] : b.state.values()) handles.insert(h);
+    for (const uint16_t h : handles) {
+        const repl::Value* x = a.state.get(h);
+        const repl::Value* y = b.state.get(h);
+        if (x && y && *x == *y) continue;
+        out.insert(handle_path_or_id(*a.schema, h));
+    }
+    add_fast_array_diffs(a, b, out);
+    return out;
+}
+
+std::string join(const std::set<std::string>& s) {
+    std::string out;
+    for (const std::string& x : s) out += (out.empty() ? "" : ", ") + x;
+    return out.empty() ? "nothing" : out;
+}
+
+int64_t int_of(const repl::Value* v) {
+    if (!v) return 0;
+    if (const auto* i = v->get_if<int64_t>()) return *i;
+    if (const auto* u = v->get_if<uint64_t>()) return static_cast<int64_t>(*u);
+    return 0;
+}
+
+const repl::Subobject* sub_named(const repl::Actor& a, const char* cls) {
+    for (const repl::Subobject& s : a.subobjects) if (s.obj.schema && std::string(s.obj.schema->name) == cls) return &s;
+    return nullptr;
+}
+
+repl::GuidValue guid_of(const repl::ObjectState& o, const char* prefix) {
+    const std::string p = prefix;
+    return {static_cast<uint32_t>(int_of(o.state.get(*o.schema, p + ".A"))),
+            static_cast<uint32_t>(int_of(o.state.get(*o.schema, p + ".B"))),
+            static_cast<uint32_t>(int_of(o.state.get(*o.schema, p + ".C"))),
+            static_cast<uint32_t>(int_of(o.state.get(*o.schema, p + ".D")))};
+}
+
+struct DonorValues {
+    spawns::MountParams p;
+    double health = 0;
+};
+
+double donor_max_health_of(const spawns::ParsedBlock& stats) {
+    const auto* nf = stats.state.schema->field("StatRepInt32EveryoneProxy");
+    const repl::FastArrayState* arr = nf ? stats.state.arrays.find(nf->index) : nullptr;
+    if (!arr) return 0.0;
+    double health = 0.0;
+    for (const repl::FastArrayItem& it : arr->items()) {
+        const auto f = it.values.values.find(1);
+        const auto* t = f == it.values.values.end() ? nullptr : f->second.get_if<repl::StatInt32Inst>();
+        if (t && t->record == content::kGuidMaxHealth) health = std::bit_cast<float>(t->value);
+    }
+    return health;
+}
+
+void read_donor_actor_transform(const spawns::OpenTemplate& d, const repl::ObjectState& actor, spawns::MountParams& p) {
+    if (const repl::Value* v = actor.state.get(*actor.schema, "Instigator")) {
+        if (const auto* g = v->get_if<FIntrepidNetworkGUID>()) p.owner_pawn = *g;
+    }
+    if (const repl::Value* v = actor.state.get(*actor.schema, "ReplicatedServerLastTransformUpdateTimeStamp")) {
+        if (const float* f = v->get_if<float>()) p.world_time = *f;
+    }
+    if (const repl::Value* v = actor.state.get(*actor.schema, "ReplicatedMovement")) {
+        if (const auto* m = v->get_if<repl::RepMovement>()) {
+            const repl::Vec3d loc = repl::dequantize_location(actor.opts, m->location);
+            p.x = loc.x; p.y = loc.y; p.z = loc.z;
+            p.yaw_degrees = d.spawn.rotation ? d.spawn.rotation->yaw * 360.0 / 65536.0 : 0;
+        }
+    }
+}
+
+std::optional<DonorValues> values_of(const spawns::OpenTemplate& d) {
+    DonorValues out;
+    spawns::MountParams& p = out.p;
+    const spawns::ParsedBlock *info = nullptr, *second = nullptr, *mount = nullptr, *stats = nullptr;
+    for (const spawns::ParsedBlock& b : d.blocks) {
+        if (b.cls == "UNPCInfo") info = &b;
+        if (b.cls == "UNPCSecondaryInfo") second = &b;
+        if (b.cls == "UMountComponent") mount = &b;
+        if (b.cls == "UAoCStatsComponent") stats = &b;
+    }
+    if (!info || !second || !mount || !stats) return std::nullopt;
+    p.owner_guid = guid_of(second->state, "CreatureOwnerGuid");
+    const repl::Value* n = info->state.state.get(*info->state.schema, "CreatureOwnerName");
+    if (n && n->get_if<std::string>()) p.owner_name = *n->get_if<std::string>();
+    p.server_id = static_cast<uint32_t>(int_of(info->state.state.get(*info->state.schema, "ServerId")));
+    p.item_guid = guid_of(mount->state, "ItemInstanceGuid");
+    p.mount_guid = guid_of(info->state, "CharacterGuid");
+    if (const repl::Value* v = mount->state.state.get(*mount->state.schema, "DissolveTimer")) {
+        if (const float* f = v->get_if<float>()) p.dissolve_timer = *f;
+    }
+    read_donor_actor_transform(d, d.actor_block().state, p);
+    out.health = donor_max_health_of(*stats);
+    return out;
+}
+
+bool same_chain(const repl::ExportChain& a, const repl::ExportChain& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i].guid.ObjectId != b[i].guid.ObjectId || a[i].name != b[i].name ||
+            a[i].checksum != b[i].checksum || a[i].has_checksum != b[i].has_checksum) return false;
+    }
+    return true;
+}
+
+std::map<int64_t, repl::StatInt32Inst> stat_items_of(const repl::ObjectState& o) {
+    std::map<int64_t, repl::StatInt32Inst> m;
+    const schema::NetField* nf = o.schema->field("StatRepInt32EveryoneProxy");
+    const repl::FastArrayState* arr = nf ? o.arrays.find(nf->index) : nullptr;
+    if (!arr) return m;
+    for (const repl::FastArrayItem& it : arr->items()) {
+        const auto f1 = it.values.values.find(1);
+        if (f1 != it.values.values.end()) if (const auto* t = f1->second.get_if<repl::StatInt32Inst>()) m[t->record] = *t;
+    }
+    return m;
+}
+
+std::set<int64_t> stat_records_differing(const repl::ObjectState& a, const repl::ObjectState& b) {
+    std::set<int64_t> out;
+    const auto x = stat_items_of(a), y = stat_items_of(b);
+    for (const auto& [record, t] : x) {
+        const auto it = y.find(record);
+        if (it == y.end() || it->second.value != t.value) out.insert(record);
+    }
+    for (const auto& [record, t] : y) if (!x.count(record)) out.insert(record);
+    return out;
+}
+
+bool is_road_effect_id(int64_t id, const content::MountData& data) {
+    for (const content::MountEffectRow& e : data.effects) if (e.kind == "road" && e.effect == id) return true;
+    return false;
+}
+
+bool item_has_road_effect(const repl::FastArrayItem& it, const content::MountData& data) {
+    for (const auto& [h, v] : it.values.values) {
+        if (const auto* i = v.get_if<int64_t>(); i && is_road_effect_id(*i, data)) return true;
+    }
+    return false;
+}
+
+size_t road_effects_in(const repl::ObjectState& o, const content::MountData& data, size_t* all) {
+    size_t roads = 0, n = 0;
+    const schema::NetField* nf = o.schema->field("CurrentEffects");
+    const repl::FastArrayState* arr = nf ? o.arrays.find(nf->index) : nullptr;
+    if (!arr) { if (all) *all = 0; return 0; }
+    for (const repl::FastArrayItem& it : arr->items()) { ++n; if (item_has_road_effect(it, data)) ++roads; }
+    if (all) *all = n;
+    return roads;
+}
+
+bool writes_open(repl::Actor& a) {
+    repl::ActorShadow shadow;
+    repl::ExportAcks acks;
+    bool failed = false;
+    const auto e = repl::open_actor(a, shadow, acks, &failed);
+    return e.has_value() && !failed && e->payload.bit_pos() > 0;
+}
+
+std::string db_path() {
+    const char* env = std::getenv("AOC_CONTENT_DB");
+    return env && *env ? env : MOUNT_CONTENT_DB_PATH;
+}
+
+const content::MountRow* row_named(const spawns::MountBook& book, const char* item_name) {
+    for (const content::MountRow& r : book.data().mounts) if (r.item_name == item_name) return &r;
+    return nullptr;
+}
+
+spawns::MountParams plain_params() {
+    spawns::MountParams p;
+    p.player_id = 3;
+    p.owner_guid = {0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u};
+    p.owner_name = "Mounty";
+    p.owner_pawn = mint();
+    p.owner_level = 12;
+    p.server_id = 60;
+    p.world_time = 1234.5;
+    p.item_guid = {0xA1u, 0xA2u, 0xA3u, 0xA4u};
+    p.x = -777000; p.y = 616000; p.z = 5000; p.yaw_degrees = 90;
+    return p;
+}
+
+std::map<int64_t, double> stat_values(const repl::Subobject* stats) {
+    std::map<int64_t, double> out;
+    if (!stats) return out;
+    const repl::FastArrayState* arr = stats->obj.arrays.find(stats->obj.schema->field("StatRepInt32EveryoneProxy")->index);
+    if (!arr) return out;
+    for (const repl::FastArrayItem& it : arr->items()) {
+        const auto f = it.values.values.find(1);
+        if (const auto* t = f == it.values.values.end() ? nullptr : f->second.get_if<repl::StatInt32Inst>()) out[t->record] = std::bit_cast<float>(t->value);
+    }
+    return out;
+}
+
+const repl::AlignmentContainer* alignments_in(const repl::ObjectState& o, const char* field) {
+    const repl::Value* v = o.state.get(*o.schema, field);
+    return v ? v->get_if<repl::AlignmentContainer>() : nullptr;
+}
+
+const repl::AlignmentContainer::Instance* instance_of_key(const repl::AlignmentContainer& c, uint64_t key) {
+    for (const auto& i : c.instances) if (i.key == key) return &i;
+    return nullptr;
+}
+
+std::vector<uint64_t> keys_of(const repl::AlignmentContainer& c) {
+    std::vector<uint64_t> out;
+    for (const auto& i : c.instances) out.push_back(i.key);
+    return out;
+}
+
+bool flag_off(const repl::ObjectState& o, const char* path) {
+    const repl::Value* v = o.state.get(*o.schema, path);
+    if (!v) return true;
+    if (const auto* b = v->get_if<bool>()) return !*b;
+    return int_of(v) == 0;
+}
+
+const content::MountRow* row_of_blueprint(const spawns::MountBook& book, const char* blueprint) {
+    for (const content::MountRow& r : book.data().mounts) if (r.blueprint == blueprint) return &r;
+    return nullptr;
+}
+
+std::optional<spawns::MountMade> make_plain(const spawns::MountBook& book, const content::MountRow& row, const spawns::MountParams& p, std::string& error) {
+    uint64_t next = 0x6000000;
+    const auto minter = [&]() {
+        FIntrepidNetworkGUID g{next, 60, 0x6ee87ee4u};
+        next += 2;
+        return g;
+    };
+    return book.make(row, p, minter, error);
+}
+
+}  // namespace
+
 static void test_donors(const spawns::MountBook& book) {
     std::printf("the donors\n");
     const spawns::MountDonors& d = book.donors();
@@ -70,11 +329,7 @@ static std::set<std::string> flatten_diff_map(const std::map<std::string, std::s
     return all;
 }
 
-static void check_golden_block_diffs(
-    const spawns::OpenTemplate& donor,
-    const content::MountRow& row,
-    const repl::Actor& a,
-    const std::string& title) {
+static void check_golden_block_diffs(const spawns::OpenTemplate& donor, const content::MountRow& row, const repl::Actor& a, const std::string& title) {
     const bool same_blocks = a.subobjects.size() + 1 == donor.blocks.size();
     CHECK(same_blocks, (title + ": the actor has the donor's subobjects").c_str());
     std::map<std::string, std::set<std::string>> found;
@@ -108,12 +363,7 @@ static void check_golden_block_diffs(
     if (!exact) std::printf("      unexpected: %s\n", report.c_str());
 }
 
-static void check_golden_stats_and_open(
-    const spawns::MountBook& book,
-    const spawns::OpenTemplate& donor,
-    const spawns::MountParams& p,
-    const repl::Actor& a,
-    const GoldenCase& c) {
+static void check_golden_stats_and_open(const spawns::MountBook& book, const spawns::OpenTemplate& donor, const spawns::MountParams& p, const repl::Actor& a, const GoldenCase& c) {
     const std::string title = c.name;
     const spawns::ParsedBlock* donor_stats = nullptr;
     for (const spawns::ParsedBlock& b : donor.blocks) {
@@ -125,9 +375,8 @@ static void check_golden_stats_and_open(
         const bool on_road = c.capture == 911;
         CHECK(on_road ? (stat_diff == std::set<int64_t>{spawns::kStatMoveSpeedMult}) : stat_diff.empty(),
               (title + ": its stats are the capture's" + (on_road ? " but for MoveSpeedMult (1.25 on a road, 1 here)" : "")).c_str());
-        size_t all = 0;
+        size_t all = 0, ours = 0;
         const size_t roads = road_effects_in(donor_stats->state, book.data(), &all);
-        size_t ours = 0;
         road_effects_in(our_stats->obj, book.data(), &ours);
         CHECK(all >= roads && all >= 1 && ours == 0,
               (title + ": the " + std::to_string(all) + " effect(s) the capture holds (" + std::to_string(roads) +
@@ -439,18 +688,12 @@ static void test_book(const spawns::MountBook& book) {
     CHECK(archetype_ids.size() == blueprints.size(), "one archetype export per Blueprint (items that share a Blueprint share it)");
 }
 
-constexpr uint64_t kCombatant = 6064629443707731976ull;
-constexpr uint64_t kNodeCitizen = 6064631051897143296ull;
-constexpr uint64_t kGuildMember = 6064630560782155776ull;
+constexpr uint64_t kCombatant = 6064629443707731976ull, kNodeCitizen = 6064631051897143296ull, kGuildMember = 6064630560782155776ull;
 
 static const repl::AlignmentContainer* donor_inherited_alignments(const spawns::MountBook& book, const char* kind) {
     const spawns::OpenTemplate* d = book.donors().donor(kind);
     const repl::ObjectState* al = nullptr;
-    if (d) {
-        for (const spawns::ParsedBlock& b : d->blocks) {
-            if (b.cls == "UAlignmentComponent") al = &b.state;
-        }
-    }
+    if (d) for (const spawns::ParsedBlock& b : d->blocks) if (b.cls == "UAlignmentComponent") al = &b.state;
     return al ? alignments_in(*al, "InheritedAlignments") : nullptr;
 }
 
@@ -461,37 +704,26 @@ static bool has_flagged_current_effect(const repl::Subobject* stats) {
     if (!arr) return false;
     bool pvp_effect = false;
     for (const repl::FastArrayItem& it : arr->items()) {
-        for (const auto& [h, v] : it.values.values) {
-            if (const auto* b = v.get_if<bool>()) pvp_effect = pvp_effect || *b;
-        }
+        for (const auto& [h, v] : it.values.values) if (const auto* b = v.get_if<bool>()) pvp_effect = pvp_effect || *b;
     }
     return pvp_effect;
 }
 
 static void check_unflagged_owner_alignments(const spawns::MountBook& book, const char* name) {
     const content::MountRow* row = row_of_blueprint(book, name);
-    if (!row) {
-        CHECK(false, (std::string(name) + ": the item is in the data").c_str());
-        return;
-    }
+    if (!row) { CHECK(false, (std::string(name) + ": the item is in the data").c_str()); return; }
     const std::string title = name;
     spawns::MountParams p = plain_params();
     std::string error;
     auto made = make_plain(book, *row, p, error);
-    if (!made) {
-        CHECK(false, (title + ": the mount is made: " + error).c_str());
-        return;
-    }
+    if (!made) { CHECK(false, (title + ": the mount is made: " + error).c_str()); return; }
     const repl::Subobject* al = sub_named(made->actor.actor, "UAlignmentComponent");
     const repl::AlignmentContainer* inherited = al ? alignments_in(al->obj, "InheritedAlignments") : nullptr;
     const repl::AlignmentContainer* own = al ? alignments_in(al->obj, "Alignments") : nullptr;
-    const std::vector<uint64_t> want = {
-        bootstrap::kAlignmentKeyA, bootstrap::kAlignmentKeyB, bootstrap::kAlignmentKeyCharacter, bootstrap::kAlignmentKeyC
-    };
+    const std::vector<uint64_t> want = {bootstrap::kAlignmentKeyA, bootstrap::kAlignmentKeyB, bootstrap::kAlignmentKeyCharacter, bootstrap::kAlignmentKeyC};
     CHECK(inherited && keys_of(*inherited) == want,
           (title + ": it inherits Player, NonCombatant, the owner's Instigator and PVPSuppressed_Perceiver, and nothing else").c_str());
-    CHECK(inherited && !instance_of_key(*inherited, kCombatant) &&
-              !instance_of_key(*inherited, kNodeCitizen) && !instance_of_key(*inherited, kGuildMember),
+    CHECK(inherited && !instance_of_key(*inherited, kCombatant) && !instance_of_key(*inherited, kNodeCitizen) && !instance_of_key(*inherited, kGuildMember),
           (title + ": no Combatant (the PvP flag), no node and no guild").c_str());
     const repl::AlignmentContainer::Instance* self = inherited ? instance_of_key(*inherited, bootstrap::kAlignmentKeyCharacter) : nullptr;
     CHECK(self && self->guids.size() == 1 && self->guids[0] == p.owner_guid, (title + ": its Instigator group is the owner").c_str());
@@ -506,8 +738,7 @@ static void check_unflagged_owner_alignments(const spawns::MountBook& book, cons
               own->instances[0].guids[1] == p.owner_guid && own->timers.empty() && inherited && inherited->timers.empty(),
           (title + ": its own Alignments are one Instigator group, the mount and its owner [R: 911, 898, 871, 872]").c_str());
     const repl::Subobject* ci = sub_named(made->actor.actor, "UNPCCombatInfo");
-    CHECK(ci && flag_off(ci->obj, "bPvPForceFlag") && flag_off(ci->obj, "bInPVPCombat") &&
-              flag_off(ci->obj, "InPvpSuppressionArea") && flag_off(ci->obj, "bInCombat"),
+    CHECK(ci && flag_off(ci->obj, "bPvPForceFlag") && flag_off(ci->obj, "bInPVPCombat") && flag_off(ci->obj, "InPvpSuppressionArea") && flag_off(ci->obj, "bInCombat"),
           (title + ": its combat info holds no PvP flag, no PvP combat and no suppression area").c_str());
     const repl::Subobject* stats = sub_named(made->actor.actor, "UAoCStatsComponent");
     CHECK(stats && !has_flagged_current_effect(stats), (title + ": it holds no effect of a flagged source (a new mount has no effect)").c_str());
@@ -523,49 +754,31 @@ static void test_alignments_are_the_owners(const spawns::MountBook& book) {
               instance_of_key(*fl, kNodeCitizen) && instance_of_key(*fl, kGuildMember) &&
               !instance_of_key(*gr, kCombatant) && !instance_of_key(*fl, kCombatant),
           "(the ground and flying donors' owners, 911 and 871, had a node and a guild)");
-    const char* blueprints[] = {
-        "Mount_Grounded_TerrorBird_0", "Mount_Aquatic_Shoalskipper_1_ALT", "Mount_Flying_Dawnbreaker_1",
-        "Mount_Grounded_Scorpix_1", "Mount_Grounded_VerdantVoyager_0", "Mount_Flying_Gryphon_5_Armored"
-    };
+    const char* blueprints[] = {"Mount_Grounded_TerrorBird_0", "Mount_Aquatic_Shoalskipper_1_ALT", "Mount_Flying_Dawnbreaker_1",
+                                "Mount_Grounded_Scorpix_1", "Mount_Grounded_VerdantVoyager_0", "Mount_Flying_Gryphon_5_Armored"};
     for (const char* name : blueprints) check_unflagged_owner_alignments(book, name);
     const content::MountRow* row = row_of_blueprint(book, "Mount_Grounded_TerrorBird_0");
     spawns::MountParams p = plain_params();
     repl::AlignmentContainer flagged;
     const repl::GuidValue none;
-    flagged.instances = {
-        {bootstrap::kAlignmentKeyA, {none}},
-        {kCombatant, {repl::GuidValue{9, 8, 7, 6}}},
-        {bootstrap::kAlignmentKeyCharacter, {p.owner_guid}}
-    };
+    flagged.instances = {{bootstrap::kAlignmentKeyA, {none}}, {kCombatant, {repl::GuidValue{9, 8, 7, 6}}}, {bootstrap::kAlignmentKeyCharacter, {p.owner_guid}}};
     p.owner_alignments = flagged;
     std::string error;
     auto made = row ? make_plain(book, *row, p, error) : std::nullopt;
     const repl::Subobject* al = made ? sub_named(made->actor.actor, "UAlignmentComponent") : nullptr;
     const repl::AlignmentContainer* inherited = al ? alignments_in(al->obj, "InheritedAlignments") : nullptr;
-    CHECK(inherited && *inherited == flagged,
-          "a flagged owner's alignments (a Combatant) are inherited exactly: the owner's state, not the donor's");
+    CHECK(inherited && *inherited == flagged, "a flagged owner's alignments (a Combatant) are inherited exactly: the owner's state, not the donor's");
 }
 
-struct RiderAnimCase {
-    const char* blueprint;
-    const char* klass;
-    const char* package;
-};
+struct RiderAnimCase { const char *blueprint, *klass, *package; };
 
-static void count_interaction_refs(
-    const repl::Subobject* inter,
-    const repl::ExportChain& chain,
-    size_t& named,
-    size_t& ours) {
+static void count_interaction_refs(const repl::Subobject* inter, const repl::ExportChain& chain, size_t& named, size_t& ours) {
     const repl::Value* data = inter ? inter->obj.state.get(*inter->obj.schema, "InteractionInputData") : nullptr;
     const auto* arr = data ? data->get_if<repl::ArrayValue>() : nullptr;
     if (!arr) return;
     for (const repl::ElementState& e : arr->elements) {
         for (const auto& [h, v] : e.values) {
-            if (const auto* g = v.get_if<FIntrepidNetworkGUID>()) {
-                ++named;
-                ours += !chain.empty() && g->ObjectId == chain[0].guid.ObjectId;
-            }
+            if (const auto* g = v.get_if<FIntrepidNetworkGUID>()) { ++named; ours += !chain.empty() && g->ObjectId == chain[0].guid.ObjectId; }
         }
     }
 }
@@ -573,28 +786,20 @@ static void count_interaction_refs(
 static void check_rider_anim_case(const spawns::MountBook& book, const RiderAnimCase& c) {
     const std::string title = c.blueprint;
     const content::MountRow* row = row_of_blueprint(book, c.blueprint);
-    if (!row) {
-        CHECK(false, (title + ": the item is in the data").c_str());
-        return;
-    }
+    if (!row) { CHECK(false, (title + ": the item is in the data").c_str()); return; }
     CHECK(book.rider_anim_of(*row) == std::string(c.package) + "." + c.klass, (title + ": its rider AnimBP is " + c.klass).c_str());
     std::string merror;
     auto made = make_plain(book, *row, plain_params(), merror);
-    if (!made) {
-        CHECK(false, (title + ": the mount is made: " + merror).c_str());
-        return;
-    }
+    if (!made) { CHECK(false, (title + ": the mount is made: " + merror).c_str()); return; }
     const world::WorldActor& w = made->actor;
-    CHECK(w.open_exports.size() == 1 && w.open_exports[0].size() == 2,
-          (title + ": the open carries one export: the AnimBP class and its package").c_str());
+    CHECK(w.open_exports.size() == 1 && w.open_exports[0].size() == 2, (title + ": the open carries one export: the AnimBP class and its package").c_str());
     const repl::ExportChain chain = w.open_exports.empty() ? repl::ExportChain{} : w.open_exports[0];
     CHECK(chain.size() == 2 && chain[0].name == c.klass && chain[1].name == c.package &&
               chain[0].has_path() && chain[1].has_path() && chain[0].has_checksum && chain[0].checksum == 0 &&
               chain[1].has_checksum && chain[1].checksum == 0 && chain[0].guid.is_valid() && chain[1].guid.is_valid() &&
               chain[0].guid.ObjectId != chain[1].guid.ObjectId,
           (title + ": the class is exported by its name in its package, flags 5, checksum 0 [R: the retail capture's export of ABP_PC_MNT_Swiftclaw_C]").c_str());
-    size_t named = 0;
-    size_t ours = 0;
+    size_t named = 0, ours = 0;
     count_interaction_refs(sub_named(w.actor, "UInteractableComponent"), chain, named, ours);
     CHECK(named == 1 && ours == 1, (title + ": the interaction data's one object reference, AttachmentAnimation, is the exported class").c_str());
     auto second = make_plain(book, *row, plain_params(), merror);
@@ -604,10 +809,7 @@ static void check_rider_anim_case(const spawns::MountBook& book, const RiderAnim
 }
 
 static void check_rider_anim_fallbacks() {
-    struct K {
-        const char* blueprint;
-        const char* want;
-    } fallbacks[] = {
+    struct K { const char *blueprint, *want; } fallbacks[] = {
         {"Mount_Grounded_Scorpix_1", "/Game/Characters/Animations/Mounts_Rider/Swiftclaw/ABP_PC_MNT_Swiftclaw.ABP_PC_MNT_Swiftclaw_C"},
         {"Mount_Grounded_VerdantVoyager_0", "/Game/Characters/Animations/Mounts_Rider/Tidesnapper/ABP_PC_MNT_Tidesnapper.ABP_PC_MNT_Tidesnapper_C"},
         {"Mount_Flying_Gryphon_5_Armored", "/Game/Characters/Animations/Mounts_Rider/Dawnbreaker/ABP_PC_MNT_Dawnbreaker.ABP_PC_MNT_Dawnbreaker_C"}
@@ -640,8 +842,7 @@ static void test_rider_anim(spawns::MountBook& book) {
         {"Mount_Flying_Gryphon_5_Armored", "ABP_PC_MNT_Gryphon_C", "/Game/Characters/Animations/Mounts_Rider/Gryphon/ABP_PC_MNT_Gryphon"},
     };
     for (const RiderAnimCase& c : cases) check_rider_anim_case(book, c);
-    size_t named = 0;
-    size_t exported = 0;
+    size_t named = 0, exported = 0;
     std::set<std::string> anims;
     for (const content::MountRow& row : book.data().mounts) {
         const std::string anim = book.rider_anim_of(row);
@@ -655,33 +856,23 @@ static void test_rider_anim(spawns::MountBook& book) {
     CHECK(anims.size() > 20, "(and they are not all one AnimBP: the Blueprints name their own)");
 }
 
-void run_mounts_part2() {
-    test_owner(*g_book);
-    test_book(*g_book);
-    test_alignments_are_the_owners(*g_book);
-    test_rider_anim(*g_book);
-}
-
 int main() {
     std::string error;
     auto db = content::ContentDb::open(db_path(), error);
-    if (!db) {
-        std::printf("  [FAIL] the content.db does not open (%s): %s\n", db_path().c_str(), error.c_str());
-        return 2;
-    }
+    if (!db) { std::printf("  [FAIL] the content.db does not open (%s): %s\n", db_path().c_str(), error.c_str()); return 2; }
     auto book = spawns::MountBook::load(*db, error);
-    if (!book) {
-        std::printf("  [FAIL] the mount tables do not load: %s\n", error.c_str());
-        return 2;
-    }
+    if (!book) { std::printf("  [FAIL] the mount tables do not load: %s\n", error.c_str()); return 2; }
     g_book = &*book;
     test_world_loads(*db);
     test_donors(*book);
     test_open_golden(*book);
     test_guids(*book);
     test_archetypes(*book);
-    run_mounts_part2();
-    run_mounts_part3();
+    test_owner(*book);
+    test_book(*book);
+    test_alignments_are_the_owners(*book);
+    test_rider_anim(*book);
+    run_mounts_summon();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -573,8 +573,146 @@ static void test_real_town_buildings() {
     for (const RealTown &rt : towns) run_real_town_building_case(rt);
 }
 
+struct PlotFolk {
+    size_t total = 0, villager_f = 0, hammer = 0, shovel = 0;
+};
+static void classify_plot_folk(PlotFolk &f, const std::string &id) {
+    ++f.total;
+    if (id.find("Villager_M_Hammer") != std::string::npos) {
+        ++f.hammer;
+        return;
+    }
+    if (id.find("Villager_M_Shovel") != std::string::npos) {
+        ++f.shovel;
+        return;
+    }
+    if (id.find("Villager_F") != std::string::npos || id.find("Villager_M") != std::string::npos) ++f.villager_f;
+}
+static PlotFolk folk_at(const std::vector<spawns::NodeSpawn> &list, int64_t plot) {
+    PlotFolk f;
+    for (const spawns::NodeSpawn &s : list) {
+        if (plot == 0 || s.plot != plot || !s.spawn.asset) continue;
+        classify_plot_folk(f, s.spawn.asset->name + " " + s.spawn.asset->archetype_path);
+    }
+    return f;
+}
+struct WorkshopTown {
+    const char *name;
+    int64_t guid;
+    int level;
+    size_t factories, farms;
+};
+static void check_town_workshops(const WorkshopTown &t) {
+    world::CityNodes &shipped = *g_env.shipped_nodes;
+    const world::NodeWire &swire = *g_env.shipped_wire;
+    const world::CityNodeInfo &info = *g_env.nodes->by_guid(t.guid);
+    const std::vector<world::PlotRow> rows = swire.plot_rows_of(t.guid, t.level);
+    const std::vector<world::PlotRow> base_rows = g_env.wire->plot_rows_of(t.guid, t.level);
+    size_t changed = 0;
+    for (size_t i = 0; i < rows.size() && i < base_rows.size(); ++i) {
+        changed += rows[i].building != base_rows[i].building || rows[i].state != base_rows[i].state;
+    }
+    char msg[240];
+    std::snprintf(msg, sizeof msg,
+                  "%s at level %d: %zu plots change (the workshops of the list), "
+                  "the others are as the layout has them",
+                  t.name, t.level, t.factories + t.farms);
+    CHECK(rows.size() == base_rows.size() && changed == t.factories + t.farms, msg);
+    spawns::NodePopStats st0, st1;
+    const auto base = select(*g_env.nodes, *g_env.wire, info, t.level, st0);
+    const auto with = select(shipped, swire, info, t.level, st1);
+    size_t villagers = 0, hammers = 0, shovels = 0, at_plots = 0;
+    for (size_t i = 0; i < rows.size() && i < base_rows.size(); ++i) {
+        if (rows[i].building == base_rows[i].building && rows[i].state == base_rows[i].state) continue;
+        const PlotFolk was = folk_at(base, rows[i].plot), now = folk_at(with, rows[i].plot);
+        villagers += now.villager_f - was.villager_f;
+        hammers += now.hammer - was.hammer;
+        shovels += now.shovel - was.shovel;
+        at_plots += now.total - was.total;
+    }
+    std::printf("    %s: %zu NPCs without workshops, %zu with (%zu at the "
+                "workshops: %zu villagers, %zu hammer "
+                "smiths, %zu farmers)\n",
+                t.name, base.size(), with.size(), at_plots, villagers, hammers, shovels);
+    std::snprintf(msg, sizeof msg,
+                  "%s: a factory brings 2 villagers and 2 hammer smiths, a farm "
+                  "2 shovel farmers",
+                  t.name);
+    CHECK(villagers == 2 * t.factories && hammers == 2 * t.factories && shovels == 2 * t.farms, msg);
+    std::snprintf(msg, sizeof msg, "%s has %zu NPCs more than with no workshop", t.name, 4 * t.factories + 2 * t.farms);
+    CHECK(with.size() == base.size() + 4 * t.factories + 2 * t.farms, msg);
+}
+static void test_workshops() {
+    std::printf("the workshops the seed starts the towns with\n");
+    world::CityNodes &shipped = *g_env.shipped_nodes;
+    const world::NodeWire &swire = *g_env.shipped_wire;
+    CHECK(shipped.plot_choices(kJoeva).size() == 5 && shipped.plot_choices(kHalcyon).size() == 1 &&
+              shipped.plot_choices(kWinstead).empty() && g_env.nodes->plot_choices(kJoeva).empty(),
+          "the shipped seed lists 5 workshops for Joeva and 1 for Halcyon, none "
+          "for Winstead; the baseline nodes (the "
+          "seed without its plots) have none");
+    const WorkshopTown towns[] = {{"Joeva", kJoeva, 4, 4, 1}, {"Halcyon", kHalcyon, 3, 1, 0}};
+    for (const WorkshopTown &t : towns) check_town_workshops(t);
+    spawns::NodePopStats a, b;
+    const world::CityNodeInfo &winstead = *g_env.nodes->by_guid(kWinstead);
+    CHECK(select(shipped, swire, winstead, 3, a).size() == select(*g_env.nodes, *g_env.wire, winstead, 3, b).size(),
+          "Winstead (no list) has the same people with the shipped seed");
+}
+static std::vector<FloorPerson> floor_grid(double cx, double cy, double lift, int half = 3) {
+    std::vector<FloorPerson> v;
+    for (int i = -half; i <= half; ++i) {
+        for (int j = -half; j <= half; ++j) {
+            v.push_back({cx + i * 2000.0, cy + j * 2000.0, 1000.0, 1000.0 + lift + ((i + j) % 3 == 0 ? 20.0 : -10.0)});
+        }
+    }
+    return v;
+}
+static void test_town_floor_class() {
+    std::printf("the town floor: a town stands over the baked ground of its bowl\n");
+    world::TownFloor tf;
+    CHECK(tf.towns() == 0 && !tf.at(0, 0, 1000), "no town: nowhere is a bowl");
+    std::vector<FloorPerson> people = floor_grid(0, 0, 5060);
+    for (int i = 0; i < 6; ++i) people.push_back({i * 1000.0, 30000.0, 1000.0, 8000.0});
+    people.push_back({500, 0, 1000.0, 3000.0});
+    people.push_back({-500, 0, 1000.0, 1100.0});
+    tf.set(7, people);
+    const std::optional<double> lift = tf.lift_of(7);
+    CHECK(tf.towns() == 1 && lift && std::fabs(*lift - 5060.0) < 25.0,
+          "the town's lift is the median of its people's heights over the ground "
+          "(50.6 m)");
+    CHECK(tf.floor_persons(7) == 49, "the floor is the people within 3 m of it: "
+                                     "not the upper floors, the wall of the "
+                                     "pit or the one on the open ground");
+    const auto in = tf.at(100, 100, 1000);
+    CHECK(in && in->node == 7 && std::fabs(in->lift - *lift) < 1e-9,
+          "a point in the town: its floor is the ground under it plus the lift, "
+          "and it names the node");
+    CHECK(!tf.at(100, 100, 3000), "...but not where the ground under the point is 20 m off the people's "
+                                  "(the wall of the pit)");
+    CHECK(tf.at(100, 100, 1000 - 900) && tf.at(100, 100, 1000 + 900), "...a ground 9 m off is inside the relief");
+    CHECK(tf.at(6000 + 7000, 0, 1000) && !tf.at(6000 + 8000, 0, 1000),
+          "the town reaches 75 m from the last person of its floor");
+    CHECK(!tf.at(20000, 20000, 1000) && !tf.at(0, 28000, 1000),
+          "...not to a point far from its floor (the upper floors 300 m off do "
+          "not make a floor)");
+    tf.set(8, floor_grid(100000, 0, 100));
+    CHECK(tf.towns() == 1 && !tf.at(100000, 0, 1000) && !tf.lift_of(8),
+          "people on the open ground (+1 m) make no town");
+    tf.set(9, floor_grid(200000, 0, 4990));
+    CHECK(tf.towns() == 2 && tf.at(200000, 0, 1000) && std::fabs(tf.at(200000, 0, 1000)->lift - 4990.0) < 25.0 &&
+              std::fabs(tf.at(0, 0, 1000)->lift - *lift) < 1e-9,
+          "two towns: each point has its own town's lift");
+    tf.set(7, floor_grid(0, 0, 100));
+    CHECK(tf.towns() == 1 && !tf.at(0, 0, 1000), "the node's people replaced by ones on the open ground: its town is "
+                                                 "gone");
+    tf.set(9, {});
+    CHECK(tf.towns() == 0, "no people: no town");
+}
+
 int main() {
     if (const int rc = init_node_pop_env(); rc != 0) return rc;
+    test_workshops();
+    test_town_floor_class();
     test_real_bowls();
     test_real_town_buildings();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);

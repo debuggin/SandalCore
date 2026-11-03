@@ -18,52 +18,6 @@ namespace emit = ::aoc::protocol::emit;
 
 namespace {
 
-uint16_t angle16(double degrees) {
-    double d = std::fmod(degrees, 360.0);
-    if (d < 0) d += 360.0;
-    return static_cast<uint16_t>(std::lround(d / 360.0 * 65536.0) & 0xFFFF);
-}
-
-uint16_t angle8(double degrees) {
-    double d = std::fmod(degrees, 360.0);
-    if (d < 0) d += 360.0;
-    return static_cast<uint16_t>(std::lround(d / 360.0 * 256.0) & 0xFF);
-}
-
-struct RepWriteArgs {
-    double x = 0, y = 0, z = 0, yaw = 0;
-    nav::Vec3 vel{};
-    bool moving = false;
-    double stamp = 0;
-    int again = 0;
-};
-
-// Ensure bReplicateMovement is enabled and angular_velocity encodes settle repeat count so identical post-montage positions still replicate.
-void write_replicated(world::WorldActor& a, const RepWriteArgs& w) {
-    repl::ObjectState& obj = a.actor.obj;
-    if (!obj.schema) return;
-    repl::RepMovement m;
-    if (const repl::Value* v = obj.state.get(7)) {
-        if (const auto* old = v->get_if<repl::RepMovement>()) m = *old;
-    }
-    if (obj.schema->command("bReplicateMovement")) obj.state.set(*obj.schema, "bReplicateMovement", repl::Value::boolean(true));
-    m.simulated_physic_sleep = false;
-    m.rep_physics = false;
-    m.location = repl::quantize_location(obj.opts, w.x, w.y, w.z);
-    m.linear_velocity = repl::quantize_velocity(obj.opts, w.vel.x, w.vel.y, w.vel.z);
-    m.angular_velocity = repl::QuantVec{repl::QuantVec::Mode::Scaled, w.again, 0, 0};
-    m.acceleration.reset();
-    m.rotation = repl::Rot{0, obj.opts.rep_movement_short_rotation ? angle16(w.yaw) : angle8(w.yaw), 0};
-    if (obj.schema->command("ReplicatedMovement")) obj.state.set(*obj.schema, "ReplicatedMovement", repl::Value(m));
-    if (obj.schema->command("ReplicatedServerLastTransformUpdateTimeStamp"))
-        obj.state.set(*obj.schema, "ReplicatedServerLastTransformUpdateTimeStamp", repl::Value::f32(static_cast<float>(w.stamp)));
-    if (obj.schema->command("CurrentMovementInput"))
-        obj.state.set(*obj.schema, "CurrentMovementInput", repl::Value(repl::PlayerMovementInput{static_cast<uint8_t>(w.moving ? repl::PlayerMovementInput::kForward : 0)}));
-    a.actor.open.spawn.location = repl::quantize_vector(10, w.x, w.y, w.z);
-    a.actor.open.spawn.rotation = repl::Rot{0, angle16(w.yaw), 0};
-    a.actor.open.spawn.velocity.reset();
-}
-
 struct RootWriteArgs {
     bool active = false;
     uint64_t montage = 0;

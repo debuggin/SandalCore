@@ -12,6 +12,107 @@
 
 namespace tpfix = aoc::worldd::tpfix;
 
+static BunchWriter item_used(int storage, int slot, const std::string &guid_hex) {
+  const schema::ClassSchema &pawn = class_named("PlayerPawn_C");
+  const schema::RpcSchema *rpc = pawn.rpc("ServerItemUsed");
+  repl::RpcParams p;
+  const auto g = items::guid_of(guid_hex);
+  const repl::GuidValue gv = g ? *g : repl::GuidValue{};
+  repl::set_rpc_param(*rpc, p, "Storage", repl::Value::u64(static_cast<uint64_t>(storage)));
+  repl::set_rpc_param(*rpc, p, "Slot", repl::Value::i64(slot));
+  repl::set_rpc_param(*rpc, p, "ExpectedItem.A", repl::Value::i64(static_cast<int32_t>(gv.a)));
+  repl::set_rpc_param(*rpc, p, "ExpectedItem.B", repl::Value::i64(static_cast<int32_t>(gv.b)));
+  repl::set_rpc_param(*rpc, p, "ExpectedItem.C", repl::Value::i64(static_cast<int32_t>(gv.c)));
+  repl::set_rpc_param(*rpc, p, "ExpectedItem.D", repl::Value::i64(static_cast<int32_t>(gv.d)));
+  repl::set_rpc_param(*rpc, p, "RequestedEquipSlot", repl::Value::i64(static_cast<int32_t>(0xFFFFFFFFu)));
+  return actor_rpc(pawn, "ServerItemUsed", p);
+}
+
+static BunchWriter summon_trigger(Harness &h, int32_t client_instance, int slot, const svc::InventoryItem *item, uint8_t location = 3) {
+  const schema::ClassSchema &cls = class_named("UAoCAbilityComponent");
+  const schema::RpcSchema *rpc = cls.rpc("ServerTriggerAbility");
+  repl::RpcParams p;
+  if (!rpc)
+    return BunchWriter();
+  repl::set_rpc_param(*rpc, p, "AbilityGuid", repl::Value::i64(108436548376185ll));
+  if (client_instance != 0)
+    repl::set_rpc_param(*rpc, p, "ClientInstanceId", repl::Value::i64(client_instance));
+  repl::set_rpc_param(*rpc, p, "InputVector", repl::Value(repl::Vec2d{1, 0}));
+  if (slot >= 0) {
+    const repl::ItemInstance inst = item ? items::to_instance(*item) : repl::ItemInstance{};
+    repl::set_rpc_param(*rpc, p, "ItemData.Slot", repl::Value::i64(slot));
+    repl::set_rpc_param(*rpc, p, "ItemData.ItemInstance", repl::Value(inst));
+    repl::set_rpc_param(*rpc, p, "ItemData.Location", repl::Value::u64(location));
+  }
+  BunchWriter out, field;
+  bool failed = false;
+  if (repl::write_rpc_field(cls, *rpc, p, field, {}, &failed) == 0 || failed)
+    return out;
+  repl::BlockHeader header;
+  header.is_actor = false;
+  header.has_rep_layout = false;
+  header.object = h.s->bootstrap().setup().guids.ability;
+  repl::write_content_block(out, header, field, /*server_form=*/false);
+  return out;
+}
+
+static emit::FIntrepidNetworkGUID component_of(const world::WorldActor &m, uint64_t object_id) {
+  emit::FIntrepidNetworkGUID g = m.actor.guid;
+  g.ObjectId = object_id;
+  return g;
+}
+
+static BunchWriter interact_with(const emit::FIntrepidNetworkGUID &component) {
+  const schema::ClassSchema &pawn = class_named("PlayerPawn_C");
+  const schema::RpcSchema *rpc = pawn.rpc("ServerInteractWithInteractableComponent");
+  repl::InteractRequest r;
+  r.interactable = component;
+  r.counter = 1;
+  r.zone = 2;
+  const auto params = repl::interact_params(*rpc, r);
+  return params ? actor_rpc(pawn, "ServerInteractWithInteractableComponent", *params) : BunchWriter();
+}
+
+static void summon_with(Harness &h, int slot, int32_t client_instance = 7) {
+  const svc::InventoryItem *item = h.s->inventory().at(Bag, slot);
+  const std::string guid = item ? item->instance_guid : std::string();
+  h.client_sends({h.client.actor(h.pawn_ch, item_used(3, slot, guid), true), h.client.actor(h.pawn_ch, summon_trigger(h, client_instance, slot, item), true)});
+}
+
+static void get_on(Harness &h) {
+  const world::WorldActor *m = h.mount();
+  if (!m)
+    return;
+  h.client_sends({h.client.actor(h.pawn_ch, interact_with(component_of(*m, m->npc.interact_component)), true)});
+}
+
+static void walk_up_to_mount(Harness &h) {
+  const world::WorldActor *m = h.mount();
+  if (!m)
+    return;
+  const GoodPosition g = h.s->movement().good();
+  const double dx = m->x - g.x;
+  const double dy = m->y - g.y;
+  const double dist = std::hypot(dx, dy);
+  if (dist > 250)
+    walk_pawn_to(h, g.x + dx * (dist - 250) / dist, g.y + dy * (dist - 250) / dist);
+}
+
+static GmTeleportRequest to_point(double x, double y) {
+  GmTeleportRequest rq;
+  rq.character = "cyb";
+  rq.x = x;
+  rq.y = y;
+  return rq;
+}
+
+static GmTeleportRequest to_place(const char *place) {
+  GmTeleportRequest rq;
+  rq.character = "cyb";
+  rq.place = place;
+  return rq;
+}
+
 static BunchWriter possession_ack(const emit::FIntrepidNetworkGUID &actor) {
   const schema::ClassSchema &pc = class_named("AoCPlayerControllerBP_C");
   repl::RpcParams p;

@@ -11,7 +11,94 @@
 #include "test_worldd_items_common.h"
 
 using namespace aoc::worldd;
-// (C:Y:B + CoA)
+
+static ItemContainer pick_fuzz_container(std::mt19937_64 &rng) {
+  if (rng() % 8 == 0)
+    return static_cast<ItemContainer>(rng() % 5);
+  return rng() % 2 ? Bag : Worn;
+}
+
+static int pick_fuzz_slot(std::mt19937_64 &rng, ItemContainer c) {
+  const int limit = c == Bag ? 70 : c == Worn ? 83 : 100;
+  if (rng() % 10 == 0)
+    return static_cast<int>(rng() % 300) - 100;
+  return static_cast<int>(rng() % limit);
+}
+
+static std::string fuzz_guid_of_slot(const Inv &inv, std::mt19937_64 &rng,
+                                     ItemContainer c, int s) {
+  const auto *it = inv.at(c, s);
+  if (it && rng() % 6)
+    return it->instance_guid;
+  return rng() % 2 ? guid_n(static_cast<uint32_t>(rng() % 600))
+                   : std::string("garbage");
+}
+
+static aoc::worldd::items::Outcome
+step_fuzz_default_action(Inv &inv, std::mt19937_64 &rng,
+                         const FakeCatalog &catalog) {
+  const auto all = inv.items();
+  if (all.empty())
+    return {};
+  const aoc::worldd::svc::InventoryItem &it = all[rng() % all.size()];
+  if (it.container == Bag && rng() % 2)
+    return inv.move(Bag, it.slot, it.quantity, it.instance_guid, Bag,
+                    static_cast<int>(rng() % 70));
+  if (it.container != ItemContainer::Quest)
+    return inv.use(it.container, it.slot, it.instance_guid, kAny, catalog);
+  return {};
+}
+
+static aoc::worldd::items::Outcome
+step_fuzz_action(Inv &inv, std::mt19937_64 &rng, const FakeCatalog &catalog) {
+  switch (rng() % 4) {
+  case 0: {
+    const ItemContainer c = pick_fuzz_container(rng);
+    const int s = pick_fuzz_slot(rng, c);
+    const uint32_t req =
+        rng() % 4 == 0 ? static_cast<uint32_t>(rng() % 100) : kAny;
+    return inv.use(c, s, fuzz_guid_of_slot(inv, rng, c, s), req, catalog);
+  }
+  case 1: {
+    const ItemContainer a = pick_fuzz_container(rng),
+                        b = pick_fuzz_container(rng);
+    const int sa = pick_fuzz_slot(rng, a), sb = pick_fuzz_slot(rng, b);
+    const auto *it = inv.at(a, sa);
+    const int32_t qty =
+        it && rng() % 6 ? it->quantity : static_cast<int32_t>(rng() % 5);
+    return inv.move(a, sa, qty, fuzz_guid_of_slot(inv, rng, a, sa), b, sb);
+  }
+  case 2: {
+    const ItemContainer a = pick_fuzz_container(rng),
+                        b = pick_fuzz_container(rng);
+    const int sa = pick_fuzz_slot(rng, a), sb = pick_fuzz_slot(rng, b);
+    const auto *ia = inv.at(a, sa);
+    const auto *ib = inv.at(b, sb);
+    const int32_t qa = ia && rng() % 6 ? ia->quantity : 1;
+    const int32_t qb = ib && rng() % 6 ? ib->quantity : 1;
+    return inv.swap(a, sa, qa, fuzz_guid_of_slot(inv, rng, a, sa), b, sb,
+                    fuzz_guid_of_slot(inv, rng, b, sb), qb);
+  }
+  default:
+    return step_fuzz_default_action(inv, rng, catalog);
+  }
+}
+
+static void apply_fuzz_replay_event(
+    std::map<std::pair<int, int>, aoc::worldd::svc::InventoryItem> &replay,
+    const aoc::worldd::items::Event &e, size_t &invariant_breaks) {
+  const std::pair<int, int> key{static_cast<int>(e.container), e.slot};
+  if (e.type == Add) {
+    replay[key] = e.item;
+    return;
+  }
+  const auto f = replay.find(key);
+  if (f == replay.end() || f->second.instance_guid != e.item.instance_guid) {
+    ++invariant_breaks;
+    return;
+  }
+  replay.erase(f);
+}
 
 static void check_fuzz_step_invariants(const Inv &before, const Inv &inv,
                                        const items::Outcome &o,

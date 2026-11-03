@@ -20,9 +20,6 @@ namespace {
 
 constexpr int64_t kTicksAtUnixEpoch = 621355968000000000ll;   // 1970-01-01 as FDateTime ticks
 constexpr int64_t kTicksPerMs = 10000;
-constexpr int32_t kMaxQuantity = 1000000;
-constexpr int64_t kMaxMs = 9'000'000'000'000ll;   // year 2255: ticks stay far inside an int64
-constexpr int64_t kMaxLockExpiration = 253402300799ll;   // Unix seconds: the end of the year 9999 (character service migration 0007)
 
 int hex_digit(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -34,10 +31,10 @@ int hex_digit(char c) {
 template <class T>
 bool contains(const std::vector<T>& v, T x) { return std::find(v.begin(), v.end(), x) != v.end(); }
 
-bool valid_container(svc::ItemContainer c) { return static_cast<uint8_t>(c) <= static_cast<uint8_t>(svc::ItemContainer::Resource2); }
-
 int bag_slot_of(int index) { return equip::ResourceBag0 + index; }
 int bag_container_of(int equip_slot) { return equip_slot >= equip::ResourceBag0 && equip_slot <= equip::ResourceBag2 ? equip_slot - equip::ResourceBag0 : -1; }
+
+}  // namespace
 
 /// What is wrong with an item, "" when nothing: the constraints of the character service's table.
 std::string item_problem(const svc::InventoryItem& it) {
@@ -60,8 +57,6 @@ std::string item_problem(const svc::InventoryItem& it) {
     if (it.lock_expiration < 0 || it.lock_expiration > kMaxLockExpiration) return "lock expiration " + std::to_string(it.lock_expiration) + " is out of range";
     return {};
 }
-
-}  // namespace
 
 int slot_count(svc::ItemContainer c) {
     switch (c) {

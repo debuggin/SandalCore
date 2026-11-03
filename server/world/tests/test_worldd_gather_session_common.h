@@ -412,58 +412,7 @@ inline BunchWriter interact(uint64_t component_object_id) {
                 : BunchWriter();
 }
 
-inline BunchWriter interrupt_channel() {
-  return actor_rpc(class_named("PlayerPawn_C"), "ServerInterruptChannel", {});
-}
-
 inline std::ostringstream g_log;
-inline size_t count_in_log(const char *what) {
-  const std::string text = g_log.str();
-  size_t n = 0;
-  for (size_t at = text.find(what); at != std::string::npos;
-       at = text.find(what, at + 1))
-    ++n;
-  return n;
-}
-
-inline BunchWriter foliage_interact() {
-  const schema::ClassSchema &pc = class_named("AoCPlayerControllerBP_C");
-  const schema::RpcSchema *rpc = pc.rpc("ServerStartInteractionWithFoliage");
-  repl::RpcParams p;
-  if (!rpc)
-    return BunchWriter();
-  repl::set_rpc_param(*rpc, p, "InteractionIndex", repl::Value::i64(0));
-  repl::set_rpc_param(*rpc, p, "OriginalInstanceIndex", repl::Value::i64(12));
-  repl::set_rpc_param(*rpc, p, "FoliageName",
-                      repl::Value(repl::NameValue::plain("Tree_Oak_Large_2")));
-  repl::set_rpc_param(*rpc, p, "FoliageComponentUUID",
-                      repl::Value(repl::NameValue::plain("FoliageISMC_0")));
-  repl::set_rpc_param(*rpc, p, "FoliageState", repl::Value::u64(0));
-  return actor_rpc(pc, "ServerStartInteractionWithFoliage", p);
-}
-
-inline BunchWriter item_used(int storage, int slot,
-                             const std::string &guid_hex) {
-  const schema::ClassSchema &pawn = class_named("PlayerPawn_C");
-  const schema::RpcSchema *rpc = pawn.rpc("ServerItemUsed");
-  repl::RpcParams p;
-  const auto g = items::guid_of(guid_hex);
-  const repl::GuidValue gv = g ? *g : repl::GuidValue{};
-  repl::set_rpc_param(*rpc, p, "Storage",
-                      repl::Value::u64(static_cast<uint64_t>(storage)));
-  repl::set_rpc_param(*rpc, p, "Slot", repl::Value::i64(slot));
-  repl::set_rpc_param(*rpc, p, "ExpectedItem.A",
-                      repl::Value::i64(static_cast<int32_t>(gv.a)));
-  repl::set_rpc_param(*rpc, p, "ExpectedItem.B",
-                      repl::Value::i64(static_cast<int32_t>(gv.b)));
-  repl::set_rpc_param(*rpc, p, "ExpectedItem.C",
-                      repl::Value::i64(static_cast<int32_t>(gv.c)));
-  repl::set_rpc_param(*rpc, p, "ExpectedItem.D",
-                      repl::Value::i64(static_cast<int32_t>(gv.d)));
-  repl::set_rpc_param(*rpc, p, "RequestedEquipSlot",
-                      repl::Value::i64(static_cast<int32_t>(0xFFFFFFFFu)));
-  return actor_rpc(pawn, "ServerItemUsed", p);
-}
 
 inline void append_block_rpcs(const schema::ClassSchema &cls,
                               const fake::Delivered &d,
@@ -496,100 +445,12 @@ inline std::vector<repl::RpcCall> pc_calls_since(const Player &p, size_t from) {
   return out;
 }
 
-inline std::vector<repl::RpcCall> pawn_calls_since(const Player &p,
-                                                   size_t from) {
-  std::vector<repl::RpcCall> out;
-  const schema::ClassSchema &cls = class_named("PlayerPawn_C");
-  for (size_t i = from; i < p.got.size(); ++i) {
-    if (p.got[i].channel != p.pawn_ch || p.got[i].open || p.got[i].close)
-      continue;
-    const auto blocks = repl::read_content_blocks(
-        p.got[i].content.data(), p.got[i].content.bit_pos(), 0);
-    if (!blocks)
-      continue;
-    for (const auto &b : *blocks)
-      append_block_rpcs(cls, p.got[i], b, out);
-  }
-  return out;
-}
-
 inline size_t count_calls(const std::vector<repl::RpcCall> &calls,
                           const char *name) {
   return static_cast<size_t>(
       std::count_if(calls.begin(), calls.end(), [&](const repl::RpcCall &c) {
         return c.rpc && std::string(c.rpc->name) == name;
       }));
-}
-
-struct NodeSeen {
-  std::vector<uint32_t> statuses;
-  bool gathered = false;
-  size_t chains = 0;
-  std::vector<std::vector<std::optional<bool>>> can_input;
-};
-
-inline void read_can_input(const repl::Value *can, NodeSeen &out) {
-  const auto *can_arr = can ? can->get_if<repl::ArrayValue>() : nullptr;
-  if (!can_arr)
-    return;
-  std::vector<std::optional<bool>> entries;
-  for (const repl::ElementState &e : can_arr->elements) {
-    const auto w = e.values.find(1);
-    const bool *x = w == e.values.end() ? nullptr : w->second.get_if<bool>();
-    entries.push_back(x ? std::optional<bool>(*x) : std::nullopt);
-  }
-  out.can_input.push_back(std::move(entries));
-}
-
-inline void read_node_block(const fake::Delivered &d, const repl::BlockView &b,
-                            uint64_t comp_id, NodeSeen &out) {
-  if (!b.header.has_rep_layout)
-    return;
-  size_t pos = b.payload_pos;
-  const size_t end = b.payload_pos + b.payload_bits;
-  if (b.header.is_actor) {
-    const schema::ClassSchema &actor_class = class_named("AGatherableActor");
-    const auto st =
-        repl::read_rep_block(actor_class, d.content.data(), end, pos);
-    const repl::Value *v = st ? st->get(actor_class, "bGathered") : nullptr;
-    if (v && v->get_if<bool>() && *v->get_if<bool>())
-      out.gathered = true;
-    return;
-  }
-  if (b.header.object.ObjectId != comp_id)
-    return;
-  const schema::ClassSchema &inter = class_named("UInteractableComponent");
-  const auto st = repl::read_rep_block(inter, d.content.data(), end, pos);
-  const repl::Value *v = st ? st->get(inter, "InputEffectStatuses") : nullptr;
-  const auto *arr = v ? v->get_if<repl::ArrayValue>() : nullptr;
-  if (arr && !arr->elements.empty()) {
-    const auto it = arr->elements[0].values.find(1);
-    if (it != arr->elements[0].values.end() && it->second.get_if<uint64_t>())
-      out.statuses.push_back(
-          static_cast<uint32_t>(*it->second.get_if<uint64_t>()));
-  }
-  read_can_input(st ? st->get(inter, "CanInputActivate") : nullptr, out);
-}
-
-inline NodeSeen node_seen(const Player &p, uint64_t node, size_t from) {
-  NodeSeen out;
-  const uint32_t ch =
-      p.s->actor_view() ? p.s->actor_view()->channel_of(node) : 0;
-  const world::WorldActor *a = p.rig.world->registry().find(node);
-  if (ch == 0 || !a)
-    return out;
-  for (size_t i = from; i < p.got.size(); ++i) {
-    if (p.got[i].channel != ch || p.got[i].open || p.got[i].close)
-      continue;
-    const auto blocks = repl::read_content_blocks(
-        p.got[i].content.data(), p.got[i].content.bit_pos(), 0);
-    if (!blocks)
-      continue;
-    ++out.chains;
-    for (const auto &b : *blocks)
-      read_node_block(p.got[i], b, a->npc.interact_component, out);
-  }
-  return out;
 }
 
 inline std::vector<std::pair<size_t, repl::ChannelingData>>
@@ -615,15 +476,6 @@ channeling_seen(const Player &p, size_t from) {
     }
   }
   return out;
-}
-
-inline bool can_input_ok(const NodeSeen &n, bool last_first) {
-  for (const auto &c : n.can_input) {
-    if (c.size() != 4)
-      return false;
-  }
-  return !n.can_input.empty() && n.can_input.back()[0] &&
-         *n.can_input.back()[0] == last_first;
 }
 
 inline void play(Player &p) {
@@ -653,18 +505,6 @@ inline svc::ProfessionState prof(int64_t guid, int tier, int level,
   s.level = level;
   s.xp = xp;
   return s;
-}
-
-inline std::string refusals_of(const Player &p) {
-  std::string out;
-  for (const auto &[kind, n] : p.s->harvest_refusals())
-    out += (out.empty() ? "" : ", ") + kind + " x" + std::to_string(n);
-  return out.empty() ? "none" : out;
-}
-
-inline size_t refusal_count(const Player &p, const char *kind) {
-  const auto it = p.s->harvest_refusals().find(kind);
-  return it == p.s->harvest_refusals().end() ? 0 : it->second;
 }
 
 struct Snap {

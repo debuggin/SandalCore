@@ -11,6 +11,113 @@
 
 using namespace aoc::worldd;
 
+static BunchWriter interrupt_channel() {
+  return actor_rpc(class_named("PlayerPawn_C"), "ServerInterruptChannel", {});
+}
+
+static size_t count_in_log(const char *what) {
+  const std::string text = g_log.str();
+  size_t n = 0;
+  for (size_t at = text.find(what); at != std::string::npos;
+       at = text.find(what, at + 1))
+    ++n;
+  return n;
+}
+
+static BunchWriter foliage_interact() {
+  const schema::ClassSchema &pc = class_named("AoCPlayerControllerBP_C");
+  const schema::RpcSchema *rpc = pc.rpc("ServerStartInteractionWithFoliage");
+  repl::RpcParams p;
+  if (!rpc)
+    return BunchWriter();
+  repl::set_rpc_param(*rpc, p, "InteractionIndex", repl::Value::i64(0));
+  repl::set_rpc_param(*rpc, p, "OriginalInstanceIndex", repl::Value::i64(12));
+  repl::set_rpc_param(*rpc, p, "FoliageName",
+                      repl::Value(repl::NameValue::plain("Tree_Oak_Large_2")));
+  repl::set_rpc_param(*rpc, p, "FoliageComponentUUID",
+                      repl::Value(repl::NameValue::plain("FoliageISMC_0")));
+  repl::set_rpc_param(*rpc, p, "FoliageState", repl::Value::u64(0));
+  return actor_rpc(pc, "ServerStartInteractionWithFoliage", p);
+}
+
+static BunchWriter item_used(int storage, int slot,
+                             const std::string &guid_hex) {
+  const schema::ClassSchema &pawn = class_named("PlayerPawn_C");
+  const schema::RpcSchema *rpc = pawn.rpc("ServerItemUsed");
+  repl::RpcParams p;
+  const auto g = items::guid_of(guid_hex);
+  const repl::GuidValue gv = g ? *g : repl::GuidValue{};
+  repl::set_rpc_param(*rpc, p, "Storage",
+                      repl::Value::u64(static_cast<uint64_t>(storage)));
+  repl::set_rpc_param(*rpc, p, "Slot", repl::Value::i64(slot));
+  repl::set_rpc_param(*rpc, p, "ExpectedItem.A",
+                      repl::Value::i64(static_cast<int32_t>(gv.a)));
+  repl::set_rpc_param(*rpc, p, "ExpectedItem.B",
+                      repl::Value::i64(static_cast<int32_t>(gv.b)));
+  repl::set_rpc_param(*rpc, p, "ExpectedItem.C",
+                      repl::Value::i64(static_cast<int32_t>(gv.c)));
+  repl::set_rpc_param(*rpc, p, "ExpectedItem.D",
+                      repl::Value::i64(static_cast<int32_t>(gv.d)));
+  repl::set_rpc_param(*rpc, p, "RequestedEquipSlot",
+                      repl::Value::i64(static_cast<int32_t>(0xFFFFFFFFu)));
+  return actor_rpc(pawn, "ServerItemUsed", p);
+}
+
+static std::vector<repl::RpcCall> pawn_calls_since(const Player &p,
+                                                   size_t from) {
+  std::vector<repl::RpcCall> out;
+  const schema::ClassSchema &cls = class_named("PlayerPawn_C");
+  for (size_t i = from; i < p.got.size(); ++i) {
+    if (p.got[i].channel != p.pawn_ch || p.got[i].open || p.got[i].close)
+      continue;
+    const auto blocks = repl::read_content_blocks(
+        p.got[i].content.data(), p.got[i].content.bit_pos(), 0);
+    if (!blocks)
+      continue;
+    for (const auto &b : *blocks)
+      append_block_rpcs(cls, p.got[i], b, out);
+  }
+  return out;
+}
+
+static bool cancel_can_input_ok(const Player &p, uint64_t node, size_t from) {
+  const uint32_t ch =
+      p.s->actor_view() ? p.s->actor_view()->channel_of(node) : 0;
+  const world::WorldActor *a = p.rig.world->registry().find(node);
+  if (ch == 0 || !a)
+    return false;
+  const schema::ClassSchema &inter = class_named("UInteractableComponent");
+  bool seen = false, last_first = false;
+  for (size_t i = from; i < p.got.size(); ++i) {
+    if (p.got[i].channel != ch || p.got[i].open || p.got[i].close)
+      continue;
+    const auto blocks = repl::read_content_blocks(
+        p.got[i].content.data(), p.got[i].content.bit_pos(), 0);
+    for (size_t j = 0; blocks && j < blocks->size(); ++j) {
+      const repl::BlockView &b = (*blocks)[j];
+      if (!b.header.has_rep_layout || b.header.is_actor ||
+          b.header.object.ObjectId != a->npc.interact_component)
+        continue;
+      size_t pos = b.payload_pos;
+      const auto st = repl::read_rep_block(inter, p.got[i].content.data(),
+                                           b.payload_pos + b.payload_bits, pos);
+      const repl::Value *can = st ? st->get(inter, "CanInputActivate") : nullptr;
+      const auto *arr = can ? can->get_if<repl::ArrayValue>() : nullptr;
+      if (!arr)
+        continue;
+      if (arr->elements.size() != 4)
+        return false;
+      const auto w = arr->elements[0].values.find(1);
+      const bool *x = w == arr->elements[0].values.end()
+                          ? nullptr
+                          : w->second.get_if<bool>();
+      seen = x != nullptr;
+      last_first = x && *x;
+    }
+  }
+  return seen && last_first;
+}
+
 static void check_cancel_unequip_and_rewear(Rig &rig, Player &p,
                                             uint64_t node) {
   const Snap s0 = snap(p);
@@ -58,7 +165,7 @@ static void check_cancel_interrupt_and_unequip(Rig &rig, Player &p,
             p.s->harvests_cancelled() == s0.cancelled + 1,
         "ServerInterruptChannel: the channel ends, the node is Available");
   rig.run(milliseconds(300));
-  CHECK(can_input_ok(node_seen(p, node, interrupt_from), true),
+  CHECK(cancel_can_input_ok(p, node, interrupt_from),
         "the cancel told the client CanInputActivate with four entries, the "
         "first true (an empty array crashed the client in test 1: its access "
         "violation 487 ms after the cancel)");

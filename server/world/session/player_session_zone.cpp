@@ -1,10 +1,52 @@
-#include "session/player_session_internal.h"
+#include "protocol/repl/move_packed.h"
+#include "protocol/repl/rpc_fields.h"
+#include "session/gm_travel.h"
+#include "session/player_session.h"
 #include "world/city_nodes.h"
 
 namespace aoc {
 namespace worldd {
 
-using namespace ::sandal::worldd::session::detail;
+namespace {
+
+const repl::Value* rpc_value(const repl::ClientRpc& rpc, std::string_view name) {
+    if (!rpc.call.decoded || !rpc.call.rpc) return nullptr;
+    const schema::RepCommand* c = repl::rpc_command(*rpc.call.rpc, name);
+    if (!c) return nullptr;
+    const auto it = rpc.call.params.values.find(c->handle);
+    return it == rpc.call.params.values.end() ? nullptr : &it->second;
+}
+
+double number_value(const repl::Value* v) {
+    if (!v) return 0.0;
+    if (const auto* i = v->get_if<int64_t>()) return static_cast<double>(*i);
+    if (const auto* u = v->get_if<uint64_t>()) return static_cast<double>(*u);
+    if (const auto* d = v->get_if<double>()) return *d;
+    if (const auto* f = v->get_if<float>()) return static_cast<double>(*f);
+    return 0.0;
+}
+
+std::string text_value(const repl::Value* v) {
+    if (!v) return {};
+    if (const auto* s = v->get_if<std::string>()) return *s;
+    return {};
+}
+
+const char* gm_refusal(PlayerSession::GmMoveResult::Status s) {
+    switch (s) {
+        case PlayerSession::GmMoveResult::Status::Dead: return "the player is dead";
+        case PlayerSession::GmMoveResult::Status::OutsideWorld: return "outside the world";
+        case PlayerSession::GmMoveResult::Status::Busy: return "the reply queue is full";
+        case PlayerSession::GmMoveResult::Status::Moved: break;
+    }
+    return "moved";
+}
+
+}  // namespace
+
+struct PlayerSession::SessionInternal {
+    static void handle_gm_node_clock_rpc(PlayerSession& s, const repl::ClientRpc& rpc, const char* params, Clock::time_point now);
+};
 
 PlayerSession::GmMoveResult PlayerSession::gm_teleport(Connection& conn, double x, double y, double z, Clock::time_point now, const std::string& by) {
     return move_to(conn, x, y, z, now, by, /*gm=*/true);
@@ -290,7 +332,7 @@ void PlayerSession::run_nodes(Connection& conn) {
     }
 }
 
-void PlayerSessionTypes::SessionInternal::handle_gm_node_clock_rpc(PlayerSession& s, const repl::ClientRpc& rpc, const char* params, Clock::time_point now) {
+void PlayerSession::SessionInternal::handle_gm_node_clock_rpc(PlayerSession& s, const repl::ClientRpc& rpc, const char* params, Clock::time_point now) {
     const std::string rpc_name = rpc.call.rpc->name;
     world::NodeControl* control = s.world_ ? s.world_->node_control() : nullptr;
     const std::string by = rpc_name + " by " + s.name();

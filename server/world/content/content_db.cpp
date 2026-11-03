@@ -19,20 +19,16 @@ constexpr const char* kMetaSql = "SELECT key, value FROM meta";
 constexpr const char* kClassSql = "SELECT guid, name, archetype_id FROM class WHERE archetype_id = ?1";
 constexpr const char* kClassByNameSql = "SELECT guid, name, archetype_id FROM class WHERE name = ?1";
 constexpr const char* kAttributesSql =
-    "SELECT stat_guid, stat_name, value, rounding_ambiguous FROM class_stat_base "
-    "WHERE class_guid = ?1 AND level = ?2 ORDER BY stat_guid";
+    "SELECT stat_guid, stat_name, value, rounding_ambiguous FROM class_stat_base WHERE class_guid = ?1 AND level = ?2 ORDER BY stat_guid";
 constexpr const char* kAbilityRuntimeSql =
     "SELECT ability_guid, name, held_behavior, requires_out_of_combat, min_stamina, cost_stat_guid, cost_amount, "
     "cost_requires_moving, charge_interval, cooldown, triggers_cooldown, disable_during_cooldown, targets_self, "
-    "effect_guid, "
-    "montage_path, cancel_section FROM ability_runtime WHERE ability_guid = ?1";
+    "effect_guid, montage_path, cancel_section FROM ability_runtime WHERE ability_guid = ?1";
 constexpr const char* kEffectRuntimeSql =
     "SELECT effect_guid, name, infinite, duration, tick_timer, stops_regen_standing, stops_regen_moving, "
-    "end_effect_guid, "
-    "end_effect_duration FROM effect_runtime";
+    "end_effect_guid, end_effect_duration FROM effect_runtime";
 constexpr const char* kEffectStatSql =
-    "SELECT effect_guid, stat_guid, source_stat_guid, factor, addend FROM effect_stat_runtime ORDER BY effect_guid, "
-    "ord";
+    "SELECT effect_guid, stat_guid, source_stat_guid, factor, addend FROM effect_stat_runtime ORDER BY effect_guid, ord";
 constexpr const char* kStaminaRuleSql = "SELECT value FROM stamina_rule WHERE key = ?1";
 constexpr const char* kItemSql =
     "SELECT guid, name, can_equip, occupies_all_equip_slots, default_quality, max_stack_size, max_durability, inv_w, "
@@ -44,22 +40,19 @@ constexpr const char* kItemSlotsSql = "SELECT slot FROM item_equip_slot WHERE it
 constexpr const char* kStatProgramSql = "SELECT version, mode, stats, classes, crc32, data FROM stat_program WHERE id = 1";
 constexpr const char* kStatBlockSql =
     "SELECT stat_guid, common_min, common_max, uncommon_min, uncommon_max, rare_min, rare_max, heroic_min, heroic_max, "
-    "epic_min, epic_max, "
-    "legendary_min, legendary_max, artifact_min, artifact_max FROM stat_block_stat WHERE block_guid = ?1 ORDER BY "
-    "stat_guid";
+    "epic_min, epic_max, legendary_min, legendary_max, artifact_min, artifact_max FROM stat_block_stat WHERE block_guid = ?1 "
+    "ORDER BY stat_guid";
 constexpr const char* kItemSetSql = "SELECT set_guid FROM item_set WHERE item_guid = ?1 ORDER BY ord";
 constexpr const char* kItemTagSql = "SELECT tag FROM item_tag WHERE item_guid = ?1 ORDER BY ord";
 constexpr const char* kSetBonusSql =
     "SELECT tier_ord, pieces, stat_guid, common, uncommon, rare, heroic, epic, legendary, artifact FROM set_bonus "
-    "WHERE set_guid = ?1 "
-    "ORDER BY tier_ord, bonus_ord";
+    "WHERE set_guid = ?1 ORDER BY tier_ord, bonus_ord";
 constexpr const char* kEquipSlotSql = "SELECT slot, name FROM equip_slot";
 constexpr const char* kItemUseSql =
     "SELECT item_guid, activation, consume_on_use, cooldown, disabled_in_combat FROM item_use WHERE item_guid = ?1";
 constexpr const char* kItemActionSql = "SELECT action_guid FROM item_action WHERE item_guid = ?1 ORDER BY ord";
 constexpr const char* kActionSql =
-    "SELECT guid, name, response_type, class_guid, class_name, remove_up_to_quantity FROM action_response WHERE guid = "
-    "?1";
+    "SELECT guid, name, response_type, class_guid, class_name, remove_up_to_quantity FROM action_response WHERE guid = ?1";
 constexpr const char* kActionRewardSql = "SELECT reward_table_guid FROM action_reward WHERE action_guid = ?1 ORDER BY ord";
 constexpr const char* kRewardTableSql = "SELECT guid, name, predicate, level_below, modelled FROM reward_table WHERE guid = ?1";
 constexpr const char* kRewardItemSql = "SELECT item_guid, variation_guid, quantity FROM reward_item WHERE table_guid = ?1 ORDER BY ord";
@@ -71,28 +64,30 @@ constexpr const char* kLevelingTypeSql =
 constexpr const char* kLevelingCurveSql = "SELECT level, xp FROM leveling_curve WHERE type_guid = ?1 ORDER BY level";
 constexpr const char* kAutoGrantSql =
     "SELECT tree_guid, tree_name, leveling_type_guid, node_guid, node_name, level_requirement, skill_guid, skill_name, "
-    "rank_guid, effect_guid "
-    "FROM skill_auto_grant WHERE leveling_type_guid = ?1 ORDER BY level_requirement, node_guid";
+    "rank_guid, effect_guid FROM skill_auto_grant WHERE leveling_type_guid = ?1 ORDER BY level_requirement, node_guid";
 constexpr const char* kRankModSql = "SELECT stat_guid, stat_name, value FROM skill_rank_stat_mod WHERE rank_guid = ?1 ORDER BY ord";
 constexpr const char* kTreeSql = "SELECT guid, name, kind, leveling_type_guid, class_guid, weapon_line_guid FROM skill_tree ORDER BY guid";
 constexpr const char* kNodeSql =
     "SELECT tree_guid, node_guid, ord, name, skill_guid, skill_name, level_requirement, point_requirement, "
-    "auto_granted, auto_hotbar, all_required, opt, slot_guid "
-    "FROM skill_node ORDER BY tree_guid, ord, opt";
+    "auto_granted, auto_hotbar, all_required, opt, slot_guid FROM skill_node ORDER BY tree_guid, ord, opt";
 constexpr const char* kRequireSql =
-    "SELECT tree_guid, node_guid, ord, skill_guid, slot_node_guid FROM skill_node_require ORDER BY tree_guid, "
-    "node_guid, ord";
+    "SELECT tree_guid, node_guid, ord, skill_guid, slot_node_guid FROM skill_node_require ORDER BY tree_guid, node_guid, ord";
 constexpr const char* kExclusiveSql =
     "SELECT tree_guid, node_guid, ord, skill_guid FROM skill_node_exclusive ORDER BY tree_guid, node_guid, ord";
 constexpr const char* kSkillRankSql =
     "SELECT skill_guid, ord, rank_guid, name, ability_guid, ability_name, effect_guid, effect_name, effect_infinite, "
-    "effect_duration "
-    "FROM skill_rank ORDER BY skill_guid, ord";
+    "effect_duration FROM skill_rank ORDER BY skill_guid, ord";
 constexpr const char* kRankCostSql = "SELECT rank_guid, ord, point_type_guid, quantity FROM skill_rank_cost ORDER BY rank_guid, ord";
 constexpr const char* kAllRankModSql = "SELECT rank_guid, stat_guid, stat_name, value FROM skill_rank_stat_mod ORDER BY rank_guid, ord";
 constexpr const char* kPointTypeSql = "SELECT guid, name FROM skill_point_type";
 constexpr const char* kLevelingPointSql = "SELECT type_guid, level, point_type_guid, quantity FROM leveling_point";
 constexpr const char* kItemWeaponSql = "SELECT attack_ability_guid, skill_line_guid, skill_line_name FROM item_weapon WHERE item_guid = ?1";
+constexpr const char* kRarityBoundsSql = "SELECT rarity_min, rarity_max FROM item_vendor WHERE item_guid = ?1";
+constexpr const char* kStatRowSql =
+    "SELECT common_min, common_max, uncommon_min, uncommon_max, rare_min, rare_max, heroic_min, heroic_max, epic_min, "
+    "epic_max, legendary_min, legendary_max, artifact_min, artifact_max FROM stat_block_stat WHERE block_guid = ?1 AND stat_guid = ?2";
+constexpr const char* kItemGearSql = "SELECT stat_block_guid, quality_curve_guid FROM item WHERE guid = ?1";
+constexpr const char* kQualityCurveSql = "SELECT ord, x, y FROM quality_curve WHERE guid = ?1 ORDER BY ord";
 
 bool read_meta_rows(sqlite3* db, const std::string& path, std::map<std::string, std::string>& meta, std::string& error) {
     Stmt q(db, kMetaSql);
@@ -101,9 +96,7 @@ bool read_meta_rows(sqlite3* db, const std::string& path, std::map<std::string, 
         return false;
     }
     int step = SQLITE_OK;
-    while ((step = sqlite3_step(q.get())) == SQLITE_ROW) {
-        meta[column_text(q.get(), 0)] = column_text(q.get(), 1);
-    }
+    while ((step = sqlite3_step(q.get())) == SQLITE_ROW) meta[column_text(q.get(), 0)] = column_text(q.get(), 1);
     if (step != SQLITE_DONE) {
         error = path + " cannot be read: " + db_message(db);
         return false;
@@ -138,16 +131,13 @@ bool validate_meta_version(const std::string& path, const std::map<std::string, 
     if (v < kMinContentcVersion) {
         error = path + " was built by contentc version " + *contentc + ", this worldd reads version " +
                 std::to_string(kMinContentcVersion) +
-                " or later (the city nodes, contentc version 12): rebuild it with this checkout's contentc: "
-                "cd services && go run ./cmd/contentc";
+                " or later (the city nodes, contentc version 12): rebuild it with this checkout's contentc: cd services && go run ./cmd/contentc";
         return false;
     }
     out.schema_version = kSchemaVersion;
     out.contentc_version = *contentc;
     out.source_dbc_sha256 = *sha;
-    if (const std::string* built = find_meta_value(meta, "built_at")) {
-        out.built_at = *built;
-    }
+    if (const std::string* built = find_meta_value(meta, "built_at")) out.built_at = *built;
     return true;
 }
 
@@ -326,18 +316,15 @@ int read_item_row_dimensions(sqlite3_stmt* s, int64_t guid, ItemRecord& rec, std
 }
 
 int read_item_row(sqlite3* db, int64_t guid, ItemRecord& rec, std::string& error) {
-    Stmt q(db, kItemSql);
+    Stmt q(db, kItemSql, guid);
     if (!q.ok()) {
-        error = "content.db item query failed: " + db_message(db);
+        fail_db(db, "item query failed", error);
         return -1;
     }
-    sqlite3_bind_int64(q.get(), 1, guid);
     const int step = sqlite3_step(q.get());
-    if (step == SQLITE_DONE) {
-        return 0;
-    }
+    if (step == SQLITE_DONE) return 0;
     if (step != SQLITE_ROW) {
-        error = "content.db item query failed: " + db_message(db);
+        fail_db(db, "item query failed", error);
         return -1;
     }
     rec.guid = sqlite3_column_int64(q.get(), 0);
@@ -366,53 +353,40 @@ int read_item_row(sqlite3* db, int64_t guid, ItemRecord& rec, std::string& error
 }
 
 bool read_item_equip_slots(sqlite3* db, int64_t guid, ItemRecord& rec, std::string& error) {
-    Stmt q(db, kItemSlotsSql);
-    if (!q.ok()) {
-        error = "content.db item slot query failed: " + db_message(db);
-        return false;
-    }
-    sqlite3_bind_int64(q.get(), 1, guid);
+    Stmt q(db, kItemSlotsSql, guid);
+    if (!q.ok()) return fail_db(db, "item slot query failed", error);
     int step = SQLITE_OK;
     while ((step = sqlite3_step(q.get())) == SQLITE_ROW) {
         const int slot = sqlite3_column_int(q.get(), 0);
-        if (slot < 0 || slot > 255) {
-            error = "content.db item " + std::to_string(guid) + " has the equip slot " + std::to_string(slot) + ", which is no EEquipSlot";
-            return false;
-        }
+        if (slot < 0 || slot > 255)
+            return fail_msg("item " + std::to_string(guid) + " has the equip slot " + std::to_string(slot) + ", which is no EEquipSlot", error);
         rec.equip_slots.push_back(static_cast<uint8_t>(slot));
     }
-    if (step != SQLITE_DONE) {
-        error = "content.db item slot query failed: " + db_message(db);
-        return false;
-    }
-    return true;
+    return check_done(db, step, "item slot query failed", error);
 }
 
 int read_resource_bag_header(sqlite3* db, int64_t item_guid, ResourceBagRecord& bag, std::string& error) {
-    Stmt q(db, kResourceBagSql);
+    Stmt q(db, kResourceBagSql, item_guid);
     if (!q.ok()) {
-        error = "content.db resource bag query failed: " + db_message(db);
+        fail_db(db, "resource bag query failed", error);
         return -1;
     }
-    sqlite3_bind_int64(q.get(), 1, item_guid);
     const int step = sqlite3_step(q.get());
-    if (step == SQLITE_DONE) {
-        return 0;
-    }
+    if (step == SQLITE_DONE) return 0;
     if (step != SQLITE_ROW) {
-        error = "content.db resource bag query failed: " + db_message(db);
+        fail_db(db, "resource bag query failed", error);
         return -1;
     }
     if (!column_is_int(q.get(), 0) || !column_is_text(q.get(), 1) || !column_is_int(q.get(), 2) || !column_is_int(q.get(), 3) ||
         !column_is_int(q.get(), 4)) {
-        error = "content.db resource bag " + std::to_string(item_guid) + " has a column of the wrong storage class";
+        fail_msg("resource bag " + std::to_string(item_guid) + " has a column of the wrong storage class", error);
         return -1;
     }
-    const int64_t columns = sqlite3_column_int64(q.get(), 2);
-    const int64_t rows = sqlite3_column_int64(q.get(), 3);
+    const int64_t columns = sqlite3_column_int64(q.get(), 2), rows = sqlite3_column_int64(q.get(), 3);
     if (columns < 1 || rows < 1 || columns * rows > 255) {
-        error = "content.db resource bag " + std::to_string(item_guid) + " has the grid " + std::to_string(columns) + " x " +
-                std::to_string(rows) + ", outside 1 to 255 cells";
+        fail_msg("resource bag " + std::to_string(item_guid) + " has the grid " + std::to_string(columns) + " x " + std::to_string(rows) +
+                     ", outside 1 to 255 cells",
+                 error);
         return -1;
     }
     bag.def = sqlite3_column_int64(q.get(), 0);
@@ -424,36 +398,21 @@ int read_resource_bag_header(sqlite3* db, int64_t item_guid, ResourceBagRecord& 
 }
 
 bool read_resource_bag_cells(sqlite3* db, int64_t item_guid, ResourceBagRecord& bag, std::string& error) {
-    Stmt q(db, kResourceBagCellSql);
-    if (!q.ok()) {
-        error = "content.db resource bag cell query failed: " + db_message(db);
-        return false;
-    }
-    sqlite3_bind_int64(q.get(), 1, bag.def);
+    Stmt q(db, kResourceBagCellSql, bag.def);
+    if (!q.ok()) return fail_db(db, "resource bag cell query failed", error);
     int step = SQLITE_OK;
     while ((step = sqlite3_step(q.get())) == SQLITE_ROW) {
-        const int64_t col = sqlite3_column_int64(q.get(), 0);
-        const int64_t row = sqlite3_column_int64(q.get(), 1);
-        const int64_t value = sqlite3_column_int64(q.get(), 2);
-        if (col < 0 || col > 255 || row < 0 || row > 255 || (value != -1 && value != -2)) {
-            error = "content.db resource bag " + std::to_string(item_guid) + " has the cell (" + std::to_string(col) + ", " +
-                    std::to_string(row) + ") = " + std::to_string(value);
-            return false;
-        }
-        if (bag.matrix.size() <= static_cast<size_t>(col)) {
-            bag.matrix.resize(static_cast<size_t>(col) + 1);
-        }
+        const int64_t col = sqlite3_column_int64(q.get(), 0), row = sqlite3_column_int64(q.get(), 1), value = sqlite3_column_int64(q.get(), 2);
+        if (col < 0 || col > 255 || row < 0 || row > 255 || (value != -1 && value != -2))
+            return fail_msg("resource bag " + std::to_string(item_guid) + " has the cell (" + std::to_string(col) + ", " +
+                                std::to_string(row) + ") = " + std::to_string(value),
+                            error);
+        if (bag.matrix.size() <= static_cast<size_t>(col)) bag.matrix.resize(static_cast<size_t>(col) + 1);
         std::vector<int32_t>& column = bag.matrix[static_cast<size_t>(col)];
-        if (column.size() <= static_cast<size_t>(row)) {
-            column.resize(static_cast<size_t>(row) + 1, -1);
-        }
+        if (column.size() <= static_cast<size_t>(row)) column.resize(static_cast<size_t>(row) + 1, -1);
         column[static_cast<size_t>(row)] = static_cast<int32_t>(value);
     }
-    if (step != SQLITE_DONE) {
-        error = "content.db resource bag cell query failed: " + db_message(db);
-        return false;
-    }
-    return true;
+    return check_done(db, step, "resource bag cell query failed", error);
 }
 
 bool gear_fail(sqlite3* db, int64_t guid, const char* what, std::string& error) {
@@ -463,11 +422,9 @@ bool gear_fail(sqlite3* db, int64_t guid, const char* what, std::string& error) 
 
 bool read_item_gear_curve(sqlite3* db, int64_t curve, stats::ItemGear& g, std::string& error) {
     if (curve == 0) return true;
-    Stmt q(db, kQualityCurveSql);
+    Stmt q(db, kQualityCurveSql, curve);
     if (!q.ok()) return gear_fail(db, g.record, "quality curve", error);
-    sqlite3_bind_int64(q.get(), 1, curve);
-    int n = 0;
-    int step = SQLITE_OK;
+    int n = 0, step = SQLITE_OK;
     while ((step = sqlite3_step(q.get())) == SQLITE_ROW) {
         if (!column_is_int(q.get(), 0) || sqlite3_column_int64(q.get(), 0) != n || n >= stats::kRarities) {
             error = "content.db's quality curve " + std::to_string(curve) + " has its rarities out of order";
@@ -477,8 +434,7 @@ bool read_item_gear_curve(sqlite3* db, int64_t curve, stats::ItemGear& g, std::s
             error = "content.db's quality curve " + std::to_string(curve) + " has a band that is not a number";
             return false;
         }
-        g.bands[static_cast<size_t>(n)] = {sqlite3_column_double(q.get(), 1), sqlite3_column_double(q.get(), 2)};
-        ++n;
+        g.bands[static_cast<size_t>(n++)] = {sqlite3_column_double(q.get(), 1), sqlite3_column_double(q.get(), 2)};
     }
     if (step != SQLITE_DONE) return gear_fail(db, g.record, "quality curve", error);
     if (n != stats::kRarities) {
@@ -492,9 +448,8 @@ bool read_item_gear_curve(sqlite3* db, int64_t curve, stats::ItemGear& g, std::s
 
 bool read_item_gear_stats(sqlite3* db, int64_t block, const std::set<int64_t>& percent_stats, stats::ItemGear& g, std::string& error) {
     if (block == 0) return true;
-    Stmt q(db, kStatBlockSql);
+    Stmt q(db, kStatBlockSql, block);
     if (!q.ok()) return gear_fail(db, g.record, "stat block", error);
-    sqlite3_bind_int64(q.get(), 1, block);
     int step = SQLITE_OK;
     while ((step = sqlite3_step(q.get())) == SQLITE_ROW) {
         stats::BlockStat s;
@@ -520,16 +475,14 @@ bool read_item_gear_stats(sqlite3* db, int64_t block, const std::set<int64_t>& p
 
 bool read_item_gear_sets_and_tags(sqlite3* db, stats::ItemGear& g, std::string& error) {
     {
-        Stmt q(db, kItemSetSql);
+        Stmt q(db, kItemSetSql, g.record);
         if (!q.ok()) return gear_fail(db, g.record, "item set", error);
-        sqlite3_bind_int64(q.get(), 1, g.record);
         int step = SQLITE_OK;
         while ((step = sqlite3_step(q.get())) == SQLITE_ROW) g.sets.push_back(sqlite3_column_int64(q.get(), 0));
         if (step != SQLITE_DONE) return gear_fail(db, g.record, "item set", error);
     }
-    Stmt q(db, kItemTagSql);
+    Stmt q(db, kItemTagSql, g.record);
     if (!q.ok()) return gear_fail(db, g.record, "item tag", error);
-    sqlite3_bind_int64(q.get(), 1, g.record);
     int step = SQLITE_OK;
     while ((step = sqlite3_step(q.get())) == SQLITE_ROW) g.tags.push_back(column_text(q.get(), 0));
     return step == SQLITE_DONE ? true : gear_fail(db, g.record, "item tag", error);
@@ -559,18 +512,99 @@ bool validate_stat_program_columns(sqlite3_stmt* s, std::string& error) {
 
 }  // namespace
 
+std::string column_text(sqlite3_stmt* s, int col) {
+    const unsigned char* t = sqlite3_column_text(s, col);
+    return t ? std::string(reinterpret_cast<const char*>(t), static_cast<size_t>(sqlite3_column_bytes(s, col))) : std::string();
+}
+std::string db_message(sqlite3* db) {
+    const char* m = sqlite3_errmsg(db);
+    return m ? m : "unknown SQLite error";
+}
+bool fail_msg(const std::string& msg, std::string& error) {
+    error = "content.db " + msg;
+    return false;
+}
+bool fail_db(sqlite3* db, const std::string& what, std::string& error) { return fail_msg(what + ": " + db_message(db), error); }
+bool check_done(sqlite3* db, int step, const std::string& what, std::string& error) {
+    return step == SQLITE_DONE ? true : fail_db(db, what, error);
+}
+bool check_cols(sqlite3_stmt* s, const std::string& table, const char* kinds, std::string& error) {
+    for (int c = 0; kinds[c] != '\0'; ++c) {
+        const char k = kinds[c];
+        if ((k == 'i' && !column_is_int(s, c)) || (k == 'r' && !column_is_real(s, c)) || (k == 't' && !column_is_text(s, c)))
+            return fail_msg(table + " has a column of the wrong storage class", error);
+    }
+    return true;
+}
+void read_rarity_bounds(sqlite3* db, int64_t guid, items::ItemRarityFacts& out) {
+    Stmt q(db, kRarityBoundsSql, guid);
+    if (q.step() == SQLITE_ROW && column_is_int(q.get(), 0) && column_is_int(q.get(), 1)) {
+        const int hi = items::kRarityCount - 1;
+        out.rarity_min = std::clamp(col_int(q.get(), 0), 0, hi);
+        out.rarity_max = std::clamp(col_int(q.get(), 1), 0, hi);
+    }
+}
+void read_quality_curve(sqlite3* db, int64_t curve, items::ItemRarityFacts& out) {
+    out.has_curve = false;
+    Stmt q(db, kQualityCurveSql, curve);
+    std::array<items::QualityBand, items::kRarityCount> bands{};
+    int n = 0, step = SQLITE_ERROR;
+    while (curve != 0 && (step = q.step()) == SQLITE_ROW) {
+        if (n >= items::kRarityCount || col_i64(q.get(), 0, -1) != n || !column_is_real(q.get(), 1) || !column_is_real(q.get(), 2)) return;
+        bands[static_cast<size_t>(n++)] = {col_real(q.get(), 1), col_real(q.get(), 2)};
+    }
+    if (step == SQLITE_DONE && n == items::kRarityCount) {
+        out.bands = bands;
+        out.has_curve = true;
+    }
+}
+void read_item_rarity(sqlite3* db, int64_t guid, ItemRecord& rec) {
+    Stmt g(db, kItemGearSql, guid);
+    if (g.step() != SQLITE_ROW) return;
+    const int64_t block = col_i64(g.get(), 0), curve = col_i64(g.get(), 1);
+    read_rarity_bounds(db, guid, rec);
+    read_quality_curve(db, curve, rec);
+    Stmt q(db, kStatRowSql, block);
+    if (block == 0 || !q.ok()) return;
+    sqlite3_bind_int64(q.get(), 2, items::kMaxDurabilityStat);
+    if (q.step() != SQLITE_ROW) return;
+    items::RarityRange row;
+    for (int r = 0; r < items::kRarityCount; ++r) {
+        if (!column_is_real(q.get(), 2 * r) || !column_is_real(q.get(), 2 * r + 1)) return;
+        row.min[static_cast<size_t>(r)] = col_real(q.get(), 2 * r);
+        row.max[static_cast<size_t>(r)] = col_real(q.get(), 2 * r + 1);
+    }
+    rec.durability_stat = row;
+}
+bool guid_list(sqlite3* db, GuidQuery query, int64_t parent, std::vector<int64_t>& out, std::string& error) {
+    Stmt q(db, query.sql, parent);
+    int step = SQLITE_ERROR;
+    while ((step = q.step()) == SQLITE_ROW) out.push_back(sqlite3_column_int64(q.get(), 0));
+    return check_done(db, step, std::string(query.what) + " query failed", error);
+}
+int64_t json_int(const nlohmann::json& o, std::string_view key) {
+    const auto it = o.find(key);
+    return it != o.end() && it->is_number_integer() ? it->get<int64_t>() : int64_t(0);
+}
+double json_num(const nlohmann::json& o, std::string_view key) {
+    const auto it = o.find(key);
+    return it != o.end() && it->is_number() ? it->get<double>() : 0.0;
+}
+bool json_flag(const nlohmann::json& o, std::string_view key) { return json_int(o, key) != 0; }
+std::string json_str(const nlohmann::json& o, std::string_view key) {
+    const auto it = o.find(key);
+    return it != o.end() && it->is_string() ? it->get<std::string>() : std::string();
+}
+
 ContentDb::ContentDb(ContentDb&& other) noexcept
     : db_(std::exchange(other.db_, nullptr)),
       path_(std::move(other.path_)),
       meta_(std::move(other.meta_)),
-      percent_stats_(std::move(other.percent_stats_)) {
-}
+      percent_stats_(std::move(other.percent_stats_)) {}
 
 ContentDb& ContentDb::operator=(ContentDb&& other) noexcept {
     if (this != &other) {
-        if (db_) {
-            sqlite3_close(db_);
-        }
+        if (db_) sqlite3_close(db_);
         db_ = std::exchange(other.db_, nullptr);
         path_ = std::move(other.path_);
         meta_ = std::move(other.meta_);
@@ -580,9 +614,7 @@ ContentDb& ContentDb::operator=(ContentDb&& other) noexcept {
 }
 
 ContentDb::~ContentDb() {
-    if (db_) {
-        sqlite3_close(db_);
-    }
+    if (db_) sqlite3_close(db_);
 }
 
 std::optional<ContentDb> ContentDb::open(const std::string& path, std::string& error) {
@@ -601,9 +633,8 @@ std::optional<ContentDb> ContentDb::open(const std::string& path, std::string& e
     }
     std::map<std::string, std::string> meta;
     if (!read_meta_rows(c.db_, path, meta, error) || !validate_meta_version(path, meta, c.meta_, error) ||
-        !validate_required_tables(c.db_, path, error)) {
+        !validate_required_tables(c.db_, path, error))
         return std::nullopt;
-    }
     c.load_percent_stats();
     spdlog::info("[content] {}: contentc version {}, built from the design database sha256 {}{}", path, c.meta_.contentc_version,
                  c.meta_.source_dbc_sha256, c.meta_.built_at.empty() ? "" : (", built " + c.meta_.built_at));
@@ -618,9 +649,7 @@ std::optional<ClassRecord> ContentDb::class_for_archetype(int64_t archetype_id, 
     }
     sqlite3_bind_int64(q.get(), 1, archetype_id);
     const int step = sqlite3_step(q.get());
-    if (step == SQLITE_ROW) {
-        return ClassRecord{sqlite3_column_int64(q.get(), 0), column_text(q.get(), 1), sqlite3_column_int64(q.get(), 2)};
-    }
+    if (step == SQLITE_ROW) return ClassRecord{sqlite3_column_int64(q.get(), 0), column_text(q.get(), 1), sqlite3_column_int64(q.get(), 2)};
     error = step == SQLITE_DONE ? "no player class has archetype id " + std::to_string(archetype_id) + " in content.db"
                                 : "content.db class query failed: " + db_message(db_);
     return std::nullopt;
@@ -634,9 +663,7 @@ std::optional<ClassRecord> ContentDb::class_for_name(const std::string& name, st
     }
     sqlite3_bind_text(q.get(), 1, name.c_str(), static_cast<int>(name.size()), SQLITE_TRANSIENT);
     const int step = sqlite3_step(q.get());
-    if (step == SQLITE_ROW) {
-        return ClassRecord{sqlite3_column_int64(q.get(), 0), column_text(q.get(), 1), sqlite3_column_int64(q.get(), 2)};
-    }
+    if (step == SQLITE_ROW) return ClassRecord{sqlite3_column_int64(q.get(), 0), column_text(q.get(), 1), sqlite3_column_int64(q.get(), 2)};
     error =
         step == SQLITE_DONE ? "no player class named '" + name + "' in content.db" : "content.db class query failed: " + db_message(db_);
     return std::nullopt;
@@ -675,43 +702,29 @@ std::optional<AbilityRules> ContentDb::ability_rules(std::string& error) const {
         !load_ability_rule(db_, kGuidRest, out.rest, error) || !load_effect_rules(db_, out, error) ||
         !load_effect_stat_mods(db_, out, error) || !read_stamina_rule(db_, "stat_regen_time", &out.stat_regen_time, error) ||
         !read_stamina_rule(db_, "regen.rate_enabled", &out.regen_rate, error) || !validate_ability_invariants(out, error) ||
-        !validate_ability_effects(out, error)) {
+        !validate_ability_effects(out, error))
         return std::nullopt;
-    }
     return out;
 }
 
 std::optional<ItemRecord> ContentDb::item(int64_t guid, std::string& error) const {
     error.clear();
     ItemRecord rec;
-    const int status = read_item_row(db_, guid, rec, error);
-    if (status <= 0) {
-        return std::nullopt;
-    }
+    if (read_item_row(db_, guid, rec, error) <= 0) return std::nullopt;
     {
-        Stmt q(db_, kItemNameSql);
-        if (q.ok()) {
-            sqlite3_bind_int64(q.get(), 1, guid);
-            if (sqlite3_step(q.get()) == SQLITE_ROW) {
-                rec.display_name = column_text(q.get(), 0);
-            }
-        }
+        Stmt q(db_, kItemNameSql, guid);
+        if (q.step() == SQLITE_ROW) rec.display_name = column_text(q.get(), 0);
     }
     read_item_rarity(db_, guid, rec);
-    if (!read_item_equip_slots(db_, guid, rec, error)) {
-        return std::nullopt;
-    }
-    return rec;
+    return read_item_equip_slots(db_, guid, rec, error) ? std::optional<ItemRecord>(std::move(rec)) : std::nullopt;
 }
 
 std::optional<ResourceBagRecord> ContentDb::resource_bag(int64_t item_guid, std::string& error) const {
     error.clear();
     ResourceBagRecord bag;
     bag.item = item_guid;
-    const int status = read_resource_bag_header(db_, item_guid, bag, error);
-    if (status <= 0 || !read_resource_bag_cells(db_, item_guid, bag, error)) {
+    if (read_resource_bag_header(db_, item_guid, bag, error) <= 0 || !read_resource_bag_cells(db_, item_guid, bag, error))
         return std::nullopt;
-    }
     return bag;
 }
 
@@ -731,9 +744,7 @@ std::optional<StatProgramRow> ContentDb::stat_program(std::string& error) const 
         return std::nullopt;
     }
     sqlite3_stmt* s = q.get();
-    if (!validate_stat_program_columns(s, error)) {
-        return std::nullopt;
-    }
+    if (!validate_stat_program_columns(s, error)) return std::nullopt;
     const void* blob = sqlite3_column_blob(s, 5);
     const int n = sqlite3_column_bytes(s, 5);
     if (!blob || n <= 0) {
@@ -754,8 +765,7 @@ std::optional<stats::ItemGear> ContentDb::item_gear(int64_t guid, std::string& e
     error.clear();
     stats::ItemGear g;
     g.record = guid;
-    int64_t block = 0;
-    int64_t curve = 0;
+    int64_t block = 0, curve = 0;
     {
         Stmt q(db_, kItemGearSql);
         if (!q.ok()) {
@@ -764,9 +774,7 @@ std::optional<stats::ItemGear> ContentDb::item_gear(int64_t guid, std::string& e
         }
         sqlite3_bind_int64(q.get(), 1, guid);
         const int step = sqlite3_step(q.get());
-        if (step == SQLITE_DONE) {
-            return std::nullopt;
-        }
+        if (step == SQLITE_DONE) return std::nullopt;
         if (step != SQLITE_ROW) {
             error = "content.db item gear query failed: " + db_message(db_);
             return std::nullopt;
@@ -776,9 +784,8 @@ std::optional<stats::ItemGear> ContentDb::item_gear(int64_t guid, std::string& e
     }
     read_rarity_bounds(db_, guid, g);
     if (!read_item_gear_curve(db_, curve, g, error) || !read_item_gear_stats(db_, block, percent_stats_, g, error) ||
-        !read_item_gear_sets_and_tags(db_, g, error)) {
+        !read_item_gear_sets_and_tags(db_, g, error))
         return std::nullopt;
-    }
     return g;
 }
 

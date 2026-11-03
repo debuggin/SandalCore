@@ -17,6 +17,24 @@ namespace repl = aoc::protocol::repl;
 namespace schema = aoc::protocol::schema;
 using aoc::protocol::emit::FIntrepidNetworkGUID;
 
+/// Every handle whose value differs between two states, by name.
+static std::set<std::string> differing(const repl::ObjectState &a, const repl::ObjectState &b) {
+  std::set<std::string> out;
+  std::set<uint16_t> handles;
+  for (const auto &[h, v] : a.state.values())
+    handles.insert(h);
+  for (const auto &[h, v] : b.state.values())
+    handles.insert(h);
+  for (const uint16_t h : handles) {
+    const repl::Value *x = a.state.get(h);
+    const repl::Value *y = b.state.get(h);
+    if (x && y && *x == *y)
+      continue;
+    out.insert(handle_path(*a.schema, h));
+  }
+  return out;
+}
+
 static void test_captured(const spawns::CapturedData &captured) {
   std::printf("the captured spawns\n");
   std::printf("    %zu opens, %zu templates, %zu spawns\n", captured.opens().size(), captured.template_count(), captured.spawns().size());
@@ -637,7 +655,7 @@ int main() {
   test_population(*db, *captured);
   test_load_area(*db, *captured);
   test_mount_donors(*db);
-  run_area_part2(*db, *captured);
+  run_area_vendors_ground(*db, *captured);
   std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

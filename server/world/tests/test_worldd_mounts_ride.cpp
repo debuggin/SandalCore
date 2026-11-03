@@ -10,6 +10,49 @@ namespace bs = aoc::worldd::bootstrap;
 
 namespace {
 
+emit::BunchWriter possession_ack(const emit::FIntrepidNetworkGUID& actor) {
+    const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+    repl::RpcParams p;
+    repl::set_rpc_param(*pc.rpc("ServerAcknowledgePossession"), p, "P", repl::Value(actor));
+    return actor_rpc(pc, "ServerAcknowledgePossession", p);
+}
+
+std::vector<repl::RpcCall> calls_of(const fake::Delivered& d, const char* cls) {
+    std::vector<repl::RpcCall> out;
+    const auto blocks = repl::read_content_blocks(d.content.data(), d.content.bit_pos(), 0);
+    if (!blocks) return out;
+    for (const auto& b : *blocks) {
+        if (b.header.has_rep_layout) continue;
+        size_t p = b.payload_pos;
+        auto calls = repl::read_rpc_fields(class_named(cls), d.content.data(), b.payload_pos + b.payload_bits, p);
+        if (calls) out.insert(out.end(), std::make_move_iterator(calls->begin()), std::make_move_iterator(calls->end()));
+    }
+    return out;
+}
+
+std::optional<emit::FIntrepidNetworkGUID> object_of(const repl::ObjectState& o, const char* path) {
+    const repl::Value* v = o.schema ? o.state.get(*o.schema, path) : nullptr;
+    if (!v) return std::nullopt;
+    if (const auto* g = v->get_if<emit::FIntrepidNetworkGUID>()) return *g;
+    return std::nullopt;
+}
+
+size_t acks_on(const Harness& h, uint32_t channel, size_t from, const char* cls = "ANPCCharacter") {
+    size_t n = 0;
+    for (const fake::Delivered* d : chains_on(h, channel, from)) {
+        for (const repl::RpcCall& c : calls_of(*d, cls)) n += c.rpc && std::string(c.rpc->name) == "ClientMoveResponsePacked";
+    }
+    return n;
+}
+
+size_t corrections_on(const Harness& h, uint32_t channel, size_t from, const char* cls = "ANPCCharacter") {
+    size_t n = 0;
+    for (const fake::Delivered* d : chains_on(h, channel, from)) {
+        for (const repl::RpcCall& c : calls_of(*d, cls)) n += c.rpc && std::string(c.rpc->name) == "ClientAdjustPosition";
+    }
+    return n;
+}
+
 struct PcMountUpTrace {
     bool restart_mount = false;
     bool camera = false;

@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-#include "test_worldd_items_session_helpers.h"
+#include "capture_packets.h"
+#include "test_worldd_items_session_common.h"
 using namespace aoc::worldd;
+static const Address kA{0x7F000001u, 50510};
+static const Address kB{0x7F000001u, 50511};
+static uint8_t g_counter = 1;
+static void counting_random(uint8_t *out, size_t n) {
+    for (size_t i = 0; i < n; ++i) out[i] = g_counter++;
+}
 struct FakeLogins : LoginQueue {
     std::vector<std::pair<uint64_t, LoginRequest>> submitted;
     void submit(uint64_t id, LoginRequest r) override {

@@ -1,9 +1,70 @@
-#include "session/player_session_internal.h"
+#include "bootstrap/character_setup.h"
+#include "content/content_db.h"
+#include "session/player_session.h"
 
 namespace aoc {
 namespace worldd {
 
-using namespace ::sandal::worldd::session::detail;
+namespace {
+
+constexpr double kMountGroundUpCm = 160.0;
+constexpr double kMountGroundDownCm = 1000.0;
+
+const char* mode_name(bootstrap::GameStateMode m) {
+    switch (m) {
+        case bootstrap::GameStateMode::Tier1: return "tier1";
+        case bootstrap::GameStateMode::Tier2: return "tier2";
+        case bootstrap::GameStateMode::Tier3: return "tier3";
+        case bootstrap::GameStateMode::Captured: return "captured";
+    }
+    return "?";
+}
+
+size_t parts_of(const Chain& c) {
+    const size_t bits = c.payload.bit_pos();
+    const size_t content =
+        bits > Connection::kMaxSingleBunchBits ? (bits + Connection::kMaxPartialBunchBits - 1) / Connection::kMaxPartialBunchBits : 1;
+    return c.exports.size() + content;
+}
+
+}  // namespace
+
+struct PlayerSession::SessionInternal {
+    static uint64_t enrich_join_setup(PlayerWorld& world, const svc::Character& character, bootstrap::CharacterSetupResult& built);
+    static void init_joined_state(PlayerSession& p, PlayerWorld& world, const svc::Character& character, bootstrap::CharacterSetupResult& built, uint64_t nodes_version);
+    static void init_mounts_and_view(PlayerSession& p, PlayerWorld& world);
+    static void log_join_summary(PlayerSession& p, PlayerWorld& world);
+    static void tick_view_and_saves(PlayerSession& s, Connection& conn, Clock::time_point now);
+};
+
+PlayerSession::PlayerSession(bootstrap::PlayerSetup setup, bootstrap::GameStateMode mode, std::string character_id, const MovementConfig& movement,
+                             PositionSink* sink, const content::AbilityRules* rules, items::Inventory inventory, const items::ItemCatalog* catalog,
+                             std::optional<stats::CharacterStats> character_stats, const PlayerWorld* world, int class_id, leveling::Progress progress)
+    : pb_(std::move(setup), mode),
+      character_id_(std::move(character_id)),
+      checker_(movement.limits, start_of(pb_.setup())),
+      saved_(checker_.good()),
+      loaded_(checker_.good()),
+      sink_(sink),
+      save_interval_(movement.save_interval),
+      ability_rules_(rules),
+      inventory_(std::move(inventory)),
+      catalog_(catalog),
+      stats_(std::move(character_stats)),
+      world_(world),
+      class_id_(class_id),
+      progress_(progress),
+      base_limits_(movement.limits) {}
+
+protocol::emit::FIntrepidNetworkGUID PlayerSession::warehouse_guid(warehouse::Area area) const {
+    const WhComponent* first = nullptr;
+    for (const WhComponent& w : wh_components_) {
+        if (w.key.area != area) continue;
+        if (wh_open_ && wh_window_.find(w.key)) return w.comp.guid;
+        if (!first) first = &w;
+    }
+    return first ? first->comp.guid : protocol::emit::FIntrepidNetworkGUID{};
+}
 
 std::string url_option(std::string_view url, std::string_view key) {
     size_t pos = 0;
@@ -56,14 +117,7 @@ PlayerSession::~PlayerSession() {
     leave_combat();
 }
 
-void PlayerSession::leave_combat() {
-    if (combat_side_ && npc_world_ && npc_world_->combat()) npc_world_->combat()->remove_player(combat_side_.get());
-    hit_port_.reset();
-    if (pipeline_) pipeline_->set_combat(nullptr);
-    combat_side_.reset();
-}
-
-uint64_t PlayerSessionTypes::SessionInternal::enrich_join_setup(PlayerWorld& world, const svc::Character& character, bootstrap::CharacterSetupResult& built) {
+uint64_t PlayerSession::SessionInternal::enrich_join_setup(PlayerWorld& world, const svc::Character& character, bootstrap::CharacterSetupResult& built) {
     for (size_t i = 1; i < built.setup->resource_bags.size(); ++i) {
         if (built.setup->resource_bags[i].present && built.setup->guids.resource_storage[i].ObjectId == 0) built.setup->guids.resource_storage[i] = world.mint_guid();
     }
@@ -105,8 +159,8 @@ uint64_t PlayerSessionTypes::SessionInternal::enrich_join_setup(PlayerWorld& wor
     return nodes_version;
 }
 
-void PlayerSessionTypes::SessionInternal::init_joined_state(PlayerSession& p, PlayerWorld& world, const svc::Character& character,
-                                                            bootstrap::CharacterSetupResult& built, uint64_t nodes_version) {
+void PlayerSession::SessionInternal::init_joined_state(PlayerSession& p, PlayerWorld& world, const svc::Character& character,
+                                                       bootstrap::CharacterSetupResult& built, uint64_t nodes_version) {
     p.wallet_ = items::Wallet(character.wallet);
     p.jobs_ = character.processing_jobs;
     for (const svc::ProcessingJob& j : p.jobs_) p.job_seen_[j.job_guid] = crafting::status_at(j, p.wall_ms());
@@ -150,7 +204,7 @@ void PlayerSessionTypes::SessionInternal::init_joined_state(PlayerSession& p, Pl
     }
 }
 
-void PlayerSessionTypes::SessionInternal::init_mounts_and_view(PlayerSession& p, PlayerWorld& world) {
+void PlayerSession::SessionInternal::init_mounts_and_view(PlayerSession& p, PlayerWorld& world) {
     p.registry_ = &world.registry();
     p.npc_world_ = &world;
     PlayerSession* self = &p;
@@ -193,7 +247,7 @@ void PlayerSessionTypes::SessionInternal::init_mounts_and_view(PlayerSession& p,
     });
 }
 
-void PlayerSessionTypes::SessionInternal::log_join_summary(PlayerSession& p, PlayerWorld& world) {
+void PlayerSession::SessionInternal::log_join_summary(PlayerSession& p, PlayerWorld& world) {
     const bootstrap::PlayerSetup& setup = p.pb_.setup();
     spdlog::info("[session] {}: joining as ServerId {}, PlayerId {}, GameState {}; channels PlayerController {}, GameState {}, pawn {}, "
                  "PlayerState {}; at ({:.1f}, {:.1f}, {:.1f}) cm",
@@ -284,7 +338,7 @@ void PlayerSession::fail(std::string why) {
     spdlog::error("[session] {}: {}", name(), failure_);
 }
 
-PlayerSession::Outcome PlayerSession::send(Connection& conn, bootstrap::Send& s) {
+Outcome PlayerSession::send(Connection& conn, bootstrap::Send& s) {
     Chain chain;
     chain.channel = s.channel != 0 ? s.channel : channels_[static_cast<size_t>(s.role)];
     chain.open = s.opens_channel;
@@ -374,7 +428,7 @@ void PlayerSession::pump(Connection& conn) {
 
 void PlayerSession::tick(Connection& conn) { pump(conn); }
 
-void PlayerSessionTypes::SessionInternal::tick_view_and_saves(PlayerSession& s, Connection& conn, Clock::time_point now) {
+void PlayerSession::SessionInternal::tick_view_and_saves(PlayerSession& s, Connection& conn, Clock::time_point now) {
     if (s.phase_in_done_ && !s.time_syncs_.empty() && now >= s.time_syncs_.front() && s.room_for(1)) {
         s.time_syncs_.pop_front();
         if (s.time_syncs_.empty()) s.time_syncs_.push_back(now + kTimeSyncInterval);

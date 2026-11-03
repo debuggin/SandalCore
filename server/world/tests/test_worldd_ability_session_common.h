@@ -203,6 +203,7 @@ inline BunchWriter trigger_bunch(const emit::FIntrepidNetworkGUID &ability, int6
     ok = ok && repl::set_rpc_param(*rpc, p, "ItemData.Location", repl::Value::u64(24));
     return ok ? ability_rpc(ability, "ServerTriggerAbility", p) : BunchWriter();
 }
+
 inline BunchWriter cancel_bunch(const emit::FIntrepidNetworkGUID &ability, int32_t id) {
     const schema::RpcSchema *rpc = class_named("UAoCAbilityComponent").rpc("ServerNotifyHeldAbilityCancelled");
     repl::RpcParams p;

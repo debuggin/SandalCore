@@ -10,6 +10,10 @@ using aoc::protocol::emit::FIntrepidNetworkGUID;
 
 namespace {
 
+bool near_to(double got, double want, double tol = 0.0125) {
+    return got >= 0 && std::fabs(got - want) <= tol;
+}
+
 struct Seen {
     double item = -1, bar = -1, callout = -1, callout_off = -1, item_end = -1, open = -1;
     double summoning_off = -1, flags = -1, run = -1, flags_off = -1, input_off = -1, gone = -1;
@@ -502,7 +506,7 @@ static void test_desummon_early(const spawns::MountBook& book) {
     }
 }
 
-void run_mounts_part3() {
+void run_mounts_summon() {
     test_summon_timeline(*g_book);
     test_one_mount(*g_book);
     test_refusals(*g_book);

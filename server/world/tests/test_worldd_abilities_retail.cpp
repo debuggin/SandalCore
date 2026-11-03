@@ -8,6 +8,64 @@ using namespace aoc::protocol;
 using namespace aoc::protocol::repl;
 using emit::FIntrepidNetworkGUID;
 
+namespace {
+
+std::map<int64_t, double> stats_of(const bs::PlayerSetup &setup) {
+    std::map<int64_t, double> stats;
+    for (const bs::StatArray *a : {&setup.stats.owner, &setup.stats.owner_proxy, &setup.stats.everyone_proxy}) {
+        for (const bs::StatItem &it : a->items)
+            stats[it.record] = std::bit_cast<float>(it.value);
+    }
+    return stats;
+}
+
+std::vector<aoc::protocol::repl::FastArrayDelta::Changed> items_of(const std::optional<bs::Send> &s, const aoc::protocol::emit::FIntrepidNetworkGUID &object, const char *cls, const char *field) {
+    const auto fields = s ? fast_fields(s->emission.payload, object, cls) : std::nullopt;
+    const aoc::protocol::repl::FastArrayField *f = fields ? field_named(*fields, cls, field) : nullptr;
+    return f ? f->delta.changed : std::vector<aoc::protocol::repl::FastArrayDelta::Changed>{};
+}
+
+bool same_guid(const aoc::protocol::repl::Value *v, uint64_t id) {
+    const aoc::protocol::emit::FIntrepidNetworkGUID *g = v ? v->get_if<aoc::protocol::emit::FIntrepidNetworkGUID>() : nullptr;
+    return g && g->ObjectId == id;
+}
+
+struct RetailItemSpec {
+    int64_t ability = 0;
+    const char *group = "";
+    uint64_t montage = 0;
+    uint16_t yaw = 0;
+};
+
+bool empty_array_field(const aoc::protocol::repl::ElementState &e, uint16_t handle) {
+    const aoc::protocol::repl::Value *v = item_value(e, handle);
+    if (!v) return true;
+    const auto *arr = v->get_if<aoc::protocol::repl::ArrayValue>();
+    return arr && arr->elements.empty();
+}
+
+bool retail_item_defaults(const aoc::protocol::repl::ElementState &e) {
+    return empty_array_field(e, 3) && empty_array_field(e, 4) && !item_get<bool>(e, 5) && item_get<int64_t>(e, 6) == 0 && item_get<float>(e, 7) == 0.0f && item_get<float>(e, 8) == 0.0f && item_get<bool>(e, 9) &&
+           item_get<float>(e, 12) == 1.0f && item_get<float>(e, 13) == 0.0f && !item_get<bool>(e, 14);
+}
+
+bool retail_item_shape(const aoc::protocol::repl::ElementState &e, const bs::PlayerSetup &setup, const RetailItemSpec &spec) {
+    const auto *g = item_value(e, 10) ? item_value(e, 10)->get_if<aoc::protocol::repl::NameValue>() : nullptr;
+    const auto *who = item_value(e, 17) ? item_value(e, 17)->get_if<aoc::protocol::emit::FIntrepidNetworkGUID>() : nullptr;
+    return retail_item_defaults(e) && item_get<int64_t>(e, 1) == spec.ability && g && g->text == spec.group && same_guid(item_value(e, 11), spec.montage) && item_get<uint64_t>(e, 16) == spec.yaw && who && *who == setup.guids.pawn;
+}
+
+bool retail_effect_shape(const aoc::protocol::repl::ElementState &e, const bs::PlayerSetup &setup, int64_t guid, float duration, float tick) {
+    bool same_character = true;
+    for (uint16_t i = 0; i < 4; ++i) {
+        const int64_t word = static_cast<int32_t>(setup.character_guid[i]);
+        same_character = same_character && item_get<int64_t>(e, static_cast<uint16_t>(7 + i)) == word && item_get<int64_t>(e, static_cast<uint16_t>(11 + i)) == word;
+    }
+    return item_get<int64_t>(e, 2) == guid && item_get<float>(e, 4) == duration && item_get<float>(e, 5) == tick && item_get<int64_t>(e, 6) == 1 && same_character && !item_get<bool>(e, 15) && item_get<int64_t>(e, 16) == 0;
+}
+
+} // namespace
+
 static const StatInt32Inst *find_owner_stat_item(const std::vector<FastArrayDelta::Changed> &owner, int64_t record, int32_t id) {
   for (const auto &item : owner) {
     const StatInt32Inst *x = item_value(item.values, 1) ? item_value(item.values, 1)->get_if<StatInt32Inst>() : nullptr;

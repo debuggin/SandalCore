@@ -2,7 +2,27 @@
 # Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-"""Generate server/worldd/spawns/region_data.h and tools/mapc/region_rects.tsv from fixtures/region/*.json."""
+"""server/world/spawns/region_data.h and tools/mapc/region_rects.tsv: the Riverlands as data (G1, stage 1, Part A).
+
+The world of G1 is the whole Riverlands: the 12 zones of influence (ZOIs) whose biome is Riverlands, 49.12 km^2, one connected piece.  Its exact border was read out
+of the game's ZOI cell grid (the chunk files under DesignAssets/World/ZOI/Verra_World_Master_ZOIs/_Generated_/Chunks: 64 x 64 x 64 cells of 512 cm per chunk, a guid
+palette and run lengths in Morton order; the decode is kept outside git with its research) and cut into disjoint rectangles, so that nothing in the repository (and
+nothing at run time) reads the game's export:
+
+    fixtures/region/riverlands_rects.json        the 401 disjoint rectangles [x0, y0, x1, y1) of the whole footprint (world cm, multiples of 512)
+    fixtures/region/riverlands_zoi_rects.json    the same area per ZOI: 1,682 rectangles, each ZOI's record guid and name
+
+Both are inputs; this script turns them into the two files the code reads:
+
+    server/world/spawns/region_data.h            worldd: the rectangles, and the per-ZOI rectangles with each ZOI's guid and name (a lookup of a point's ZOI is
+                                                 what the spawn filter's zone names need)
+    tools/mapc/region_rects.tsv                  mapc: the 401 rectangles (it reads the cells that touch them, plus its margin)
+
+    python tools/capture/gen_region.py            # rewrite the two files
+    python tools/capture/gen_region.py --check    # write nothing, exit 1 on a change (or when the inputs contradict each other)
+
+It needs only the two JSON files: they are in the repository, so `--check` runs from a clean checkout.  A file keeps the line ending it has (a new one is written LF).
+"""
 import argparse
 import json
 import os
@@ -12,7 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
 RECTS_JSON = os.path.join(ROOT, 'fixtures', 'region', 'riverlands_rects.json')
 ZOI_JSON = os.path.join(ROOT, 'fixtures', 'region', 'riverlands_zoi_rects.json')
-HEADER = os.path.join(ROOT, 'server', 'worldd', 'spawns', 'region_data.h')
+HEADER = os.path.join(ROOT, 'server', 'world', 'spawns', 'region_data.h')
 MAPC_FILE = os.path.join(ROOT, 'tools', 'mapc', 'region_rects.tsv')
 
 CELL = 512
@@ -67,6 +87,7 @@ def validate(r, rects, zois):
     if seen != cells:
         problems.append('the per-ZOI rectangles do not tile the footprint: %d cells against %d (%d only in one)' % (len(seen), len(cells), len(seen ^ cells)))
     return problems
+# -- Cyb x C-O-A --
 
 
 def render_header(rects, zois):
@@ -102,8 +123,8 @@ def render_header(rects, zois):
     a('inline constexpr uint32_t kRiverlandsAreaCells = %d;' % area_cells(rects))
     a('')
     a('inline constexpr Rect kRiverlandsRects[] = {')
-    for i in range(0, len(rects), 4):
-        a('    ' + ' '.join('{%d, %d, %d, %d},' % q for q in rects[i:i + 4]))
+    for x0, y0, x1, y1 in rects:
+        a('    {%d, %d, %d, %d},' % (x0, y0, x1, y1))
     a('};')
     a('inline constexpr size_t kRiverlandsRectCount = sizeof(kRiverlandsRects) / sizeof(kRiverlandsRects[0]);')
     a('')
@@ -112,11 +133,10 @@ def render_header(rects, zois):
     rows = []
     for z in zois:
         a('    // %s (%d rectangles)' % (z['name'], len(z['rects'])))
-        zrects = z['rects']
-        for i in range(0, len(zrects), 4):
-            a('    ' + ' '.join('{%d, %d, %d, %d},' % q for q in zrects[i:i + 4]))
-        rows.append((z, first, len(zrects)))
-        first += len(zrects)
+        for x0, y0, x1, y1 in z['rects']:
+            a('    {%d, %d, %d, %d},' % (x0, y0, x1, y1))
+        rows.append((z, first, len(z['rects'])))
+        first += len(z['rects'])
     a('};')
     a('inline constexpr size_t kZoiRectCount = sizeof(kZoiRects) / sizeof(kZoiRects[0]);')
     a('')

@@ -9,6 +9,126 @@
 
 namespace adminv1 = ::aoc::worldadmin::v1;
 
+struct TriggerItemSpec {
+  int slot = -1;
+  const svc::InventoryItem *item = nullptr;
+  uint8_t location = 3;
+  int32_t animation_index = 0;
+};
+
+static bool fill_trigger_params(const schema::RpcSchema &rpc, repl::RpcParams &p, int64_t ability, int32_t client_instance, TriggerItemSpec spec) {
+  bool ok = repl::set_rpc_param(rpc, p, "AbilityGuid", repl::Value::i64(ability));
+  if (ok && client_instance != 0)
+    ok = repl::set_rpc_param(rpc, p, "ClientInstanceId", repl::Value::i64(client_instance));
+  if (ok && spec.animation_index != 0)
+    ok = repl::set_rpc_param(rpc, p, "AnimationIndex", repl::Value::i64(spec.animation_index));
+  ok = ok && repl::set_rpc_param(rpc, p, "InputVector", repl::Value(repl::Vec2d{1, 0}));
+  if (ok && spec.slot >= 0) {
+    const repl::ItemInstance inst = spec.item ? items::to_instance(*spec.item) : repl::ItemInstance{};
+    ok = repl::set_rpc_param(rpc, p, "ItemData.Slot", repl::Value::i64(spec.slot)) &&
+         repl::set_rpc_param(rpc, p, "ItemData.ItemInstance", repl::Value(inst)) &&
+         repl::set_rpc_param(rpc, p, "ItemData.Location", repl::Value::u64(spec.location));
+  }
+  return ok;
+}
+
+static BunchWriter trigger_on(Harness &h, const emit::FIntrepidNetworkGUID &component, int64_t ability, int32_t client_instance, TriggerItemSpec spec = {}) {
+  const schema::ClassSchema &cls = class_named("UAoCAbilityComponent");
+  const schema::RpcSchema *rpc = cls.rpc("ServerTriggerAbility");
+  repl::RpcParams p;
+  if (!rpc || !fill_trigger_params(*rpc, p, ability, client_instance, spec))
+    return BunchWriter();
+  BunchWriter out, field;
+  bool failed = false;
+  if (repl::write_rpc_field(cls, *rpc, p, field, {}, &failed) == 0 || failed)
+    return out;
+  repl::BlockHeader header;
+  header.is_actor = false;
+  header.has_rep_layout = false;
+  header.object = component;
+  repl::write_content_block(out, header, field, /*server_form=*/false);
+  (void)h;
+  return out;
+}
+
+static void move_mount(Harness &h, const repl::NetworkMove &m) {
+  const uint32_t ch = h.s->mount_channel();
+  h.client_sends({h.client.actor(ch ? ch : 999, client_move("ANPCCharacter", m), false)});
+}
+
+static bool ride_on(Harness &h, int slot = kMountSlot) {
+  const svc::InventoryItem *item = h.s->inventory().at(Bag, slot);
+  const schema::ClassSchema &pawn = class_named("PlayerPawn_C");
+  const schema::RpcSchema *used_rpc = pawn.rpc("ServerItemUsed");
+  repl::RpcParams up;
+  const auto g = items::guid_of(item ? item->instance_guid : std::string());
+  const repl::GuidValue gv = g ? *g : repl::GuidValue{};
+  repl::set_rpc_param(*used_rpc, up, "Storage", repl::Value::u64(3));
+  repl::set_rpc_param(*used_rpc, up, "Slot", repl::Value::i64(slot));
+  repl::set_rpc_param(*used_rpc, up, "ExpectedItem.A", repl::Value::i64(static_cast<int32_t>(gv.a)));
+  repl::set_rpc_param(*used_rpc, up, "ExpectedItem.B", repl::Value::i64(static_cast<int32_t>(gv.b)));
+  repl::set_rpc_param(*used_rpc, up, "ExpectedItem.C", repl::Value::i64(static_cast<int32_t>(gv.c)));
+  repl::set_rpc_param(*used_rpc, up, "ExpectedItem.D", repl::Value::i64(static_cast<int32_t>(gv.d)));
+  repl::set_rpc_param(*used_rpc, up, "RequestedEquipSlot", repl::Value::i64(static_cast<int32_t>(0xFFFFFFFFu)));
+  h.client_sends({h.client.actor(h.pawn_ch, actor_rpc(pawn, "ServerItemUsed", up), true),
+                  h.client.actor(h.pawn_ch, trigger_on(h, h.s->bootstrap().setup().guids.ability, 108436548376185ll, 7, TriggerItemSpec{slot, item, 3, 0}), true)});
+  h.run(milliseconds(1900));
+  if (!h.mount() || h.s->mounts()->phase() != MountController::Phase::Out)
+    return false;
+  const world::WorldActor *m = h.mount();
+  const GoodPosition gp = h.s->movement().good();
+  const double dx = m->x - gp.x, dy = m->y - gp.y, dist = std::hypot(dx, dy);
+  if (dist > 250)
+    walk_pawn_to(h, gp.x + dx * (dist - 250) / dist, gp.y + dy * (dist - 250) / dist);
+  repl::InteractRequest ir;
+  ir.interactable = m->actor.guid;
+  ir.interactable.ObjectId = m->npc.interact_component;
+  ir.counter = 1;
+  ir.zone = 2;
+  const auto ip = repl::interact_params(*pawn.rpc("ServerInteractWithInteractableComponent"), ir);
+  h.client_sends({h.client.actor(h.pawn_ch, ip ? actor_rpc(pawn, "ServerInteractWithInteractableComponent", *ip) : BunchWriter(), true)});
+  h.run(milliseconds(200));
+  return h.s->mounted();
+}
+
+struct Rider {
+  double x = 0;
+  double y = 0;
+  double z = 0;
+  float ts = 0;
+  uint16_t yaw = 0;
+};
+
+static Rider start_riding(Harness &h) {
+  Rider r;
+  const GoodPosition g = h.s->movement().good();
+  r.x = g.x;
+  r.y = g.y;
+  r.z = g.z;
+  r.yaw = yaw16_of(g.yaw_degrees);
+  return r;
+}
+
+static void ride_step(Harness &h, Rider &r, double dx, double dy, double dz = 0) {
+  const double dt = 0.1;
+  r.ts += static_cast<float>(dt);
+  r.x += dx;
+  r.y += dy;
+  r.z += dz;
+  move_mount(h, move_at(r.ts, r.x, r.y, r.z, r.yaw));
+  h.step(milliseconds(static_cast<int>(std::lround(dt * 1000))));
+}
+
+static std::optional<double> mult_of(const world::WorldActor &m) {
+  return spawns::stat_value(m, spawns::kStatMoveSpeedMult);
+}
+
+static constexpr int64_t kMoveSpeedMult = 109228544644729ll;
+
+static void with_nodes(PlayerWorld &w) {
+  w.set_city_nodes(g_nodes.get());
+}
+
 
 static void test_teleport_refusals() {
   std::printf("teleport: the dead are not moved; the player list\n");

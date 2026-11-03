@@ -4,12 +4,25 @@
 #include "bootstrap/character_setup.h"
 #include "content/content_db.h"
 #include "protocol/repl/item_rpc.h"
-#include "session/player_session_internal.h"
+#include "session/player_session.h"
 
 namespace aoc {
 namespace worldd {
 
-using namespace ::sandal::worldd::session::detail;
+void stacks_of(const StackSpec& spec, const content::ItemRecord& rec, std::vector<svc::InventoryItem>& out) {
+  const int32_t stack = rec.max_stack_size > 0 ? rec.max_stack_size : 1;
+  for (int32_t left = spec.count; left > 0;) {
+    svc::InventoryItem it;
+    it.container = svc::ItemContainer::Backpack;
+    it.item_record_id = spec.record;
+    it.quantity = std::min(left, stack);
+    it.quality = spec.quality > 0 ? spec.quality : rec.default_quality;
+    it.durability = rec.max_durability_at(it.quality);
+    it.created_at_ms = spec.created_ms;
+    left -= it.quantity;
+    out.push_back(std::move(it));
+  }
+}
 
 namespace {
 

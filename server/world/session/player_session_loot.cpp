@@ -6,11 +6,9 @@
 #include "protocol/repl/item_rpc.h"
 #include "protocol/repl/rpc_fields.h"
 #include "protocol/repl/storage_rpc.h"
-#include "session/player_session_internal.h"
+#include "session/player_session.h"
 
 namespace aoc::worldd {
-
-using namespace ::sandal::worldd::session::detail;
 
 namespace {
 

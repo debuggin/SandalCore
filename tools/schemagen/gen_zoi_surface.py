@@ -3,16 +3,44 @@
 # Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-"""gen_zoi_surface.py: generate compact 2D ZOI surface table (world/zoi_surface_table.h)."""
+"""gen_zoi_surface.py: the zone of influence (ZOI) at every point of the world, as a compact 2D table (Nodes 1, stage 1).
+
+The ZOI chunk grid of the Cache.db export (Content/DesignAssets/World/ZOI/Verra_World_Master_ZOIs/_Generated_/Chunks) says which
+ZOI owns each 512 cm cell of the world.  A ZOI is a prism: its owner is the same for every height from the first metres above the
+sea to 1,638 m (the chunks of z layers 0 to 4 agree except at sea level and under ground), and the 3D lookup finds no chunk above
+z 163,840.  So worldd looks a point up in this SURFACE table, which holds one owner per (x, y) cell: the cells of layer 0 at the height
+of z = 16,384 cm (the same height tools' zoi_lookup.py calls the surface).
+
+    python tools/capture/gen_zoi_surface.py                 # rewrite server/world/world/zoi_surface_table.h (about a minute)
+    python tools/capture/gen_zoi_surface.py --check         # write nothing, exit 1 when the header would change
+    python tools/capture/gen_zoi_surface.py --chunks DIR --content-db content.db
+
+The encoding of a chunk file (validated
+on all 30,558 files, the 78 ZOI records' extents and 153,359 retail player moves): the world is cut into chunks of 32,768 cm per
+axis (chunk = floor(position / 32768)), each 64 x 64 x 64 cells of 512 cm; the Zen package's export (at HeaderSize, the u32 at byte 4)
+is 15 header bytes, a u8 version (3), a u32 palette count P, P x u64 ZOI guid (0 = none), a u32 N and N x (UE packed-int run length,
+u8 palette index); the runs walk the cells in Morton (Z-order) order, x in bit 0 of each three, y in bit 1, z in bit 2.
+
+The header (world/zoi_surface_table.h) holds, for the 4,635 chunk columns that have a file:
+  * kPalette    the ZOI guids that own a cell of the surface (0 first = no ZOI), ascending;
+  * kIndex      per chunk column of the box kMinCx.., row-major (cy rows, cx columns): kNone for no file; bit 31 set = the whole chunk is one
+                owner (the low byte is its palette index); else the offset in kRuns of the chunk's runs;
+  * kRuns       per non-uniform chunk the runs over its 64 x 64 cells in row-major order (iy * 64 + ix), each: u16 length (little endian)
+                and u8 palette index.
+world/zoi_surface.h/.cpp look a point up in it.  --content-db only reports which palette guids are no ZOIRecord of that content.db (the
+research found two: one under ground, one outside the Riverlands); it changes nothing in the output.  The output is deterministic and a
+file keeps the line ending it already has (a new one is written with LF).
+"""
 import argparse
 import os
 import sqlite3
 import struct
 import sys
+# Cyb and C O A
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
-OUT = os.path.join(ROOT, 'server', 'worldd', 'world', 'zoi_surface_table.h')
+OUT = os.path.join(ROOT, 'server', 'world', 'world', 'zoi_surface_table.h')
 DEFAULT_CHUNKS = os.environ.get('AOC_ZOI_CHUNKS', '')
 CELLS = 64
 CHUNK_CM = 32768
@@ -149,6 +177,7 @@ def rows(values, per, fmt):
 
 
 def render(t):
+    cell_km2 = (CELL_CM / 100000.0) ** 2
     out = ['// ============================================================================',
            '//  world/zoi_surface_table.h (Nodes 1, stage 1)',
            '//',
@@ -158,7 +187,9 @@ def render(t):
            '//',
            '//  %d chunk columns (%d one owner, %d with %d runs), %d owners (0 = no ZOI) over %d bytes of runs.' % (
                t['chunks'], t['uniform'], t['chunks'] - t['uniform'], t['nruns'], len(t['palette']), len(t['runs'])),
-           '//  palette count: %d' % len(t['palette'])]
+           '//  palette index, guid, surface km2:']
+    for i, g in enumerate(t['palette']):
+        out.append('//    %2d  %d  %.4f' % (i, g, t['area'][g] * cell_km2))
     out += ['// ============================================================================',
             '#pragma once',
             '',
@@ -181,16 +212,17 @@ def render(t):
             '};',
             '',
             'inline constexpr uint32_t kIndex[%d] = {' % len(t['index']),
-            rows(t['index'], 32, '0x%08Xu'),
+            rows(t['index'], 8, '0x%08Xu'),
             '};',
             '',
             'inline constexpr uint8_t kRuns[%d] = {' % len(t['runs']),
-            rows(list(t['runs']), 512, '%d'),
+            rows(list(t['runs']), 32, '%d'),
             '};',
             '',
             '}  // namespace aoc::worldd::world::zoi_surface',
             '']
     return '\n'.join(out)
+# CoA - C | Y | B
 
 
 def write_if_changed(path, text, check):

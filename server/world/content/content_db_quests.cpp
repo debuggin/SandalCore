@@ -13,25 +13,6 @@ namespace aoc::worldd::content {
 
 namespace {
 
-int64_t json_int(const nlohmann::json& o, const char* key) {
-    const auto it = o.find(key);
-    return it != o.end() && it->is_number_integer() ? it->get<int64_t>() : int64_t(0);
-}
-
-double json_num(const nlohmann::json& o, const char* key) {
-    const auto it = o.find(key);
-    return it != o.end() && it->is_number() ? it->get<double>() : 0.0;
-}
-
-bool json_flag(const nlohmann::json& o, const char* key) {
-    return json_int(o, key) != 0;
-}
-
-std::string json_str(const nlohmann::json& o, const char* key) {
-    const auto it = o.find(key);
-    return it != o.end() && it->is_string() ? it->get<std::string>() : std::string();
-}
-
 void json_lenient_ints(const nlohmann::json& o, const char* key, std::vector<int64_t>& out) {
     const auto it = o.find(key);
     if (it == o.end() || !it->is_array()) return;

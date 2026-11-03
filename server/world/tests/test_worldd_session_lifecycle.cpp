@@ -24,6 +24,117 @@ using emit::FIntrepidNetworkGUID;
 using std::chrono::milliseconds;
 using std::chrono::seconds;
 
+static svc::Character second_record() {
+  svc::Character c = cyb_record();
+  c.id = "11112222333344445555666677778888";
+  c.name = "dee";
+  return c;
+}
+
+Joined handshake(Rig &rig, const Address &addr, Clock::time_point now) {
+  Joined j;
+  j.addr = addr;
+  rig.take(addr);
+  const auto initial = capture::bytes(capture::kInitial);
+  rig.ep.on_datagram(addr, initial.data(), initial.size(), now);
+  auto out = rig.take(addr);
+  if (out.size() != 1) {
+    return j;
+  }
+  j.challenge = conn::parse_handshake(out[0].data(), out[0].size());
+  conn::HandshakePacket resp = *j.challenge;
+  resp.type = conn::HandshakeType::Response;
+  resp.sent_count = 2;
+  resp.padding.assign(11, 0x5A);
+  const auto bytes = conn::build_handshake(resp);
+  rig.ep.on_datagram(addr, bytes.data(), bytes.size(), now);
+  out = rig.take(addr);
+  if (out.size() != 1) {
+    return j;
+  }
+  const auto seqs = conn::initial_sequences(j.challenge->cookie);
+  j.client.emplace(conn::outer_header_of(*j.challenge),
+                   j.challenge->ext->custom_field(), seqs.server, seqs.client);
+  j.session =
+      rig.logins.submitted.empty() ? 0 : rig.logins.submitted.back().first;
+  return j;
+}
+
+std::vector<fake::Received> drain(Rig &rig, Joined &j, const Address &addr) {
+  std::vector<fake::Received> got;
+  for (const auto &p : rig.take(addr)) {
+    got.push_back(j.client->receive(p));
+    for (const auto &d : got.back().delivered) {
+      j.got.push_back(d);
+    }
+  }
+  return got;
+}
+
+std::vector<fake::Received> exchange(Rig &rig, Joined &j, const Address &addr,
+                                     std::vector<fake::Bunch> bunches,
+                                     Clock::time_point now) {
+  const auto pkt = j.client->packet(std::move(bunches));
+  rig.ep.on_datagram(addr, pkt.data(), pkt.size(), now);
+  rig.ep.tick(now);
+  return drain(rig, j, addr);
+}
+
+const conn::ControlMessage *
+find_message(const std::vector<fake::Received> &got, conn::Nmt type) {
+  for (const auto &r : got) {
+    for (const auto &m : r.messages) {
+      if (m.type == type) {
+        return &m;
+      }
+    }
+  }
+  return nullptr;
+}
+
+bool closed_by_server(const std::vector<fake::Received> &got) {
+  for (const auto &r : got) {
+    if (r.closed) {
+      return true;
+    }
+  }
+  return false;
+}
+
+LoginResult cyb_login() {
+  LoginResult r;
+  r.accepted = true;
+  r.character = cyb_record();
+  return r;
+}
+
+void log_in_as(Rig &rig, Joined &j, const svc::Character &rec,
+               Clock::time_point now, const std::string &machine) {
+  exchange(rig, j, j.addr, {j.client->hello()}, now);
+  LoginResult r;
+  r.accepted = true;
+  r.character = rec;
+  rig.ep.post_login_result(j.session, r);
+  rig.ep.tick(now + milliseconds(1));
+  drain(rig, j, j.addr);
+  exchange(rig, j, j.addr, {j.client->login(machine, machine)},
+           now + milliseconds(2));
+}
+
+void log_in(Rig &rig, Joined &j, const Address &addr, const svc::Character &rec,
+            Clock::time_point now) {
+  j.addr = addr;
+  log_in_as(rig, j, rec, now, kMachine);
+}
+
+void join_now(Rig &rig, Joined &j, const Address &addr, Clock::time_point now) {
+  const auto p = j.client->packet(
+      {j.client->netspeed(200000), j.client->nmt(conn::Nmt::Join)});
+  rig.ep.on_datagram(addr, p.data(), p.size(), now);
+  rig.ep.tick(now);
+  drain(rig, j, addr);
+}
+
 static void test_client_driven_log_lines() {
   std::printf("the log lines the client can cause\n");
   Harness h;

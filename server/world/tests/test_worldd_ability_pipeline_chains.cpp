@@ -756,8 +756,6 @@ int main() {
   test_held_ranks();
   test_charge_chain();
   test_dance_zones();
-  test_cast_flood();
-  test_unaffordable_at_the_cost_step();
   test_time();
   test_regeneration();
   test_movement();

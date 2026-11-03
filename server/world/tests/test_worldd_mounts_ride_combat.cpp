@@ -10,6 +10,26 @@ namespace bs = aoc::worldd::bootstrap;
 
 namespace {
 
+emit::BunchWriter possession_ack(const emit::FIntrepidNetworkGUID& actor) {
+    const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+    repl::RpcParams p;
+    repl::set_rpc_param(*pc.rpc("ServerAcknowledgePossession"), p, "P", repl::Value(actor));
+    return actor_rpc(pc, "ServerAcknowledgePossession", p);
+}
+
+std::vector<repl::RpcCall> calls_of(const fake::Delivered& d, const char* cls) {
+    std::vector<repl::RpcCall> out;
+    const auto blocks = repl::read_content_blocks(d.content.data(), d.content.bit_pos(), 0);
+    if (!blocks) return out;
+    for (const auto& b : *blocks) {
+        if (b.header.has_rep_layout) continue;
+        size_t p = b.payload_pos;
+        auto calls = repl::read_rpc_fields(class_named(cls), d.content.data(), b.payload_pos + b.payload_bits, p);
+        if (calls) out.insert(out.end(), std::make_move_iterator(calls->begin()), std::make_move_iterator(calls->end()));
+    }
+    return out;
+}
+
 void verify_roads_transition_and_dismount(Harness& h, Rider& r, uint32_t mch, const content::MountData& data) {
     for (int i = 0; i < 10 && h.s->ride()->road_tier() != 4; ++i) ride_step(h, r, 118.8, 0);
     CHECK(h.s->ride()->road_tier() == 4 && std::fabs(mult_of(*h.mount()).value_or(0) - 1.3) < 1e-6, "on the tier-4 crossing MoveSpeedMult is 1.3");

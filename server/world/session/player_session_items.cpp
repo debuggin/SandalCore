@@ -5,14 +5,20 @@
 #include "content/content_db.h"
 #include "protocol/repl/item_rpc.h"
 #include "protocol/repl/storage_rpc.h"
-#include "session/player_session_internal.h"
+#include "session/item_use.h"
+#include "session/player_session.h"
 
 namespace aoc {
 namespace worldd {
 
-using namespace ::sandal::worldd::session::detail;
-
 namespace {
+
+std::optional<svc::ItemContainer> material_bag_of_location(uint8_t location) {
+  for (int i = 0; i < items::kResourceContainers; ++i) {
+    if (location == static_cast<uint8_t>(repl::ItemLocation::Resource0) + i) return items::resource_container(i);
+  }
+  return std::nullopt;
+}
 
 using QueueStepFn = std::function<void(const char*, std::function<std::optional<bootstrap::Send>(bootstrap::PlayerBootstrap&)>, bool)>;
 

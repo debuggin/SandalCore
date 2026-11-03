@@ -237,43 +237,4 @@ inline aoc::worldd::talents::Plan run(aoc::worldd::talents::Book& book, std::ini
     return p;
 }
 
-struct RealWorld {
-    std::filesystem::path                        dir;
-    std::optional<aoc::worldd::content::ContentDb> db;
-    std::optional<aoc::worldd::talents::Catalog>   catalog;
-    RealWorld() {
-        dir = content_fixture::make_temp_dir("worldd_talents_");
-        const std::filesystem::path path = dir / "content.db";
-        if (!content_fixture::make_db(path)) std::exit(2);
-        std::string error;
-        db = aoc::worldd::content::ContentDb::open(path.string(), error);
-        if (!db) {
-            std::printf("  [FAIL] the fixture does not open: %s\n", error.c_str());
-            std::exit(2);
-        }
-        auto data = db->talent_data(error);
-        if (!data) {
-            std::printf("  [FAIL] talent_data: %s\n", error.c_str());
-            std::exit(2);
-        }
-        catalog = aoc::worldd::talents::Catalog::from(std::move(*data), error);
-        if (!catalog) {
-            std::printf("  [FAIL] the catalog: %s\n", error.c_str());
-            std::exit(2);
-        }
-    }
-    ~RealWorld() {
-        db.reset();
-        std::error_code ec;
-        std::filesystem::remove_all(dir, ec);
-    }
-};
-
-inline constexpr int64_t kBardClass = 108640158570105ll;
-inline constexpr int64_t kTankClass = 108640201692798ll;
-inline constexpr int64_t kScepterCombo = 6064631845843960261ll;
-inline constexpr int64_t kBookCombo = 6064631012536680449ll;
-
-void run_talents_part2();
-void run_talents_part3();
-void run_talents_part4();
+void run_talents_retail_tests();

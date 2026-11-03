@@ -9,6 +9,73 @@ using namespace aoc::worldd;
 using namespace aoc::protocol;
 using namespace aoc::protocol::repl;
 
+namespace {
+
+struct Ref {
+    const char *name;
+    size_t bits;
+    const char *hex;
+};
+template <class B> Ref ref(const B &b) { return {b.name, b.bits, b.hex}; }
+
+bool same_as(const aoc::protocol::emit::BunchWriter &w, const Ref &b) {
+    const auto want = capture_blocks::bytes_of(b.hex);
+    size_t diff = 0;
+    if (w.bit_pos() != b.bits) {
+        std::printf("    wrote %zu bits, expected %zu (%s)", w.bit_pos(), b.bits, b.name);
+        const size_t n = w.bit_pos() < b.bits ? w.bit_pos() : b.bits;
+        if (!capture_blocks::same_bit_range(w.data(), want.data(), n, &diff)) std::printf("; first differing bit %zu", diff);
+        std::printf("\n");
+        return false;
+    }
+    if (!capture_blocks::same_bit_range(w.data(), want.data(), b.bits, &diff)) {
+        std::printf("    first differing bit %zu (%s)\n", diff, b.name);
+        return false;
+    }
+    return true;
+}
+
+template <class B> double captured_start_time(const B &b, const bs::PlayerSetup &setup) {
+    aoc::protocol::emit::BunchWriter w;
+    const auto bytes = capture_blocks::bytes_of(b.hex);
+    w.write_bit_range(bytes.data(), 0, b.bits);
+    const auto fields = fast_fields(w, setup.guids.stats, "UAoCStatsComponent");
+    const aoc::protocol::repl::FastArrayField *fx = fields ? field_named(*fields, "UAoCStatsComponent", "CurrentEffects") : nullptr;
+    if (!fx || fx->delta.changed.size() != 1) return 0;
+    const auto it = fx->delta.changed[0].values.values.find(3);
+    return it != fx->delta.changed[0].values.values.end() && it->second.get_if<double>() ? *it->second.get_if<double>() : 0;
+}
+
+bs::ActiveAbilityItem rest_item(int64_t instance, int32_t counter, float position = 0, bool jump = false) {
+    bs::ActiveAbilityItem a;
+    a.ability_guid = content::kGuidRest;
+    a.server_instance_id = instance;
+    a.targets_self = true;
+    a.montage_path = std::string(bs::kRestMontagePath);
+    a.montage_position = position;
+    a.may_jump_to_position = jump;
+    a.animation_counter = counter;
+    return a;
+}
+
+bs::EffectItem rest_effect(int64_t id, double start) {
+    bs::EffectItem e;
+    e.effect_id = id;
+    e.effect_guid = kRestEffect;
+    e.start_time = start;
+    e.duration = aoc::worldd::AbilityRuntime::kInfiniteDuration;
+    e.tick_time = 0;
+    e.stacks = 1;
+    return e;
+}
+
+void regen_to(bs::AbilityChange &c, float v) {
+    c.stats.push_back({kHealthRegen, v});
+    c.stats.push_back({kManaRegen, v});
+}
+
+} // namespace
+
 static void check_rest_start(Sim &s, const Rules &r) {
   CHECK(s.trigger(content::kGuidRest, 0) == Refusal::None && s.rt.resting(), "Rest starts (a toggle, out of combat)");
   const auto start = s.with("the Rest starts");

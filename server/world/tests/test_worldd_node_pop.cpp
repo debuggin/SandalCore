@@ -10,6 +10,175 @@ using namespace aoc::worldd::test_node_pop;
 
 namespace {
 
+static std::vector<spawns::NodeSpawn> select_real(const world::CityNodeInfo &info, int level,
+                                                  spawns::NodePopStats &st) {
+    return select(*g_env.nodes, *g_env.wire, info, level, st);
+}
+static const char *why_id(Why w) {
+    struct Entry {
+        Why w;
+        const char *name;
+    };
+    static constexpr Entry kTable[] = {
+        {Why::Spawns, "Spawns"},
+        {Why::DevOnly, "DevOnly"},
+        {Why::NotWorldMap, "NotWorldMap"},
+        {Why::Blacklisted, "Blacklisted"},
+        {Why::Gated, "Gated"},
+        {Why::NodeLevel, "NodeLevel"},
+        {Why::Culture, "Culture"},
+        {Why::NodeOrZone, "NodeOrZone"},
+        {Why::NodeType, "NodeType"},
+        {Why::Biome, "Biome"},
+        {Why::Season, "Season"},
+        {Why::Weather, "Weather"},
+        {Why::TimeOfDay, "TimeOfDay"},
+        {Why::RequiredTag, "RequiredTag"},
+        {Why::Prop, "Prop"},
+        {Why::Hidden, "Hidden"},
+        {Why::Placeholder, "Placeholder"},
+        {Why::NoMesh, "NoMesh"},
+        {Why::NoAnimation, "NoAnimation"},
+        {Why::Appearance, "Appearance"},
+    };
+    for (const Entry &e : kTable) {
+        if (e.w == w) return e.name;
+    }
+    return "?";
+}
+static uint64_t digest_of(const std::vector<spawns::NodeSpawn> &list) {
+    uint64_t total = 0;
+    for (const spawns::NodeSpawn &n : list) {
+        const spawns::DataSpawn &s = n.spawn;
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "%lld,%lld,%d,%s", static_cast<long long>(std::nearbyint(s.x)),
+                      static_cast<long long>(std::nearbyint(s.y)), s.level,
+                      spawns::archetype_leaf(s.asset->archetype_path).c_str());
+        uint64_t h = 0xCBF29CE484222325ull;
+        for (const char *p = buf; *p; ++p) h = (h ^ static_cast<unsigned char>(*p)) * 0x100000001B3ull;
+        total += h;
+    }
+    return total;
+}
+static std::string join_counts(const std::map<std::string, size_t> &m) {
+    std::string out;
+    for (const auto &[k, v] : m) {
+        if (v == 0) continue;
+        out += (out.empty() ? "" : ";") + k + ":" + std::to_string(v);
+    }
+    return out;
+}
+static std::string diff_golden_case(const tests::NodePopCase &c, const spawns::NodePopStats &st,
+                                    const std::vector<spawns::NodeSpawn> &list) {
+    std::map<std::string, size_t> filtered, blueprints;
+    for (const auto &[why, n] : st.pop.filtered) filtered[why_id(why)] += n;
+    for (const spawns::NodeSpawn &n : list) ++blueprints[spawns::archetype_leaf(n.spawn.asset->archetype_path)];
+    std::string diff;
+    const auto cmp = [&](const char *name, uint64_t got, uint64_t want) {
+        if (got != want)
+            diff += std::string(" ") + name + "=" + std::to_string(got) + " (golden " + std::to_string(want) + ")";
+    };
+    cmp("sets_layout", st.sets[0], c.sets_layout);
+    cmp("sets_building", st.sets[1], c.sets_building);
+    cmp("points_layout", st.points[0], c.points_layout);
+    cmp("points_building", st.points[1], c.points_building);
+    cmp("spawned_layout", st.spawned[0], c.spawned_layout);
+    cmp("spawned_building", st.spawned[1], c.spawned_building);
+    cmp("no_template", st.pop.no_template, c.no_template);
+    cmp("no_asset", st.pop.no_asset, c.no_asset);
+    cmp("outside", st.outside, c.outside);
+    if (join_counts(filtered) != c.filtered)
+        diff += " filtered=[" + join_counts(filtered) + "] (golden [" + c.filtered + "])";
+    if (join_counts(blueprints) != c.blueprints) diff += " blueprints differ";
+    const uint64_t d = digest_of(list);
+    if (d != c.digest) diff += " digest " + std::to_string(d) + " (golden " + std::to_string(c.digest) + ")";
+    return diff;
+}
+struct WalkerCount {
+    size_t total = 0, patrol = 0, wander = 0, stand = 0, guards_patrol = 0, service_walking = 0, patrol_unplaced = 0;
+    size_t stationary_routed = 0, villager_patrol = 0, carriers_walk = 0, workers_walk = 0, farmers_stand = 0;
+    size_t services = 0, crate_vendors = 0, crate_vendors_walking = 0, building_wanderers = 0, workers_off_plot = 0,
+           workers_far = 0;
+};
+struct WalkerSpawnArgs {
+    const world::WorldActor &actor;
+    const content::NpcInstanceRow *inst = nullptr;
+    const content::NpcRouteRow *route = nullptr;
+    const world::CityNodeInfo &node;
+    int64_t plot = 0;
+};
+static bool is_service_leaf(const content::NpcInstanceRow *inst, const std::string &leaf) {
+    static const char *const kServiceWords[] = {"Vendor",          "Clerk",     "Manager", "_KAE",
+                                                "Salesman",        "Caravan",   "Station", "Board",
+                                                "ServiceBuilding", "TurnInBox", "Mailbox", "ServiceDesk"};
+    if (inst && inst->vendor != 0) return true;
+    for (const char *w : kServiceWords) {
+        if (leaf.find(w) != std::string::npos) return true;
+    }
+    return false;
+}
+static void record_workshop_wanderer(WalkerCount &c, const world::WorldActor &a, const npc::NpcMotionSetup &s,
+                                     const world::CityNodeInfo &node, int64_t plot) {
+    double ox = node.x, oy = node.y;
+    bool found = false;
+    const double yaw = node.yaw * 3.14159265358979323846 / 180.0;
+    const int lvl = g_env.shipped_nodes->level_of(node.guid);
+    for (const world::PlotRow &r : g_env.shipped_wire->plot_rows_of(node.guid, lvl)) {
+        if (r.plot != plot) continue;
+        ox = node.x + r.tx * std::cos(yaw) - r.ty * std::sin(yaw);
+        oy = node.y + r.tx * std::sin(yaw) + r.ty * std::cos(yaw);
+        found = true;
+    }
+    ++c.building_wanderers;
+    if (!found || std::hypot(a.x - ox, a.y - oy) > 3000.0) ++c.workers_off_plot;
+    if (s.wander_max > npc::kWorkshopRadiusCm) ++c.workers_far;
+}
+static void record_workshop_role(WalkerCount &c, const WalkerSpawnArgs &args, const npc::NpcMotionSetup &s,
+                                 const std::string &leaf) {
+    if (args.plot != 0 && s.ambient == npc::Ambient::Wander)
+        record_workshop_wanderer(c, args.actor, s, args.node, args.plot);
+    if (!args.inst || args.inst->name.rfind("Node_Filler_Villager", 0) != 0) return;
+    if (s.ambient == npc::Ambient::Wander && leaf.find("Shovel") == std::string::npos) ++c.workers_walk;
+    if (s.ambient == npc::Ambient::Stationary && leaf.find("Shovel") != std::string::npos) ++c.farmers_stand;
+}
+static void record_walker_service(WalkerCount &c, const WalkerSpawnArgs &args, const npc::NpcMotionSetup &s,
+                                  const std::string &leaf) {
+    if (is_service_leaf(args.inst, leaf)) {
+        ++c.services;
+        if (s.ambient != npc::Ambient::Stationary) ++c.service_walking;
+    }
+    if (leaf == "ServiceBuilding_Caravansary_CrateSalesman") {
+        ++c.crate_vendors;
+        c.crate_vendors_walking += s.ambient != npc::Ambient::Stationary;
+    }
+    record_workshop_role(c, args, s, leaf);
+}
+static void record_walker_patrol(WalkerCount &c, const world::CityNodeInfo &node, const npc::NpcMotionSetup &s,
+                                 const std::string &leaf) {
+    ++c.patrol;
+    (npc::is_guard_leaf(leaf) ? c.guards_patrol : c.villager_patrol)++;
+    if (leaf.find("Carrying") != std::string::npos) ++c.carriers_walk;
+    if (std::hypot(s.route.front().x - node.x, s.route.front().y - node.y) > 60000.0) ++c.patrol_unplaced;
+}
+static void record_walker_spawn(WalkerCount &c, const WalkerSpawnArgs &args) {
+    const npc::SpeedModel speeds;
+    npc::NpcMotionSetup s =
+        npc::make_setup(args.actor, g_env.table, args.inst, args.route, speeds, nullptr, &args.node);
+    if (args.plot != 0) npc::keep_to_workshop(&s, npc::kWorkshopRadiusCm);
+    const std::string leaf = spawns::blueprint_leaf(args.actor.npc.archetype);
+    ++c.total;
+    record_walker_service(c, args, s, leaf);
+    if (s.ambient == npc::Ambient::Patrol && s.route.size() >= 2) {
+        record_walker_patrol(c, args.node, s, leaf);
+    } else if (s.ambient == npc::Ambient::Stationary) {
+        ++c.stand;
+        if (!s.route.empty()) ++c.stationary_routed;
+    } else {
+        ++c.wander;
+    }
+    if (npc::stands_by_kind(leaf) && s.ambient != npc::Ambient::Stationary) ++c.service_walking;
+}
+
 static void test_filter_tags_and_zones(const content::PopFilter &open, const std::set<std::string> &none,
                                        const spawns::SpawnContext &ctx, const spawns::SpawnFilter &f) {
     content::PopFilter pf = open;
@@ -200,74 +369,6 @@ static void test_data() {
                  "key at or below the node's: nothing "
                  "below its first key");
     check_joeva_placed_sets(*joeva, layout);
-}
-
-struct WorkshopTown {
-    const char *name;
-    int64_t guid;
-    int level;
-    size_t factories, farms;
-};
-
-static void check_town_workshops(const WorkshopTown &t) {
-    world::CityNodes &shipped = *g_env.shipped_nodes;
-    const world::NodeWire &swire = *g_env.shipped_wire;
-    const world::CityNodeInfo &info = *g_env.nodes->by_guid(t.guid);
-    const std::vector<world::PlotRow> rows = swire.plot_rows_of(t.guid, t.level);
-    const std::vector<world::PlotRow> base_rows = g_env.wire->plot_rows_of(t.guid, t.level);
-    size_t changed = 0;
-    for (size_t i = 0; i < rows.size() && i < base_rows.size(); ++i) {
-        changed += rows[i].building != base_rows[i].building || rows[i].state != base_rows[i].state;
-    }
-    char msg[240];
-    std::snprintf(msg, sizeof msg,
-                  "%s at level %d: %zu plots change (the workshops of the list), "
-                  "the others are as the layout has them",
-                  t.name, t.level, t.factories + t.farms);
-    CHECK(rows.size() == base_rows.size() && changed == t.factories + t.farms, msg);
-
-    spawns::NodePopStats st0, st1;
-    const auto base = select(*g_env.nodes, *g_env.wire, info, t.level, st0);
-    const auto with = select(shipped, swire, info, t.level, st1);
-    size_t villagers = 0, hammers = 0, shovels = 0, at_plots = 0;
-    for (size_t i = 0; i < rows.size() && i < base_rows.size(); ++i) {
-        if (rows[i].building == base_rows[i].building && rows[i].state == base_rows[i].state) continue;
-        const PlotFolk was = folk_at(base, rows[i].plot), now = folk_at(with, rows[i].plot);
-        villagers += now.villager_f - was.villager_f;
-        hammers += now.hammer - was.hammer;
-        shovels += now.shovel - was.shovel;
-        at_plots += now.total - was.total;
-    }
-    std::printf("    %s: %zu NPCs without workshops, %zu with (%zu at the "
-                "workshops: %zu villagers, %zu hammer "
-                "smiths, %zu farmers)\n",
-                t.name, base.size(), with.size(), at_plots, villagers, hammers, shovels);
-    std::snprintf(msg, sizeof msg,
-                  "%s: a factory brings 2 villagers and 2 hammer smiths, a farm "
-                  "2 shovel farmers",
-                  t.name);
-    CHECK(villagers == 2 * t.factories && hammers == 2 * t.factories && shovels == 2 * t.farms, msg);
-    std::snprintf(msg, sizeof msg, "%s has %zu NPCs more than with no workshop", t.name, 4 * t.factories + 2 * t.farms);
-    CHECK(with.size() == base.size() + 4 * t.factories + 2 * t.farms, msg);
-}
-
-static void test_workshops() {
-    std::printf("the workshops the seed starts the towns with\n");
-    world::CityNodes &shipped = *g_env.shipped_nodes;
-    const world::NodeWire &swire = *g_env.shipped_wire;
-    CHECK(shipped.plot_choices(kJoeva).size() == 5 && shipped.plot_choices(kHalcyon).size() == 1 &&
-              shipped.plot_choices(kWinstead).empty() && g_env.nodes->plot_choices(kJoeva).empty(),
-          "the shipped seed lists 5 workshops for Joeva and 1 for Halcyon, none "
-          "for Winstead; the baseline nodes (the "
-          "seed without its plots) have none");
-
-    const WorkshopTown towns[] = {{"Joeva", kJoeva, 4, 4, 1}, {"Halcyon", kHalcyon, 3, 1, 0}};
-    for (const WorkshopTown &t : towns) check_town_workshops(t);
-
-    spawns::NodePopStats a, b;
-    const world::CityNodeInfo &winstead = *g_env.nodes->by_guid(kWinstead);
-    CHECK(select(shipped, swire, winstead, 3, a).size() == select(*g_env.nodes, *g_env.wire, winstead, 3, b).size(),
-          "Winstead (no list) has the same people with the shipped seed");
 }
 
 struct Anchor {
@@ -707,7 +808,6 @@ int main() {
     if (const int rc = init_node_pop_env(); rc != 0) return rc;
     test_filter();
     test_data();
-    test_workshops();
     test_walkers();
     test_anchors();
     test_golden();

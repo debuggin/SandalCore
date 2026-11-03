@@ -147,6 +147,7 @@ add_library(world_core STATIC
     session/ability_pipeline_cast.cpp
     session/ability_pipeline_damage.cpp
     session/ability_pipeline_hits.cpp
+    session/ability_pipeline_host.cpp
     session/ability_pipeline_internal.h
     session/ability_pipeline_zones.cpp
     session/ability_reactions.cpp
@@ -169,7 +170,6 @@ add_library(world_core STATIC
     session/player_session_artisan.cpp
     session/player_session_combat.cpp
     session/player_session_guild.cpp
-    session/player_session_internal.h
     session/player_session_items.cpp
     session/player_session_lifecycle.cpp
     session/player_session_loot.cpp
@@ -177,7 +177,6 @@ add_library(world_core STATIC
     session/player_session_movement.cpp
     session/player_session_quests.cpp
     session/player_session_quick_craft.cpp
-    session/player_session_state.h
     session/player_session_types.h
     session/player_session_vendor.cpp
     session/player_session_zone.cpp
@@ -373,12 +372,16 @@ target_sources(test_world_area_session PRIVATE
     tests/test_worldd_quest_offer_lifecycle.cpp
     tests/test_worldd_quest_progression_handin.cpp
 )
+target_sources(test_world_bootstrap PRIVATE tests/test_worldd_bootstrap_sequence.cpp)
 target_sources(test_world_character_setup PRIVATE tests/test_worldd_character_setup_stats.cpp)
+target_sources(test_world_items PRIVATE tests/test_worldd_items_equip.cpp)
 target_sources(test_world_movement PRIVATE tests/test_worldd_movement_saver.cpp)
+target_sources(test_world_nav_window PRIVATE tests/test_worldd_nav_window_npcs.cpp)
 target_sources(test_world_session PRIVATE
     tests/test_worldd_session_relog.cpp
     tests/test_worldd_session_lifecycle.cpp
 )
+target_sources(test_world_talents PRIVATE tests/test_worldd_talents_retail.cpp)
 world_add_test(test_world_abilities_cooldowns tests/test_worldd_abilities_cooldowns.cpp)
 world_add_test(test_world_abilities_retail tests/test_worldd_abilities_retail.cpp)
 world_add_test(test_world_items_bootstrap tests/test_worldd_items_bootstrap.cpp)
@@ -417,6 +420,7 @@ target_compile_definitions(test_world_area PRIVATE
 
 # the harvest of the resource nodes (Gathering stage 2, "Harvesting"): the node state, the wire against the retail capture, the requirements and the rolls, on the real content.db of the working tree
 world_add_test(test_world_gather)
+target_sources(test_world_gather PRIVATE tests/test_worldd_gather_rolls.cpp)
 target_compile_definitions(test_world_gather PRIVATE
     GATHER_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 world_add_test(test_world_gather_session)
@@ -434,11 +438,13 @@ target_compile_definitions(test_world_resource PRIVATE
 
 # Foliage gathering (Gathering stage 3): the map, the store with a fake clock, the cells' state actors and the foliage tables of the real content.db and region_foliage.tsv of the working tree
 world_add_test(test_world_foliage)
+target_sources(test_world_foliage PRIVATE tests/test_worldd_foliage_cells.cpp)
 target_compile_definitions(test_world_foliage PRIVATE
     FOLIAGE_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     FOLIAGE_TSV_PATH="${PROJECT_SOURCE_DIR}/dist/content/region_foliage.tsv")
 
 world_add_test(test_world_foliage_session)
+target_sources(test_world_foliage_session PRIVATE tests/test_worldd_foliage_session_wire.cpp)
 target_compile_definitions(test_world_foliage_session PRIVATE
     GATHER_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     FOLIAGE_TSV_PATH="${PROJECT_SOURCE_DIR}/dist/content/region_foliage.tsv")
@@ -449,6 +455,7 @@ target_compile_definitions(test_world_foliage_session_world PRIVATE
 
 # Hunting (Gathering stage 3): the huntable creature's template, the 53 hunting interactions and their rewards, and the corpse's wire against the retail capture, on the real content.db of the working tree
 world_add_test(test_world_hunting)
+target_sources(test_world_hunting PRIVATE tests/test_worldd_hunting_corpse.cpp)
 target_compile_definitions(test_world_hunting PRIVATE
     HUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
@@ -461,6 +468,7 @@ target_compile_definitions(test_world_hunting_session PRIVATE
 
 # the professions and the GM artisan items (Gathering stage 2): the rules on a small book and the 67 scrolls on the real content.db of the working tree
 world_add_test(test_world_professions)
+target_sources(test_world_professions PRIVATE tests/test_worldd_professions_artisan.cpp)
 target_compile_definitions(test_world_professions PRIVATE
     PROFESSIONS_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 
@@ -485,6 +493,7 @@ target_compile_definitions(test_world_mounts PRIVATE
     MOUNT_SPEEDS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_speeds.tsv"
     MOUNT_RIDERS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_riders.tsv")
 world_add_test(test_world_mounts_session)
+target_sources(test_world_mounts_session PRIVATE tests/test_worldd_mounts_session_goldens.cpp)
 target_compile_definitions(test_world_mounts_session PRIVATE
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_RIDERS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_riders.tsv")
@@ -527,6 +536,7 @@ target_compile_definitions(test_world_city_nodes PRIVATE
 # the nodes the client is told of (Nodes 1, stage 2): the maps, summaries and sieges of the registry's levels against the retail capture's, the session's answers (their order, the
 # live update, the GM console) and the GM control over gRPC against an in-process fake of the node service
 world_add_test(test_world_node_state)
+target_sources(test_world_node_state PRIVATE tests/test_worldd_node_state_control.cpp)
 target_compile_definitions(test_world_node_state PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json"
@@ -601,6 +611,7 @@ target_compile_definitions(test_world_rewards PRIVATE
 
 # the generic ability runtime (plan D2) on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
 world_add_test(test_world_ability_pipeline)
+target_sources(test_world_ability_pipeline PRIVATE tests/test_worldd_ability_pipeline_costs.cpp)
 target_compile_definitions(test_world_ability_pipeline PRIVATE
     ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")
 world_add_test(test_world_ability_pipeline_chains tests/test_worldd_ability_pipeline_chains.cpp)

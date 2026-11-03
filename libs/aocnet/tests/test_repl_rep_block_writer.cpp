@@ -456,7 +456,7 @@ static void test_parent_mask() {
     CHECK(write_rep_block(owner, es, esh, ew) == 1 + 8 + 16 + 8 + 8, "an empty array on a first send: count 0");
 }
 
-void run_repl_rep_block_part2() {
+void run_repl_rep_block_writer() {
     test_hostile_counts();
     t5_array_element_handles();
     t7_array_bound();

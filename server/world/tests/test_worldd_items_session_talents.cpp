@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-#include "test_worldd_items_session_helpers.h"
+#include "bootstrap/captured_replies.h"
+#include "bootstrap/captured_setup.h"
+#include "bootstrap/character_setup.h"
+#include "test_worldd_items_session_common.h"
 using namespace aoc::worldd;
+static constexpr int64_t kAxe2HLine = 6064632150845227015ll;
 static std::vector<repl::ActionbarSlot> sorted_slots(std::vector<repl::ActionbarSlot> slots) {
     std::sort(slots.begin(), slots.end(), [](const repl::ActionbarSlot &a, const repl::ActionbarSlot &b) { return a.bank_index != b.bank_index ? a.bank_index < b.bank_index : a.slot_index < b.slot_index; });
     return slots;

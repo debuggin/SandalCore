@@ -1,14 +1,65 @@
+#include "bootstrap/character_setup.h"
 #include "combat/combat_world.h"
+#include "content/content_db.h"
 #include "protocol/repl/ability_rpc.h"
 #include "protocol/repl/hit_rpc.h"
-#include "session/player_session_internal.h"
+#include "session/player_session.h"
 
 namespace aoc {
 namespace worldd {
 
+class PlayerSession::CombatSide final : public combat::PlayerPort, public combat::Fighter {
+public:
+  explicit CombatSide(PlayerSession& s) : s_(s), aligns_(combat::CombatData::player_alignments()) {}
+
+  uint64_t actor_id() const override { return s_.pb_.setup().guids.pawn.ObjectId; }
+  combat::Fighter& fighter() override { return *this; }
+  void receive_hit(const combat::IncomingHit& hit, double) override {
+    if (inbox.size() < 256) inbox.push_back(hit);
+  }
+  void set_in_combat(bool in_combat, double) override { wants_in_combat = in_combat; }
+  std::array<uint32_t, 4> character_guid() const override { return s_.pb_.setup().character_guid; }
+  FIntrepidNetworkGUID pawn_guid() const override { return s_.pb_.setup().guids.pawn; }
+  FIntrepidNetworkGUID cylinder_guid() const override { return s_.pb_.setup().guids.collision_cylinder; }
+  void receive_kill(const combat::KillReward& kill, double) override {
+    if (kills.size() < 64) kills.push_back(kill);
+  }
+
+  uint64_t id() const override { return actor_id(); }
+  bool is_player() const override { return true; }
+  int level() const override { return s_.stats_ ? s_.stats_->level() : 1; }
+  combat::Vec3 position() const override {
+    const GoodPosition& g = s_.checker_.good();
+    return {g.x, g.y, g.z};
+  }
+  double radius_cm() const override { return 34.0; }
+  double facing_degrees() const override { return s_.checker_.good().yaw_degrees; }
+  bool alive() const override {
+    const stats::StatValue* h = s_.stats_ ? s_.stats_->find(content::kGuidHealth) : nullptr;
+    return h && h->value > 0;
+  }
+  const std::vector<int64_t>& alignments() const override { return aligns_; }
+  stats::CharacterStats& stats() override { return *s_.stats_; }
+  std::vector<stats::WornItem> worn() const override { return bootstrap::worn_items_of(s_.inventory_); }
+
+  std::vector<combat::IncomingHit> inbox;
+  std::vector<combat::KillReward>  kills;
+  bool                             wants_in_combat = false;
+
+private:
+  PlayerSession&       s_;
+  std::vector<int64_t> aligns_;
+};
+
+void PlayerSession::leave_combat() {
+  if (combat_side_ && npc_world_ && npc_world_->combat()) npc_world_->combat()->remove_player(combat_side_.get());
+  hit_port_.reset();
+  if (pipeline_) pipeline_->set_combat(nullptr);
+  combat_side_.reset();
+}
+
 namespace {
 
-using namespace ::sandal::worldd::session::detail;
 using SendFn = std::function<int(bootstrap::Send&)>;
 
 bool is_ability_transition(const AbilityEvent& e) {
@@ -95,7 +146,7 @@ bool drain_pending_ends(bootstrap::PlayerBootstrap& pb, std::deque<int32_t>& pen
 void drain_pending_confirms(bootstrap::PlayerBootstrap& pb, std::deque<bootstrap::HitConfirm>& pending_confirms,
                             size_t& confirms_sent, const GoodPosition& at, const SendFn& send_fn) {
   while (!pending_confirms.empty()) {
-    const size_t n = std::min(pending_confirms.size(), PlayerSessionTypes::kConfirmsPerCall);
+    const size_t n = std::min(pending_confirms.size(), PlayerSession::kConfirmsPerCall);
     std::vector<bootstrap::HitConfirm> batch(pending_confirms.begin(),
                                              pending_confirms.begin() + static_cast<std::ptrdiff_t>(n));
     const bootstrap::PlayerBootstrap::Checkpoint checkpoint = pb.checkpoint();
@@ -191,7 +242,7 @@ bool is_valid_trigger_input(const std::optional<ParsedTriggerInput>& parsed, con
 }
 
 void log_unreadable_trigger(size_t& logged, std::string_view session_name, bool has_parsed, size_t param_bits) {
-  if (++logged <= PlayerSessionTypes::kLoggedPerKind) {
+  if (++logged <= PlayerSession::kLoggedPerKind) {
     spdlog::warn("[session] {}: a ServerTriggerAbility{} does not read ({} parameter bits): ignored", session_name,
                  has_parsed ? " for an ability worldd runs" : "", param_bits);
   }

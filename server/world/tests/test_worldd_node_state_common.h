@@ -14,28 +14,15 @@
 inline int g_pass = 0;
 inline int g_fail = 0;
 
-#define CHECK(cond, msg)                       \
-    do {                                       \
-        if (cond) {                            \
-            std::printf("  [ok ] %s\n", msg);  \
-            g_pass++;                          \
-        } else {                               \
-            std::printf("  [FAIL] %s\n", msg); \
-            g_fail++;                          \
-        }                                      \
-    } while (0)
+#define CHECK(cond, msg) do { \
+    if (cond) { std::printf("  [ok ] %s\n", msg); g_pass++; } \
+    else { std::printf("  [FAIL] %s\n", msg); g_fail++; } \
+} while (0)
 
-#define CHECKF(cond, ...)             \
-    do {                              \
-        if (cond) {                   \
-            g_pass++;                 \
-        } else {                      \
-            std::printf("  [FAIL] "); \
-            std::printf(__VA_ARGS__); \
-            std::printf("\n");        \
-            g_fail++;                 \
-        }                             \
-    } while (0)
+#define CHECKF(cond, ...) do { \
+    if (cond) { g_pass++; } \
+    else { std::printf("  [FAIL] "); std::printf(__VA_ARGS__); std::printf("\n"); g_fail++; } \
+} while (0)
 
 #ifndef NODES_CONTENT_DB_PATH
 #define NODES_CONTENT_DB_PATH "dist/content/content.db"
@@ -77,14 +64,8 @@ inline std::string guid_n(uint32_t n) {
 
 inline aoc::worldd::svc::InventoryItem make_item(aoc::worldd::svc::ItemContainer c, int slot, int64_t record, uint32_t n, int32_t quantity = 1) {
     aoc::worldd::svc::InventoryItem it;
-    it.container = c;
-    it.slot = slot;
-    it.item_record_id = record;
-    it.instance_guid = guid_n(n);
-    it.quantity = quantity;
-    it.quality = 1;
-    it.durability = 11;
-    it.created_at_ms = 1'771'299'474'000ll;
+    it.container = c; it.slot = slot; it.item_record_id = record; it.instance_guid = guid_n(n);
+    it.quantity = quantity; it.quality = 1; it.durability = 11; it.created_at_ms = 1'771'299'474'000ll;
     return it;
 }
 
@@ -116,20 +97,13 @@ inline aoc::worldd::svc::Character cyb_record(bool with_sister = true) {
     return c;
 }
 
-inline aoc::worldd::bootstrap::LoginIdentity identity() {
-    return {kMachine, kMachine};
-}
-inline double world_time_at(aoc::worldd::Clock::time_point t) {
-    return std::chrono::duration<double>(t - t0).count();
-}
+inline aoc::worldd::bootstrap::LoginIdentity identity() { return {kMachine, kMachine}; }
+inline double world_time_at(aoc::worldd::Clock::time_point t) { return std::chrono::duration<double>(t - t0).count(); }
 
 struct RecordingSink : aoc::worldd::PositionSink {
-    void save(const std::string &, const aoc::worldd::svc::Position &) override {
-    }
-    void save_inventory(const std::string &, std::vector<aoc::worldd::svc::InventoryItem>) override {
-    }
-    void save_progress(const std::string &, aoc::worldd::svc::Progress) override {
-    }
+    void save(const std::string &, const aoc::worldd::svc::Position &) override {}
+    void save_inventory(const std::string &, std::vector<aoc::worldd::svc::InventoryItem>) override {}
+    void save_progress(const std::string &, aoc::worldd::svc::Progress) override {}
 };
 
 /// A node control that remembers what the console asked.
@@ -141,15 +115,9 @@ struct RecordingControl : aoc::worldd::world::NodeControl {
     void add_experience(const std::string &n, int64_t amount, const std::string &by) override {
         calls.push_back("add_xp " + n + " " + std::to_string(amount) + " | " + by);
     }
-    void node_data(const std::string &n, const std::string &by) override {
-        calls.push_back("node_data " + n + " | " + by);
-    }
-    void clock(const std::string &by) override {
-        calls.push_back("clock | " + by);
-    }
-    void advance_clock(int64_t s, const std::string &by) override {
-        calls.push_back("advance " + std::to_string(s) + " | " + by);
-    }
+    void node_data(const std::string &n, const std::string &by) override { calls.push_back("node_data " + n + " | " + by); }
+    void clock(const std::string &by) override { calls.push_back("clock | " + by); }
+    void advance_clock(int64_t s, const std::string &by) override { calls.push_back("advance " + std::to_string(s) + " | " + by); }
 };
 
 inline std::unique_ptr<aoc::worldd::world::CityNodes> g_nodes;
@@ -157,10 +125,7 @@ inline std::unique_ptr<aoc::worldd::world::NodeWire> g_wire;
 
 inline const aoc::protocol::schema::RpcSchema &pc_rpc(const char *name) {
     const aoc::protocol::schema::RpcSchema *r = class_named("AoCPlayerControllerBP_C").rpc(name);
-    if (!r) {
-        std::printf("  [FAIL] no RPC %s\n", name);
-        std::exit(2);
-    }
+    if (!r) { std::printf("  [FAIL] no RPC %s\n", name); std::exit(2); }
     return *r;
 }
 
@@ -175,38 +140,24 @@ struct Fixture {
     explicit Fixture(bool seeded = true, bool with_control = true) {
         dir = content_fixture::make_temp_dir("worldd_node_state_");
         const std::filesystem::path db = dir / "content.db";
-        if (!content_fixture::make_db(db))
-            std::exit(2);
+        if (!content_fixture::make_db(db)) std::exit(2);
         std::string error;
         content = aoc::worldd::content::ContentDb::open(db.string(), error);
-        if (!content) {
-            std::printf("  [FAIL] the content.db does not open: %s\n", error.c_str());
-            std::exit(2);
-        }
+        if (!content) { std::printf("  [FAIL] the content.db does not open: %s\n", error.c_str()); std::exit(2); }
         world = std::make_unique<aoc::worldd::PlayerWorld>(&*content, "", aoc::worldd::bootstrap::GameStateMode::Tier3, kServerId, guids);
         nodes = aoc::worldd::world::CityNodes::load(db_path(), error);
-        if (!nodes) {
-            std::printf("  [FAIL] the real content.db has no city nodes: %s\n", error.c_str());
-            std::exit(2);
-        }
+        if (!nodes) { std::printf("  [FAIL] the real content.db has no city nodes: %s\n", error.c_str()); std::exit(2); }
         size_t applied = 0;
-        if (seeded && !nodes->apply_seed_file(NODES_SEED_PATH, error, &applied)) {
-            std::printf("  [FAIL] the seed does not load: %s\n", error.c_str());
-            std::exit(2);
-        }
+        if (seeded && !nodes->apply_seed_file(NODES_SEED_PATH, error, &applied)) { std::printf("  [FAIL] the seed does not load: %s\n", error.c_str()); std::exit(2); }
         world->set_city_nodes(nodes.get());
         world->set_node_wire(g_wire.get());
-        if (with_control)
-            world->set_node_control(&control);
+        if (with_control) world->set_node_control(&control);
     }
     Fixture(const Fixture &) = delete;
     Fixture &operator=(const Fixture &) = delete;
     ~Fixture() {
-        world.reset();
-        nodes.reset();
-        content.reset();
-        std::error_code ec;
-        std::filesystem::remove_all(dir, ec);
+        world.reset(); nodes.reset(); content.reset();
+        std::error_code ec; std::filesystem::remove_all(dir, ec);
     }
 };
 
@@ -226,41 +177,29 @@ struct Harness {
         : fx(seeded, with_control), record(std::move(r)) {
         fx.world->set_position_sink(&sink);
         s = aoc::worldd::PlayerSession::join(conn, *fx.world, record, identity(), world_time_at(t), error);
-        if (!s) {
-            std::printf("  [FAIL] the session does not join: %s\n", error.c_str());
-            std::exit(2);
-        }
+        if (!s) { std::printf("  [FAIL] the session does not join: %s\n", error.c_str()); std::exit(2); }
         pawn_ch = s->channel_of(aoc::worldd::bootstrap::Role::Pawn);
         pc_ch = s->channel_of(aoc::worldd::bootstrap::Role::PlayerController);
         gs_ch = s->channel_of(aoc::worldd::bootstrap::Role::GameState);
     }
 
     void flush() {
-        for (auto &pkt : conn.flush(t)) {
-            const auto r = client.receive(pkt);
-            for (const auto &d : r.delivered)
-                got.push_back(d);
-        }
+        for (auto &pkt : conn.flush(t))
+            for (const auto &d : client.receive(pkt).delivered) got.push_back(d);
     }
     void client_sends(std::vector<fake::Bunch> bunches) {
         const auto pkt = client.packet(std::move(bunches));
         const std::vector<aoc::worldd::InBunch> in = conn.receive(pkt, t);
         s->take_acks(conn);
-        for (const aoc::worldd::InBunch &b : in)
-            s->on_bunch(conn, b, t);
+        for (const aoc::worldd::InBunch &b : in) s->on_bunch(conn, b, t);
         s->end_of_datagram(conn);
     }
     void step(std::chrono::milliseconds d = std::chrono::milliseconds(20)) {
-        t += d;
-        fx.world->tick_world(world_time_at(t));
-        s->tick(conn, t);
-        flush();
-        s->take_acks(conn);
-        client_sends({});
+        t += d; fx.world->tick_world(world_time_at(t)); s->tick(conn, t);
+        flush(); s->take_acks(conn); client_sends({});
     }
     void run(std::chrono::milliseconds total) {
-        for (std::chrono::milliseconds done{0}; done < total; done += std::chrono::milliseconds(20))
-            step();
+        for (std::chrono::milliseconds done{0}; done < total; done += std::chrono::milliseconds(20)) step();
     }
     void settle() {
         for (int quiet = 0, i = 0; quiet < 8 && i < 1500; ++i) {
@@ -300,51 +239,18 @@ inline void Harness::play() {
     run(std::chrono::milliseconds(400));
 }
 
-/// The calls of a chain's RPC blocks, by name, as the client reads them with the class's schema.
-inline std::vector<aoc::protocol::repl::RpcCall> calls_of(const fake::Delivered &d, const char *cls) {
-    std::vector<aoc::protocol::repl::RpcCall> out;
-    const auto blocks = aoc::protocol::repl::read_content_blocks(d.content.data(), d.content.bit_pos(), 0);
-    if (!blocks)
-        return out;
-    for (const auto &b : *blocks) {
-        if (b.header.has_rep_layout)
-            continue;
-        size_t p = b.payload_pos;
-        auto calls = aoc::protocol::repl::read_rpc_fields(class_named(cls), d.content.data(), b.payload_pos + b.payload_bits, p);
-        if (!calls)
-            continue;
-        for (auto &c : *calls)
-            out.push_back(std::move(c));
-    }
-    return out;
-}
-
 /// UPackageMapClient::SerializeNewActor (test_worldd_session.cpp read_new_actor): the bit after it, 0 when it does not read.
 inline size_t new_actor_end(const aoc::protocol::emit::BunchWriter &w, bool player_controller) {
     aoc::protocol::wire::PacketReader r(w.data(), w.byte_size(), w.bit_pos());
-    for (int i = 0; i < 3; ++i) {
-        r.read_uint32();
-        r.read_uint32();
-        r.read_uint32();
-        r.read_uint32();
-    }
+    for (int i = 0; i < 3; ++i) { r.read_uint32(); r.read_uint32(); r.read_uint32(); r.read_uint32(); }
     auto vector = [&] {
-        if (!r.read_bit())
-            return true;
-        if (!r.read_bit())
-            return false;
-        return aoc::protocol::repl::read_quantized_vector(r).has_value();
+        if (!r.read_bit()) return true;
+        return r.read_bit() && aoc::protocol::repl::read_quantized_vector(r).has_value();
     };
-    if (!vector())
-        return 0;
-    if (r.read_bit() && !aoc::protocol::repl::read_struct("FRotator", r))
-        return 0;
-    if (!vector() || !vector())
-        return 0;
-    if (player_controller) {
-        r.read_uint8();
-        r.read_uint32();
-    }
+    if (!vector()) return 0;
+    if (r.read_bit() && !aoc::protocol::repl::read_struct("FRotator", r)) return 0;
+    if (!vector() || !vector()) return 0;
+    if (player_controller) { r.read_uint8(); r.read_uint32(); }
     return r.overflowed() ? 0 : r.pos();
 }
 
@@ -355,19 +261,16 @@ inline States states_of(const fake::Delivered &d, const aoc::protocol::repl::Act
     States out;
     const size_t start = d.open ? new_actor_end(d.content, player_controller) : 0;
     const auto blocks = aoc::protocol::repl::read_content_blocks(d.content.data(), d.content.bit_pos(), start);
-    if (!blocks)
-        return out;
+    if (!blocks) return out;
     for (const aoc::protocol::repl::BlockView &b : *blocks) {
         const aoc::protocol::repl::Subobject *sub = b.header.is_actor ? nullptr : actor.find(b.header.object);
         const aoc::protocol::schema::ClassSchema *cls = b.header.is_actor ? actor.obj.schema : (sub ? sub->obj.schema : nullptr);
         const uint64_t id = b.header.is_actor ? 0 : b.header.object.ObjectId;
-        if (!cls)
-            continue;
+        if (!cls) continue;
         aoc::protocol::emit::BunchWriter w;
         w.write_bit_range(d.content.data(), b.payload_pos, b.payload_bits);
         auto st = aoc::protocol::repl::load_object_state(*cls, w.data(), b.payload_bits, b.header.has_rep_layout);
-        if (st)
-            out.emplace(id, std::move(*st));
+        if (st) out.emplace(id, std::move(*st));
     }
     return out;
 }
@@ -375,34 +278,9 @@ inline States states_of(const fake::Delivered &d, const aoc::protocol::repl::Act
 /// The chains of a channel from `from` on.
 inline std::vector<const fake::Delivered *> chains_on(const Harness &h, uint32_t channel, size_t from, bool include_open = true) {
     std::vector<const fake::Delivered *> out;
-    for (size_t i = from; i < h.got.size(); ++i) {
-        if (h.got[i].channel == channel && !h.got[i].close && (include_open || !h.got[i].open))
-            out.push_back(&h.got[i]);
-    }
+    for (size_t i = from; i < h.got.size(); ++i)
+        if (h.got[i].channel == channel && !h.got[i].close && (include_open || !h.got[i].open)) out.push_back(&h.got[i]);
     return out;
 }
 
-inline void append_pc_calls_of(const fake::Delivered &d, std::vector<std::string> &names, std::vector<aoc::protocol::repl::RpcCall> *keep) {
-    for (aoc::protocol::repl::RpcCall &c : calls_of(d, "AoCPlayerControllerBP_C")) {
-        if (c.rpc && std::string(c.rpc->name) == "ClientSetTime")
-            continue;
-        names.push_back(c.rpc ? c.rpc->name : "?");
-        if (keep)
-            keep->push_back(std::move(c));
-    }
-}
-
-inline std::vector<std::string> pc_calls_from(const Harness &h, size_t from, std::vector<aoc::protocol::repl::RpcCall> *keep = nullptr) {
-    std::vector<std::string> names;
-    for (const fake::Delivered *d : chains_on(h, h.pc_ch, from, false))
-        append_pc_calls_of(*d, names, keep);
-    return names;
-}
-
-inline aoc::protocol::repl::RpcParams node_param(const char *rpc_name, const char *param, int64_t node) {
-    aoc::protocol::repl::RpcParams p;
-    aoc::protocol::repl::set_rpc_param(pc_rpc(rpc_name), p, param, aoc::protocol::repl::Value::i64(node));
-    return p;
-}
-
-void run_node_state_part2();
+void run_node_state_control_tests();

@@ -10,6 +10,120 @@ namespace schema = aoc::protocol::schema;
 namespace gen = aoc::protocol::schema::gen;
 using std::chrono::seconds;
 
+struct TsvPos {
+    double x = 100;
+    double y = 200;
+    double z = 300;
+};
+
+static std::string tsv_line(const char *def, const char *owner, const char *comp, int index, TsvPos p = {}) {
+    char buf[512];
+    std::snprintf(buf, sizeof buf, "1\t%s\tCELL\t%s\t%s\t%d\t%.1f\t%.1f\t%.1f\t0\t0\t0\t1\t1\t1\tmesh\t\n", def, owner, comp, index, p.x, p.y, p.z);
+    return buf;
+}
+
+static bool tsv_parse_fails(const std::string &body, const char *want) {
+    std::string e;
+    const auto bad = aoc::worldd::foliage::FoliageMap::parse(body, e);
+    return !bad && e.find(want) != std::string::npos;
+}
+
+struct WantStart {
+    int capture;
+    const char *def;
+    double x;
+    double y;
+    double z;
+};
+
+static bool match_want_start(const aoc::worldd::foliage::FoliageMap &m, const capture_foliage::Start &s, const WantStart &w) {
+    if (s.capture != w.capture) {
+        return false;
+    }
+    const auto row = m.find(s.owner, s.component, s.has_instance ? s.instance : 0u);
+    if (!row) {
+        return false;
+    }
+    const auto &r = m.rows()[*row];
+    return m.def_names()[r.def] == w.def && std::fabs(r.x - w.x) < 0.2 && std::fabs(r.y - w.y) < 0.2 && std::fabs(r.z - w.z) < 0.2;
+}
+
+static bool check_real_cell_centre(const aoc::worldd::foliage::FoliageMap &m) {
+    for (const auto &o : capture_foliage::kIfaOpens) {
+        if (std::string(o.name) != "InstancedFoliageActor_25600_-40_19_0") {
+            continue;
+        }
+        const auto owner = m.owner_of(o.name);
+        if (!owner) {
+            return false;
+        }
+        double cx = 0;
+        double cy = 0;
+        m.cell_center(*owner, cx, cy);
+        return static_cast<int64_t>(cx) == o.location[0] && static_cast<int64_t>(cy) == o.location[1] && m.owners()[*owner].components.size() == o.component_count;
+    }
+    return false;
+}
+
+static aoc::worldd::foliage::DefTimes oak() {
+    aoc::worldd::foliage::DefTimes d;
+    d.paint = aoc::worldd::foliage::kAdult;
+    d.empty_seconds = 300;
+    d.has[0] = d.has[1] = d.has[2] = true;
+    d.life[0] = 1800;
+    d.life[1] = 1800;
+    d.life[2] = 0;
+    return d;
+}
+
+static aoc::worldd::foliage::DefTimes plant() {
+    aoc::worldd::foliage::DefTimes d;
+    d.paint = aoc::worldd::foliage::kJuvenile;
+    d.empty_seconds = 1800;
+    d.has[0] = d.has[1] = true;
+    d.life[0] = 300;
+    return d;
+}
+
+static aoc::worldd::foliage::DefTimes stone() {
+    aoc::worldd::foliage::DefTimes d;
+    d.paint = aoc::worldd::foliage::kAdult;
+    d.empty_seconds = 840;
+    d.has[2] = true;
+    return d;
+}
+
+struct SeenItem {
+    uint64_t record;
+    int quantity;
+    int quality;
+};
+
+struct RewardCase {
+    const char *what;
+    const char *def;
+    int state;
+    std::set<int> captures;
+};
+
+static const aoc::worldd::foliage::DefInfo *find_def_by_prefix(World &w, const char *prefix, bool exact) {
+    for (uint32_t r = 0; r < w.f->map().rows().size(); ++r) {
+        const std::string &n = w.f->name_of(r);
+        if (exact ? (n == prefix) : (n.rfind(prefix, 0) == 0)) {
+            return &w.f->def_of(r);
+        }
+    }
+    return nullptr;
+}
+
+static std::string temp_dup_tsv_path() {
+    const char *d = std::getenv("TEMP");
+    if (!d || !*d) {
+        d = std::getenv("TMP");
+    }
+    return (d && *d ? std::string(d) + "/" : std::string()) + "aoc_foliage_dup.tsv";
+}
+
 static void check_map_synthetic_heights_and_damaged() {
     std::string heights = "# t\n";
     heights += tsv_line("A", "InstancedFoliageActor_25600_-31_16_0", "IntrepidGatherableFISMC_0", 0, {1, 2, 12024.0});
@@ -300,222 +414,6 @@ static void test_rewards(World &w) {
     CHECK(lengths, "(the captured channels are 5 to 15 s: base x the speed curve)");
 }
 
-static void record_tsv_row(const std::string &raw, const std::map<ClientName, WireCell> &client, TsvRowStats &st) {
-    const std::vector<std::string> col = parse_tsv_row_cols(raw);
-    if (col.size() < 6) {
-        return;
-    }
-    ++st.rows;
-    bump_tsv_category(col[1], st.stones, st.trees, st.plants);
-    if (col[4].rfind("IntrepidGatherableFISMC_", 0) != 0) {
-        ++st.foreign;
-    }
-    const auto cell = client.find(client_fname(col[3]));
-    if (cell == client.end()) {
-        ++st.no_actor;
-        return;
-    }
-    const auto comp = cell->second.components.find(client_fname(col[4]));
-    if (comp == cell->second.components.end()) {
-        ++st.no_component;
-        return;
-    }
-    if (!comp->second) {
-        ++st.uninitialized;
-        return;
-    }
-    ++st.resolved;
-    bump_tsv_category(col[1], st.stones_ok, st.trees_ok, st.plants_ok);
-}
-
-static void test_every_instance_has_its_state(World &w) {
-    std::printf("the cells: every instance of the map resolves the way the client looks it up\n");
-    std::map<ClientName, WireCell> client;
-    size_t actors = 0;
-    size_t unreadable = 0;
-    size_t doubled = 0;
-    size_t components = 0;
-    size_t not_init = 0;
-    w.world->registry().for_each([&](const world::WorldActor &a) {
-        if (a.kind != world::ActorKind::Foliage) {
-            return;
-        }
-        ++actors;
-        WireCell cell;
-        if (!read_cell_from_wire(a.actor, cell)) {
-            ++unreadable;
-            return;
-        }
-        components += cell.components.size();
-        for (const auto &[n, init] : cell.components) {
-            if (!init) {
-                ++not_init;
-            }
-        }
-        if (!client.emplace(cell.name, cell).second) {
-            ++doubled;
-        }
-    });
-    char msg[240];
-    std::snprintf(msg, sizeof msg, "%zu state actors in the world, %zu read back from their bits, %zu FoliageName twice, %zu components, %zu not initialized", actors, actors - unreadable, doubled, components, not_init);
-    CHECK(actors == 671 && unreadable == 0 && doubled == 0 && components == 10613 && not_init == 0 && client.size() == 671, msg);
-    TsvRowStats st;
-    FILE *f = std::fopen(tsv_path(), "rb");
-    char buf[2048];
-    while (f && std::fgets(buf, sizeof buf, f)) {
-        record_tsv_row(buf, client, st);
-    }
-    if (f) {
-        std::fclose(f);
-    }
-    std::snprintf(msg, sizeof msg, "%zu of the %zu rows resolve to an initialized component (%zu without a state actor, %zu without a component, %zu not initialized)", st.resolved, st.rows, st.no_actor, st.no_component, st.uninitialized);
-    CHECK(st.rows == 84218 && st.resolved == st.rows, msg);
-    std::snprintf(msg, sizeof msg, "... %zu of %zu trees, %zu of %zu plants, %zu of %zu stones (and the four rock pillars)", st.trees_ok, st.trees, st.plants_ok, st.plants, st.stones_ok, st.stones);
-    CHECK(st.trees == 42250 && st.trees_ok == st.trees && st.plants == 21046 && st.plants_ok == st.plants && st.stones == 20922 && st.stones_ok == st.stones, msg);
-    CHECK(st.foreign == 0, "every row, the 20,922 stones among them, is in an IntrepidGatherableFISMC_<n> component: the class the client's target scan accepts");
-}
-
-static void test_cells_equal_retail(World &w) {
-    std::printf("the cells: an untouched cell's open against the retail opens (1198's login, 1428)\n");
-    fol::FoliageCells &cells = w.f->cells();
-    size_t painted = 0;
-    size_t found = 0;
-    size_t actor_ok = 0;
-    size_t spawn_ok = 0;
-    RetailCompStats cst;
-    std::set<uint64_t> server_ids;
-    for (const auto &open : capture_foliage::kIfaOpens) {
-        const auto owner = w.f->map().owner_of(open.name);
-        if (!owner) {
-            continue;
-        }
-        ++painted;
-        const world::WorldActor *a = w.world->registry().find(cells.actor_of(*owner));
-        if (!a) {
-            continue;
-        }
-        ++found;
-        repl::ActorShadow shadow;
-        std::vector<repl::ContentBlock> blocks;
-        if (!repl::collect_open_blocks(a->actor, shadow, blocks) || blocks.size() != 1 + open.component_count) {
-            continue;
-        }
-        if (check_retail_actor_block(*a, open, server_ids)) {
-            ++actor_ok;
-        }
-        const auto &q = a->actor.open.spawn.location;
-        if (q && q->mode == repl::QuantVec::Mode::Scaled && open.spawn_scaled && q->x == open.spawn[0] && q->y == open.spawn[1] && q->z == open.spawn[2]) {
-            ++spawn_ok;
-        }
-        check_retail_components(*a, open, blocks, cst);
-    }
-    CHECK(painted == 10, "ten of the twelve retail opens are painted cells of the map (the other two are a town's runtime foliage)");
-    CHECK(found == painted, "... and each has a state actor in the world from the start");
-    char actor_msg[300];
-    std::snprintf(actor_msg, sizeof actor_msg, "the actor block (520 bits: AuthServerIDReplicated, ReplicatedMovement, RemoteRole, Role, FoliageName) is the retail block to the last bit in each, but for that one server id (%zu values in the ten)", server_ids.size());
-    CHECK(actor_ok == painted && server_ids == std::set<uint64_t>({0, 37, 48}), actor_msg);
-    CHECK(spawn_ok == painted, "SerializeNewActor's location (x and y the cell's centre, z the middle of its instances' lowest and highest) is the retail location in each");
-    CHECK(cst.order_ok == painted, "the components are the same, in the same byte order (_0, _1, _10 ... _19, _2 ...), in each");
-    char msg[200];
-    std::snprintf(msg, sizeof msg, "all %zu component blocks are the retail blocks (%zu of them with no IndexedStates: equal to the last bit; the rest up to the IndexedStates field)", cst.comps_total, cst.whole_total);
-    CHECK(cst.comps_total == 166 && cst.comps_ok == cst.comps_total && cst.whole_ok == cst.whole_total && cst.whole_total > 0, msg);
-}
-
-static void check_cell_actor_meta(const world::WorldActor &a, const fol::FoliageMap &map, uint16_t owner) {
-    CHECK(a.actor.subobjects.size() == map.owners()[owner].components.size() && a.actor.subobjects.size() == 28, "it has a component for each FISMC of the owner: 28, as the retail open of that cell");
-    double cx = 0;
-    double cy = 0;
-    map.cell_center(owner, cx, cy);
-    CHECK(a.x == cx && a.y == cy && a.x == -1011200.0 && a.y == 499200.0, "it stands at the cell's centre (-1,011,200, 499,200), where the retail open puts it");
-    const bool arch_ok = a.actor.open.archetype.size() == 2 && a.actor.open.archetype[0].guid.ObjectId == 18292086725290287385ull && a.actor.subobjects[0].dynamic_class && a.actor.subobjects[0].dynamic_class->front().guid.ObjectId == 8959184318458680037ull;
-    CHECK(arch_ok, "its archetype is Default__IntrepidStateIFA and its components are IntrepidFoliageStateComponent (the ids of the retail capture's export)");
-    CHECK(name_text(a.actor.obj, "FoliageName") == "InstancedFoliageActor_25600_-40_19_0", "FoliageName is the owner");
-    const bool comp_ok = name_text(a.actor.subobjects[0].obj, "FoliageComponentUUID") == "IntrepidGatherableFISMC_0" && name_text(a.actor.subobjects[1].obj, "FoliageComponentUUID") == "IntrepidGatherableFISMC_1" && name_text(a.actor.subobjects[2].obj, "FoliageComponentUUID") == "IntrepidGatherableFISMC_10";
-    CHECK(comp_ok, "the components are in byte order: _0, _1, _10 ... (the retail open's)");
-}
-
-static void test_cell_actor(World &w) {
-    std::printf("the cells: the state actor of the cell the retail capture opened\n");
-    fol::FoliageCells &cells = w.f->cells();
-    const auto &map = w.f->map();
-    const uint32_t stone_row = w.row_of("InstancedFoliageActor_25600_-40_19_0", "IntrepidGatherableFISMC_18", 0);
-    const uint16_t owner = map.rows()[stone_row].owner;
-    CHECK(w.f->name_of(stone_row) == "Stone_Granite_Large_3", "(a Granite stone)");
-    const uint64_t actor_id = cells.actor_of(owner);
-    CHECK(actor_id != 0 && cells.actors() == 671 && cells.items_of(owner) == 0, "every cell has its state actor before anything in it is cut: 671, this one with no item");
-    const size_t in_registry = w.world->registry().size();
-    const Clock::time_point t0{seconds(1000)};
-    const auto change = w.f->harvested(stone_row, t0);
-    CHECK(change && change->state == fol::kEmpty, "the harvest is Empty");
-    CHECK(cells.actor_of(owner) == actor_id && cells.actors() == 671 && w.world->registry().size() == in_registry, "the first cut of the cell changed its actor and made no other");
-    const world::WorldActor *a = w.world->registry().find(actor_id);
-    const bool flags_ok = a && a->kind == world::ActorKind::Foliage && a->snapshot_only && a->keep_fast_shadow && a->dormancy_delay == fol::kStateActorOpen && !a->never_dormant;
-    CHECK(flags_ok, "it is a snapshot-only foliage actor with a 265 ms open, whose fast arrays the view keeps");
-    if (!a) {
-        return;
-    }
-    check_cell_actor_meta(*a, map, owner);
-    CHECK(cells.shown_state(stone_row) == 3u && cells.items_of(owner) == 1, "one item: the instance, Empty (3)");
-    const double back = w.f->store().regrow_seconds(stone_row);
-    w.f->tick(after(t0, back - 1.0));
-    CHECK(cells.shown_state(stone_row) == 3u, "(a stone is still Empty a second before its time)");
-    const uint32_t version = w.world->registry().find(actor_id)->version;
-    w.f->tick(after(t0, back + 1.0));
-    CHECK(!cells.shown_state(stone_row) && cells.items_of(owner) == 0 && w.world->registry().find(actor_id)->version > version, "then it is whole: the item leaves the list and the actor's version moved");
-}
-
-static void check_cell_first_open_form(World &w, uint64_t actor_id, uint32_t oak_row) {
-    const uint32_t other = w.row_of(kCell41_19, "IntrepidGatherableFISMC_0", 1);
-    const Clock::time_point t1{seconds(30000)};
-    w.f->harvested(oak_row, t1);
-    w.f->harvested(other, t1);
-    const world::WorldActor *b = w.world->registry().find(actor_id);
-    repl::Actor fresh = b->actor;
-    b->first_open_form(fresh);
-    CHECK(states_listed(fresh, 3) == 2 && states_listed(fresh, 11) == 0, "two instances cut a moment ago are a live harvest to a first look: still 3 (the client plays the fall)");
-    w.f->tick(after(t1, 60));
-    const uint32_t third = w.row_of(kCell41_19, "IntrepidGatherableFISMC_0", 2);
-    w.f->harvested(third, after(t1, 60));
-    repl::Actor copy = b->actor;
-    b->first_open_form(copy);
-    CHECK(states_listed(copy, 11) == 2 && states_listed(copy, 3) == 1 && states_listed(b->actor, 3) == 3 && states_listed(b->actor, 11) == 0, "a minute later a first look lists the two older Empty instances as 11 and the new one as 3; the actor itself holds 3 for all");
-    const repl::FastArrayState *live = nullptr;
-    const repl::FastArrayState *shown = nullptr;
-    for (size_t i = 0; i < b->actor.subobjects.size() && !live; ++i) {
-        const auto layout = repl::fast_array_layout(*b->actor.subobjects[i].obj.schema, "IndexedStates");
-        const repl::FastArrayState *l = b->actor.subobjects[i].obj.arrays.find(layout->field);
-        if (l && !l->items().empty()) {
-            live = l;
-            shown = copy.subobjects[i].obj.arrays.find(layout->field);
-        }
-    }
-    const bool keys_ok = live && shown && live->array_key() == shown->array_key() && live->items()[0].key == shown->items()[0].key && live->items()[0].id == shown->items()[0].id;
-    CHECK(keys_ok, "and the copy keeps the array's key and the items' keys and IDs (only the value changed: what a connection has is the server's count)");
-}
-
-static void test_cell_regrowth(World &w) {
-    std::printf("the cells: an Oak's items through its regrowth\n");
-    fol::FoliageCells &cells = w.f->cells();
-    const uint32_t oak_row = w.row_of(kCell41_19, "IntrepidGatherableFISMC_0", 0);
-    const uint16_t owner = w.f->map().rows()[oak_row].owner;
-    const Clock::time_point t0{seconds(20000)};
-    w.f->harvested(oak_row, t0);
-    const uint64_t actor_id = cells.actor_of(owner);
-    CHECK(actor_id != 0 && cells.shown_state(oak_row) == 3u, "a harvest: the instance is Empty (3) in its cell's list");
-    const world::WorldActor *a = w.world->registry().find(actor_id);
-    CHECK(a && a->actor.subobjects.size() == 8, "the cell (-41, 19) has 8 components");
-    const uint32_t v0 = a ? a->version : 0;
-    w.f->tick(after(t0, 10));
-    CHECK(cells.shown_state(oak_row) == 3u, "(nothing is due after 10 s)");
-    w.f->tick(after(t0, 301));
-    CHECK(cells.shown_state(oak_row) == 0u && w.world->registry().find(actor_id)->version > v0, "after 300 s: Infancy (0), and the actor's version moved: the clients are sent it");
-    w.f->tick(after(t0, 301 + 1800));
-    CHECK(cells.shown_state(oak_row) == 1u, "after 1,800 s more: Juvenile (1)");
-    w.f->tick(after(t0, 301 + 3600 + 5));
-    CHECK(!cells.shown_state(oak_row) && cells.items_of(owner) == 0 && w.f->store().deviations() == 0, "after 1,800 s more: whole, the item is deleted from the list");
-    check_cell_first_open_form(w, actor_id, oak_row);
-}
-
 static void test_duplicate_name(World &w) {
     std::printf("the data: a def name with two records\n");
     const std::string path = temp_dup_tsv_path();
@@ -558,47 +456,6 @@ static void test_duplicate_name(World &w) {
     CHECK(miss_ok, "a missing map is an error that names the file and `mapc extract`");
 }
 
-static void test_load(const char *db, const char *tsv) {
-    std::printf("the load: the 671 state actors made at start\n");
-    World w;
-    if (!w.open(db, tsv, false)) {
-        return;
-    }
-    const size_t registry_before = w.world->registry().size();
-    CHECK(w.f->cells().actors() == 0, "(the first draft's way, an actor at a cell's first cut: none yet, for the measurement)");
-    const size_t ws0 = working_set_bytes();
-    const auto t0 = std::chrono::steady_clock::now();
-    const size_t made = w.f->cells().make_all();
-    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    const size_t ws1 = working_set_bytes();
-    size_t subobjects = 0;
-    size_t total_bits = 0;
-    size_t max_bits = 0;
-    size_t opens = 0;
-    w.world->registry().for_each([&](const world::WorldActor &a) {
-        if (a.kind != world::ActorKind::Foliage) {
-            return;
-        }
-        subobjects += a.actor.subobjects.size();
-        repl::ActorShadow shadow;
-        std::vector<repl::ContentBlock> blocks;
-        if (!repl::collect_open_blocks(a.actor, shadow, blocks)) {
-            return;
-        }
-        size_t bits = 0;
-        for (const repl::ContentBlock &b : blocks) {
-            bits += b.payload.bit_pos();
-        }
-        total_bits += bits;
-        max_bits = std::max(max_bits, bits);
-        ++opens;
-    });
-    const double grown_mb = ws1 > ws0 ? static_cast<double>(ws1 - ws0) / (1024.0 * 1024.0) : 0.0;
-    CHECK(made == 671 && subobjects == 10613 && w.world->registry().size() == registry_before + 671 && opens == 671, "671 actors with 10,613 components were made and each builds its open");
-    CHECK(ms < 2000.0, "they are made in under two seconds, once, at start");
-    CHECK(ws0 == 0 || grown_mb < 100.0, "and they hold under 100 MB of the process (the measurement: see above)");
-}
-
 int main() {
     spdlog::set_level(spdlog::level::warn);
     test_map_synthetic();
@@ -615,13 +472,9 @@ int main() {
         if (w.open(db, tsv)) {
             test_data(w);
             test_rewards(w);
-            test_every_instance_has_its_state(w);
-            test_cells_equal_retail(w);
-            test_cell_actor(w);
-            test_cell_regrowth(w);
             test_duplicate_name(w);
+            run_foliage_cells_tests(w, db, tsv);
         }
-        test_load(db, tsv);
     }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -14,6 +14,47 @@ using namespace aoc::worldd;
 
 namespace {
 
+const schema::ClassSchema &replicator() {
+  const schema::ClassSchema *s =
+      gen::find_class_schema("ANodeLayoutReplicator");
+  if (!s) {
+    std::printf("  [FAIL] no schema ANodeLayoutReplicator\n");
+    std::exit(2);
+  }
+  return *s;
+}
+
+std::vector<uint8_t> bytes_of_hex(const char *hex) {
+  auto nib = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+  std::vector<uint8_t> out;
+  for (size_t i = 0; hex[i] && hex[i + 1]; i += 2)
+    out.push_back(static_cast<uint8_t>(nib(hex[i]) << 4 | nib(hex[i + 1])));
+  return out;
+}
+
+bool same_bits(const emit::BunchWriter &w, const std::vector<uint8_t> &want,
+               size_t bits) {
+  if (w.bit_pos() != bits)
+    return false;
+  for (size_t i = 0; i < bits; ++i) {
+    if (((w.bytes()[i >> 3] >> (i & 7)) & 1) != ((want[i >> 3] >> (i & 7)) & 1))
+      return false;
+  }
+  return true;
+}
+
+size_t count_owner(const std::vector<repl::NodeLayoutItem> &items, int64_t node,
+                   bool layout) {
+  size_t n = 0;
+  for (const auto &it : items)
+    n += ((it.owner_guid == node) == layout) ? 1 : 0;
+  return n;
+}
+
+std::optional<repl::NodeLayoutPayload> payload_of(const world::WorldActor &a) {
+  return repl::read_node_layout_state(*a.actor.obj.schema, a.actor.obj.arrays);
+}
+
 size_t extras_expected(int64_t node, int level, int season) {
   (void)season;
   switch (level) {

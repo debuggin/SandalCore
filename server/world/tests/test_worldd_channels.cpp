@@ -3,7 +3,13 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 //
 // test_worldd_channels.cpp: actor channels in net/connection: chains split into partial bunches, channel sequences, open and close
-#include "test_worldd_channels_common.h"
+#include "fake_client.h"
+#include "net/connection.h"
+#include "protocol/wire/ue5_primitives.h"
+
+#include <cstdio>
+#include <string>
+#include <vector>
 
 using namespace aoc::worldd;
 namespace conn = aoc::protocol::conn;
@@ -11,6 +17,258 @@ namespace emit = aoc::protocol::emit;
 namespace wire = aoc::protocol::wire;
 using std::chrono::milliseconds;
 using std::chrono::seconds;
+
+static int g_pass = 0, g_fail = 0;
+
+#define CHECK(cond, msg) do { \
+    if (cond) { std::printf("  [ok ] %s\n", msg); g_pass++; } \
+    else { std::printf("  [FAIL] %s\n", msg); g_fail++; } \
+} while (0)
+
+#define CHECK_QUIET(cond) do { \
+    if (!(cond)) { std::printf("  [FAIL] %s\n", #cond); g_fail++; } \
+} while (0)
+
+static const conn::OuterHeader kOuter{0x500c7696u, 0, 5};
+static const conn::CustomField kCf{0x38, 0x21, 0xc7, 0x0d, 0x43, 0x5d};
+static const Clock::time_point t0{seconds(1000)};
+
+static ConnectionConfig server_config() {
+    return ConnectionConfig{kOuter, kCf, 14265, 15870};
+}
+
+static ConnectionConfig client_config() {
+    return ConnectionConfig{kOuter, kCf, 15870, 14265};
+}
+
+static emit::BunchWriter random_bits(size_t bits, uint32_t seed) {
+    emit::BunchWriter w(bits / 8 + 8);
+    uint32_t x = seed * 2654435761u + 12345u;
+    for (size_t i = 0; i < bits; ++i) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        w.write_bit(static_cast<int>(x & 1));
+    }
+    return w;
+}
+
+static std::vector<uint8_t> unhex(const char *hex) {
+    std::vector<uint8_t> out;
+    const std::string s(hex);
+    for (size_t i = 0; i + 1 < s.size(); i += 2) {
+        out.push_back(static_cast<uint8_t>(std::stoi(s.substr(i, 2), nullptr, 16)));
+    }
+    return out;
+}
+
+static std::vector<uint8_t> hex_bits(const char *hex, size_t bits) {
+    const auto b = unhex(hex);
+    std::vector<uint8_t> out;
+    for (size_t i = 0; i < bits; ++i) {
+        out.push_back((b[i / 8] >> (i % 8)) & 1);
+    }
+    return out;
+}
+
+static emit::BunchWriter writer_of(const char *hex, size_t bits) {
+    const auto b = unhex(hex);
+    emit::BunchWriter w(b.size() + 8);
+    w.write_bit_range(b.data(), 0, bits);
+    return w;
+}
+
+static std::vector<uint8_t> bits_of(const emit::BunchWriter &w) {
+    std::vector<uint8_t> out;
+    for (size_t i = 0; i < w.bit_pos(); ++i) {
+        out.push_back((w.data()[i / 8] >> (i % 8)) & 1);
+    }
+    return out;
+}
+
+static std::vector<uint8_t> bits_of(const InBunch &b) {
+    std::vector<uint8_t> out;
+    for (size_t i = 0; i < b.bits; ++i) {
+        out.push_back((b.data[i / 8] >> (i % 8)) & 1);
+    }
+    return out;
+}
+
+static std::vector<uint8_t> concat(std::vector<uint8_t> a, const std::vector<uint8_t> &b) {
+    a.insert(a.end(), b.begin(), b.end());
+    return a;
+}
+
+struct Seen {
+    size_t packet = 0;
+    wire::ParsedBunch b;
+    std::vector<uint8_t> header;
+    std::vector<uint8_t> payload;
+};
+using Datagrams = std::vector<std::vector<uint8_t>>;
+
+static Seen make_seen_bunch(size_t pkt_idx, const std::vector<uint8_t> &p, const wire::ParsedBunch &b) {
+    Seen s;
+    s.packet = pkt_idx;
+    s.b = b;
+    size_t off = b.data_start_bit - b.header_bits;
+    for (size_t k = 0; k < b.header_bits; ++k) {
+        s.header.push_back(static_cast<uint8_t>(::ue5::read_bits(p.data(), p.size(), off, 1)));
+    }
+    off = b.data_start_bit;
+    for (size_t k = 0; k < b.bunch_data_bits; ++k) {
+        s.payload.push_back(static_cast<uint8_t>(::ue5::read_bits(p.data(), p.size(), off, 1)));
+    }
+    return s;
+}
+
+static std::vector<Seen> parse(const Datagrams &pkts) {
+    std::vector<Seen> out;
+    for (size_t i = 0; i < pkts.size(); ++i) {
+        const auto &p = pkts[i];
+        const auto dp = conn::read_data_packet(p.data(), p.size(), wire::Direction::ServerToClient);
+        if (!dp) {
+            continue;
+        }
+        for (const auto &b : conn::packet_bunches(p.data(), p.size(), *dp)) {
+            out.push_back(make_seen_bunch(i, p, b));
+        }
+    }
+    return out;
+}
+
+static std::vector<Seen> on_channel(const std::vector<Seen> &all, uint32_t channel) {
+    std::vector<Seen> out;
+    for (const auto &s : all) {
+        if (s.b.channel == channel) {
+            out.push_back(s);
+        }
+    }
+    return out;
+}
+
+struct Captured {
+    unsigned chseq;
+    size_t hdr_bits;
+    const char *hdr_hex;
+    size_t bits;
+};
+
+static size_t mismatches(const std::vector<Seen> &seen, size_t first, const Captured *cap, size_t n) {
+    size_t bad = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const bool ok = first + i < seen.size() && seen[first + i].b.ch_sequence == cap[i].chseq &&
+                        seen[first + i].header == hex_bits(cap[i].hdr_hex, cap[i].hdr_bits) &&
+                        seen[first + i].payload.size() == cap[i].bits;
+        if (!ok) {
+            std::printf("    part %zu differs from the capture (chSeq %u)\n", i, cap[i].chseq);
+            ++bad;
+        }
+    }
+    return bad;
+}
+
+#define CHECK_CAPTURE(seen, first, table, msg) \
+    CHECK(mismatches(seen, first, table, sizeof(table) / sizeof(table[0])) == 0, msg)
+
+static Chain chain(uint32_t channel, size_t export_bits, size_t payload_bits, bool open = false, uint32_t seed = 1) {
+    Chain c;
+    c.channel = channel;
+    c.open = open;
+    if (export_bits) {
+        c.exports.push_back(random_bits(export_bits, seed));
+    }
+    c.payload = random_bits(payload_bits, seed + 100);
+    return c;
+}
+
+static std::vector<InBunch> deliver(Connection &client, const Datagrams &pkts, Clock::time_point t, size_t drop = SIZE_MAX) {
+    std::vector<InBunch> got;
+    for (size_t i = 0; i < pkts.size(); ++i) {
+        if (i == drop) {
+            continue;
+        }
+        for (auto &b : client.receive(pkts[i], t)) {
+            got.push_back(std::move(b));
+        }
+    }
+    return got;
+}
+
+static void return_acks(Connection &server, Connection &client, Clock::time_point t) {
+    for (const auto &p : client.flush(t)) {
+        server.receive(p, t);
+    }
+}
+
+static const Captured kPkt22[] = {
+    {954, 51, "d3a0ba27737603", 3545}, {955, 49, "34e0eecc2c5200", 1314},
+    {956, 49, "3428efc99c3600", 873},  {957, 49, "3460efccdc0a00", 173},
+};
+static const char *kHudExport =
+    "020000001e2214eb02c1e9ea00000000000000000ace7b7ed7e3afa2d800000000000000000a00000000000000000000000000000000"
+    "360000005e8ec2daca5eaa925eaed2c8cecae8e65e84a0be829e8690aa8800000000001800000084a0be829e8690aa88be8600a224de5801";
+static const char *kHudRpc = "de08d43020f02142b12e109cae0e0000000000000000";
+static const Captured kPkt23[] = {{958, 46, "3480ef99bd1b", 3550}, {959, 46, "34c0ef990f02", 263}};
+static const Captured kPkt72[] = {
+    {960, 49, "3428f0c91c3f00", 1009}, {961, 49, "3460f0c80cdc01", 7616}, {962, 49, "34a0f0c80cdc01", 7616},
+    {963, 49, "34e0f0c80cdc01", 7616}, {964, 49, "3420f1cc9cba00", 2985},
+};
+static const Captured kPkt77[] = {{965, 46, "3440f199d313", 2537}};
+static const Captured kGameState[] = {
+    {954, 51, "93a1ba27736403", 3473}, {955, 49, "64e0eec80cdc01", 7616}, {956, 49, "6420efc80cdc01", 7616},
+    {957, 49, "6460efc80cdc01", 7616}, {958, 49, "64a0efc80cdc01", 7616}, {959, 49, "64e0efc80cdc01", 7616},
+    {960, 49, "6420f0c80cdc01", 7616}, {961, 49, "6460f0c80cdc01", 7616}, {962, 49, "64a0f0c80cdc01", 7616},
+    {963, 49, "64e0f0c80cdc01", 7616}, {964, 49, "6420f1c80cdc01", 7616}, {965, 49, "6460f1c80cdc01", 7616},
+    {966, 49, "64a0f1c80cdc01", 7616}, {967, 49, "64e0f1c80cdc01", 7616}, {968, 49, "6420f2c80cdc01", 7616},
+    {969, 49, "6460f2c80cdc01", 7616}, {970, 49, "64a0f2c80cdc01", 7616}, {971, 49, "64e0f2cc1c7c00", 1985},
+};
+static const Captured kCh14[] = {
+    {954, 51, "93a3ba27732807", 7329}, {955, 49, "e4e8eec81c3c00", 961}, {956, 49, "e420efcc4ca901", 6804},
+};
+static const Captured kCh21Open[] = {{954, 51, "53a5ba2773a005", 5761}, {955, 49, "54e1eecc5cd701", 7541}};
+static const Captured kCh21Close3[] = {{956, 53, "1d55c07b660000", 0}};
+static const Captured kCh21Whole[] = {{957, 48, "5305bd67b64b", 2422}};
+static const Captured kCh21Close1a[] = {{958, 53, "0d55e07b660000", 0}};
+static const Captured kCh21Split[] = {{959, 51, "5385bf27337007", 7616}, {960, 49, "5421f0ccac4e01", 5354}};
+static const Captured kCh21Close1b[] = {{961, 53, "0d55107c660000", 0}};
+static const Captured kUnreliable[] = {{0, 30, "30685204", 553}, {0, 30, "3020b90a", 1372}};
+
+struct Pair {
+    Connection s{server_config(), t0};
+    Connection cl{client_config(), t0};
+    Clock::time_point t = t0;
+    Datagrams sent;
+    std::vector<InBunch> at_client;
+
+    Datagrams step(size_t drop = SIZE_MAX) {
+        t += milliseconds(100);
+        Datagrams pkts = s.flush(t);
+        for (const auto &p : pkts) {
+            sent.push_back(p);
+        }
+        for (auto &b : deliver(cl, pkts, t, drop)) {
+            at_client.push_back(std::move(b));
+        }
+        t += milliseconds(100);
+        return_acks(s, cl, t);
+        return pkts;
+    }
+};
+
+static void agree(Connection &c, const Chain &chain_, bool expect, const char *msg) {
+    const size_t unacked = c.unacked_reliable(chain_.channel);
+    const bool was_open = c.channel_open(chain_.channel);
+    const bool was_closing = c.channel_closing(chain_.channel);
+    const bool can = c.can_send_chain(chain_);
+    const bool can_again = c.can_send_chain(chain_);
+    const bool untouched = c.unacked_reliable(chain_.channel) == unacked && c.channel_open(chain_.channel) == was_open &&
+                           c.channel_closing(chain_.channel) == was_closing;
+    const bool sent = c.send_chain(chain_) != 0;
+    const bool ok = can == expect && can_again == can && untouched && sent == can;
+    if (!ok) {
+        std::printf("    can=%d again=%d untouched=%d sent=%d expected=%d\n", can, can_again, untouched, sent, expect);
+    }
+    CHECK(ok, msg);
+}
 
 static bool is_pkt22_first_part(const wire::ParsedBunch &b) {
     return b.is_control && b.is_open && !b.is_close && b.is_reliable && b.has_package_map_exports &&
@@ -34,12 +292,9 @@ static void test_pc_channel_pkt22(Connection &c) {
     auto seen = parse(pkts);
     CHECK(seen.size() == 4, "four bunches");
     CHECK_CAPTURE(seen, 0, kPkt22, "chSeq 954..957: the header bits are those of pkt#22, bit for bit");
-    CHECK(seen.size() == 4 && is_pkt22_first_part(seen[0].b) && seen[0].b.channel_name == "EName[102]",
-          "the first part: bControl, bOpen, exports, partial initial, no custom-exports bit, EName 102");
-    CHECK(seen.size() == 4 && is_pkt22_second_part(seen[1].b),
-          "the second: content, partial final, no bOpen");
-    CHECK(seen.size() == 4 && seen[2].payload == hex_bits(kHudExport, 873) && seen[3].payload == hex_bits(kHudRpc, 173),
-          "the ClientSetHUD parts carry the export and the RPC bit for bit");
+    CHECK(seen.size() == 4 && is_pkt22_first_part(seen[0].b) && seen[0].b.channel_name == "EName[102]", "the first part: bControl, bOpen, exports, partial initial, no custom-exports bit, EName 102");
+    CHECK(seen.size() == 4 && is_pkt22_second_part(seen[1].b), "the second: content, partial final, no bOpen");
+    CHECK(seen.size() == 4 && seen[2].payload == hex_bits(kHudExport, 873) && seen[3].payload == hex_bits(kHudRpc, 173), "the ClientSetHUD parts carry the export and the RPC bit for bit");
 }
 
 static void test_pc_channel() {
@@ -181,8 +436,7 @@ static void test_unreliable_chain() {
     const auto seen = parse(c.flush(t0));
     CHECK(seen.size() == 5, "five bunches");
     CHECK_CAPTURE(seen, 2, kUnreliable, "the unreliable parts have the header bits of pkt#149: no chSeq, no channel name");
-    CHECK(seen.size() == 5 && is_unreliable_initial_export(seen[2].b) && seen[3].b.partial_final,
-          "exports first, partial initial then final");
+    CHECK(seen.size() == 5 && is_unreliable_initial_export(seen[2].b) && seen[3].b.partial_final, "exports first, partial initial then final");
     CHECK(seen.size() == 5 && seen[4].b.ch_sequence == 956, "and the reliable sequence went on with 956");
 }
 
@@ -337,8 +591,7 @@ static void test_channel_state() {
         sent.push_back(p);
     }
     auto seen = on_channel(parse(sent), 5);
-    CHECK(is_reopen_sequence_valid(seen),
-          "the queue has open 954, bunch 955, close 956 (reason 4), open 957: the refused ones left no gap");
+    CHECK(is_reopen_sequence_valid(seen), "the queue has open 954, bunch 955, close 956 (reason 4), open 957: the refused ones left no gap");
 
     conn::BunchHeader control;
     control.reliable = true;
@@ -418,18 +671,14 @@ static void test_closing_index() {
 }
 
 static void check_ack_events_parts_0_to_2(const std::vector<AckEvent> &ev, ChainId id) {
-    auto at = [&](size_t i) {
-        return i < ev.size() ? ev[i] : AckEvent{};
-    };
+    auto at = [&](size_t i) { return i < ev.size() ? ev[i] : AckEvent{}; };
     CHECK(at(0).chain == id && at(0).part == 0 && at(0).export_part && at(0).delivered && at(0).channel == 5, "part 0 is the export, delivered");
     CHECK(at(1).chain == id && at(1).part == 1 && !at(1).export_part && at(1).delivered, "part 1 is content, delivered");
     CHECK(at(2).chain == id && at(2).part == 2 && !at(2).export_part && !at(2).delivered, "part 2 was lost");
 }
 
 static void check_ack_events_part_3_and_other(const std::vector<AckEvent> &ev, ChainId id, ChainId other) {
-    auto at = [&](size_t i) {
-        return i < ev.size() ? ev[i] : AckEvent{};
-    };
+    auto at = [&](size_t i) { return i < ev.size() ? ev[i] : AckEvent{}; };
     CHECK(at(3).chain == id && at(3).part == 3 && at(3).delivered && at(4).chain == other && at(4).part == 0 && at(4).delivered,
           "part 3 and the other chain's part were delivered");
 }
@@ -482,8 +731,7 @@ static void test_ack_events() {
     const ChainId uid2 = p.s.send_chain(u2);
     p.step();
     ev = p.s.take_ack_events();
-    CHECK(ev.size() == 2 && ev[0].chain == uid2 && ev[0].delivered && ev[1].chain == uid2 && ev[1].delivered,
-          "an unreliable chain that arrives is reported delivered");
+    CHECK(ev.size() == 2 && ev[0].chain == uid2 && ev[0].delivered && ev[1].chain == uid2 && ev[1].delivered, "an unreliable chain that arrives is reported delivered");
     CHECK(p.s.close_channel(5) && p.s.channel_closing(5), "a close");
     p.step();
     CHECK(!p.s.channel_closing(5) && p.s.take_ack_events().empty(), "acknowledged: the index is free, no AckEvent");

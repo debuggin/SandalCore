@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 SandalCore contributors.
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+#include "content/content_db.h"
 #include "crafting/rewards.h"
 #include "crafting/rules.h"
 #include "crafting/station.h"
 #include "items/acquired.h"
-#include "session/player_session_internal.h"
+#include "session/player_session.h"
 #include <iterator>
 #include <limits>
 namespace aoc {
 namespace worldd {
-using namespace ::sandal::worldd::session::detail;
 namespace {
 using StepBuilder = std::function<std::optional<bootstrap::Send>(bootstrap::PlayerBootstrap &)>;
 using QueueLaterFn = std::function<void(const char *, StepBuilder, Clock::time_point, bool)>;
@@ -560,7 +560,7 @@ std::vector<professions::Change> PlayerSession::set_professions(const profession
     }
     return changes;
 }
-std::vector<PlayerSession::ProfessionWire> PlayerSession::profession_wire(const std::vector<professions::Change> &changes) const {
+std::vector<ProfessionWire> PlayerSession::profession_wire(const std::vector<professions::Change> &changes) const {
     std::vector<ProfessionWire> wire;
     if (!professions_.valid())
         return wire;

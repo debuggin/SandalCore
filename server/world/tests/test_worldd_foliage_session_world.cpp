@@ -1,11 +1,201 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-#include "test_worldd_foliage_session_helpers.h"
+#include "test_worldd_foliage_session_common.h"
+
+#include "capture_foliage.h"
+#include "test_support.h"
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#endif
 
 namespace {
 
-static void count_client_components(const ClientFoliage &client, size_t &components, size_t &uninitialized) {
+using ClientName = std::pair<std::string, int32_t>;
+
+std::optional<ClientName> client_name(const repl::Value *v) {
+    const repl::NameValue *n = v ? v->get_if<repl::NameValue>() : nullptr;
+    if (!n || n->hardcoded) return std::nullopt;
+    return ClientName{n->text, n->number};
+}
+
+ClientName client_fname(const std::string &s) {
+    const size_t us = s.rfind('_');
+    if (us == std::string::npos || us == 0 || us + 1 >= s.size()) return {s, 0};
+    const std::string tail = s.substr(us + 1);
+    const bool bad_len = tail.size() > 9 || (tail.size() > 1 && tail[0] == '0');
+    if (bad_len || tail.find_first_not_of("0123456789") != std::string::npos) return {s, 0};
+    return {s.substr(0, us), std::stoi(tail) + 1};
+}
+
+struct ClientFoliage {
+    struct Cell {
+        std::map<ClientName, bool> components;
+        std::map<ClientName, std::map<uint32_t, uint32_t>> states;
+    };
+    struct Open {
+        size_t chain = 0;
+        ClientName name;
+        std::vector<tsupport::Bits> blocks;
+        size_t with_states = 0;
+        std::vector<std::pair<uint32_t, uint32_t>> changed;
+        size_t deleted = 0;
+        int channel = 0;
+    };
+    std::map<ClientName, Cell> lookup;
+    std::map<uint32_t, ClientName> channels;
+    std::map<uint64_t, std::pair<ClientName, ClientName>> object_names;
+    std::vector<Open> opens;
+    size_t closes_dormancy = 0, closes_destroyed = 0, closes_relevancy = 0, closes_other = 0;
+    size_t updates = 0;
+
+    void absorb_comp_fast_array(const repl::FastArrayField &f, uint64_t obj_id, Cell &cell, Open &open) {
+        open.deleted += f.delta.deleted.size();
+        const auto known = object_names.find(obj_id);
+        for (const auto &item : f.delta.changed) {
+            const auto s1 = item.values.values.find(1);
+            const auto key = item.values.values.find(2);
+            if (s1 == item.values.values.end() || key == item.values.values.end()) continue;
+            if (!s1->second.get_if<uint64_t>() || !key->second.get_if<uint64_t>()) continue;
+            const uint32_t idx = static_cast<uint32_t>(*key->second.get_if<uint64_t>());
+            const uint32_t st = static_cast<uint32_t>(*s1->second.get_if<uint64_t>());
+            open.changed.emplace_back(idx, st);
+            if (known != object_names.end()) cell.states[known->second.second][idx] = st;
+        }
+    }
+
+    bool absorb_comp_rep(const fake::Delivered &d, const repl::BlockView &b, size_t &p2, Cell &cell, const Open &open) {
+        if (!b.header.has_rep_layout) return true;
+        const schema::ClassSchema &comp = class_named("UIntrepidFoliageStateComponent");
+        const auto c = repl::read_rep_block(comp, d.content.data(), b.payload_pos + b.payload_bits, p2);
+        if (!c) return false;
+        const auto fismc = client_name(c->get(comp, "FoliageComponentUUID"));
+        const repl::Value *init = c->get(comp, "bInitialized");
+        if (fismc) {
+            cell.components[*fismc] = init && init->get_if<bool>() && *init->get_if<bool>();
+            object_names[b.header.object.ObjectId] = {open.name, *fismc};
+        }
+        return true;
+    }
+
+    void absorb_comp_block(const fake::Delivered &d, const repl::BlockView &b, Cell &cell, Open &open) {
+        if (b.header.is_actor) return;
+        size_t p2 = b.payload_pos;
+        const size_t end = b.payload_pos + b.payload_bits;
+        if (!absorb_comp_rep(d, b, p2, cell, open) || p2 >= end) return;
+        const schema::ClassSchema &comp = class_named("UIntrepidFoliageStateComponent");
+        const auto fields = repl::read_fast_array_fields(comp, d.content.data(), end, p2);
+        if (!fields) return;
+        ++open.with_states;
+        for (const repl::FastArrayField &f : *fields) absorb_comp_fast_array(f, b.header.object.ObjectId, cell, open);
+    }
+
+    void absorb_open(size_t chain_idx, const fake::Delivered &d) {
+        channels.erase(d.channel);
+        const size_t prefix = new_actor_prefix_bits(d.content);
+        const auto blocks =
+            prefix ? repl::read_content_blocks(d.content.data(), d.content.bit_pos(), prefix) : std::nullopt;
+        if (!blocks || blocks->empty() || !(*blocks)[0].header.is_actor || !(*blocks)[0].header.has_rep_layout) return;
+        const schema::ClassSchema &ifa = class_named("AIntrepidStateIFA");
+        size_t pos = (*blocks)[0].payload_pos;
+        const auto st =
+            repl::read_rep_block(ifa, d.content.data(), (*blocks)[0].payload_pos + (*blocks)[0].payload_bits, pos);
+        const auto name = st ? client_name(st->get(ifa, "FoliageName")) : std::nullopt;
+        if (!name) return;
+        channels[d.channel] = *name;
+        Open open;
+        open.chain = chain_idx;
+        open.name = *name;
+        open.channel = static_cast<int>(d.channel);
+        const tsupport::Bits all(d.content.bytes(), d.content.bit_pos());
+        for (const auto &b : *blocks) open.blocks.push_back(all.slice(b.payload_pos, b.payload_bits));
+        Cell &cell = lookup[*name];
+        for (size_t k = 1; k < blocks->size(); ++k) absorb_comp_block(d, (*blocks)[k], cell, open);
+        opens.push_back(std::move(open));
+    }
+
+    void absorb_close(const fake::Delivered &d) {
+        const auto held = channels.find(d.channel);
+        if (held == channels.end()) return;
+        switch (d.close_reason) {
+        case 1:
+            ++closes_dormancy;
+            break;
+        case 0:
+            ++closes_destroyed;
+            lookup.erase(held->second);
+            break;
+        case 3:
+            ++closes_relevancy;
+            lookup.erase(held->second);
+            break;
+        default:
+            ++closes_other;
+            lookup.erase(held->second);
+            break;
+        }
+        channels.erase(held);
+    }
+
+    void absorb(const Player &p, size_t from) {
+        for (size_t i = from; i < p.got.size(); ++i) {
+            const fake::Delivered &d = p.got[i];
+            if (d.open) {
+                absorb_open(i, d);
+            } else if (!d.close && channels.count(d.channel)) {
+                ++updates;
+            }
+            if (d.close) absorb_close(d);
+        }
+    }
+
+    bool resolves(const std::string &ifa, const std::string &fismc) const {
+        const auto cell = lookup.find(client_fname(ifa));
+        if (cell == lookup.end()) return false;
+        const auto comp = cell->second.components.find(client_fname(fismc));
+        return comp != cell->second.components.end() && comp->second;
+    }
+    size_t closes() const { return closes_dormancy + closes_destroyed + closes_relevancy + closes_other; }
+};
+
+struct Spot {
+    const char *what;
+    double x, y, z;
+    const char *def;
+};
+
+std::optional<uint32_t> nearest_row(const foliage::FoliageMap &map, const Spot &s, double *distance) {
+    std::optional<uint32_t> best;
+    double least = 1e18;
+    for (uint32_t r = 0; r < map.rows().size(); ++r) {
+        const auto &row = map.rows()[r];
+        if (map.def_names()[row.def] != s.def) continue;
+        const double d = std::hypot(row.x - s.x, row.y - s.y);
+        if (d < least) {
+            least = d;
+            best = r;
+        }
+    }
+    *distance = least;
+    return best;
+}
+
+bool client_resolves(const ClientFoliage &client, const foliage::FoliageMap &map, uint32_t row) {
+    const auto &r = map.rows()[row];
+    return client.resolves(map.owners()[r.owner].name, map.owners()[r.owner].components[r.component]);
+}
+
+void count_client_components(const ClientFoliage &client, size_t &components, size_t &uninitialized) {
     for (const auto &[name, cell] : client.lookup) {
         for (const auto &[comp, init] : cell.components) {
             ++components;
@@ -14,8 +204,8 @@ static void count_client_components(const ClientFoliage &client, size_t &compone
     }
 }
 
-static void check_delivery_spots_and_far(FRig &fr, Player &p, ClientFoliage &client, const Spot (&spots)[3],
-                                         const std::optional<uint32_t> (&rows)[3]) {
+void check_delivery_spots_and_far(FRig &fr, Player &p, ClientFoliage &client, const Spot (&spots)[3],
+                                  const std::optional<uint32_t> (&rows)[3]) {
     const foliage::FoliageMap &map = fr.f().map();
     char msg[240];
     for (int i = 0; i < 3; ++i) {
@@ -53,7 +243,7 @@ static void check_delivery_spots_and_far(FRig &fr, Player &p, ClientFoliage &cli
           msg);
 }
 
-static void test_delivery() {
+void test_delivery() {
     std::printf("every cell's state actor reaches the player, and the client keeps it (the login spot, then the user's "
                 "three spots)\n");
     FRig fr;
@@ -94,14 +284,14 @@ static void test_delivery() {
     check_delivery_spots_and_far(fr, p, client, spots, rows);
 }
 
-static bool reopen_component_matches(const tsupport::Bits &ours, const capture_foliage::Component &c) {
+bool reopen_component_matches(const tsupport::Bits &ours, const capture_foliage::Component &c) {
     if (c.has_states) {
         return ours.size() == c.block.bits && ours.slice(0, 283) == tsupport::bits_of_hex(c.block.hex, 283);
     }
     return ours == tsupport::bits_of_hex(c.block.hex, c.block.bits);
 }
 
-static size_t count_matching_reopen_blocks(const ClientFoliage::Open &open, const capture_foliage::IfaOpen &golden) {
+size_t count_matching_reopen_blocks(const ClientFoliage::Open &open, const capture_foliage::IfaOpen &golden) {
     if (open.blocks.size() != 1 + golden.component_count) return 0;
     size_t same = (open.blocks[0] == tsupport::bits_of_hex(golden.actor.hex, golden.actor.bits)) ? 1 : 0;
     for (uint32_t i = 0; i < golden.component_count; ++i) {
@@ -110,8 +300,8 @@ static size_t count_matching_reopen_blocks(const ClientFoliage::Open &open, cons
     return same;
 }
 
-static void check_reopen_blocks_and_regrow(FRig &fr, Player &p, ClientFoliage &client, size_t held_opens,
-                                           const capture_foliage::IfaOpen &golden) {
+void check_reopen_blocks_and_regrow(FRig &fr, Player &p, ClientFoliage &client, size_t held_opens,
+                                    const capture_foliage::IfaOpen &golden) {
     const ClientFoliage::Open &open = client.opens.back();
     const ClientName cell_name = client_fname(fid::kOwner);
     CHECK(open.name == cell_name && open.blocks.size() == 1 + golden.component_count,
@@ -140,7 +330,7 @@ static void check_reopen_blocks_and_regrow(FRig &fr, Player &p, ClientFoliage &c
           "the last one deletes the instance from the list: it is whole again");
 }
 
-static void test_cut_on_a_held_cell() {
+void test_cut_on_a_held_cell() {
     std::printf(
         "a cut on a cell the client holds: the actor opens again with the change [R: the retail capture packet 901]\n");
     FRig fr;
@@ -170,7 +360,7 @@ static void test_cut_on_a_held_cell() {
     check_reopen_blocks_and_regrow(fr, p, client, held_opens, *golden);
 }
 
-static size_t working_set_bytes() {
+size_t working_set_bytes() {
 #ifdef _WIN32
     PROCESS_MEMORY_COUNTERS pmc{};
     pmc.cb = sizeof pmc;
@@ -189,7 +379,7 @@ struct ViewLoadStats {
     double tour_ms = 0, tour_mb = 0, tour_kb_per_open = 0;
 };
 
-static void run_view_tour(FRig &fr, Player &p, ViewLoadStats &st) {
+void run_view_tour(FRig &fr, Player &p, ViewLoadStats &st) {
     const foliage::FoliageMap &map = fr.f().map();
     p.got.clear();
     ClientFoliage tourist;
@@ -222,7 +412,7 @@ static void run_view_tour(FRig &fr, Player &p, ViewLoadStats &st) {
     st.tour_other_closes = tourist.closes_destroyed + tourist.closes_relevancy + tourist.closes_other;
 }
 
-static bool run_view_load_pass(int with, ViewLoadStats &st) {
+bool run_view_load_pass(int with, ViewLoadStats &st) {
     FRig fr;
     if (!fr.open(0.01, with == 1)) return false;
     Player &p = fr.rig.add_player(record_at("bbec5c86eb101fe5f38c87f0fa22e7d0", "cyb", -777947.0, 617946.0, 15952.05));
@@ -256,7 +446,7 @@ static bool run_view_load_pass(int with, ViewLoadStats &st) {
     return true;
 }
 
-static void test_view_load() {
+void test_view_load() {
     std::printf("the load on the view: 671 state actors, tracked and sent to one player\n");
     ViewLoadStats st;
     for (int with = 0; with < 2; ++with) {
@@ -289,7 +479,7 @@ static void test_view_load() {
           "and the server holds under 200 MB for him (the shadows of 671 cells and what he was sent)");
 }
 
-static bool open_real_world_riverlands(Rig &rig, double &load_s) {
+bool open_real_world_riverlands(Rig &rig, double &load_s) {
     std::string open_error;
     rig.db = content::ContentDb::open(g_path, open_error);
     if (!rig.db) {
@@ -322,7 +512,7 @@ static bool open_real_world_riverlands(Rig &rig, double &load_s) {
     return true;
 }
 
-static void test_login_in_the_real_world() {
+void test_login_in_the_real_world() {
     std::printf("the login in the real world: the Riverlands' creatures and nodes beside the 671 state actors\n");
     Rig rig;
     double load_s = 0;

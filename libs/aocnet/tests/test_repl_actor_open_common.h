@@ -70,39 +70,6 @@ inline aoc::protocol::repl::ExportChain level_chain() {
             link(12923414834320654503ull, "/Game/Levels/Verra_World_Master/Verra_World_Master", true, 0)};
 }
 
-inline bool same_prefix(const aoc::protocol::emit::BunchWriter& w, const capture_blocks::Bits& b, size_t n) {
-    if (w.bit_pos() < n || b.bits < n) return false;
-    const auto want = capture_blocks::bytes_of(b.hex);
-    size_t diff = 0;
-    if (!capture_blocks::same_bit_range(w.data(), want.data(), n, &diff)) {
-        std::printf("    first differing bit %zu (%s)\n", diff, b.name);
-        return false;
-    }
-    return true;
-}
-
-inline bool same_as(const aoc::protocol::emit::BunchWriter& w, const capture_blocks::Bits& b) {
-    if (w.bit_pos() != b.bits) {
-        std::printf("    wrote %zu bits, expected %zu (%s)\n", w.bit_pos(), b.bits, b.name);
-        return false;
-    }
-    return same_prefix(w, b, b.bits);
-}
-
-inline bool emitted_as(const std::optional<aoc::protocol::repl::Emission>& e,
-                       std::initializer_list<const capture_blocks::Bits*> exports,
-                       const capture_blocks::Bits& content) {
-    if (!e || e->exports.size() != exports.size()) {
-        std::printf("    %zu export bunches, expected %zu\n", e ? e->exports.size() : 0, exports.size());
-        return false;
-    }
-    size_t i = 0;
-    for (const capture_blocks::Bits* x : exports) {
-        if (!same_as(e->exports[i++], *x)) return false;
-    }
-    return same_as(e->payload, content);
-}
-
 inline aoc::protocol::repl::RepState state_of(const capture_blocks::Block& b) {
     const aoc::protocol::schema::ClassSchema& s = schema_named(b.class_name);
     const auto bytes = capture_blocks::bytes_of(b.hex);
@@ -110,35 +77,6 @@ inline aoc::protocol::repl::RepState state_of(const capture_blocks::Block& b) {
     auto st = aoc::protocol::repl::read_rep_block(s, bytes.data(), b.bits, pos);
     if (!st) { std::printf("  [FAIL] %s does not read\n", b.name); g_fail++; return {}; }
     return *st;
-}
-
-inline bool block_is(const aoc::protocol::repl::ObjectState& o, const capture_blocks::Block& b) {
-    const aoc::protocol::schema::ClassSchema& s = schema_named(b.class_name);
-    const auto bytes = capture_blocks::bytes_of(b.hex);
-    size_t pos = 0;
-    const auto st = aoc::protocol::repl::read_rep_block(s, bytes.data(), b.bits, pos);
-    return st && pos == b.rep_bits && *st == o.state;
-}
-
-inline aoc::protocol::repl::CodecOptions stat_options() {
-    aoc::protocol::repl::CodecOptions o;
-    o.stat_int32_extended = [](int64_t record) {
-        const uint32_t hi = static_cast<uint32_t>(static_cast<uint64_t>(record) >> 32);
-        return hi == 0x5429e8c0u || hi == 0x5429e8c4u;
-    };
-    return o;
-}
-
-inline bool load_fast_arrays(const capture_blocks::Block& b, size_t from, aoc::protocol::repl::ObjectState& o) {
-    const auto bytes = capture_blocks::bytes_of(b.hex);
-    size_t pos = from;
-    const auto fields = aoc::protocol::repl::read_fast_array_fields(*o.schema, bytes.data(), b.bits, pos, o.opts);
-    if (!fields) return false;
-    for (const aoc::protocol::repl::FastArrayField& f : *fields) {
-        aoc::protocol::repl::FastArrayState* st = o.arrays.get(*o.schema, f.field);
-        if (!st || !aoc::protocol::repl::apply_fast_array_delta(*st, f.delta)) return false;
-    }
-    return true;
 }
 
 inline aoc::protocol::repl::Subobject component(uint64_t id, const char* name, uint32_t checksum) {
@@ -235,4 +173,4 @@ inline uint32_t export_count(const aoc::protocol::emit::BunchWriter& b) {
     return r.read_uint32();
 }
 
-void run_repl_actor_open_part2();
+void run_repl_actor_open_shadow();

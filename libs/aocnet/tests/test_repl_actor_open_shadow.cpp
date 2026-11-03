@@ -433,7 +433,7 @@ static void test_noop_update_copies_nothing() {
           "and it allocates a fraction of what copying the shadow once would (the old code copied it twice)");
 }
 
-void run_repl_actor_open_part2() {
+void run_repl_actor_open_shadow() {
     test_shadow();
     t1_rollback_across_objects();
     t2_assembly_failure_rolls_back();

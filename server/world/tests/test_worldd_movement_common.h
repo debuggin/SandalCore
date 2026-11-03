@@ -55,76 +55,6 @@ inline constexpr uint32_t kRandomizer = 0x6ee87ee4u;
 inline constexpr double kX = -777664.5, kY = 616578.6875, kZ = 15952.0498046875;
 inline constexpr uint16_t kSpawnYaw = 16550;
 
-inline uint8_t g_counter = 1;
-inline void counting_random(uint8_t* out, size_t n) {
-    for (size_t i = 0; i < n; ++i) out[i] = g_counter++;
-}
-
-template <class Pred>
-inline bool wait_until(Pred pred, std::chrono::milliseconds limit = std::chrono::milliseconds(3000)) {
-    const auto until = std::chrono::steady_clock::now() + limit;
-    while (!pred()) {
-        if (std::chrono::steady_clock::now() > until) return false;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    return true;
-}
-
-struct FakeCharacters : aoc::worldd::svc::CharacterApi {
-    struct Save {
-        std::string id;
-        aoc::worldd::svc::Position position;
-    };
-    std::mutex mu;
-    std::condition_variable cv;
-    std::vector<Save> saves;
-    std::vector<aoc::worldd::svc::CallStatus> answers;
-    std::deque<aoc::worldd::svc::CallStatus> script;
-    bool block = false;
-    std::chrono::milliseconds max_block{2000};
-    int running = 0;
-    bool throw_once = false;
-
-    aoc::worldd::svc::CharacterResult get_character(const std::string&) override { return {}; }
-
-    aoc::worldd::svc::CallStatus save_position(const std::string& id, const aoc::worldd::svc::Position& position) override {
-        std::unique_lock<std::mutex> lock(mu);
-        ++running;
-        cv.notify_all();
-        cv.wait_for(lock, max_block, [this] { return !block; });
-        aoc::worldd::svc::CallStatus status = aoc::worldd::svc::CallStatus::Ok;
-        if (!script.empty()) {
-            status = script.front();
-            script.pop_front();
-        }
-        --running;
-        if (throw_once) {
-            throw_once = false;
-            answers.push_back(aoc::worldd::svc::CallStatus::Failed);
-            cv.notify_all();
-            throw std::runtime_error("the fake service threw");
-        }
-        answers.push_back(status);
-        if (status == aoc::worldd::svc::CallStatus::Ok) saves.push_back({id, position});
-        cv.notify_all();
-        return status;
-    }
-
-    void hold() { std::lock_guard<std::mutex> l(mu); block = true; }
-    void release() {
-        { std::lock_guard<std::mutex> l(mu); block = false; }
-        cv.notify_all();
-    }
-    size_t calls() { std::lock_guard<std::mutex> l(mu); return answers.size(); }
-    size_t saved_count() { std::lock_guard<std::mutex> l(mu); return saves.size(); }
-    std::vector<Save> saved() { std::lock_guard<std::mutex> l(mu); return saves; }
-    bool in_flight() { std::lock_guard<std::mutex> l(mu); return running > 0; }
-};
-
-inline aoc::worldd::svc::Position pos(double x, double y = 0, double z = 0, float yaw = 0) {
-    return {x, y, z, yaw};
-}
-
 inline const aoc::protocol::schema::ClassSchema& class_named(const char* name) {
     const aoc::protocol::schema::ClassSchema* c = aoc::protocol::schema::gen::find_class_schema(name);
     if (!c) {
@@ -133,48 +63,6 @@ inline const aoc::protocol::schema::ClassSchema& class_named(const char* name) {
     }
     return *c;
 }
-
-struct DecodedRpc {
-    bool ok = false;
-    std::string name;
-    aoc::protocol::repl::RpcCall call;
-};
-
-inline DecodedRpc decode_rpc(const aoc::protocol::emit::BunchWriter& content, const aoc::protocol::schema::ClassSchema& cls) {
-    DecodedRpc d;
-    const auto blocks = aoc::protocol::repl::read_content_blocks(content.data(), content.bit_pos(), 0);
-    if (!blocks || blocks->size() != 1) return d;
-    size_t p = (*blocks)[0].payload_pos;
-    auto calls = aoc::protocol::repl::read_rpc_fields(cls, content.data(), (*blocks)[0].payload_pos + (*blocks)[0].payload_bits, p);
-    if (!calls || calls->size() != 1) return d;
-    d.call = std::move((*calls)[0]);
-    d.name = d.call.rpc->name;
-    d.ok = d.call.decoded;
-    return d;
-}
-
-inline const aoc::protocol::repl::Value* param(const DecodedRpc& d, std::string_view path) {
-    const aoc::protocol::schema::RepCommand* c = aoc::protocol::repl::rpc_command(*d.call.rpc, path);
-    if (!c) return nullptr;
-    const auto it = d.call.params.values.find(c->handle);
-    return it == d.call.params.values.end() ? nullptr : &it->second;
-}
-
-inline aoc::worldd::CharacterSaver::Config quick(std::chrono::milliseconds destructor_wait = std::chrono::milliseconds(2000)) {
-    aoc::worldd::CharacterSaver::Config c;
-    c.retry_delay = std::chrono::milliseconds(5);
-    c.destructor_wait = destructor_wait;
-    return c;
-}
-
-struct RecordingSink : aoc::worldd::PositionSink {
-    struct Saved {
-        std::string id;
-        aoc::worldd::svc::Position position;
-    };
-    std::vector<Saved> saves;
-    void save(const std::string& id, const aoc::worldd::svc::Position& p) override { saves.push_back({id, p}); }
-};
 
 struct Fixture {
     std::filesystem::path dir;
@@ -220,11 +108,6 @@ inline aoc::worldd::svc::Character cyb_record() {
     return c;
 }
 
-inline aoc::worldd::bootstrap::LoginIdentity identity() { return {kMachine, kMachine}; }
-inline double world_time_at(aoc::worldd::Clock::time_point t) {
-    return std::chrono::duration<double>(t - t0).count();
-}
-
 inline aoc::protocol::repl::NetworkMove move_at(
     float ts, double x, double y, double z, uint16_t yaw = kSpawnYaw) {
     aoc::protocol::repl::NetworkMove m;
@@ -233,13 +116,6 @@ inline aoc::protocol::repl::NetworkMove move_at(
     m.location = aoc::protocol::repl::quantize_vector(100, x, y, z);
     m.control_rotation.yaw = yaw;
     m.movement_mode = aoc::protocol::repl::kMoveWalking;
-    return m;
-}
-
-inline aoc::protocol::repl::NetworkMove move_with_mode(
-    float ts, double x, double y, double z, uint8_t mode) {
-    aoc::protocol::repl::NetworkMove m = move_at(ts, x, y, z, kSpawnYaw);
-    m.movement_mode = mode;
     return m;
 }
 
@@ -263,148 +139,6 @@ inline aoc::protocol::emit::BunchWriter client_move(const aoc::protocol::repl::N
     return client_move(p);
 }
 
-inline aoc::protocol::emit::BunchWriter client_moves(const std::vector<aoc::protocol::repl::NetworkMove>& moves) {
-    const aoc::protocol::schema::ClassSchema& cls = class_named("PlayerPawn_C");
-    const aoc::protocol::schema::NetField* f = cls.field("ServerMovePacked");
-    aoc::protocol::emit::BunchWriter out;
-    if (!f) return out;
-    aoc::protocol::emit::BunchWriter field;
-    for (const aoc::protocol::repl::NetworkMove& m : moves) {
-        aoc::protocol::repl::MovePacked p;
-        p.new_move = m;
-        aoc::protocol::emit::BunchWriter params;
-        if (!aoc::protocol::repl::write_move_packed(params, p) ||
-            aoc::protocol::repl::write_field(cls, f->index, params, field) == 0) {
-            return aoc::protocol::emit::BunchWriter();
-        }
-    }
-    aoc::protocol::repl::BlockHeader header;
-    aoc::protocol::repl::write_content_block(out, header, field, false);
-    return out;
-}
-
-struct Harness {
-    Fixture fx;
-    RecordingSink sink;
-    aoc::worldd::Connection conn{
-        aoc::worldd::ConnectionConfig{
-            aoc::protocol::conn::OuterHeader{0x500c7696u, 0, 5},
-            aoc::protocol::conn::CustomField{0x38, 0x21, 0xc7, 0x0d, 0x43, 0x5d},
-            14265,
-            15870},
-        t0};
-    fake::Client client{
-        aoc::protocol::conn::OuterHeader{0x500c7696u, 0, 5},
-        aoc::protocol::conn::CustomField{0x38, 0x21, 0xc7, 0x0d, 0x43, 0x5d},
-        14265,
-        15870};
-    std::unique_ptr<aoc::worldd::PlayerSession> s;
-    aoc::worldd::Clock::time_point t = t0;
-    std::vector<fake::Delivered> got;
-    std::string error;
-    uint32_t pawn_ch = 0;
-
-    explicit Harness(const aoc::worldd::MovementConfig& mc = {}, bool with_sink = true) {
-        fx.world->set_movement(mc);
-        if (with_sink) fx.world->set_position_sink(&sink);
-        s = aoc::worldd::PlayerSession::join(conn, *fx.world, cyb_record(), identity(), world_time_at(t), error);
-        if (!s) {
-            std::printf("  [FAIL] the session does not join: %s\n", error.c_str());
-            std::exit(2);
-        }
-        pawn_ch = s->channel_of(aoc::worldd::bootstrap::Role::Pawn);
-        settle();
-    }
-    void flush() {
-        for (auto& pkt : conn.flush(t)) {
-            const auto r = client.receive(pkt);
-            for (const auto& d : r.delivered) got.push_back(d);
-        }
-    }
-    void client_sends(std::vector<fake::Bunch> bunches) {
-        const auto pkt = client.packet(std::move(bunches));
-        const std::vector<aoc::worldd::InBunch> in = conn.receive(pkt, t);
-        s->take_acks(conn);
-        for (const aoc::worldd::InBunch& b : in) s->on_bunch(conn, b, t);
-        s->end_of_datagram(conn);
-    }
-    void step(std::chrono::milliseconds d = std::chrono::milliseconds(20)) {
-        t += d;
-        s->tick(conn, t);
-        flush();
-        s->take_acks(conn);
-        client_sends({});
-    }
-    void settle() {
-        for (int quiet = 0, i = 0; quiet < 3 && i < 400; ++i) {
-            const size_t before = got.size();
-            step();
-            quiet = (got.size() == before && s->join_pending() == 0 && s->replies_pending() == 0) ? quiet + 1 : 0;
-        }
-    }
-    std::vector<const fake::Delivered*> send_move(const aoc::protocol::emit::BunchWriter& bunch) {
-        const size_t from = got.size();
-        client_sends({client.actor(pawn_ch, bunch, false)});
-        flush();
-        std::vector<const fake::Delivered*> out;
-        for (size_t i = from; i < got.size(); ++i) {
-            if (got[i].channel == pawn_ch) out.push_back(&got[i]);
-        }
-        return out;
-    }
-    std::vector<const fake::Delivered*> send_move(const aoc::protocol::repl::NetworkMove& m) {
-        return send_move(client_move(m));
-    }
-};
-
-inline bool is_ack(const fake::Delivered& d, float ts) {
-    const auto blocks = aoc::protocol::repl::read_content_blocks(d.content.data(), d.content.bit_pos(), 0);
-    if (!d.exports.empty() || d.reliable || d.content.bit_pos() != 68 || !blocks || blocks->size() != 1) return false;
-    const aoc::protocol::schema::ClassSchema& pawn = class_named("PlayerPawn_C");
-    size_t pos_bits = (*blocks)[0].payload_pos;
-    const auto h = aoc::protocol::repl::read_field_header(
-        pawn, d.content.data(), pos_bits + (*blocks)[0].payload_bits, pos_bits);
-    if (!h || std::string(pawn.field(h->field)->name) != "ClientMoveResponsePacked") return false;
-    aoc::protocol::wire::PacketReader r(d.content.data(), d.content.byte_size(), pos_bits + h->payload_bits);
-    r.set_pos(pos_bits);
-    return r.read_bits(10) == 645 && std::bit_cast<float>(static_cast<uint32_t>(r.read_bits(32))) == ts;
-}
-
-inline std::optional<DecodedRpc> as_correction(const fake::Delivered& d) {
-    DecodedRpc r = decode_rpc(d.content, class_named("PlayerPawn_C"));
-    if (!r.ok || r.name != "ClientAdjustPosition") return std::nullopt;
-    return r;
-}
-
-inline bool correction_is(
-    const fake::Delivered& d,
-    float ts,
-    const aoc::protocol::repl::Vec3d& loc,
-    uint8_t mode = aoc::protocol::repl::kMoveWalking) {
-    const auto r = as_correction(d);
-    if (!r || d.reliable || !d.exports.empty()) return false;
-    const aoc::protocol::repl::Value* t = param(*r, "TimeStamp");
-    const aoc::protocol::repl::Value* l = param(*r, "NewLoc");
-    const aoc::protocol::repl::Value* m = param(*r, "ServerMovementMode");
-    const float got_ts = t && t->get_if<float>() ? *t->get_if<float>() : 0.0f;
-    return (t || ts == 0.0f) && got_ts == ts && l && l->get_if<aoc::protocol::repl::Vec3d>() &&
-           *l->get_if<aoc::protocol::repl::Vec3d>() == loc &&
-           (m ? *m->get_if<uint64_t>() : 0) == mode;
-}
-
-inline bool correction_is(const fake::Delivered& d, float ts, double x, double y, double z) {
-    return correction_is(d, ts, aoc::protocol::repl::Vec3d{x, y, z}, aoc::protocol::repl::kMoveWalking);
-}
-
-inline bool correction_is(
-    const fake::Delivered& d,
-    float ts,
-    const aoc::worldd::GoodPosition& p,
-    uint8_t mode = aoc::protocol::repl::kMoveWalking) {
-    return correction_is(d, ts, aoc::protocol::repl::Vec3d{p.x, p.y, p.z}, mode);
-}
-
 inline bool near(double a, double b) { return std::fabs(a - b) < 0.01; }
 
-void run_movement_part2();
-void run_movement_part3();
+void run_movement_saver();

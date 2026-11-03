@@ -117,13 +117,6 @@ inline aoc::worldd::svc::Character cyb_record() {
     return c;
 }
 
-inline aoc::worldd::svc::Character second_record() {
-    aoc::worldd::svc::Character c = cyb_record();
-    c.id = "11112222333344445555666677778888";
-    c.name = "dee";
-    return c;
-}
-
 inline aoc::worldd::bootstrap::LoginIdentity identity() {
     return {kMachine, kMachine};
 }
@@ -424,105 +417,19 @@ struct Joined {
 };
 // [C | O | A + C:Y:B]
 
-inline Joined handshake(Rig& rig, const aoc::worldd::Address& addr, aoc::worldd::Clock::time_point now) {
-    Joined j;
-    j.addr = addr;
-    rig.take(addr);
-    const auto initial = capture::bytes(capture::kInitial);
-    rig.ep.on_datagram(addr, initial.data(), initial.size(), now);
-    auto out = rig.take(addr);
-    if (out.size() != 1) {
-        return j;
-    }
-    j.challenge = aoc::protocol::conn::parse_handshake(out[0].data(), out[0].size());
-    aoc::protocol::conn::HandshakePacket resp = *j.challenge;
-    resp.type = aoc::protocol::conn::HandshakeType::Response;
-    resp.sent_count = 2;
-    resp.padding.assign(11, 0x5A);
-    const auto bytes = aoc::protocol::conn::build_handshake(resp);
-    rig.ep.on_datagram(addr, bytes.data(), bytes.size(), now);
-    out = rig.take(addr);
-    if (out.size() != 1) {
-        return j;
-    }
-    const auto seqs = aoc::protocol::conn::initial_sequences(j.challenge->cookie);
-    j.client.emplace(aoc::protocol::conn::outer_header_of(*j.challenge), j.challenge->ext->custom_field(), seqs.server,
-                     seqs.client);
-    j.session = rig.logins.submitted.empty() ? 0 : rig.logins.submitted.back().first;
-    return j;
-}
-
-inline std::vector<fake::Received> drain(Rig& rig, Joined& j, const aoc::worldd::Address& addr) {
-    std::vector<fake::Received> got;
-    for (const auto& p : rig.take(addr)) {
-        got.push_back(j.client->receive(p));
-        for (const auto& d : got.back().delivered) {
-            j.got.push_back(d);
-        }
-    }
-    return got;
-}
-
-inline std::vector<fake::Received> exchange(Rig& rig, Joined& j, const aoc::worldd::Address& addr,
-                                            std::vector<fake::Bunch> bunches, aoc::worldd::Clock::time_point now) {
-    const auto pkt = j.client->packet(std::move(bunches));
-    rig.ep.on_datagram(addr, pkt.data(), pkt.size(), now);
-    rig.ep.tick(now);
-    return drain(rig, j, addr);
-}
-
-inline const aoc::protocol::conn::ControlMessage* find_message(const std::vector<fake::Received>& got,
-                                                               aoc::protocol::conn::Nmt type) {
-    for (const auto& r : got) {
-        for (const auto& m : r.messages) {
-            if (m.type == type) {
-                return &m;
-            }
-        }
-    }
-    return nullptr;
-}
-
-inline bool closed_by_server(const std::vector<fake::Received>& got) {
-    for (const auto& r : got) {
-        if (r.closed) {
-            return true;
-        }
-    }
-    return false;
-}
-
-inline aoc::worldd::LoginResult cyb_login() {
-    aoc::worldd::LoginResult r;
-    r.accepted = true;
-    r.character = cyb_record();
-    return r;
-}
-
-inline void log_in_as(Rig& rig, Joined& j, const aoc::worldd::svc::Character& rec, aoc::worldd::Clock::time_point now,
-                      const std::string& machine) {
-    exchange(rig, j, j.addr, {j.client->hello()}, now);
-    aoc::worldd::LoginResult r;
-    r.accepted = true;
-    r.character = rec;
-    rig.ep.post_login_result(j.session, r);
-    rig.ep.tick(now + std::chrono::milliseconds(1));
-    drain(rig, j, j.addr);
-    exchange(rig, j, j.addr, {j.client->login(machine, machine)}, now + std::chrono::milliseconds(2));
-}
-
-inline void log_in(Rig& rig, Joined& j, const aoc::worldd::Address& addr, const aoc::worldd::svc::Character& rec,
-                   aoc::worldd::Clock::time_point now) {
-    j.addr = addr;
-    log_in_as(rig, j, rec, now, kMachine);
-}
-
-inline void join_now(Rig& rig, Joined& j, const aoc::worldd::Address& addr, aoc::worldd::Clock::time_point now) {
-    const auto p = j.client->packet({j.client->netspeed(200000), j.client->nmt(aoc::protocol::conn::Nmt::Join)});
-    rig.ep.on_datagram(addr, p.data(), p.size(), now);
-    rig.ep.tick(now);
-    drain(rig, j, addr);
-}
+Joined handshake(Rig& rig, const aoc::worldd::Address& addr, aoc::worldd::Clock::time_point now);
+std::vector<fake::Received> drain(Rig& rig, Joined& j, const aoc::worldd::Address& addr);
+std::vector<fake::Received> exchange(Rig& rig, Joined& j, const aoc::worldd::Address& addr,
+                                     std::vector<fake::Bunch> bunches, aoc::worldd::Clock::time_point now);
+const aoc::protocol::conn::ControlMessage* find_message(const std::vector<fake::Received>& got,
+                                                        aoc::protocol::conn::Nmt type);
+bool closed_by_server(const std::vector<fake::Received>& got);
+aoc::worldd::LoginResult cyb_login();
+void log_in_as(Rig& rig, Joined& j, const aoc::worldd::svc::Character& rec, aoc::worldd::Clock::time_point now,
+               const std::string& machine);
+void log_in(Rig& rig, Joined& j, const aoc::worldd::Address& addr, const aoc::worldd::svc::Character& rec,
+            aoc::worldd::Clock::time_point now);
+void join_now(Rig& rig, Joined& j, const aoc::worldd::Address& addr, aoc::worldd::Clock::time_point now);
 
 // ~ C_Y_B - CoA ~
 

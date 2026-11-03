@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 SandalCore contributors.
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+#include "content/content_db.h"
 #include "crafting/rewards.h"
 #include "crafting/rules.h"
 #include "crafting/station.h"
 #include "items/acquired.h"
 #include "items/currency.h"
-#include "session/player_session_internal.h"
+#include "session/player_session.h"
 #include "world/city_nodes.h"
 namespace aoc {
 namespace worldd {
-using namespace ::sandal::worldd::session::detail;
 namespace {
 using StepBuilder = std::function<std::optional<bootstrap::Send>(bootstrap::PlayerBootstrap &)>;
 struct StationCheckResult {

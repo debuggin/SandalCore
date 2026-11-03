@@ -1,9 +1,32 @@
-#include "session/player_session_internal.h"
+#include "protocol/repl/move_packed.h"
+#include "protocol/repl/rpc_fields.h"
+#include "session/player_session.h"
 
 namespace aoc {
 namespace worldd {
 
-using namespace ::sandal::worldd::session::detail;
+namespace {
+
+const char* role_name(Role r) {
+    switch (r) {
+        case Role::PlayerController: return "PlayerController";
+        case Role::GameState: return "GameState";
+        case Role::Pawn: return "pawn";
+        case Role::PlayerState: return "PlayerState";
+    }
+    return "?";
+}
+
+}  // namespace
+
+struct PlayerSession::SessionInternal {
+    static bool dispatch_controller_early_rpc(PlayerSession& s, Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    static bool dispatch_controller_actor_rpc(PlayerSession& s, Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now);
+    static bool dispatch_pawn_actor_rpc(PlayerSession& s, Connection& conn, const repl::ClientRpc& rpc, const InBunch& bunch, Clock::time_point now);
+    static bool check_stale_or_borderline_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict);
+    static void accept_move(PlayerSession& s, Connection& conn, const repl::NetworkMove& move, const GoodPosition& before, Clock::time_point now);
+    static void refuse_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict);
+};
 
 void PlayerSession::tally_speed(const GoodPosition& before, const GoodPosition& after, bool sprinting, bool evading) {
     if (!before.has_time_stamp || evading) return;
@@ -158,7 +181,7 @@ void PlayerSession::note_unserved_blocks(Role role, const repl::ClientBunch& par
     }
 }
 
-bool PlayerSessionTypes::SessionInternal::dispatch_controller_early_rpc(PlayerSession& s, Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
+bool PlayerSession::SessionInternal::dispatch_controller_early_rpc(PlayerSession& s, Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
     const std::string_view name_of_rpc = rpc.call.rpc->name;
     if (name_of_rpc == "ServerAcknowledgePossession") {
         const auto it = rpc.call.params.values.find(1);
@@ -189,7 +212,7 @@ bool PlayerSessionTypes::SessionInternal::dispatch_controller_early_rpc(PlayerSe
     return false;
 }
 
-bool PlayerSessionTypes::SessionInternal::dispatch_controller_actor_rpc(PlayerSession& s, Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
+bool PlayerSession::SessionInternal::dispatch_controller_actor_rpc(PlayerSession& s, Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
     if (dispatch_controller_early_rpc(s, conn, rpc, now)) return true;
     const std::string_view name_of_rpc = rpc.call.rpc->name;
     if (name_of_rpc == "ServerDesummonMount") { s.on_desummon_mount(conn, now); return true; }
@@ -234,7 +257,7 @@ bool PlayerSessionTypes::SessionInternal::dispatch_controller_actor_rpc(PlayerSe
     return false;
 }
 
-bool PlayerSessionTypes::SessionInternal::dispatch_pawn_actor_rpc(PlayerSession& s, Connection& conn, const repl::ClientRpc& rpc, const InBunch& bunch, Clock::time_point now) {
+bool PlayerSession::SessionInternal::dispatch_pawn_actor_rpc(PlayerSession& s, Connection& conn, const repl::ClientRpc& rpc, const InBunch& bunch, Clock::time_point now) {
     const std::string_view name_of_rpc = rpc.call.rpc->name;
     if (name_of_rpc == "ServerClientIsReadyToPhaseIn") {
         if (s.phase_in_requested_ || !s.room_for(1)) return true;
@@ -298,7 +321,7 @@ void PlayerSession::dispatch(Connection& conn, Role role, const repl::ClientRpc&
     }
 }
 
-bool PlayerSessionTypes::SessionInternal::check_stale_or_borderline_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict) {
+bool PlayerSession::SessionInternal::check_stale_or_borderline_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict) {
     if (verdict.fault == MoveFault::TimeStampNotRising) {
         if (++s.stale_streak_ >= kStaleStreakLog && !s.stale_streak_logged_) {
             s.stale_streak_logged_ = true;
@@ -325,7 +348,7 @@ bool PlayerSessionTypes::SessionInternal::check_stale_or_borderline_move(PlayerS
     return false;
 }
 
-void PlayerSessionTypes::SessionInternal::accept_move(PlayerSession& s, Connection& conn, const repl::NetworkMove& move, const GoodPosition& before, Clock::time_point now) {
+void PlayerSession::SessionInternal::accept_move(PlayerSession& s, Connection& conn, const repl::NetworkMove& move, const GoodPosition& before, Clock::time_point now) {
     const bool on_mount = s.mounted();
     s.pending_fix_.reset();
     if (!on_mount && s.is_moving(before, move)) s.moved_at_ = now;
@@ -342,7 +365,7 @@ void PlayerSessionTypes::SessionInternal::accept_move(PlayerSession& s, Connecti
     if (++s.moves_acked_ == 1) spdlog::info("[session] {}: the first move is acknowledged (TimeStamp {})", s.name(), move.time_stamp);
 }
 
-void PlayerSessionTypes::SessionInternal::refuse_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict) {
+void PlayerSession::SessionInternal::refuse_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict) {
     ++s.moves_refused_;
     if (s.moves_refused_ == 10 || s.moves_refused_ == 100 || s.moves_refused_ == 1000 || s.moves_refused_ == 10000) {
         spdlog::info("[session] {}: {} moves refused so far", s.name(), s.moves_refused_);

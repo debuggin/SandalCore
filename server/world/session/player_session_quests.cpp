@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 SandalCore contributors.
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+#include "content/content_db.h"
 #include "dialogue/talk.h"
 #include "protocol/repl/dialogue_rpc.h"
+#include "protocol/repl/rpc_fields.h"
 #include "quest/quest_wire.h"
 #include "quest/registry_points.h"
-#include "session/player_session_internal.h"
+#include "session/player_session.h"
 #include "world/city_nodes.h"
 #include "world/zoi_surface.h"
 
 namespace aoc::worldd {
-
-using namespace ::sandal::worldd::session::detail;
 
 namespace {
 

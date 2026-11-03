@@ -331,93 +331,6 @@ inline void Harness::play() {
   run(milliseconds(400));
 }
 
-inline BunchWriter item_used(int storage, int slot, const std::string &guid_hex) {
-  const schema::ClassSchema &pawn = class_named("PlayerPawn_C");
-  const schema::RpcSchema *rpc = pawn.rpc("ServerItemUsed");
-  repl::RpcParams p;
-  const auto g = items::guid_of(guid_hex);
-  const repl::GuidValue gv = g ? *g : repl::GuidValue{};
-  repl::set_rpc_param(*rpc, p, "Storage", repl::Value::u64(static_cast<uint64_t>(storage)));
-  repl::set_rpc_param(*rpc, p, "Slot", repl::Value::i64(slot));
-  repl::set_rpc_param(*rpc, p, "ExpectedItem.A", repl::Value::i64(static_cast<int32_t>(gv.a)));
-  repl::set_rpc_param(*rpc, p, "ExpectedItem.B", repl::Value::i64(static_cast<int32_t>(gv.b)));
-  repl::set_rpc_param(*rpc, p, "ExpectedItem.C", repl::Value::i64(static_cast<int32_t>(gv.c)));
-  repl::set_rpc_param(*rpc, p, "ExpectedItem.D", repl::Value::i64(static_cast<int32_t>(gv.d)));
-  repl::set_rpc_param(*rpc, p, "RequestedEquipSlot", repl::Value::i64(static_cast<int32_t>(0xFFFFFFFFu)));
-  return actor_rpc(pawn, "ServerItemUsed", p);
-}
-
-struct TriggerItemSpec {
-  int slot = -1;
-  const svc::InventoryItem *item = nullptr;
-  uint8_t location = 3;
-  int32_t animation_index = 0;
-};
-
-inline bool fill_trigger_params(const schema::RpcSchema &rpc, repl::RpcParams &p, int64_t ability, int32_t client_instance, TriggerItemSpec spec) {
-  bool ok = repl::set_rpc_param(rpc, p, "AbilityGuid", repl::Value::i64(ability));
-  if (ok && client_instance != 0) {
-    ok = repl::set_rpc_param(rpc, p, "ClientInstanceId", repl::Value::i64(client_instance));
-  }
-  if (ok && spec.animation_index != 0) {
-    ok = repl::set_rpc_param(rpc, p, "AnimationIndex", repl::Value::i64(spec.animation_index));
-  }
-  ok = ok && repl::set_rpc_param(rpc, p, "InputVector", repl::Value(repl::Vec2d{1, 0}));
-  if (ok && spec.slot >= 0) {
-    const repl::ItemInstance inst = spec.item ? items::to_instance(*spec.item) : repl::ItemInstance{};
-    ok = repl::set_rpc_param(rpc, p, "ItemData.Slot", repl::Value::i64(spec.slot)) && repl::set_rpc_param(rpc, p, "ItemData.ItemInstance", repl::Value(inst)) &&
-         repl::set_rpc_param(rpc, p, "ItemData.Location", repl::Value::u64(spec.location));
-  }
-  return ok;
-}
-
-inline BunchWriter trigger_on(Harness &h, const emit::FIntrepidNetworkGUID &component, int64_t ability, int32_t client_instance, TriggerItemSpec spec = {}) {
-  const schema::ClassSchema &cls = class_named("UAoCAbilityComponent");
-  const schema::RpcSchema *rpc = cls.rpc("ServerTriggerAbility");
-  repl::RpcParams p;
-  if (!rpc || !fill_trigger_params(*rpc, p, ability, client_instance, spec)) {
-    return BunchWriter();
-  }
-  BunchWriter out;
-  BunchWriter field;
-  bool failed = false;
-  if (repl::write_rpc_field(cls, *rpc, p, field, {}, &failed) == 0 || failed) {
-    return out;
-  }
-  repl::BlockHeader header;
-  header.is_actor = false;
-  header.has_rep_layout = false;
-  header.object = component;
-  repl::write_content_block(out, header, field, /*server_form=*/false);
-  (void)h;
-  return out;
-}
-
-inline BunchWriter summon_trigger(Harness &h, int32_t client_instance, int slot, const svc::InventoryItem *item, uint8_t location = 3) {
-  return trigger_on(h, h.s->bootstrap().setup().guids.ability, 108436548376185ll, client_instance, TriggerItemSpec{slot, item, location, 0});
-}
-
-inline BunchWriter dismount_rpc() {
-  return actor_rpc(class_named("AoCPlayerControllerBP_C"), "ServerDismountInteraction", {});
-}
-
-inline emit::FIntrepidNetworkGUID component_of(const world::WorldActor &m, uint64_t object_id) {
-  emit::FIntrepidNetworkGUID g = m.actor.guid;
-  g.ObjectId = object_id;
-  return g;
-}
-
-inline BunchWriter interact_with(const emit::FIntrepidNetworkGUID &component) {
-  const schema::ClassSchema &pawn = class_named("PlayerPawn_C");
-  const schema::RpcSchema *rpc = pawn.rpc("ServerInteractWithInteractableComponent");
-  repl::InteractRequest r;
-  r.interactable = component;
-  r.counter = 1;
-  r.zone = 2;
-  const auto params = repl::interact_params(*rpc, r);
-  return params ? actor_rpc(pawn, "ServerInteractWithInteractableComponent", *params) : BunchWriter();
-}
-
 inline repl::NetworkMove move_at(float ts, double x, double y, double z, uint16_t yaw = 0) {
   repl::NetworkMove m;
   m.time_stamp = ts;
@@ -451,26 +364,9 @@ inline BunchWriter client_move(const char *cls_name, const repl::NetworkMove &m)
 inline void move_pawn(Harness &h, const repl::NetworkMove &m) {
   h.client_sends({h.client.actor(h.pawn_ch, client_move("PlayerPawn_C", m), false)});
 }
-inline void move_mount(Harness &h, const repl::NetworkMove &m) {
-  const uint32_t ch = h.s->mount_channel();
-  h.client_sends({h.client.actor(ch ? ch : 999, client_move("ANPCCharacter", m), false)});
-}
-
-inline void summon_with(Harness &h, int slot, int32_t client_instance = 7) {
-  const svc::InventoryItem *item = h.s->inventory().at(Bag, slot);
-  const std::string guid = item ? item->instance_guid : std::string();
-  h.client_sends({h.client.actor(h.pawn_ch, item_used(3, slot, guid), true), h.client.actor(h.pawn_ch, summon_trigger(h, client_instance, slot, item), true)});
-}
-
-inline void get_on(Harness &h) {
-  const world::WorldActor *m = h.mount();
-  if (!m)
-    return;
-  h.client_sends({h.client.actor(h.pawn_ch, interact_with(component_of(*m, m->npc.interact_component)), true)});
-}
 
 inline void get_off(Harness &h) {
-  h.client_sends({h.client.actor(h.pc_ch, dismount_rpc(), true)});
+  h.client_sends({h.client.actor(h.pc_ch, actor_rpc(class_named("AoCPlayerControllerBP_C"), "ServerDismountInteraction", {}), true)});
 }
 
 inline uint16_t yaw16_of(double degrees) {
@@ -488,31 +384,6 @@ inline void walk_pawn_to(Harness &h, double x, double y, double speed = 600.0) {
     move_pawn(h, move_at(g_pawn_ts, g.x + dx * i / steps, g.y + dy * i / steps, g.z, yaw16_of(g.yaw_degrees)));
     h.step(milliseconds(200));
   }
-}
-
-inline void walk_up_to_mount(Harness &h) {
-  const world::WorldActor *m = h.mount();
-  if (!m)
-    return;
-  const GoodPosition g = h.s->movement().good();
-  const double dx = m->x - g.x;
-  const double dy = m->y - g.y;
-  const double dist = std::hypot(dx, dy);
-  if (dist <= 250)
-    return;
-  walk_pawn_to(h, g.x + dx * (dist - 250) / dist, g.y + dy * (dist - 250) / dist);
-}
-
-inline bool ride_on(Harness &h, int slot = kMountSlot) {
-  summon_with(h, slot);
-  h.run(milliseconds(1900));
-  if (!h.mount() || h.s->mounts()->phase() != MountController::Phase::Out) {
-    return false;
-  }
-  walk_up_to_mount(h);
-  get_on(h);
-  h.run(milliseconds(200));
-  return h.s->mounted();
 }
 
 inline std::vector<repl::RpcCall> calls_of(const fake::Delivered &d, const char *cls) {
@@ -553,38 +424,6 @@ inline size_t corrections_on(const Harness &h, uint32_t channel, size_t from, co
   return n;
 }
 
-struct Rider {
-  double x = 0;
-  double y = 0;
-  double z = 0;
-  float ts = 0;
-  uint16_t yaw = 0;
-};
-
-inline Rider start_riding(Harness &h) {
-  Rider r;
-  const GoodPosition g = h.s->movement().good();
-  r.x = g.x;
-  r.y = g.y;
-  r.z = g.z;
-  r.yaw = yaw16_of(g.yaw_degrees);
-  return r;
-}
-
-inline void ride_step(Harness &h, Rider &r, double dx, double dy, double dz = 0) {
-  const double dt = 0.1;
-  r.ts += static_cast<float>(dt);
-  r.x += dx;
-  r.y += dy;
-  r.z += dz;
-  move_mount(h, move_at(r.ts, r.x, r.y, r.z, r.yaw));
-  h.step(milliseconds(static_cast<int>(std::lround(dt * 1000))));
-}
-
-inline std::optional<double> mult_of(const world::WorldActor &m) {
-  return spawns::stat_value(m, spawns::kStatMoveSpeedMult);
-}
-
 inline svc::Character cyb_on_the_ground() {
   svc::Character c = cyb_record();
   c.has_position = true;
@@ -592,7 +431,6 @@ inline svc::Character cyb_on_the_ground() {
   return c;
 }
 
-inline constexpr int64_t kMoveSpeedMult = 109228544644729ll;
 inline std::unique_ptr<world::CityNodes> g_nodes;
 
 inline bool near_to(double got, double want, double tol = 0.5) {
@@ -603,20 +441,12 @@ inline GmTravel make_travel(Harness &h) {
   return GmTravel(*h.fx.world, [&h] { return std::vector<PlayerHandle>{PlayerHandle{h.s.get(), &h.conn}}; }, [&h] { return h.t; });
 }
 
-inline void adopt_the_ground(PlayerWorld &w) {
+inline void on_the_ground(PlayerWorld &w) {
   std::string err;
   auto nav = aoc::worldd::nav::AreaNav::from_file(aoc::worldd::navfix::build_file(), &err);
   if (!nav || !w.adopt_ground(std::move(nav), err))
     std::exit(2);
-}
-
-inline void with_nodes(PlayerWorld &w) {
   w.set_city_nodes(g_nodes.get());
-}
-
-inline void on_the_ground(PlayerWorld &w) {
-  adopt_the_ground(w);
-  with_nodes(w);
 }
 
 inline void pawn_move_to(Harness &h, double x, double y, double z, double dt = 0.2) {
@@ -625,37 +455,14 @@ inline void pawn_move_to(Harness &h, double x, double y, double z, double dt = 0
   h.step(milliseconds(static_cast<int>(std::lround(dt * 1000))));
 }
 
-inline GmTeleportRequest to_point(double x, double y) {
+inline GmTeleportRequest to_point_z(double x, double y, double z) {
   GmTeleportRequest rq;
   rq.character = "cyb";
   rq.x = x;
   rq.y = y;
-  return rq;
-}
-
-inline GmTeleportRequest to_point_z(double x, double y, double z) {
-  GmTeleportRequest rq = to_point(x, y);
   rq.z = z;
   rq.has_z = true;
   return rq;
-}
-
-inline GmTeleportRequest to_place(const char *place) {
-  GmTeleportRequest rq;
-  rq.character = "cyb";
-  rq.place = place;
-  return rq;
-}
-
-inline void assign_mount_row(const content::MountRow &r) {
-  if (r.item_name == "Mount_Grounded_TerrorBird_0")
-    g_mount_record = r.item;
-  if (r.item_name == "Mount_Grounded_Horse_0")
-    g_other_mount_record = r.item;
-  if (r.kind == "aquatic" && !g_aquatic_record)
-    g_aquatic_record = r.item;
-  if (r.kind == "flying" && !g_flying_record)
-    g_flying_record = r.item;
 }
 
 inline bool init_gm_travel_globals() {
@@ -665,8 +472,16 @@ inline bool init_gm_travel_globals() {
   const auto data = real ? real->mount_data(error) : std::nullopt;
   if (!data)
     return false;
-  for (const content::MountRow &r : data->mounts)
-    assign_mount_row(r);
+  for (const content::MountRow &r : data->mounts) {
+    if (r.item_name == "Mount_Grounded_TerrorBird_0")
+      g_mount_record = r.item;
+    if (r.item_name == "Mount_Grounded_Horse_0")
+      g_other_mount_record = r.item;
+    if (r.kind == "aquatic" && !g_aquatic_record)
+      g_aquatic_record = r.item;
+    if (r.kind == "flying" && !g_flying_record)
+      g_flying_record = r.item;
+  }
   g_nodes = world::CityNodes::load(real_db_path(), error);
   return g_nodes != nullptr;
 }

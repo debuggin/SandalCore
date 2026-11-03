@@ -12,6 +12,68 @@ namespace gen = aoc::protocol::schema::gen;
 using capture_blocks::Bits;
 using capture_blocks::Block;
 
+namespace {
+
+bool same_prefix(const BunchWriter& w, const Bits& b, size_t n) {
+    if (w.bit_pos() < n || b.bits < n) return false;
+    const auto want = capture_blocks::bytes_of(b.hex);
+    size_t diff = 0;
+    if (!capture_blocks::same_bit_range(w.data(), want.data(), n, &diff)) {
+        std::printf("    first differing bit %zu (%s)\n", diff, b.name);
+        return false;
+    }
+    return true;
+}
+
+bool same_as(const BunchWriter& w, const Bits& b) {
+    if (w.bit_pos() != b.bits) {
+        std::printf("    wrote %zu bits, expected %zu (%s)\n", w.bit_pos(), b.bits, b.name);
+        return false;
+    }
+    return same_prefix(w, b, b.bits);
+}
+
+bool emitted_as(const std::optional<Emission>& e, std::initializer_list<const Bits*> exports, const Bits& content) {
+    if (!e || e->exports.size() != exports.size()) {
+        std::printf("    %zu export bunches, expected %zu\n", e ? e->exports.size() : 0, exports.size());
+        return false;
+    }
+    size_t i = 0;
+    for (const Bits* x : exports) if (!same_as(e->exports[i++], *x)) return false;
+    return same_as(e->payload, content);
+}
+
+bool block_is(const ObjectState& o, const Block& b) {
+    const schema::ClassSchema& s = schema_named(b.class_name);
+    const auto bytes = capture_blocks::bytes_of(b.hex);
+    size_t pos = 0;
+    const auto st = read_rep_block(s, bytes.data(), b.bits, pos);
+    return st && pos == b.rep_bits && *st == o.state;
+}
+
+CodecOptions stat_options() {
+    CodecOptions o;
+    o.stat_int32_extended = [](int64_t record) {
+        const uint32_t hi = static_cast<uint32_t>(static_cast<uint64_t>(record) >> 32);
+        return hi == 0x5429e8c0u || hi == 0x5429e8c4u;
+    };
+    return o;
+}
+
+bool load_fast_arrays(const Block& b, size_t from, ObjectState& o) {
+    const auto bytes = capture_blocks::bytes_of(b.hex);
+    size_t pos = from;
+    const auto fields = read_fast_array_fields(*o.schema, bytes.data(), b.bits, pos, o.opts);
+    if (!fields) return false;
+    for (const FastArrayField& f : *fields) {
+        FastArrayState* st = o.arrays.get(*o.schema, f.field);
+        if (!st || !apply_fast_array_delta(*st, f.delta)) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
 static void test_pc_open() {
     std::printf("PlayerController open (ch 3 pkt#22 chSeq 954/955)\n");
     Actor pc = make_pc();
@@ -345,7 +407,7 @@ int main() {
     test_pawn_update();
     test_exports();
     test_rpcs();
-    run_repl_actor_open_part2();
+    run_repl_actor_open_shadow();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

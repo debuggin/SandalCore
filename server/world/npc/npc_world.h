@@ -376,4 +376,15 @@ private:
     Stats                         stats_;
 };
 
+struct RepWriteArgs {
+    double x = 0, y = 0, z = 0, yaw = 0;
+    nav::Vec3 vel{};
+    bool moving = false;
+    double stamp = 0;
+    int again = 0;
+};
+uint16_t angle16(double degrees);
+uint16_t angle8(double degrees);
+void write_replicated(world::WorldActor& a, const RepWriteArgs& w);
+
 }  // namespace aoc::worldd::npc

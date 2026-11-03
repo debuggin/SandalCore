@@ -11,34 +11,7 @@ namespace aoc::worldd::items {
 
 namespace {
 
-constexpr int32_t kMaxQuantity = 1000000;
-constexpr int64_t kMaxMs = 9'000'000'000'000ll;
-constexpr int64_t kMaxLockExpiration = 253402300799ll;
-
-bool valid_container(svc::ItemContainer c) { return static_cast<uint8_t>(c) <= static_cast<uint8_t>(svc::ItemContainer::Resource2); }
-
 bool is_craft_source(svc::ItemContainer c) { return is_resource(c) || c == svc::ItemContainer::Backpack; }
-
-std::string item_problem(const svc::InventoryItem& it) {
-    if (!valid_container(it.container)) return "its storage is none of the Backpack, the Equipment, the Quest storage and the three resource containers";
-    if (it.slot < 0 || it.slot >= slot_count(it.container)) {
-        return "slot " + std::to_string(it.slot) + " is outside the " + container_name(it.container) + " (0 to " +
-               std::to_string(slot_count(it.container) - 1) + ")";
-    }
-    if (it.item_record_id <= 0) return "record " + std::to_string(it.item_record_id) + " is none";
-    if (const auto g = guid_of(it.instance_guid); !g || guid_hex(*g) != it.instance_guid) {
-        return "instance guid '" + it.instance_guid + "' is not 32 lowercase hex digits (or is the zero guid)";
-    }
-    if (it.quantity < 1 || it.quantity > kMaxQuantity) return "quantity " + std::to_string(it.quantity) + " is not 1 to " + std::to_string(kMaxQuantity);
-    if (it.quality < kMinQuality || it.quality > kMaxQuality) return "quality " + std::to_string(it.quality) + " is not " + std::to_string(kMinQuality) + " to " + std::to_string(kMaxQuality);
-    if (!std::isfinite(it.durability) || it.durability < 0) return "durability is not a number from 0";
-    if (it.created_at_ms < 0 || it.created_at_ms > kMaxMs) return "creation time " + std::to_string(it.created_at_ms) + " ms is out of range";
-    for (const std::optional<float>* p : {&it.persisted_health, &it.persisted_mana}) {
-        if (*p && (!std::isfinite(**p) || **p < 0 || **p > 1e9f)) return "a persisted Health or Mana is not a number from 0 to 1e9";
-    }
-    if (it.lock_expiration < 0 || it.lock_expiration > kMaxLockExpiration) return "lock expiration " + std::to_string(it.lock_expiration) + " is out of range";
-    return {};
-}
 
 Event make_storage_event(repl::StorageEventType type, svc::ItemContainer c, int slot, const svc::InventoryItem& item, bool instigated = true) {
     Event e;

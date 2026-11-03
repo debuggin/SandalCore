@@ -11,6 +11,111 @@ using wire::PacketReader;
 namespace gen = aoc::protocol::schema::gen;
 namespace cap = capture_items;
 
+namespace {
+
+std::map<std::string, size_t> g_counts;
+size_t g_items[3] = {};
+size_t g_empty[3] = {};
+
+std::optional<ItemInstance> read_item_bits(const Bits& bits, size_t* consumed = nullptr) {
+    return with_exact(bits, [&](const uint8_t* d, size_t bytes, size_t n) {
+        PacketReader r(d, bytes, n);
+        auto it = read_item_instance(r);
+        if (consumed) *consumed = r.pos();
+        return it;
+    });
+}
+
+Bits write_item_bits(const ItemInstance& it, bool* ok = nullptr) {
+    BunchWriter w;
+    const bool wrote = write_item_instance(w, it);
+    if (ok) *ok = wrote;
+    return Bits(w);
+}
+
+std::string num(uint64_t v) { return std::to_string(v); }
+std::string snum(int64_t v) { return std::to_string(v); }
+
+std::string hexn(uint64_t v, int digits) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%0*llx", digits, static_cast<unsigned long long>(v));
+    return buf;
+}
+
+std::string guid_text(const GuidValue& g) { return hexn(g.a, 8) + hexn(g.b, 8) + hexn(g.c, 8) + hexn(g.d, 8); }
+
+std::string join(const std::vector<std::string>& v, const char* sep) {
+    std::string out;
+    for (size_t i = 0; i < v.size(); ++i) out += (i ? sep : "") + v[i];
+    return out;
+}
+
+std::string utf8_hex(const std::string& s) {
+    std::string out;
+    for (unsigned char c : s) out += hexn(c, 2);
+    return out;
+}
+
+template <class T> uint64_t bits_of(T v) { return std::bit_cast<std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>>(v); }
+
+std::string dump_item(const ItemInstance& it) {
+    if (!it.has_item) return "empty";
+    std::vector<std::string> gems, stats, cds, custom;
+    for (const SocketedGem& g : it.gems)
+        gems.push_back(num(g.socket_index) + ":" + num(g.item_record_id) + ":" + num(g.socket_record_id) + ":" + num(g.quality) + ":" + (g.flag ? "1" : "0"));
+    for (const PersistedStat& s : it.stats) stats.push_back(num(s.stat_id) + ":" + hexn(bits_of(s.value), 8));
+    for (const PersistedCooldown& c : it.cooldowns)
+        cds.push_back(num(c.record_guid) + ":" + hexn(bits_of(c.date_time_start), 16) + ":" + num(c.saved_charges));
+    for (const PersistedCustomData& d : it.custom_data) custom.push_back(num(d.type) + ":" + utf8_hex(d.text));
+    return "rec=" + num(it.record_id) + " qty=" + num(it.quantity) + " qual=" + num(it.quality) + " ench=" + num(it.enchantment_level) +
+           " temp=" + num(it.tempering_value) + " gems=[" + join(gems, ",") + "] dur=" + hexn(bits_of(it.durability), 8) +
+           " stolen=" + (it.stolen ? "1" : "0") + " guid=" + guid_text(it.guid) + " ct=" + snum(it.creation_time) +
+           " crate=" + guid_text(it.crate_guid) + " node=" + num(it.node_guid_purchased_from) + " lock=" + snum(it.lock_expiration) +
+           " stats=[" + join(stats, ",") + "] cd=[" + join(cds, ",") + "] custom=[" + join(custom, ",") + "] ts=" +
+           hexn(bits_of(it.synchronized_timestamp), 16);
+}
+
+std::string short_item(const ItemInstance& it) { return it.has_item ? num(it.record_id) + "@" + guid_text(it.guid) : "empty"; }
+std::string obj_text(const FIntrepidNetworkGUID& o) { return num(o.ObjectId) + "." + num(o.ServerId) + "." + num(o.Randomizer); }
+
+std::string dump_container(const StorageEventContainer& c) {
+    std::vector<std::string> slots;
+    for (const StorageEventSlot& s : c.slots) slots.push_back(snum(s.slot) + ":" + snum(s.count) + ":" + guid_text(s.item_guid));
+    return obj_text(c.object) + "/" + join(slots, ",") + "/st=" + num(c.status);
+}
+
+std::string dump_event(const ItemStorageEvent& e) {
+    std::vector<std::string> targets;
+    for (const StorageEventContainer& c : e.targets) targets.push_back(dump_container(c));
+    return "type=" + num(e.type) + " src=" + dump_container(e.move_source) + " item=" + short_item(e.item) +
+           " instig=" + guid_text(e.instigator) + " xa=" + (e.extra_guid_a ? guid_text(*e.extra_guid_a) : "-") +
+           " xi=" + (e.extra_i64 ? num(*e.extra_i64) : "-") + " xb=" + (e.extra_guid_b ? guid_text(*e.extra_guid_b) : "-") +
+           " targets=[" + join(targets, ";") + "]";
+}
+
+std::string dump_payload(const StoragePayload& p) {
+    std::vector<std::string> filled, matrix;
+    for (size_t i = 0; i < p.storage.size(); ++i) {
+        if (p.storage[i].item.has_item) filled.push_back(num(i) + ":" + snum(p.storage[i].slot) + ":" + short_item(p.storage[i].item));
+    }
+    for (const auto& col : p.override_matrix) {
+        std::vector<std::string> cells;
+        for (int32_t c : col) cells.push_back(snum(c));
+        matrix.push_back(join(cells, ","));
+    }
+    return "target=" + (p.target.ObjectId ? obj_text(p.target) : std::string("-")) + " name=" + p.container_name +
+           " weight=" + hexn(bits_of(p.maximum_weight), 8) + " max=" + snum(p.maximum_items) +
+           " fountain=" + (p.loot_fountain_on_death ? "1" : "0") + " drop=" + hexn(bits_of(p.item_drop_on_destruction_percent), 8) +
+           " dropmax=" + hexn(bits_of(p.maximum_items_to_drop_percent), 8) + " imin=" + hexn(bits_of(p.minimum_impulse.x), 16) + "," +
+           hexn(bits_of(p.minimum_impulse.y), 16) + "," + hexn(bits_of(p.minimum_impulse.z), 16) + " imax=" + hexn(bits_of(p.maximum_impulse.x), 16) +
+           "," + hexn(bits_of(p.maximum_impulse.y), 16) + "," + hexn(bits_of(p.maximum_impulse.z), 16) +
+           " angular=" + (p.randomize_angular ? "1" : "0") + " slots=" + num(p.storage.size()) + " filled=" + num(filled_slots(p)) +
+           " retrieve=" + (p.client_retrieve_only ? "1" : "0") + " dim=" + hexn(bits_of(p.dimension.x), 16) + "," +
+           hexn(bits_of(p.dimension.y), 16) + " matrix=" + join(matrix, ";") + " [" + join(filled, ",") + "]";
+}
+
+}  // namespace
+
 struct Read {
     bool                            ok = false;
     std::string                     why;
@@ -393,7 +498,7 @@ int main() {
     test_instances();
     test_synthetic();
     test_layout_and_refusals();
-    run_repl_items_part2();
+    run_repl_items_storage();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

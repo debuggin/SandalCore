@@ -772,9 +772,7 @@ int main() {
                 real_db_path().c_str());
     return 0;
   }
-  test_catalog();
-  test_cast_timeline();
-  test_mana_costs();
+  run_ability_pipeline_costs_tests();
   test_resonance_and_fortissimo();
   test_glee();
   test_stat_forms();

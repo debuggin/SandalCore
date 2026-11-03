@@ -13,6 +13,454 @@ using std::chrono::seconds;
 using tsupport::Bits;
 using tsupport::bits_of_hex;
 
+static void
+check_template_golden_blocks(World &w, aoc::worldd::spawns::GenericNpcs &on,
+                             const aoc::worldd::spawns::OpenTemplate *cap) {
+  const aoc::worldd::content::NpcAssetRow *spider = w.asset("Hunting_Spider");
+  const aoc::worldd::content::NpcAssetRow *tide =
+      w.asset("Hunting_Tidensapper");
+  const aoc::worldd::content::NpcAssetRow *raven = w.asset("Hunting_Raven");
+  const char *names[] = {"Hunting_Spider", "Hunting_Tidesnapper"};
+  const aoc::worldd::content::NpcAssetRow *assets[] = {spider, tide};
+  for (int i = 0; i < 2; ++i) {
+    const aoc::worldd::spawns::OpenTemplate *t = on.template_for(*assets[i]);
+    const aoc::protocol::repl::ObjectState *block =
+        t && t->blocks.size() == 8 ? interactable(*t) : nullptr;
+    const capture_hunting::Living *golden = nullptr;
+    for (const capture_hunting::Living &l : capture_hunting::kLiving) {
+      if (std::string(l.kind) == names[i]) {
+        golden = &l;
+      }
+    }
+    CHECK(block && golden &&
+              golden->component_def ==
+                  static_cast<uint64_t>(assets[i]->interact_component) &&
+              golden->interaction_def ==
+                  static_cast<uint64_t>(assets[i]->interaction_def) &&
+              rep_block_of(*block) ==
+                  tsupport::bits_of_hex(golden->block.hex, golden->block.bits),
+          (std::string("the ") + names[i] +
+           "'s eighth block, made from the Raven's, is the capture's, to the "
+           "bit (276 bits)")
+              .c_str());
+  }
+  aoc::worldd::spawns::InstanceParams p;
+  p.x = 100;
+  p.y = 200;
+  p.z = 300;
+  p.level = 7;
+  p.server_id = kServerId;
+  std::string why;
+  auto cap_made = cap ? aoc::worldd::spawns::instantiate(
+                            *cap, [&] { return w.mint(); }, p, why)
+                      : std::nullopt;
+  CHECK(cap_made && cap_made->npc.interact_def == raven->interaction_def &&
+            cap_made->npc.interact_component != 0,
+        "the captured Raven's instance reads its interaction def from its "
+        "block too");
+}
+
+static void
+test_template_instances(World &w, aoc::worldd::spawns::GenericNpcs &on,
+                        const aoc::worldd::spawns::OpenTemplate *hunting_wolf,
+                        const aoc::worldd::spawns::OpenTemplate *plain_wolf) {
+  const aoc::worldd::content::NpcAssetRow *wolf = w.asset("Hunting_Wolf");
+  const aoc::worldd::content::NpcAssetRow *raven = w.asset("Hunting_Raven");
+  const aoc::worldd::spawns::TemplateSource source{&*w.captured, &on};
+  bool is_generic = true;
+  const aoc::worldd::spawns::OpenTemplate *cap =
+      source.find(*raven, &is_generic);
+  check_template_golden_blocks(w, on, cap);
+  CHECK(cap && !is_generic && cap->blocks.size() == 8 &&
+            cap == w.captured->template_for(kRavenPath),
+        "the Raven's template is the captured open (eight blocks) when a "
+        "capture opened it");
+  aoc::worldd::spawns::InstanceParams p;
+  p.x = 100;
+  p.y = 200;
+  p.z = 300;
+  p.level = 7;
+  p.server_id = kServerId;
+  std::string why;
+  auto made = hunting_wolf
+                  ? aoc::worldd::spawns::instantiate(
+                        *hunting_wolf, [&] { return w.mint(); }, p, why)
+                  : std::nullopt;
+  CHECK(made && made->npc.interact_component != 0 &&
+            made->npc.interact_def == wolf->interaction_def &&
+            made->actor.subobjects.size() == 7,
+        "an instance has the component's id in NpcInfo and the asset's "
+        "interaction def");
+  if (made) {
+    const uint64_t id = made->id;
+    const uint64_t comp = made->npc.interact_component;
+    CHECK(w.registry().add(std::move(*made)), "it joins the registry");
+    const aoc::worldd::world::WorldActor *found =
+        w.registry().find_by_component(comp);
+    CHECK(found && found->id == id, "and find_by_component finds it");
+  }
+  auto plain_made = plain_wolf
+                        ? aoc::worldd::spawns::instantiate(
+                              *plain_wolf, [&] { return w.mint(); }, p, why)
+                        : std::nullopt;
+  CHECK(plain_made && plain_made->npc.interact_def == 0 &&
+            plain_made->npc.interact_component == 0,
+        "a plain creature has neither");
+}
+
+static void check_same_archetype_exports(
+    const aoc::worldd::spawns::OpenTemplate *hunting_wolf,
+    const aoc::worldd::spawns::OpenTemplate *test_tpl) {
+  if (!hunting_wolf || !test_tpl) {
+    return;
+  }
+  bool same_export =
+      hunting_wolf->archetype.size() == test_tpl->archetype.size();
+  for (size_t i = 0; same_export && i < hunting_wolf->archetype.size(); ++i) {
+    same_export = hunting_wolf->archetype[i].guid.ObjectId ==
+                  test_tpl->archetype[i].guid.ObjectId;
+  }
+  CHECK(same_export,
+        "and both name the Blueprint's export by the same NetGUIDs");
+}
+
+static void check_hunting_wolf_interactable(
+    const aoc::worldd::spawns::OpenTemplate *hunting_wolf,
+    const aoc::worldd::spawns::OpenTemplate *test_tpl,
+    const aoc::worldd::content::NpcAssetRow &wolf) {
+  check_same_archetype_exports(hunting_wolf, test_tpl);
+  const aoc::protocol::repl::ObjectState *o =
+      hunting_wolf ? interactable(*hunting_wolf) : nullptr;
+  CHECK(o != nullptr, "the Hunting_Wolf's interactable reads");
+  if (!o) {
+    return;
+  }
+  const auto comp = int_of(o->state.get(*o->schema, "ComponentDefId.Guid"));
+  const aoc::protocol::repl::ElementState *input =
+      element(*o, "InteractionInputData", 0);
+  const auto def = input && input->values.count(6)
+                       ? int_of(&input->values.at(6))
+                       : std::nullopt;
+  CHECK(comp && *comp == wolf.interact_component && def &&
+            *def == wolf.interaction_def,
+        "it holds the asset's ComponentDefId (ICD_Hunting_Wolf) and "
+        "PlayerInteractDefinition (Hunting_Wolf)");
+  bool ones = true;
+  for (size_t i = 0; i < 4; ++i) {
+    const aoc::protocol::repl::ElementState *s =
+        element(*o, "CurrentInputStates", i);
+    const auto cur =
+        s && s->values.count(1) ? int_of(&s->values.at(1)) : std::nullopt;
+    ones = ones && cur && *cur == 1;
+  }
+  CHECK(ones, "and four interaction states of 1, as a living huntable's");
+}
+
+static void
+check_wolf_templates(World &w, aoc::worldd::spawns::GenericNpcs &on,
+                     const aoc::worldd::content::NpcAssetRow &wolf,
+                     const aoc::worldd::content::NpcAssetRow &test_wolf,
+                     const aoc::worldd::content::NpcAssetRow &plain) {
+  aoc::worldd::spawns::GenericNpcs off(*w.captured, &w.motion, w.config(false));
+  const aoc::worldd::spawns::OpenTemplate *old_wolf = off.template_for(wolf);
+  CHECK(old_wolf && old_wolf->blocks.size() == 7 &&
+            old_wolf->find("UInteractableComponent") < 0,
+        "without the hunting defs a Hunting_Wolf has the seven blocks of a "
+        "plain creature (as before)");
+  aoc::worldd::spawns::Verdict v = aoc::worldd::spawns::Verdict::NoPath;
+  const aoc::worldd::spawns::OpenTemplate *hunting_wolf =
+      on.template_for(wolf, &v);
+  CHECK(hunting_wolf && v == aoc::worldd::spawns::Verdict::Generic &&
+            hunting_wolf->blocks.size() == 8 &&
+            hunting_wolf->blocks.back().cls == "UInteractableComponent" &&
+            hunting_wolf->blocks.back().kind == 2 &&
+            !hunting_wolf->blocks.back().class_chain.empty(),
+        "a Hunting_Wolf has eight blocks, the eighth a dynamic "
+        "UInteractableComponent with its class export");
+  const aoc::worldd::spawns::OpenTemplate *plain_wolf = on.template_for(plain);
+  CHECK(plain_wolf && plain_wolf->blocks.size() == 7 &&
+            on.template_for(plain) == plain_wolf,
+        "a plain Wolf has its seven blocks, and the template is the same "
+        "object when asked again");
+  const aoc::worldd::spawns::OpenTemplate *test_tpl =
+      on.template_for(test_wolf);
+  CHECK(test_tpl && test_tpl != hunting_wolf && test_tpl->blocks.size() == 7 &&
+            on.template_for(wolf) == hunting_wolf &&
+            on.template_for(test_wolf) == test_tpl,
+        "HuntingTest (its def is no hunting one) stays a plain creature beside "
+        "the Hunting_Wolf, whatever order they "
+        "are asked in");
+  check_hunting_wolf_interactable(hunting_wolf, test_tpl, wolf);
+  test_template_instances(w, on, hunting_wolf, plain_wolf);
+}
+
+static void test_template(World &w) {
+  std::printf("the huntable creature's template\n");
+  const aoc::worldd::content::NpcAssetRow *wolf = w.asset("Hunting_Wolf");
+  const aoc::worldd::content::NpcAssetRow *test_wolf = w.asset("HuntingTest");
+  const aoc::worldd::content::NpcAssetRow *plain = w.asset("Pop_Wolf");
+  const aoc::worldd::content::NpcAssetRow *spider = w.asset("Hunting_Spider");
+  const aoc::worldd::content::NpcAssetRow *tide =
+      w.asset("Hunting_Tidensapper");
+  const aoc::worldd::content::NpcAssetRow *raven = w.asset("Hunting_Raven");
+  CHECK(wolf && test_wolf && plain && spider && tide && raven,
+        "the assets are in the data");
+  if (!(wolf && test_wolf && plain && spider && tide && raven)) {
+    return;
+  }
+  CHECK(wolf->archetype_path == test_wolf->archetype_path &&
+            wolf->interaction_def != test_wolf->interaction_def,
+        "(Hunting_Wolf and HuntingTest share one Blueprint and differ in their "
+        "interaction)");
+  // C:Y:B - CoA
+  aoc::worldd::spawns::GenericNpcs on(*w.captured, &w.motion, w.config(true));
+  CHECK(w.hunting_defs.size() == 53, "53 hunting interaction defs are known");
+  check_wolf_templates(w, on, *wolf, *test_wolf, *plain);
+}
+
+static bool has_living_alignments(const aoc::protocol::repl::Actor &actor,
+                                  uint64_t want_align) {
+  constexpr uint64_t kSelf = 6064630243140894720ull;
+  const aoc::protocol::repl::Subobject *al =
+      find_sub(actor, "UAlignmentComponent");
+  const aoc::protocol::repl::Value *av =
+      al ? al->obj.state.get(*al->obj.schema, "Alignments") : nullptr;
+  const auto *cont =
+      av ? av->get_if<aoc::protocol::repl::AlignmentContainer>() : nullptr;
+  if (!cont || cont->instances.size() != 2) {
+    return false;
+  }
+  bool one_friendly = true;
+  bool own = false;
+  for (const auto &inst : cont->instances) {
+    if (inst.key == kSelf) {
+      own = true;
+    } else {
+      one_friendly = one_friendly && inst.key == want_align;
+    }
+  }
+  return one_friendly && own;
+}
+
+static void check_living_creature_open(World &w,
+                                       aoc::worldd::spawns::GenericNpcs &on,
+                                       const capture_hunting::Living &l) {
+  const aoc::worldd::content::NpcAssetRow *asset = nullptr;
+  for (const auto &[guid, row] : w.pop.assets) {
+    if (static_cast<uint64_t>(row.interaction_def) == l.interaction_def &&
+        !asset) {
+      asset = &row;
+    }
+  }
+  const aoc::worldd::spawns::OpenTemplate *tpl =
+      asset ? on.template_for(*asset) : nullptr;
+  aoc::worldd::spawns::InstanceParams p;
+  p.server_id = kServerId;
+  p.level = 12;
+  std::string why;
+  auto made = tpl ? aoc::worldd::spawns::instantiate(
+                        *tpl, [&] { return w.mint(); }, p, why)
+                  : std::nullopt;
+  const std::string label = std::string("the ") + l.kind;
+  CHECK(made.has_value(), (label + " is made from a generic template").c_str());
+  if (!made) {
+    return;
+  }
+  CHECK(
+      name_of(made->actor) == l.name,
+      (label +
+       "'s UNPCInfo.CharacterName is the capture's (the nameplate's name: \"" +
+       l.name + "\")")
+          .c_str());
+  CHECK(has_living_alignments(made->actor, l.alignment),
+        (label + "'s alignments are the capture's: the one Friendly Blueprint "
+                 "alignment and its own record (a "
+                 "hostile Raven of the same instance lists two others)")
+            .c_str());
+  const aoc::protocol::repl::Subobject *combat =
+      find_sub(made->actor, "UNPCCombatInfo");
+  CHECK(combat && rep_block_of(combat->obj) ==
+                      tsupport::bits_of_hex(l.combat.hex, l.combat.bits),
+        (label + "'s CombatInfo is the capture's to the bit (bIsDead, "
+                 "bInvulnerable, bNotTargetable written: 36 bits)")
+            .c_str());
+  const aoc::protocol::repl::Subobject *ability =
+      find_sub(made->actor, "UAoCAbilityComponent");
+  CHECK(ability && l.ability.bits == 0 &&
+            rep_block_of(ability->obj).size() == 0,
+        (label +
+         "'s AbilityComponent is the capture's: nothing (it fights nothing)")
+            .c_str());
+}
+
+static void test_living_open(World &w) {
+  std::printf("a living huntable's open against the captures: what makes the "
+              "client draw it friendly\n");
+  aoc::worldd::spawns::GenericNpcs on(*w.captured, &w.motion, w.config(true));
+  for (const capture_hunting::Living &l : capture_hunting::kLiving) {
+    check_living_creature_open(w, on, l);
+  }
+  const std::pair<const char *, const char *> known[] = {
+      {"Hunting_Raven", "Raven"},
+      {"Hunting_Spider", "Spider"},
+      {"Hunting_Tidesnapper", "Tidesnapper"},
+      {"Hunting_Bear", "Bear"},
+      {"Hunting_PallasCat", "Pallas Cat"},
+      {"Hunting_Rabid", "Grem"}};
+  for (const auto &[kind, want] : known) {
+    std::string got;
+    for (const auto &[def, k] : w.g->hunting()) {
+      if (k.name == kind) {
+        got = w.hunting_names.count(def) ? w.hunting_names.at(def)
+                                         : std::string("(none)");
+      }
+    }
+    CHECK(got == want, (std::string(kind) + " is named \"" + want +
+                        "\" (got \"" + got + "\")")
+                           .c_str());
+  }
+  CHECK(w.hunting_names.size() == w.hunting_defs.size(),
+        "every hunting def has a nameplate name");
+}
+// (C-Y-B ~ CoA)
+
+static void test_stands(World &w) {
+  std::printf("a huntable creature stands: no wander, no patrol\n");
+  const aoc::worldd::content::NpcAssetRow *wolf = w.asset("Hunting_Wolf");
+  const aoc::worldd::content::NpcAssetRow *plain = w.asset("Pop_Wolf");
+  if (!wolf || !plain) {
+    CHECK(false, "the assets are in the data");
+    return;
+  }
+  aoc::worldd::spawns::GenericNpcs on(*w.captured, &w.motion, w.config(true));
+  aoc::worldd::spawns::InstanceParams p;
+  p.server_id = kServerId;
+  std::string why;
+  const aoc::worldd::spawns::OpenTemplate *hw = on.template_for(*wolf);
+  const aoc::worldd::spawns::OpenTemplate *pw = on.template_for(*plain);
+  auto hunt = hw ? aoc::worldd::spawns::instantiate(
+                       *hw, [&] { return w.mint(); }, p, why)
+                 : std::nullopt;
+  auto pl = pw ? aoc::worldd::spawns::instantiate(
+                     *pw, [&] { return w.mint(); }, p, why)
+               : std::nullopt;
+  if (!hunt || !pl) {
+    CHECK(false, "both creatures are made");
+    return;
+  }
+  aoc::worldd::content::NpcInstanceRow inst;
+  inst.ambient_behavior = "Default";
+  aoc::worldd::npc::SpeedModel standing;
+  standing.standing_defs = &w.hunting_defs;
+  CHECK(aoc::worldd::npc::make_setup(*hunt, w.motion, &inst, nullptr,
+                                     aoc::worldd::npc::SpeedModel{})
+                .ambient == aoc::worldd::npc::Ambient::Wander,
+        "(without the rule an instance of Default wanders)");
+  CHECK(aoc::worldd::npc::make_setup(*hunt, w.motion, &inst, nullptr, standing)
+                .ambient == aoc::worldd::npc::Ambient::Stationary,
+        "a huntable creature of that instance stands");
+  inst.ambient_behavior = "Patrol";
+  CHECK(aoc::worldd::npc::make_setup(*hunt, w.motion, &inst, nullptr, standing)
+                .ambient == aoc::worldd::npc::Ambient::Stationary,
+        "and a huntable of a Patrol instance stands too");
+  inst.ambient_behavior = "Default";
+  CHECK(aoc::worldd::npc::make_setup(*pl, w.motion, &inst, nullptr, standing)
+                .ambient == aoc::worldd::npc::Ambient::Wander,
+        "a plain Wolf of the same instance still wanders");
+}
+
+static void
+check_data_nothing_and_one_of(World &w, size_t nothing,
+                              const std::set<std::string> &nothing_names) {
+  char msg[200];
+  std::snprintf(msg, sizeof msg,
+                "%zu kinds give nothing: the RETIRED_ and NOTUSED_ items (Ebon "
+                "Omen, Kirin, Midnight Mare, Obsidian Stallion, "
+                "Plumed Haleberder, Runic Steed, Terrapin), an empty table "
+                "(Shell), a weight of 0 (Wyrmling), predicates on "
+                "the creature's wounds (the CanTame prototype)",
+                nothing);
+  CHECK(nothing == 10 && nothing_names.count("Hunting_ShellOfTheAncients") &&
+            nothing_names.count("Hunting_Kirin") &&
+            nothing_names.count("Hunting_MidnightMare") &&
+            nothing_names.count("Hunting_Wyrmling") &&
+            nothing_names.count("Hunting_Grem_Prototype_CanTame"),
+        msg);
+  std::snprintf(msg, sizeof msg,
+                "the data's NumberOfSubtablesToSelect of 2 is read as 1 for "
+                "the %zu roots with two subtables (a carcass or a "
+                "trainable)",
+                w.g->hunting_one_of());
+  CHECK(w.g->hunting_one_of() >= 10 && w.g->hunting_one_of() <= 30, msg);
+}
+
+static void check_data_novice_and_riverlands(
+    const std::map<int64_t, aoc::worldd::gather::Gathering::HuntKind> &kinds) {
+  for (const char *name : {"Hunting_Wolf", "Hunting_Raven", "Hunting_Spider",
+                           "Hunting_Rabid", "Hunting_Bear", "Hunting_Horse"}) {
+    bool found = false;
+    for (const auto &[def, k] : kinds) {
+      found = found ||
+              (k.name == name && !k.gives_nothing && k.row->cert_tier == 0);
+    }
+    CHECK(found,
+          (std::string(name) + " is a Novice kind that gives items").c_str());
+  }
+  const char *riverlands[] = {
+      "Hunting_Wolf",           "Hunting_Bear",        "Hunting_Rabid",
+      "Hunting_SilkwormLarvae", "Hunting_Otter",       "Hunting_Horse",
+      "Hunting_Raven",          "Hunting_Spider",      "Hunting_Bullywog",
+      "Hunting_PallasCat",      "Hunting_Gryphon",     "Hunting_Deer",
+      "Hunting_Bork",           "Hunting_Tidesnapper", "Hunting_Skinwalker",
+      "Hunting_Swiftclaw",      "Hunting_TerrorBird"};
+  size_t present = 0;
+  for (const char *name : riverlands) {
+    for (const auto &[def, k] : kinds) {
+      present += k.name == name && !k.gives_nothing ? 1 : 0;
+    }
+  }
+  CHECK(present == 17 || present == 16,
+        "the Riverlands' kinds (17 spawn today) are all there and give items");
+}
+
+static void test_data(World &w) {
+  std::printf("the data: the 53 hunting interactions\n");
+  const auto &kinds = w.g->hunting();
+  CHECK(kinds.size() == 53, "53 hunting kinds");
+  size_t tier[5] = {0, 0, 0, 0, 0};
+  size_t bow = 0, fifteen = 0, reach = 0, loaded = 0, nothing = 0;
+  std::set<std::string> nothing_names;
+  for (const auto &[def, k] : kinds) {
+    const aoc::worldd::content::GatherDefRow &row = *k.row;
+    if (row.cert_tier >= 0 && row.cert_tier <= 4) {
+      ++tier[row.cert_tier];
+    }
+    bow += row.tool_slot == 38 && row.profession_guid ==
+                                      aoc::worldd::content::kProfessionHunting
+               ? 1
+               : 0;
+    fifteen += row.base_duration == 15.0 ? 1 : 0;
+    reach += row.interact_radius == 200.0 && row.interact_tolerance == 30.0 &&
+                     aoc::worldd::gather::reach_cm(row) == 330.0
+                 ? 1
+                 : 0;
+    loaded += w.g->interaction(row.guid) == &row ? 1 : 0;
+    if (k.gives_nothing) {
+      ++nothing;
+      nothing_names.insert(k.name);
+    }
+  }
+  CHECK(tier[0] == 13 && tier[1] == 22 && tier[2] == 18,
+        "Novice 13, Apprentice 22, Journeyman 18");
+  CHECK(bow == 53 && fifteen == 53,
+        "all use the Bow (slot 38) of the Hunting profession, 15 s base");
+  CHECK(reach == 53, "radius 200 cm and tolerance 30 cm: a start reaches 330 "
+                     "cm (with the leeway)");
+  CHECK(loaded == 53, "each is a gather interaction Gathering holds");
+  check_data_nothing_and_one_of(w, nothing, nothing_names);
+  check_data_novice_and_riverlands(kinds);
+}
+
 static int64_t find_timid_asset_set(const World &w, int64_t timid_guid) {
   int64_t timid_set = 0;
   for (const auto &[set, members] : w.pop.asset_sets) {
@@ -254,494 +702,6 @@ static void test_timid_grem(World &w) {
   }
 }
 
-// == C-O-A | Cyb ==
-
-static bool is_retired_harvest(World &w,
-                               const std::optional<gather::Harvest> &h) {
-  if (!h) {
-    return false;
-  }
-  bool retired_only = true;
-  for (const combat::RolledItem &it : h->items) {
-    std::string err;
-    const auto rec = w.db->item(it.item, err);
-    retired_only = retired_only && rec &&
-                   (rec->name.rfind("RETIRED_", 0) == 0 ||
-                    rec->name.rfind("NOTUSED_", 0) == 0);
-  }
-  return retired_only;
-}
-
-static const gather::Gathering::HuntKind *find_hunt_kind(World &w,
-                                                         const char *name) {
-  for (const auto &[def, k] : w.g->hunting()) {
-    if (k.name == name) {
-      return &k;
-    }
-  }
-  return nullptr;
-}
-
-static const ch::FrameEvent *find_frame_event(int capture) {
-  for (const ch::FrameEvent &e : ch::kFrameEvents) {
-    if (e.capture == capture) {
-      return &e;
-    }
-  }
-  return nullptr;
-}
-
-static bool roll_matches_capture(World &w,
-                                 const gather::Gathering::HuntKind &kind,
-                                 const ch::FrameEvent &ev,
-                                 stats::CharacterStats::Evaluation &run) {
-  std::string why;
-  stats::SplitMix rng;
-  rng.state = 99;
-  bool found = false;
-  for (int i = 0; i < 400 && !found; ++i) {
-    const auto h =
-        w.g->harvest(*kind.row, run, 25, world::NodeSite{}, nullptr, rng, why);
-    for (const combat::RolledItem &it :
-         h ? h->items : std::vector<combat::RolledItem>{}) {
-      found = found || (static_cast<uint64_t>(it.item) == ev.event.record &&
-                        it.quantity == static_cast<int64_t>(ev.event.quantity));
-    }
-  }
-  return found;
-}
-
-static void test_rolls_captures(World &w,
-                                stats::CharacterStats::Evaluation &run) {
-  struct Cap {
-    int capture;
-    const char *kind;
-  };
-  const Cap caps[] = {{1456, "Hunting_Bear"},
-                      {1457, "Hunting_Raven"},
-                      {1458, "Hunting_Wolf"},
-                      {1178, "Hunting_Ram"},
-                      {1179, "Hunting_Hawk"}};
-  for (const Cap &c : caps) {
-    const gather::Gathering::HuntKind *kind = find_hunt_kind(w, c.kind);
-    const ch::FrameEvent *ev = find_frame_event(c.capture);
-    const bool found = kind && ev && roll_matches_capture(w, *kind, *ev, run);
-    char what[160];
-    std::snprintf(what, sizeof what,
-                  "%d (%s): the captured item x%u is among the kind's rolls",
-                  c.capture, c.kind, ev ? ev->event.quantity : 0u);
-    CHECK(found, what);
-  }
-  std::string why;
-  const gather::Gathering::HuntKind *any = find_hunt_kind(w, "Hunting_Wolf");
-  const auto secs =
-      any ? w.g->channel_seconds(*any->row, run, why) : std::nullopt;
-  char msg[160];
-  std::snprintf(msg, sizeof msg,
-                "the channel at rating 0 is %.2f s (base 15 s, the captured "
-                "hunts: 13.9 to 14.8 s with their ratings)",
-                secs ? *secs : -1.0);
-  CHECK(secs && *secs >= 13.5 && *secs <= 15.0, msg);
-}
-
-static void
-test_rolls_empty_and_captures(World &w,
-                              stats::CharacterStats::Evaluation &run) {
-  std::string why;
-  size_t empty_ok = 0;
-  size_t empty_n = 0;
-  for (const auto &[def, k] : w.g->hunting()) {
-    if (!k.gives_nothing) {
-      continue;
-    }
-    ++empty_n;
-    stats::SplitMix rng;
-    rng.state = 5;
-    const auto h =
-        w.g->harvest(*k.row, run, 25, world::NodeSite{}, nullptr, rng, why);
-    empty_ok += is_retired_harvest(w, h) ? 1 : 0;
-  }
-  CHECK(empty_n == 10 && empty_ok == 10,
-        "the ten that give nothing roll only retired items (or none): the "
-        "session drops them");
-  test_rolls_captures(w, run);
-}
-
-struct KindRollVerdict {
-  bool items = true;
-  bool xp = true;
-  bool adv = true;
-};
-
-static void log_roll_failure(const gather::Gathering::HuntKind &k,
-                             const KindRollVerdict &v, size_t empty_rolls,
-                             const std::set<int64_t> &xps) {
-  if (v.items && v.xp && v.adv) {
-    return;
-  }
-  std::printf("      (%s: items %d, xp %d, adventuring %d, empty rolls %zu, "
-              "tier %d, xp*1000+rarity seen:",
-              k.name.c_str(), v.items ? 1 : 0, v.xp ? 1 : 0, v.adv ? 1 : 0,
-              empty_rolls, k.row->cert_tier);
-  for (const int64_t val : xps) {
-    std::printf(" %lld", static_cast<long long>(val));
-  }
-  std::printf(")\n");
-}
-
-static KindRollVerdict roll_kind_300(World &w, int64_t def,
-                                     const gather::Gathering::HuntKind &k,
-                                     stats::CharacterStats::Evaluation &run) {
-  std::string why;
-  stats::SplitMix rng;
-  rng.state = 11 + static_cast<uint64_t>(def & 0xffff);
-  KindRollVerdict v;
-  std::set<int64_t> xps;
-  size_t empty_rolls = 0;
-  const double base = k.row->cert_tier == 0   ? 160.0
-                      : k.row->cert_tier == 1 ? 200.0
-                                              : 240.0;
-  for (int i = 0; i < 300; ++i) {
-    const auto h =
-        w.g->harvest(*k.row, run, 25, world::NodeSite{}, nullptr, rng, why);
-    if (!h) {
-      v.items = false;
-      break;
-    }
-    xps.insert(h->profession_xp * 1000 + h->primary_rarity);
-    empty_rolls += h->items.empty() ? 1 : 0;
-    v.items = v.items && !h->items.empty() && h->items.size() <= 2;
-    for (const combat::RolledItem &it : h->items) {
-      v.items = v.items && it.quantity >= 1 && it.quantity <= 20;
-    }
-    v.xp = v.xp &&
-           h->profession_xp ==
-               static_cast<int64_t>(base * (1.0 + 0.5 * h->primary_rarity));
-    v.adv = v.adv && h->adventuring_xp > 0;
-  }
-  log_roll_failure(k, v, empty_rolls, xps);
-  return v;
-}
-
-static void test_rolls(World &w) {
-  std::printf("the rolls: every kind that gives, the captured items\n");
-  auto owner = w.make_stats();
-  std::string why;
-  auto run = owner->evaluation({}, why);
-  if (!run) {
-    std::printf("  [FAIL] the stat run does not start: %s\n", why.c_str());
-    return;
-  }
-  w.g->set_ratings({});
-  size_t checked = 0;
-  size_t items_ok = 0;
-  size_t xp_ok = 0;
-  size_t adv_ok = 0;
-  for (const auto &[def, k] : w.g->hunting()) {
-    if (k.gives_nothing) {
-      continue;
-    }
-    ++checked;
-    const KindRollVerdict v = roll_kind_300(w, def, k, *run);
-    items_ok += v.items ? 1 : 0;
-    xp_ok += v.xp ? 1 : 0;
-    adv_ok += v.adv ? 1 : 0;
-  }
-  char msg[160];
-  std::snprintf(msg, sizeof msg,
-                "the %zu kinds that give: 300 rolls each, every roll gives an "
-                "item (1 to 20), of one subtable (one or two "
-                "stacks)",
-                checked);
-  CHECK(checked == 43 && items_ok == checked, msg);
-  CHECK(xp_ok == checked,
-        "and Hunter XP of 160 (Novice), 200 (Apprentice) or 240 (Journeyman) "
-        "for a Common item, +50 % of that for "
-        "each better rarity: once, not once for each subtable");
-  CHECK(adv_ok == checked, "and Adventuring XP");
-  test_rolls_empty_and_captures(w, *run);
-}
-// C O A with C_Y_B
-
-static void check_corpse_wire_after_done(World &w, gather::NodeBoard &board,
-                                         uint64_t id,
-                                         repl::ActorShadow &shadow) {
-  const world::WorldActor *done = w.registry().find(id);
-  float health = -1;
-  const bool have_health =
-      done && combat::read_stat(*done, content::kGuidHealth, health);
-  CHECK(!have_health || health == 0.0f,
-        "and Health is 0 (an item of the stats, when the actor has one)");
-  CHECK(board.state_of(id) == gather::NodeState::Gathered &&
-            !gather::node_gathered(*done),
-        "the corpse is Gathered for the board and still has no bGathered");
-  std::vector<repl::ContentBlock> update;
-  CHECK(repl::collect_update_blocks(corpse_view_of(w, id, 7), shadow, update) &&
-            update.empty(),
-        "nothing changes after");
-  const repl::Actor other = corpse_view_of(w, id, 99);
-  const repl::Subobject *comp = sub_of(other, "UInteractableComponent");
-  const repl::ElementState *e =
-      comp ? element(comp->obj, "InputEffectStatuses", 0) : nullptr;
-  const auto it = e ? e->values.find(3) : decltype(e->values.end()){};
-  const auto *pg = e && it != e->values.end()
-                       ? it->second.get_if<emit::FIntrepidNetworkGUID>()
-                       : nullptr;
-  CHECK(pg && pg->ObjectId == 0,
-        "another player's connection sees InteractingPlayer as none");
-}
-
-static void check_corpse_wire_done_blocks(World &w, gather::NodeBoard &board,
-                                          uint64_t id, Clock::time_point now,
-                                          repl::ActorShadow &shadow) {
-  std::string why;
-  CHECK(board.complete(id, now, seconds(3600), why),
-        "the board completes the channel");
-  repl::Actor view = corpse_view_of(w, id, 7);
-  std::vector<repl::ContentBlock> update;
-  CHECK(repl::collect_update_blocks(view, shadow, update),
-        "the done update builds");
-  bool inter_ok = false;
-  bool combat_ok = false;
-  for (const repl::ContentBlock &b : update) {
-    if (b.payload.bit_pos() == ch::kRun1457Done.bits) {
-      inter_ok = payload_is(b, ch::kRun1457Done);
-    }
-    if (b.payload.bit_pos() == ch::kRun1457DoneCombat.bits) {
-      combat_ok = payload_is(b, ch::kRun1457DoneCombat);
-    }
-  }
-  CHECK(inter_ok,
-        "the interactable's block is the capture's done update, to the bit "
-        "(370 bits: the status 0xD0000004, the "
-        "pawn, nobody channels, CanInputActivate, all four states 0)");
-  CHECK(combat_ok, "the corpse's CombatInfo block is the capture's (27 bits: "
-                   "bIsDead 1, bNotTargetable 0)");
-  check_corpse_wire_after_done(w, board, id, shadow);
-}
-
-static void test_corpse_wire_beats_and_done(World &w, gather::NodeBoard &board,
-                                            uint64_t id,
-                                            repl::ActorShadow &shadow) {
-  std::vector<repl::ContentBlock> update;
-  size_t same = 0;
-  size_t one_block = 0;
-  Clock::time_point now = t0;
-  for (size_t i = 0; i < ch::kRun1457BeatCount; ++i) {
-    now += milliseconds(67);
-    if (!board.beat(id, now)) {
-      break;
-    }
-    repl::Actor view = corpse_view_of(w, id, 7);
-    update.clear();
-    if (!repl::collect_update_blocks(view, shadow, update)) {
-      break;
-    }
-    if (update.size() != 1) {
-      continue;
-    }
-    ++one_block;
-    same += payload_is(update[0], ch::kRun1457Beats[i].block) ? 1 : 0;
-  }
-  CHECK(one_block == ch::kRun1457BeatCount,
-        "every heartbeat is one block: the interactable's");
-  CHECK(same == ch::kRun1457BeatCount,
-        "all 204 heartbeats are the capture's, to the bit (the counter +2 "
-        "each; the first, 217 bits, also takes "
-        "InteractingPlayer off)");
-  check_corpse_wire_done_blocks(w, board, id, now + milliseconds(36), shadow);
-}
-
-static void mark_corpse_not_targetable(World &w, uint64_t id) {
-  w.registry().modify(id, world::Change::State, [&](world::WorldActor &a) {
-    for (repl::Subobject &s : a.actor.subobjects) {
-      if (s.obj.schema && std::string(s.obj.schema->name) == "UNPCCombatInfo") {
-        s.obj.state.set(*s.obj.schema, "bNotTargetable",
-                        repl::Value::boolean(true));
-      }
-    }
-  });
-}
-
-static void start_and_beat_corpse_wire(World &w, uint64_t id,
-                                       const emit::FIntrepidNetworkGUID &pawn) {
-  std::string why;
-  gather::Channeler by;
-  by.player_id = 7;
-  by.character =
-      repl::GuidValue{ch::kRuns[1].character[0], ch::kRuns[1].character[1],
-                      ch::kRuns[1].character[2], ch::kRuns[1].character[3]};
-  by.pawn = pawn;
-  gather::NodeBoard board(w.registry(), gather::NodeBoard::Config{});
-  repl::ActorShadow shadow;
-  std::vector<repl::ContentBlock> blocks;
-  repl::Actor view = corpse_view_of(w, id, 7);
-  CHECK(repl::collect_open_blocks(view, shadow, blocks) && blocks.size() == 8,
-        "the living corpse opens with its eight blocks");
-  CHECK(board.begin(id, by, t0, milliseconds(13915), why),
-        "the board starts the channel (the corpse is no gatherable)");
-  CHECK(board.state_of(id) == gather::NodeState::Channeling &&
-            !gather::node_gathered(*w.registry().find(id)),
-        "it is Channeling, and a corpse is never 'gathered' (no bGathered)");
-  view = corpse_view_of(w, id, 7);
-  std::vector<repl::ContentBlock> update;
-  CHECK(repl::collect_update_blocks(view, shadow, update) && update.size() == 1,
-        "the start is one block: the interactable's");
-  if (update.size() == 1) {
-    CHECK(payload_is(update[0], ch::kRun1457Start),
-          "which is the capture's start, to the bit (418 bits: the status "
-          "0x08000001, the pawn, who channels)");
-  }
-  test_corpse_wire_beats_and_done(w, board, id, shadow);
-}
-
-static void test_corpse_wire(World &w) {
-  std::printf("the retail capture, replayed: the corpse's start, 204 "
-              "heartbeats and the done update, to the bit\n");
-  const spawns::OpenTemplate *raven_tpl = w.captured->template_for(kRavenPath);
-  CHECK(raven_tpl != nullptr,
-        "the captured Raven open is the corpse's template");
-  if (!raven_tpl) {
-    return;
-  }
-  spawns::InstanceParams p;
-  p.x = 5000;
-  p.y = 6000;
-  p.z = 7000;
-  p.level = 5;
-  p.server_id = kServerId;
-  std::string why;
-  auto made = spawns::instantiate(*raven_tpl, [&] { return w.mint(); }, p, why);
-  CHECK(made.has_value(), "a Raven is made");
-  if (!made) {
-    return;
-  }
-  made->npc.name = "Raven";
-  const uint64_t id = made->id;
-  CHECK(w.registry().add(std::move(*made)), "it joins the registry");
-  mark_corpse_not_targetable(w, id);
-  const auto cap_start = load(ch::kRun1457Start, "UInteractableComponent");
-  const repl::ElementState *statuses =
-      cap_start ? element(*cap_start, "InputEffectStatuses", 0) : nullptr;
-  const auto pawn_it =
-      statuses ? statuses->values.find(3) : decltype(statuses->values.end()){};
-  CHECK(statuses && pawn_it != statuses->values.end() &&
-            pawn_it->second.get_if<emit::FIntrepidNetworkGUID>(),
-        "the capture's pawn reference is in the start block");
-  if (!statuses || pawn_it == statuses->values.end()) {
-    return;
-  }
-  start_and_beat_corpse_wire(
-      w, id, *pawn_it->second.get_if<emit::FIntrepidNetworkGUID>());
-}
-// [C.O.A ~ C | Y | B]
-
-static void check_corpse_board_after_cancel(World &w, gather::NodeBoard &board,
-                                            uint64_t a,
-                                            const gather::Channeler &two) {
-  const world::WorldActor *wa = w.registry().find(a);
-  const repl::Subobject *comp =
-      wa ? sub_of(wa->actor, "UInteractableComponent") : nullptr;
-  const repl::ElementState *can =
-      comp ? element(comp->obj, "CanInputActivate", 0) : nullptr;
-  const repl::Value *can_array =
-      comp ? comp->obj.state.get(*comp->obj.schema, "CanInputActivate")
-           : nullptr;
-  CHECK(can_array && can_array->get_if<repl::ArrayValue>() &&
-            can_array->get_if<repl::ArrayValue>()->elements.size() == 4 &&
-            can && can->values.count(1) && *can->values.at(1).get_if<bool>(),
-        "CanInputActivate is four entries, the first true again (never an "
-        "empty array: the client crashes on one)");
-  const repl::ElementState *s0 =
-      comp ? element(comp->obj, "CurrentInputStates", 0) : nullptr;
-  const auto cur =
-      s0 && s0->values.count(1) ? int_of(&s0->values.at(1)) : std::nullopt;
-  CHECK(cur && *cur == 1 && gather::node_status(*wa) == 0 &&
-            !gather::node_gathered(*wa),
-        "the state is 1 again, the status 0, no bGathered");
-  std::string why;
-  CHECK(board.begin(a, two, t0 + seconds(20), seconds(14), why),
-        "and the corpse can be hunted again");
-}
-
-static void check_corpse_board_beats_and_plain(World &w,
-                                               gather::NodeBoard &board,
-                                               uint64_t a, uint64_t b,
-                                               const gather::Channeler &one) {
-  const auto status_of_actor = [&](uint64_t id) {
-    return gather::node_status(*w.registry().find(id));
-  };
-  Clock::time_point now = t0 + seconds(20);
-  Clock::time_point now2 = t0;
-  for (int i = 0; i < 3; ++i) {
-    now += milliseconds(67);
-    board.beat(a, now);
-    now2 += milliseconds(67);
-    board.beat(b, now2);
-  }
-  std::string why;
-  CHECK(status_of_actor(a) == (7u << 27 | 1u),
-        "three heartbeats: the counter 1 + 2 x 3");
-  CHECK(board.complete(a, now + milliseconds(40), seconds(3600), why) &&
-            status_of_actor(a) == (8u << 27 | 4u),
-        "the done update 40 ms after a beat: one on (8), phase 4");
-  CHECK(board.complete(b, now2 + milliseconds(70), seconds(3600), why) &&
-            status_of_actor(b) == (9u << 27 | 4u),
-        "70 ms after a beat: two on (9), phase 4");
-  spawns::InstanceParams p;
-  p.server_id = kServerId;
-  const content::NpcAssetRow *plain = w.asset("Pop_Wolf");
-  spawns::GenericNpcs off(*w.captured, &w.motion, w.config(false));
-  const spawns::OpenTemplate *plain_tpl =
-      plain ? off.template_for(*plain) : nullptr;
-  auto pm = plain_tpl ? spawns::instantiate(
-                            *plain_tpl, [&] { return w.mint(); }, p, why)
-                      : std::nullopt;
-  const uint64_t plain_id = pm && w.registry().add(std::move(*pm)) ? pm->id : 0;
-  CHECK(plain_id != 0 && !board.begin(plain_id, one, t0, seconds(14), why),
-        "a creature with no interactable cannot be begun");
-}
-
-static void test_corpse_board(World &w) {
-  std::printf("the board and a corpse: a second player, a cancel, a "
-              "done-counter rule\n");
-  const spawns::OpenTemplate *raven_tpl = w.captured->template_for(kRavenPath);
-  if (!raven_tpl) {
-    return;
-  }
-  const auto make = [&]() -> uint64_t {
-    spawns::InstanceParams p;
-    p.x = 1;
-    p.y = 2;
-    p.z = 3;
-    p.server_id = kServerId;
-    std::string why;
-    auto m = spawns::instantiate(*raven_tpl, [&] { return w.mint(); }, p, why);
-    return m && w.registry().add(std::move(*m)) ? m->id : 0;
-  };
-  const uint64_t a = make();
-  const uint64_t b = make();
-  gather::NodeBoard board(w.registry(), gather::NodeBoard::Config{});
-  gather::Channeler one;
-  gather::Channeler two;
-  one.player_id = 1;
-  one.character = {1, 2, 3, 4};
-  two.player_id = 2;
-  two.character = {5, 6, 7, 8};
-  std::string why;
-  CHECK(board.begin(a, one, t0, seconds(14), why),
-        "player 1 starts a hunt of corpse A");
-  CHECK(!board.begin(a, two, t0, seconds(14), why) &&
-            why.find("channeling") != std::string::npos,
-        "player 2 is refused the same corpse (it is channeling)");
-  CHECK(board.begin(b, two, t0, seconds(14), why), "but takes the other one");
-  CHECK(gather::node_status(*w.registry().find(a)) == 0x08000001u,
-        "the status of a channeling corpse is 0x08000001");
-  CHECK(board.cancel(a, "test"), "a cancel");
-  check_corpse_board_after_cancel(w, board, a, two);
-  check_corpse_board_beats_and_plain(w, board, a, b, one);
-}
-
 int main() {
   spdlog::set_level(spdlog::level::off);
   const char *path = db_path();
@@ -760,9 +720,7 @@ int main() {
   test_timid_grem(w);
   test_stands(w);
   test_data(w);
-  test_rolls(w);
-  test_corpse_wire(w);
-  test_corpse_board(w);
+  run_hunting_corpse_tests(w);
   std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

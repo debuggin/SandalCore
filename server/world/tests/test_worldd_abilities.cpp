@@ -9,6 +9,8 @@ using namespace aoc::protocol::repl;
 
 namespace {
 
+bool near_d(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
+
 bool evasion_effect_ok(const content::EffectRule *ev, const content::EffectRule *ender) {
   return ev && !ev->infinite && ev->duration == 0.5 && ev->stops_regen_standing && ev->stops_regen_moving && ender && ev->end_effect_duration == 1.0 && ender->stops_regen_standing && ender->stops_regen_moving;
 }

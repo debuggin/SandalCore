@@ -342,102 +342,9 @@ struct Rig {
     }
 };
 
-inline void Player::join() {
-    s = aoc::worldd::PlayerSession::join(conn, *rig.world, record, identity(), world_time_at(rig.t), error);
-    if (!s) {
-        std::printf("  [FAIL] the session does not join: %s\n", error.c_str());
-        std::exit(2);
-    }
-    pawn_ch = s->channel_of(bs::Role::Pawn);
-    pc_ch = s->channel_of(bs::Role::PlayerController);
-}
-
-inline void Player::flush() {
-    for (auto& pkt : conn.flush(rig.t)) {
-        const auto r = client.receive(pkt);
-        for (const auto& d : r.delivered) got.push_back(d);
-    }
-}
-
-inline void Player::client_sends(std::vector<fake::Bunch> bunches) {
-    const auto pkt = client.packet(std::move(bunches));
-    const std::vector<aoc::worldd::InBunch> in = conn.receive(pkt, rig.t);
-    s->take_acks(conn);
-    for (const aoc::worldd::InBunch& b : in) s->on_bunch(conn, b, rig.t);
-    s->end_of_datagram(conn);
-}
-
-inline void Player::step_session() {
-    s->tick(conn, rig.t);
-    flush();
-    s->take_acks(conn);
-    client_sends({});
-}
-
-inline void Player::request(const emit::BunchWriter& rpc, uint32_t channel) {
-    client_sends({client.actor(channel, rpc, true)});
-    rig.settle();
-}
-
-inline void Player::send_now(const emit::BunchWriter& rpc, uint32_t channel) {
-    client_sends({client.actor(channel, rpc, true)});
-    rig.run(std::chrono::milliseconds(60));
-}
-
-inline emit::BunchWriter actor_rpc(const schema::ClassSchema& cls, const char* name, const repl::RpcParams& params) {
-    emit::BunchWriter out;
-    const schema::RpcSchema* rpc = cls.rpc(name);
-    if (!rpc) return out;
-    emit::BunchWriter field;
-    bool failed = false;
-    if (repl::write_rpc_field(cls, *rpc, params, field, {}, &failed) == 0 && !params.values.empty()) {
-        std::printf("  [FAIL] %s does not write\n", name);
-        return out;
-    }
-    if (failed) return out;
-    repl::BlockHeader header;
-    repl::write_content_block(out, header, field, /*server_form=*/false);
-    return out;
-}
-
-inline emit::BunchWriter interact(uint64_t component_object_id) {
-    const schema::ClassSchema& pawn = class_named("PlayerPawn_C");
-    const schema::RpcSchema* rpc = pawn.rpc("ServerInteractWithInteractableComponent");
-    repl::InteractRequest r;
-    r.interactable.ObjectId = component_object_id;
-    r.interactable.ServerId = kServerId;
-    r.interactable.Randomizer = kRandomizer;
-    r.counter = 1;
-    const auto params = repl::interact_params(*rpc, r);
-    return params ? actor_rpc(pawn, "ServerInteractWithInteractableComponent", *params) : emit::BunchWriter();
-}
-
-inline emit::BunchWriter interrupt_channel() {
-    return actor_rpc(class_named("PlayerPawn_C"), "ServerInterruptChannel", {});
-}
-
-inline size_t count_in_log(const char* what) {
-    const std::string text = g_log.str();
-    size_t n = 0;
-    for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + 1)) ++n;
-    return n;
-}
-
-inline emit::BunchWriter item_used(int storage, int slot, const std::string& guid_hex) {
-    const schema::ClassSchema& pawn = class_named("PlayerPawn_C");
-    const schema::RpcSchema* rpc = pawn.rpc("ServerItemUsed");
-    repl::RpcParams p;
-    const auto g = aoc::worldd::items::guid_of(guid_hex);
-    const repl::GuidValue gv = g ? *g : repl::GuidValue{};
-    repl::set_rpc_param(*rpc, p, "Storage", repl::Value::u64(static_cast<uint64_t>(storage)));
-    repl::set_rpc_param(*rpc, p, "Slot", repl::Value::i64(slot));
-    repl::set_rpc_param(*rpc, p, "ExpectedItem.A", repl::Value::i64(static_cast<int32_t>(gv.a)));
-    repl::set_rpc_param(*rpc, p, "ExpectedItem.B", repl::Value::i64(static_cast<int32_t>(gv.b)));
-    repl::set_rpc_param(*rpc, p, "ExpectedItem.C", repl::Value::i64(static_cast<int32_t>(gv.c)));
-    repl::set_rpc_param(*rpc, p, "ExpectedItem.D", repl::Value::i64(static_cast<int32_t>(gv.d)));
-    repl::set_rpc_param(*rpc, p, "RequestedEquipSlot", repl::Value::i64(static_cast<int32_t>(0xFFFFFFFFu)));
-    return actor_rpc(pawn, "ServerItemUsed", p);
-}
+emit::BunchWriter actor_rpc(const schema::ClassSchema& cls, const char* name, const repl::RpcParams& params);
+emit::BunchWriter interact(uint64_t component_object_id);
+size_t count_in_log(const char* what);
 
 struct CorpseSeen {
     std::vector<uint32_t> statuses;
@@ -448,36 +355,13 @@ struct CorpseSeen {
 
 std::vector<std::pair<size_t, repl::ChannelingData>> channeling_seen(const Player& p, size_t from);
 std::vector<std::pair<size_t, std::string>> pc_chain_calls(const Player& p, size_t from);
-std::vector<std::string> pc_call_names_since(const Player& p, size_t from);
-size_t count_names(const std::vector<std::string>& v, const char* name);
 CorpseSeen corpse_seen(const Player& p, uint64_t comp_id, uint32_t channel, size_t from);
 
-inline void play(Player& p) {
-    p.rig.settle();
-    p.request(actor_rpc(class_named("PlayerPawn_C"), "ServerClientIsReadyToPhaseIn", {}), p.pawn_ch);
-    p.rig.run(std::chrono::seconds(2));
-    p.rig.settle();
-}
-
-inline bool run_until(
-    Rig& rig, const std::function<bool()>& done, std::chrono::milliseconds limit = std::chrono::seconds(30)) {
-    for (std::chrono::milliseconds t{0}; t < limit; t += std::chrono::milliseconds(20)) {
-        if (done()) return true;
-        rig.step();
-    }
-    return done();
-}
-
-inline aoc::worldd::svc::Character record_here(const char* id_hex, const char* name) {
-    aoc::worldd::svc::Character c = record_of(id_hex, name);
-    c.has_position = true;
-    c.position.x = kCx;
-    c.position.y = kCy;
-    c.position.z = bs::kDefaultSpawn.z;
-    return c;
-}
-
-inline uint64_t pawn_id(const Player& p) { return p.s->bootstrap().setup().guids.pawn.ObjectId; }
+void play(Player& p);
+bool run_until(
+    Rig& rig, const std::function<bool()>& done, std::chrono::milliseconds limit = std::chrono::seconds(30));
+aoc::worldd::svc::Character record_here(const char* id_hex, const char* name);
+uint64_t pawn_id(const Player& p);
 
 struct HuntRig {
     Rig rig;
@@ -508,15 +392,7 @@ struct HuntRig {
     void settle() { rig.run(std::chrono::milliseconds(500)); }
 };
 
-inline bool dead_for_clients(const aoc::worldd::world::WorldActor* a) {
-    if (!a) return false;
-    for (const repl::Subobject& s : a->actor.subobjects) {
-        if (!s.obj.schema || std::string(s.obj.schema->name) != "UNPCCombatInfo") continue;
-        const repl::Value* v = s.obj.state.get(*s.obj.schema, "bIsDead");
-        const bool* b = v ? v->get_if<bool>() : nullptr;
-        return b && *b;
-    }
-    return false;
-}
+bool dead_for_clients(const aoc::worldd::world::WorldActor* a);
 
-void run_hunting_session_part2();
+void run_hunting_session_refusals();
+

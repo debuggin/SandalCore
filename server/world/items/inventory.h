@@ -89,6 +89,12 @@ inline svc::ItemContainer resource_container(int index) { return static_cast<svc
 int slot_count(svc::ItemContainer c);
 const char* container_name(svc::ItemContainer c);
 
+inline constexpr int32_t kMaxQuantity = 1000000;
+inline constexpr int64_t kMaxMs = 9'000'000'000'000ll;
+inline constexpr int64_t kMaxLockExpiration = 253402300799ll;
+inline bool valid_container(svc::ItemContainer c) { return static_cast<uint8_t>(c) <= static_cast<uint8_t>(svc::ItemContainer::Resource2); }
+std::string item_problem(const svc::InventoryItem& it);
+
 /// EEquipSlot values the rules and the visible gear name (the exe's enum).
 namespace equip {
 inline constexpr uint8_t Helmet = 1, Chest = 2, Wrists = 3, Hands = 4, Legs = 5, Feet = 6, Shoulders = 7, Back = 8, Belt = 9;

@@ -16,6 +16,187 @@ using emit::BunchWriter;
 using std::chrono::milliseconds;
 using std::chrono::seconds;
 
+struct DecodedRpc {
+    bool ok = false;
+    std::string name;
+    repl::RpcCall call;
+};
+
+static DecodedRpc decode_rpc(const BunchWriter& content, const schema::ClassSchema& cls) {
+    DecodedRpc d;
+    const auto blocks = repl::read_content_blocks(content.data(), content.bit_pos(), 0);
+    if (!blocks || blocks->size() != 1) return d;
+    size_t p = (*blocks)[0].payload_pos;
+    auto calls = repl::read_rpc_fields(cls, content.data(), (*blocks)[0].payload_pos + (*blocks)[0].payload_bits, p);
+    if (!calls || calls->size() != 1) return d;
+    d.call = std::move((*calls)[0]);
+    d.name = d.call.rpc->name;
+    d.ok = d.call.decoded;
+    return d;
+}
+
+static const repl::Value* param(const DecodedRpc& d, std::string_view path) {
+    const schema::RepCommand* c = repl::rpc_command(*d.call.rpc, path);
+    if (!c) return nullptr;
+    const auto it = d.call.params.values.find(c->handle);
+    return it == d.call.params.values.end() ? nullptr : &it->second;
+}
+
+struct RecordingSink : PositionSink {
+    struct Saved {
+        std::string id;
+        svc::Position position;
+    };
+    std::vector<Saved> saves;
+    void save(const std::string& id, const svc::Position& p) override { saves.push_back({id, p}); }
+};
+
+static bs::LoginIdentity identity() { return {kMachine, kMachine}; }
+static double world_time_at(Clock::time_point t) { return std::chrono::duration<double>(t - t0).count(); }
+
+static repl::NetworkMove move_with_mode(float ts, double x, double y, double z, uint8_t mode) {
+    repl::NetworkMove m = move_at(ts, x, y, z, kSpawnYaw);
+    m.movement_mode = mode;
+    return m;
+}
+
+static BunchWriter client_moves(const std::vector<repl::NetworkMove>& moves) {
+    const schema::ClassSchema& cls = class_named("PlayerPawn_C");
+    const schema::NetField* f = cls.field("ServerMovePacked");
+    BunchWriter out;
+    if (!f) return out;
+    BunchWriter field;
+    for (const repl::NetworkMove& m : moves) {
+        repl::MovePacked p;
+        p.new_move = m;
+        BunchWriter params;
+        if (!repl::write_move_packed(params, p) || repl::write_field(cls, f->index, params, field) == 0) {
+            return BunchWriter();
+        }
+    }
+    repl::BlockHeader header;
+    repl::write_content_block(out, header, field, false);
+    return out;
+}
+
+struct Harness {
+    Fixture fx;
+    RecordingSink sink;
+    Connection conn{
+        ConnectionConfig{
+            aoc::protocol::conn::OuterHeader{0x500c7696u, 0, 5},
+            aoc::protocol::conn::CustomField{0x38, 0x21, 0xc7, 0x0d, 0x43, 0x5d},
+            14265,
+            15870},
+        t0};
+    fake::Client client{
+        aoc::protocol::conn::OuterHeader{0x500c7696u, 0, 5},
+        aoc::protocol::conn::CustomField{0x38, 0x21, 0xc7, 0x0d, 0x43, 0x5d},
+        14265,
+        15870};
+    std::unique_ptr<PlayerSession> s;
+    Clock::time_point t = t0;
+    std::vector<fake::Delivered> got;
+    std::string error;
+    uint32_t pawn_ch = 0;
+
+    explicit Harness(const MovementConfig& mc = {}, bool with_sink = true) {
+        fx.world->set_movement(mc);
+        if (with_sink) fx.world->set_position_sink(&sink);
+        s = PlayerSession::join(conn, *fx.world, cyb_record(), identity(), world_time_at(t), error);
+        if (!s) {
+            std::printf("  [FAIL] the session does not join: %s\n", error.c_str());
+            std::exit(2);
+        }
+        pawn_ch = s->channel_of(bs::Role::Pawn);
+        settle();
+    }
+    void flush() {
+        for (auto& pkt : conn.flush(t)) {
+            const auto r = client.receive(pkt);
+            for (const auto& d : r.delivered) got.push_back(d);
+        }
+    }
+    void client_sends(std::vector<fake::Bunch> bunches) {
+        const auto pkt = client.packet(std::move(bunches));
+        const std::vector<InBunch> in = conn.receive(pkt, t);
+        s->take_acks(conn);
+        for (const InBunch& b : in) s->on_bunch(conn, b, t);
+        s->end_of_datagram(conn);
+    }
+    void step(milliseconds d = milliseconds(20)) {
+        t += d;
+        s->tick(conn, t);
+        flush();
+        s->take_acks(conn);
+        client_sends({});
+    }
+    void settle() {
+        for (int quiet = 0, i = 0; quiet < 3 && i < 400; ++i) {
+            const size_t before = got.size();
+            step();
+            quiet = (got.size() == before && s->join_pending() == 0 && s->replies_pending() == 0) ? quiet + 1 : 0;
+        }
+    }
+    std::vector<const fake::Delivered*> send_move(const BunchWriter& bunch) {
+        const size_t from = got.size();
+        client_sends({client.actor(pawn_ch, bunch, false)});
+        flush();
+        std::vector<const fake::Delivered*> out;
+        for (size_t i = from; i < got.size(); ++i) {
+            if (got[i].channel == pawn_ch) out.push_back(&got[i]);
+        }
+        return out;
+    }
+    std::vector<const fake::Delivered*> send_move(const repl::NetworkMove& m) { return send_move(client_move(m)); }
+};
+
+static bool is_ack(const fake::Delivered& d, float ts) {
+    const auto blocks = repl::read_content_blocks(d.content.data(), d.content.bit_pos(), 0);
+    if (!d.exports.empty() || d.reliable || d.content.bit_pos() != 68 || !blocks || blocks->size() != 1) return false;
+    const schema::ClassSchema& pawn = class_named("PlayerPawn_C");
+    size_t pos_bits = (*blocks)[0].payload_pos;
+    const auto h = repl::read_field_header(pawn, d.content.data(), pos_bits + (*blocks)[0].payload_bits, pos_bits);
+    if (!h || std::string(pawn.field(h->field)->name) != "ClientMoveResponsePacked") return false;
+    aoc::protocol::wire::PacketReader r(d.content.data(), d.content.byte_size(), pos_bits + h->payload_bits);
+    r.set_pos(pos_bits);
+    return r.read_bits(10) == 645 && std::bit_cast<float>(static_cast<uint32_t>(r.read_bits(32))) == ts;
+}
+
+static std::optional<DecodedRpc> as_correction(const fake::Delivered& d) {
+    DecodedRpc r = decode_rpc(d.content, class_named("PlayerPawn_C"));
+    if (!r.ok || r.name != "ClientAdjustPosition") return std::nullopt;
+    return r;
+}
+
+static bool correction_is(
+    const fake::Delivered& d,
+    float ts,
+    const repl::Vec3d& loc,
+    uint8_t mode = repl::kMoveWalking) {
+    const auto r = as_correction(d);
+    if (!r || d.reliable || !d.exports.empty()) return false;
+    const repl::Value* t = param(*r, "TimeStamp");
+    const repl::Value* l = param(*r, "NewLoc");
+    const repl::Value* m = param(*r, "ServerMovementMode");
+    const float got_ts = t && t->get_if<float>() ? *t->get_if<float>() : 0.0f;
+    return (t || ts == 0.0f) && got_ts == ts && l && l->get_if<repl::Vec3d>() &&
+           *l->get_if<repl::Vec3d>() == loc &&
+           (m ? *m->get_if<uint64_t>() : 0) == mode;
+}
+
+static bool correction_is(const fake::Delivered& d, float ts, double x, double y, double z) {
+    return correction_is(d, ts, repl::Vec3d{x, y, z}, repl::kMoveWalking);
+}
+
+static bool correction_is(
+    const fake::Delivered& d,
+    float ts,
+    const GoodPosition& p,
+    uint8_t mode = repl::kMoveWalking) {
+    return correction_is(d, ts, repl::Vec3d{p.x, p.y, p.z}, mode);
+}
+
 static void test_correction_wire() {
     std::printf("PlayerBootstrap::correction\n");
     auto setup = bs::captured_character_setup();
@@ -58,166 +239,6 @@ static void test_correction_wire() {
     const auto second = pb.correction(12.375f, loc, repl::Vec3d{}, repl::kMoveWalking);
     CHECK(second && second->emission.payload.bit_pos() == fix->emission.payload.bit_pos() && fix->emission.payload.bit_pos() > 2 * 192,
           "a second correction is the same bits (it touches no shadow) and more than its two vectors' 384");
-}
-
-static void check_saver_queue_and_bounds() {
-    {
-        FakeCharacters api;
-        CharacterSaver saver(api, quick());
-        saver.save("aa", pos(1, 2, 3, 90.5f));
-        CHECK(saver.flush(seconds(3)), "a position is saved; flush says everything is");
-        const auto s = api.saved();
-        CHECK(s.size() == 1 && s[0].id == "aa" && s[0].position.x == 1 && s[0].position.y == 2 && s[0].position.z == 3 && s[0].position.yaw == 90.5f &&
-                  saver.saved() == 1 && saver.failed() == 0 && saver.queued() == 0,
-              "the character service got the id and the position as given");
-    }
-    {
-        FakeCharacters api;
-        api.hold();
-        CharacterSaver saver(api, quick());
-        saver.save("aa", pos(1));
-        CHECK(wait_until([&] { return api.in_flight(); }), "(the worker is inside the first call)");
-        saver.save("aa", pos(2));
-        saver.save("aa", pos(3));
-        saver.save("aa", pos(4));
-        saver.save("bb", pos(10));
-        CHECK(saver.queued() == 2 && saver.replaced() == 2, "while it is busy a character has one entry: later positions replace the waiting one (two replaced)");
-        api.release();
-        CHECK(saver.flush(seconds(3)), "(released)");
-        const auto s = api.saved();
-        CHECK(s.size() == 3 && s[0].id == "aa" && s[0].position.x == 1 && s[1].id == "aa" && s[1].position.x == 4 && s[2].id == "bb" && s[2].position.x == 10,
-              "the first position was already on its way, then the latest of aa (4, not 2 or 3) and bb: three calls, in the order the characters first waited");
-    }
-    {
-        FakeCharacters api;
-        api.hold();
-        CharacterSaver saver(api, quick());
-        const auto begin = std::chrono::steady_clock::now();
-        for (int i = 0; i < 20000; ++i) saver.save("c" + std::to_string(i % 50), pos(i));
-        const auto took = std::chrono::steady_clock::now() - begin;
-        CHECK(took < seconds(1) && saver.queued() <= 50, "20,000 saves for 50 characters while the service hangs return at once: at most one entry each");
-        api.release();
-        saver.flush(seconds(3));
-    }
-    {
-        FakeCharacters api;
-        api.hold();
-        CharacterSaver::Config cfg = quick();
-        cfg.max_queued = 3;
-        CharacterSaver saver(api, cfg);
-        saver.save("c0", pos(0));
-        wait_until([&] { return api.in_flight(); });
-        for (int i = 1; i <= 4; ++i) saver.save("c" + std::to_string(i), pos(i));
-        CHECK(saver.queued() == 3 && saver.dropped() == 1, "a fourth waiting character: the oldest entry (c1) is dropped and counted");
-        api.release();
-        saver.flush(seconds(3));
-        const auto s = api.saved();
-        CHECK(s.size() == 4 && s[0].id == "c0" && s[1].id == "c2" && s[2].id == "c3" && s[3].id == "c4", "c0 (in flight), c2, c3, c4 were saved; c1 was not");
-    }
-}
-
-static void check_saver_retries_and_errors() {
-    {
-        FakeCharacters api;
-        api.script = {svc::CallStatus::Unavailable, svc::CallStatus::Unavailable, svc::CallStatus::Ok};
-        CharacterSaver saver(api, quick());
-        saver.save("aa", pos(7));
-        CHECK(saver.flush(seconds(3)) && api.calls() == 3 && saver.saved() == 1 && saver.failed() == 0 && api.saved().size() == 1,
-              "an Unavailable service is tried again: two refusals then Ok is one saved position, not a failure");
-    }
-    {
-        FakeCharacters api;
-        api.script = {svc::CallStatus::Unavailable, svc::CallStatus::Unavailable, svc::CallStatus::Unavailable, svc::CallStatus::Ok};
-        CharacterSaver saver(api, quick());
-        saver.save("aa", pos(7));
-        saver.flush(seconds(3));
-        CHECK(api.calls() == 3 && saver.saved() == 0 && saver.failed() == 1 && saver.queued() == 0,
-              "three Unavailable answers (max_attempts) and the position is given up: counted as failed");
-    }
-    {
-        FakeCharacters api;
-        api.script = {svc::CallStatus::NotFound};
-        CharacterSaver saver(api, quick());
-        saver.save("aa", pos(7));
-        saver.flush(seconds(3));
-        api.script = {svc::CallStatus::Refused};
-        saver.save("bb", pos(8));
-        saver.flush(seconds(3));
-        CHECK(api.calls() == 2 && saver.failed() == 2 && saver.saved() == 0, "NotFound and Refused are final: one call each, no retry");
-    }
-    {
-        FakeCharacters api;
-        api.script = {svc::CallStatus::Unavailable, svc::CallStatus::Ok};
-        CharacterSaver::Config cfg = quick();
-        cfg.retry_delay = milliseconds(300);
-        CharacterSaver saver(api, cfg);
-        saver.save("aa", pos(1));
-        wait_until([&] { return api.calls() == 1; });
-        saver.save("aa", pos(2));
-        CHECK(!saver.flush(milliseconds(30)), "(flush does not report an empty queue while a retry is due)");
-        CHECK(saver.flush(seconds(3)), "(after the pause everything is saved)");
-        const auto s = api.saved();
-        CHECK(s.size() == 1 && s[0].position.x == 2 && api.calls() == 2, "the retry sends the newer position (2), not the old one: two calls, one saved");
-    }
-    {
-        FakeCharacters api;
-        api.throw_once = true;
-        CharacterSaver saver(api, quick());
-        saver.save("aa", pos(1));
-        saver.flush(seconds(3));
-        saver.save("bb", pos(2));
-        CHECK(saver.flush(seconds(3)) && saver.failed() == 1 && saver.saved() == 1, "a call that throws is a failure and the worker goes on: the next position is saved");
-    }
-}
-
-static void check_saver_flush_and_destructor() {
-    {
-        FakeCharacters api;
-        api.hold();
-        api.max_block = milliseconds(400);
-        CharacterSaver saver(api, quick());
-        saver.save("aa", pos(1));
-        const auto begin = std::chrono::steady_clock::now();
-        const bool done = saver.flush(milliseconds(50));
-        const auto took = std::chrono::steady_clock::now() - begin;
-        CHECK(!done && took >= milliseconds(40) && took < milliseconds(300), "flush(50 ms) on a hung service returns false after about 50 ms");
-        api.release();
-        CHECK(saver.flush(seconds(3)), "(released: flushed)");
-    }
-    {
-        FakeCharacters api;
-        {
-            CharacterSaver saver(api, quick());
-            saver.save("aa", pos(1));
-            saver.save("bb", pos(2));
-        }
-        CHECK(api.saved_count() == 2, "the destructor flushes what is queued");
-    }
-    {
-        FakeCharacters api;
-        api.hold();
-        api.max_block = milliseconds(300);
-        const auto begin = std::chrono::steady_clock::now();
-        {
-            CharacterSaver saver(api, quick(milliseconds(50)));
-            saver.save("aa", pos(1));
-            wait_until([&] { return api.in_flight(); });
-            saver.save("bb", pos(2));
-        }
-        const auto took = std::chrono::steady_clock::now() - begin;
-        const auto s = api.saved();
-        CHECK(took < seconds(2) && s.size() == 1 && s[0].id == "aa",
-              "with a hung service the destructor gives up after its bound: the call in flight finished, the waiting one was left behind");
-        spdlog::default_logger()->flush();
-        CHECK(g_log.str().find("not saved") != std::string::npos, "and it says so");
-    }
-}
-
-static void test_saver() {
-    std::printf("CharacterSaver\n");
-    check_saver_queue_and_bounds();
-    check_saver_retries_and_errors();
-    check_saver_flush_and_destructor();
 }
 
 static BunchWriter client_move_raw(const capture_moves::Move& mv) {
@@ -642,7 +663,14 @@ static void test_saving_in_the_session() {
     check_session_interval_sink_and_yaw();
 }
 
-void run_movement_part2() {
+int main() {
+    auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
+    logger->set_level(spdlog::level::debug);
+    spdlog::set_default_logger(logger);
+
+    test_correction_wire();
+    test_good_moves();
+    test_corrections();
     test_one_correction_per_datagram();
     test_racing_the_time_stamp();
     test_pending_and_old();
@@ -650,19 +678,7 @@ void run_movement_part2() {
     test_low_limit();
     test_refusal_logging();
     test_saving_in_the_session();
-}
-
-int main() {
-    auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
-    logger->set_level(spdlog::level::debug);
-    spdlog::set_default_logger(logger);
-
-    test_correction_wire();
-    test_saver();
-    test_good_moves();
-    test_corrections();
-    run_movement_part2();
-    run_movement_part3();
+    run_movement_saver();
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

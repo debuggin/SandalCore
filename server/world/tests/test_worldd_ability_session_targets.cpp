@@ -626,7 +626,7 @@ int main() {
         test_e1_ranged_book_at_wolf();
         test_e1_cylinder_in_own_block();
     } else {
-        std::printf("E1 ability session part5 tests: skipped (no content.db)\n");
+        std::printf("E1 ability session targets tests: skipped (no content.db)\n");
     }
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
