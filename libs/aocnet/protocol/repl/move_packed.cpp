@@ -1,37 +1,94 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  protocol/repl/move_packed.cpp
-//
-//  See move_packed.h.
-// ============================================================================
 #include "protocol/repl/move_packed.h"
 
 #include "protocol/wire/packet_reader.h"
 
+#include <algorithm>
 #include <bit>
+#include <cmath>
 
 namespace aoc { namespace protocol { namespace repl {
 
 using emit::BunchWriter;
 using wire::PacketReader;
 
+bool is_finite_vec3(const Vec3d& v) noexcept {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+
+double clamp_finite_component(double v, double max_abs) noexcept {
+    if (!std::isfinite(v) || !std::isfinite(max_abs) || max_abs <= 0.0) return 0.0;
+    return std::clamp(v, -max_abs, max_abs);
+}
+
+Vec3d clamp_move_vector(const Vec3d& v, double max_abs_component, double max_magnitude) noexcept {
+    Vec3d out{
+        clamp_finite_component(v.x, max_abs_component),
+        clamp_finite_component(v.y, max_abs_component),
+        clamp_finite_component(v.z, max_abs_component),
+    };
+    if (std::isfinite(max_magnitude) && max_magnitude > 0.0) {
+        const double mag = std::hypot(out.x, out.y, out.z);
+        if (mag > max_magnitude && mag > 0.0) {
+            const double ratio = max_magnitude / mag;
+            out.x *= ratio;
+            out.y *= ratio;
+            out.z *= ratio;
+        }
+    }
+    return out;
+}
+
+uint16_t quantize_rotation_axis_16(double degrees) noexcept {
+    if (!std::isfinite(degrees)) return 0u;
+    double wrapped = std::fmod(degrees, 360.0);
+    if (wrapped < 0.0) wrapped += 360.0;
+    const long long scaled = std::llround(wrapped * (65536.0 / 360.0));
+    return static_cast<uint16_t>(scaled & 0xFFFFLL);
+}
+
+Rot quantize_control_rotation(double pitch_deg, double yaw_deg, double roll_deg) noexcept {
+    return Rot{
+        quantize_rotation_axis_16(pitch_deg),
+        quantize_rotation_axis_16(yaw_deg),
+        quantize_rotation_axis_16(roll_deg),
+    };
+}
+
+QuantVec quantize_move_location_clamped(double x, double y, double z, double max_abs_cm) noexcept {
+    const double cx = clamp_finite_component(x, max_abs_cm);
+    const double cy = clamp_finite_component(y, max_abs_cm);
+    const double cz = clamp_finite_component(z, max_abs_cm);
+    return quantize_vector(cx, cy, cz, kMoveLocationScale);
+}
+
+QuantVec quantize_move_acceleration_clamped(double x, double y, double z, double max_abs_cm_s2) noexcept {
+    const double cx = clamp_finite_component(x, max_abs_cm_s2);
+    const double cy = clamp_finite_component(y, max_abs_cm_s2);
+    const double cz = clamp_finite_component(z, max_abs_cm_s2);
+    return quantize_vector(cx, cy, cz, kMoveAccelerationScale);
+}
+
 namespace {
+
+bool vec_within_abs_bound(const Vec3d& v, double max_abs) noexcept {
+    if (!is_finite_vec3(v) || !std::isfinite(max_abs) || max_abs <= 0.0) return false;
+    return std::abs(v.x) <= max_abs && std::abs(v.y) <= max_abs && std::abs(v.z) <= max_abs;
+}
 
 bool fail(std::string* why, const char* what, size_t at) {
     if (why) *why = std::string(what) + " at bit " + std::to_string(at);
     return false;
 }
 
-/// SerializeOptionalValue<uint8>: a bit that says whether the value differs from `fallback`, then the value.
 uint8_t read_optional_u8(PacketReader& r, uint8_t fallback) { return r.read_bit() ? r.read_uint8() : fallback; }
 
 void write_optional_u8(BunchWriter& out, uint8_t value, uint8_t fallback) {
     out.write_bit(value != fallback);
     if (value != fallback) out.write_uint8(value);
 }
-// ~ C | O | A & C Y B ~
 
 bool read_move(PacketReader& r, NetworkMove& m, std::string* why) {
     m.time_stamp = std::bit_cast<float>(r.read_uint32());
@@ -80,10 +137,28 @@ bool write_move(BunchWriter& out, const NetworkMove& m) {
 
 }  // namespace
 
-std::optional<MovePacked> read_move_packed(const uint8_t* data, size_t data_bytes, size_t pos, size_t end, std::string* why) {
-    // `end` is a claim of the caller (a bunch's own numbers); the buffer is what can be read. A parameter that claims
-    // bits the buffer does not hold is not a parameter.
-    if (end > data_bytes * 8) {
+bool network_move_is_finite_and_bounded(
+    const NetworkMove& m, double max_abs_coord_cm, double max_abs_accel_cm_s2) noexcept {
+    if (!std::isfinite(m.time_stamp) || !m.has_valid_base()) return false;
+    return vec_within_abs_bound(m.location_cm(), max_abs_coord_cm) &&
+           vec_within_abs_bound(m.acceleration_cm(), max_abs_accel_cm_s2);
+}
+
+bool move_packed_is_finite_and_bounded(
+    const MovePacked& moves, double max_abs_coord_cm, double max_abs_accel_cm_s2) noexcept {
+    if (!network_move_is_finite_and_bounded(moves.new_move, max_abs_coord_cm, max_abs_accel_cm_s2)) return false;
+    if (moves.pending && !network_move_is_finite_and_bounded(*moves.pending, max_abs_coord_cm, max_abs_accel_cm_s2)) {
+        return false;
+    }
+    if (moves.old && !network_move_is_finite_and_bounded(*moves.old, max_abs_coord_cm, max_abs_accel_cm_s2)) {
+        return false;
+    }
+    return true;
+}
+
+std::optional<MovePacked> read_move_packed(
+    const uint8_t* data, size_t data_bytes, size_t pos, size_t end, std::string* why) {
+    if (pos > end || end / 8 > data_bytes || ((end & 7u) != 0 && end / 8 == data_bytes)) {
         fail(why, "the parameter runs past the end of the buffer", end);
         return std::nullopt;
     }

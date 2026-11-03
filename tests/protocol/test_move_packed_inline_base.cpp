@@ -1,14 +1,140 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #include "../world/test_harness.h"
-#include "protocol/emit/bunch_writer.h"
+#include "protocol/conn/packet_notify.h"
 #include "protocol/repl/codecs.h"
 #include "protocol/repl/move_packed.h"
+#include "protocol/server_guid_allocator.h"
 #include "protocol/wire/packet_reader.h"
+#include <limits>
 
 namespace {
 
 constexpr uint8_t kExportHasPath = 0x01;
 constexpr uint8_t kExportNoLoad = 0x02;
 constexpr uint8_t kExportHasChecksum = 0x04;
+
+int test_move_packed_quantization_and_bounds() {
+    using namespace aoc::protocol::repl;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+
+    SANDAL_ASSERT(is_valid_inline_movement_base_object_id(1u));
+    SANDAL_ASSERT(!is_valid_inline_movement_base_object_id(0u));
+    SANDAL_ASSERT(!is_valid_inline_movement_base_object_id(2u));
+    SANDAL_ASSERT(clamp_finite_component(nan, 500.0) == 0.0);
+    SANDAL_ASSERT(clamp_finite_component(inf, 500.0) == 0.0);
+    SANDAL_ASSERT(clamp_finite_component(-900.0, 500.0) == -500.0);
+
+    const Vec3d clamped = clamp_move_vector(Vec3d{300.0, 400.0, 0.0}, 1000.0, 250.0);
+    SANDAL_ASSERT(is_finite_vec3(clamped));
+    SANDAL_ASSERT(clamped.x > 149.9 && clamped.x < 150.1);
+    SANDAL_ASSERT(clamped.y > 199.9 && clamped.y < 200.1);
+
+    SANDAL_ASSERT(quantize_rotation_axis_16(nan) == 0u);
+    SANDAL_ASSERT(quantize_rotation_axis_16(180.0) == 32768u);
+    SANDAL_ASSERT(quantize_rotation_axis_16(-90.0) == 49152u);
+    SANDAL_ASSERT(dequantize_rotation_axis_16(32768u) == 180.0);
+
+    MovePacked mp{};
+    mp.new_move.time_stamp = 12.5f;
+    mp.new_move.location = quantize_move_location_clamped(125.25, -450.5, 80.0);
+    mp.new_move.acceleration = quantize_move_acceleration_clamped(10.5, 0.0, -5.0);
+    mp.new_move.control_rotation = quantize_control_rotation(45.0, 90.0, 0.0);
+    mp.new_move.base = aoc::protocol::emit::FIntrepidNetworkGUID{0x01000002ULL, 60u, 0x1234u};
+    SANDAL_ASSERT(move_packed_is_finite_and_bounded(mp));
+
+    aoc::protocol::emit::BunchWriter bw;
+    SANDAL_ASSERT(write_move_packed(bw, mp));
+    auto decoded = read_move_packed(bw.data(), bw.byte_size(), 0, bw.bit_pos());
+    SANDAL_ASSERT(decoded.has_value() && *decoded == mp);
+
+    MovePacked bad_base = mp;
+    bad_base.new_move.base = aoc::protocol::emit::FIntrepidNetworkGUID::from_u64(1u);
+    SANDAL_ASSERT(!bad_base.new_move.has_valid_base());
+    SANDAL_ASSERT(!move_packed_is_finite_and_bounded(bad_base));
+    SANDAL_ASSERT(!write_move_packed(bw, bad_base));
+    return 0;
+}
+
+int test_server_guid_allocator_pm52_and_shards() {
+    using aoc::protocol::ServerGuidAllocator;
+    ServerGuidAllocator alloc(77u, 0xA5A55A5Au);
+    const auto g0 = alloc.next();
+    const auto g1 = alloc.next();
+    const auto g2 = alloc.next();
+    SANDAL_ASSERT(g0.ObjectId == ServerGuidAllocator::kFirstObjectId);
+    SANDAL_ASSERT(g1.ObjectId == g0.ObjectId + 2ULL);
+    SANDAL_ASSERT(g2.ObjectId == g1.ObjectId + 2ULL);
+    SANDAL_ASSERT(!aoc::protocol::has_pm52_inline_flag(g0.ObjectId));
+    SANDAL_ASSERT(aoc::protocol::has_pm52_inline_flag(1ULL));
+    SANDAL_ASSERT(aoc::protocol::is_server_allocated_guid(g0));
+    SANDAL_ASSERT(!aoc::protocol::is_server_allocated_guid(1ULL));
+
+    const uint64_t shard_guid = aoc::protocol::encode_shard_guid(0x1234u, 0x00ABCDEFULL);
+    SANDAL_ASSERT(!aoc::protocol::has_pm52_inline_flag(shard_guid));
+    SANDAL_ASSERT(aoc::protocol::extract_shard_id(shard_guid) == 0x1234u);
+    SANDAL_ASSERT(aoc::protocol::extract_raw_counter(shard_guid) == 0x00ABCDEFULL);
+    SANDAL_ASSERT(aoc::protocol::is_server_allocated_guid(shard_guid));
+
+    ServerGuidAllocator near_max(1u, 2u, ServerGuidAllocator::kMaxObjectId - 2ULL);
+    const auto pre_sat = near_max.next();
+    const auto sat_0 = near_max.next();
+    const auto sat_1 = near_max.next();
+    SANDAL_ASSERT(pre_sat.ObjectId == ServerGuidAllocator::kMaxObjectId - 2ULL);
+    SANDAL_ASSERT(sat_0.ObjectId == ServerGuidAllocator::kMaxObjectId);
+    SANDAL_ASSERT(sat_1.ObjectId == ServerGuidAllocator::kMaxObjectId);
+    SANDAL_ASSERT(!aoc::protocol::has_pm52_inline_flag(sat_1.ObjectId));
+    return 0;
+}
+
+int test_packet_notify_14bit_wraparound() {
+    using namespace aoc::protocol::conn;
+    SANDAL_ASSERT(kSequenceMask == 0x3FFFu);
+    SANDAL_ASSERT(seq14_advance(16383u, 1) == 0u);
+    SANDAL_ASSERT(seq14_advance(0u, -1) == 16383u);
+    SANDAL_ASSERT(seq14_distance(0u, 16383u) == 1);
+    SANDAL_ASSERT(seq14_distance(16383u, 0u) == -1);
+    SANDAL_ASSERT(seq14_is_newer(0u, 16383u));
+    SANDAL_ASSERT(!seq14_is_newer(16383u, 0u));
+    SANDAL_ASSERT(seq14_is_newer(8191u, 0u));
+    SANDAL_ASSERT(!seq14_is_newer(8192u, 0u));
+    SANDAL_ASSERT(seq14_in_ack_window(16383u, 2u, 32u));
+    SANDAL_ASSERT(!seq14_in_ack_window(3u, 2u, 32u));
+
+    PacketNotify sender;
+    PacketNotify receiver;
+    sender.init(99u, 16382u);
+    receiver.init(16381u, 100u);
+
+    for (int i = 0; i < 4; ++i) {
+        const NotifyHeader h = sender.make_header();
+        const uint16_t sent_seq = sender.commit_and_increment_out_seq();
+        SANDAL_ASSERT(h.seq == sent_seq);
+        const int delta = receiver.update(h, [](uint16_t, bool) {});
+        SANDAL_ASSERT(delta == 1);
+        receiver.ack_seq(h.seq);
+    }
+
+    const NotifyHeader reply = receiver.make_header();
+    receiver.commit_and_increment_out_seq();
+    SANDAL_ASSERT(reply.acked_seq == 1u);
+    SANDAL_ASSERT(reply.is_seq_delivered(1u));
+    SANDAL_ASSERT(reply.is_seq_delivered(0u));
+    SANDAL_ASSERT(reply.is_seq_delivered(16383u));
+    SANDAL_ASSERT(reply.is_seq_delivered(16382u));
+    SANDAL_ASSERT(!reply.is_delivered(kMaxHistoryBits));
+
+    int acked_packets = 0;
+    bool all_delivered = true;
+    const int rdelta = sender.update(reply, [&](uint16_t, bool delivered) {
+        if (!delivered) all_delivered = false;
+        ++acked_packets;
+    });
+    SANDAL_ASSERT(rdelta == 1 && acked_packets == 4 && all_delivered);
+    return 0;
+}
 
 int test_object_id_1_inline_movement_base_roundtrip() {
     aoc::protocol::repl::InlineObject inline_base{};
@@ -44,7 +170,9 @@ int test_object_id_1_inline_movement_base_roundtrip() {
     SANDAL_ASSERT(val_noload.has_value() && r_noload.remaining_bits() == 0);
     const auto* dec_noload = val_noload->get_if<aoc::protocol::repl::InlineObject>();
     SANDAL_ASSERT(dec_noload != nullptr && *dec_noload == no_load);
-    return 0;
+    if (test_move_packed_quantization_and_bounds() != 0) return 1;
+    if (test_server_guid_allocator_pm52_and_shards() != 0) return 1;
+    return test_packet_notify_14bit_wraparound();
 }
 
 void write_raw_inline_header(aoc::protocol::emit::BunchWriter& bw, uint8_t flags) {
@@ -109,14 +237,19 @@ int test_inline_movement_base_invalid_flags_rejected() {
 int main(int argc, char** argv) {
     const auto cfg = sandal::test::parse_test_cli(argc, argv);
     if (sandal::test::should_run_case(cfg, "object_id_1_inline_movement_base_roundtrip")) {
-        if (test_object_id_1_inline_movement_base_roundtrip() != 0) {
-            return 1;
-        }
+        if (test_object_id_1_inline_movement_base_roundtrip() != 0) return 1;
     }
     if (sandal::test::should_run_case(cfg, "inline_movement_base_invalid_flags_rejected")) {
-        if (test_inline_movement_base_invalid_flags_rejected() != 0) {
-            return 1;
-        }
+        if (test_inline_movement_base_invalid_flags_rejected() != 0) return 1;
+    }
+    if (sandal::test::should_run_case(cfg, "move_packed_quantization_and_bounds")) {
+        if (test_move_packed_quantization_and_bounds() != 0) return 1;
+    }
+    if (sandal::test::should_run_case(cfg, "server_guid_allocator_pm52_and_shards")) {
+        if (test_server_guid_allocator_pm52_and_shards() != 0) return 1;
+    }
+    if (sandal::test::should_run_case(cfg, "packet_notify_14bit_wraparound")) {
+        if (test_packet_notify_14bit_wraparound() != 0) return 1;
     }
     return 0;
 }
