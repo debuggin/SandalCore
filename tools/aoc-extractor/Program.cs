@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System.Buffers.Binary;
 using System.Text;
+using AocExtractor.Commands;
 using AocExtractor.Pipeline;
 using SandalCore.Config;
 using ZstdSharp;
@@ -17,7 +18,9 @@ public static class Program
         {
             (ExtractorOptions opts, bool selfTest) = ParseArgs(args);
             if (selfTest) { await RunSelfTestsAsync().ConfigureAwait(false); return 0; }
-            int count = await new IoStoreExtractionPipeline().RunAsync(opts).ConfigureAwait(false);
+            int count = opts.Command == "extract-db"
+                ? await ExtractDbCommand.ExecuteAsync(opts).ConfigureAwait(false)
+                : await new IoStoreExtractionPipeline().RunAsync(opts).ConfigureAwait(false);
             Console.WriteLine($"[aoc-extractor] Completed {opts.Command}: {count} package(s) processed.");
             return 0;
         }
@@ -63,7 +66,16 @@ public static class Program
         TestUsmapPassthroughOpenAndNegatives();
         await TestPipelineChannelAndAesValidationAsync(ct).ConfigureAwait(false);
         TestCliAndConfigRoundTrip();
-        Console.WriteLine("[SELF-TEST] PASS: all 7 semantic test suites succeeded.");
+        ExtractDbCommand.RunSelfTests();
+        string tmpOut = Path.Combine(Path.GetTempPath(), $"aoc_extract_db_{Guid.NewGuid():N}.db");
+        string sidecar = ExtractDbCommand.ResolveCatalogOutputPath(tmpOut);
+        try
+        {
+            int rows = await ExtractDbCommand.ExecuteAsync(new ExtractorOptions("", "", DefaultAesKeyHex, tmpOut, "", "extract-db"), ct).ConfigureAwait(false);
+            Assert(rows > 0 && File.Exists(sidecar), "ExtractDbCommand.ExecuteAsync sidecar export");
+        }
+        finally { if (File.Exists(sidecar)) File.Delete(sidecar); }
+        Console.WriteLine("[SELF-TEST] PASS: all 8 semantic test suites succeeded.");
     }
 
     private static byte[] BuildSyntheticPayload(bool includeV4EnumHeader)

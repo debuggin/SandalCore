@@ -260,6 +260,9 @@ var keep = map[string]bool{
 	"AttuneRecordBase":       true,
 	"RespawnRecordBase":      true,
 	"MasterAttuneRecordBase": true,
+	"UDayNightCycleData":     true,
+	"UWorldEventDefinition":  true,
+	"AAoCPopulationSpot":     true,
 }
 
 // -- C Y B x C.O.A --
@@ -472,6 +475,9 @@ func Build(ctx context.Context, opt Options) (*Summary, error) {
 	if err := buildWarehouse(w, src, &opt, meta); err != nil {
 		return nil, err
 	}
+	if err := buildSystem16(w, src, meta); err != nil {
+		return nil, err
+	}
 
 	// meta.
 	h := db.Header()
@@ -676,3 +682,41 @@ func earlierDBCs(path string) ([]string, error) {
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i]) < strings.ToLower(out[j]) })
 	return out, nil
 }
+
+func buildSystem16(w *writer, src *source, meta map[string]string) error {
+	dayComp, nightComp, cycleSec, events := 9.0, 6.0, 7200.0, 0
+	if src != nil {
+		for _, r := range src.rows["UDayNightCycleData"] {
+			f := newFields("UDayNightCycleData", r.Fields)
+			if v := f.optFloat("DayCompression"); v > 0 {
+				dayComp = v
+			}
+			if v := f.optFloat("NightCompression"); v > 0 {
+				nightComp = v
+			}
+			if v := f.optFloat("CycleLengthSec"); v > 0 {
+				cycleSec = v
+			}
+		}
+		for _, r := range src.rows["UWorldEventDefinition"] {
+			if err := w.exec(`INSERT OR REPLACE INTO world_event_defs (event_guid, name) VALUES (?, ?)`, r.Guid, r.Name); err != nil {
+				return err
+			}
+			events++
+		}
+		for _, r := range src.rows["AAoCPopulationSpot"] {
+			f := newFields("AAoCPopulationSpot", r.Fields)
+			npcGuid, _ := r.Fields["NpcGuid"].(int64)
+			sub, _ := r.Fields["Sublevel"].(string)
+			if err := w.exec(`INSERT OR REPLACE INTO world_spawners (spawner_id, spawner_category, actor_class, sublevel, npc_guid, x, y, z, radius) VALUES (?, 'mob', 'AAoCPopulationSpot', ?, ?, ?, ?, ?, ?)`,
+				r.Name, sub, npcGuid, f.optFloat("X"), f.optFloat("Y"), f.optFloat("Z"), f.optFloat("Radius")); err != nil {
+				return err
+			}
+		}
+	}
+	meta["typed.sky_clock_config"] = "1"
+	meta["typed.world_event_defs"] = strconv.Itoa(events)
+	return w.exec(`INSERT OR REPLACE INTO sky_clock_config (id, day_compression, night_compression, cycle_length_sec) VALUES (1, ?, ?, ?)`,
+		dayComp, nightComp, cycleSec)
+}
+

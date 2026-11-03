@@ -788,5 +788,8 @@ func Create(db *sql.DB) error {
 	if err := createCurrency(db); err != nil {
 		return err
 	}
+	if err := createSystem16(db); err != nil {
+		return err
+	}
 	return createWarehouse(db)
 }

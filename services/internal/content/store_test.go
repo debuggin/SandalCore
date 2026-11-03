@@ -90,8 +90,9 @@ func TestCreateMakesTheDocumentedTables(t *testing.T) {
 	want = append(want, CraftingTables...)   // crafting, step 0 (contentc version 20): the stations, recipes and rewards
 	want = append(want, QuestTables...)      // quests, slice 1 (contentc version 21): the quests, their objectives, the NPCs' offers and the accept nodes
 	want = append(want, CurrencyTables...)   // Glint tiers (contentc version 24): the currencies and the bags' stack-size stats
-	want = append(want, WarehouseTables...)  // storage, step 0 (contentc version 25): the warehouse defs, tabs and item chunks
-	want = append(want, RespawnTables...)    // Embersprings (contentc version 26): the places, the respawn definitions and the instances that name one
+	want = append(want, WarehouseTables...)     // storage, step 0 (contentc version 25): the warehouse defs, tabs and item chunks
+	want = append(want, RespawnTables...)       // Embersprings (contentc version 26): the places, the respawn definitions and the instances that name one
+	want = append(want, WorldSystem16Tables...) // System 16 world data (contentc version 37)
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("tables = %v\nwant     %v", got, want)
@@ -356,3 +357,48 @@ func TestQueries(t *testing.T) {
 		t.Error("Record(5, 11) succeeded")
 	}
 }
+
+func TestSystem16TablesRoundTrip(t *testing.T) {
+	path := newDB(t, "1")
+	sdb, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdb.Close()
+	for _, q := range []string{
+		`INSERT INTO world_spawners (spawner_id, spawner_category, actor_class, sublevel, npc_guid, x, y, z, radius) VALUES ('sp_1', 'mob', 'AAoCPopulationSpot', 'Riverlands', 101, 10, 20, 30, 500)`,
+		`INSERT INTO npc_abilities (npc_guid, ability_guid, ability_name, source) VALUES (101, 202, 'Slash', 'PopAsset')`,
+		`INSERT INTO world_interactables (interactable_id, actor_class, interactable_type, sublevel, x, y, z, radius) VALUES ('int_1', 'AAoCInteractable', 'chest', 'Riverlands', 1, 2, 3, 150)`,
+		`INSERT INTO node_stage_stations (node_guid, stage, station_id, station_type, rel_x, rel_y, rel_z) VALUES (301, 3, 'st_1', 'forge', 5, 6, 7)`,
+		`INSERT INTO zoi_foliage_spawns (zoi_guid, instance_idx, mesh_path, gatherable_guid, x, y, z) VALUES (401, 0, '/Game/Mesh/Tree', 501, 11, 22, 33)`,
+		`INSERT INTO water_volumes (volume_id, body_type, min_x, min_y, min_z, max_x, max_y, max_z) VALUES ('wat_1', 'lake', -100, -100, 0, 100, 100, 50)`,
+		`INSERT INTO hazard_volumes (volume_id, hazard_type, damage_per_tick, tick_ms, min_x, min_y, min_z, max_x, max_y, max_z) VALUES ('haz_1', 'lava', 25, 1000, -50, -50, 0, 50, 50, 20)`,
+		`INSERT INTO sky_clock_config (id, day_compression, night_compression, cycle_length_sec) VALUES (1, 9.0, 6.0, 7200.0)`,
+		`INSERT INTO fishing_spots (spot_id, fish_school_type, loot_table_guid, x, y, z, radius) VALUES ('fish_1', 'freshwater', 601, 12, 34, 56, 300)`,
+		`INSERT INTO treasure_sockets (socket_id, sublevel, loot_table_guid, x, y, z) VALUES ('tr_1', 'Riverlands', 701, 70, 80, 90)`,
+		`INSERT INTO world_event_defs (event_guid, name, min_node_stage, max_node_stage, state_graph_json) VALUES (801, 'CaravanAmbush', 1, 4, '{"start":"idle"}')`,
+		`INSERT INTO weather_cycles (zone_name, weather_state, weight, duration_sec) VALUES ('Riverlands', 'Rain', 0.25, 900)`,
+	} {
+		exec(t, sdb, q)
+	}
+	sdb.Close()
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, tbl := range WorldSystem16Tables {
+		var n int
+		if err := db.SQL().QueryRow(`SELECT count(*) FROM ` + tbl).Scan(&n); err != nil || n != 1 {
+			t.Errorf("table %s count = %d, err = %v", tbl, n, err)
+		}
+	}
+	if cfg, err := db.SkyClockConfig(); err != nil || cfg.DayCompression != 9.0 || cfg.NightCompression != 6.0 || cfg.CycleLengthSec != 7200.0 {
+		t.Errorf("SkyClockConfig = %+v, %v", cfg, err)
+	}
+	if evs, err := db.WorldEventDefs(); err != nil || len(evs) != 1 || evs[0].EventGuid != 801 || evs[0].Name != "CaravanAmbush" {
+		t.Errorf("WorldEventDefs = %+v, %v", evs, err)
+	}
+}
+
