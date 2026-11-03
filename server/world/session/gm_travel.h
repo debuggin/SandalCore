@@ -33,13 +33,46 @@
 #include "session/player_session.h"
 #include "session/player_world.h"
 #include "world/places.h"
-
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
 
 namespace aoc { namespace worldd {
+
+struct TravelSafetyBounds {
+    float min_z = -10000.0f, max_z = 50000.0f, world_extent = 1000000.0f;
+};
+
+struct TravelTargetValidation {
+    bool  valid = false, clamped_ground = false;
+    float clamped_x = 0.0f, clamped_y = 0.0f, clamped_z = 0.0f;
+};
+
+static constexpr float kGroundClampSafetyOffset = 0.5f;
+
+[[nodiscard]] inline TravelTargetValidation ValidateAndClampTravelTarget(
+    float x, float y, float z, const TravelSafetyBounds& bounds) noexcept {
+    TravelTargetValidation out{};
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+        !std::isfinite(bounds.min_z) || !std::isfinite(bounds.max_z) || !std::isfinite(bounds.world_extent) ||
+        bounds.min_z >= bounds.max_z || bounds.world_extent <= 0.0f ||
+        std::fabs(x) > bounds.world_extent || std::fabs(y) > bounds.world_extent || z > bounds.max_z) {
+        return out;
+    }
+    out.valid = true;
+    out.clamped_x = x;
+    out.clamped_y = y;
+    out.clamped_ground = z < bounds.min_z;
+    out.clamped_z = out.clamped_ground ? (bounds.min_z + kGroundClampSafetyOffset) : z;
+    return out;
+}
+
+[[nodiscard]] inline TravelTargetValidation ValidateAndClampTravelTarget(
+    float x, float y, float z, float min_z = -10000.0f, float max_z = 50000.0f) noexcept {
+    return ValidateAndClampTravelTarget(x, y, z, TravelSafetyBounds{min_z, max_z, 1000000.0f});
+}
 
 /// A client's text for the log: a control character (a newline would start a log line of the player's making) becomes '?'.  Every free string a player sends and worldd logs goes
 /// through it (Nodes 1 review A, M3).

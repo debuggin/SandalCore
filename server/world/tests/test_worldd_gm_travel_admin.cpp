@@ -676,6 +676,68 @@ static void test_admin_queue() {
     }
 }
 
+static void test_travel_coordinate_safety_and_clamp() {
+    std::printf("coordinate safety: finite bounds, world extent, and sub-terrain ground clamp\n");
+    const float nan_v = std::numeric_limits<float>::quiet_NaN();
+    const float inf_v = std::numeric_limits<float>::infinity();
+    CHECK(!aoc::worldd::ValidateAndClampTravelTarget(nan_v, 0.0f, 100.0f).valid, "NaN x coordinate is rejected");
+    CHECK(!aoc::worldd::ValidateAndClampTravelTarget(0.0f, inf_v, 100.0f).valid, "Inf y coordinate is rejected");
+    CHECK(!aoc::worldd::ValidateAndClampTravelTarget(0.0f, 0.0f, -inf_v).valid, "-Inf z coordinate is rejected");
+    CHECK(!aoc::worldd::ValidateAndClampTravelTarget(1000001.0f, 0.0f, 100.0f).valid, "x beyond world extent is rejected");
+    CHECK(!aoc::worldd::ValidateAndClampTravelTarget(0.0f, -1000001.0f, 100.0f).valid, "y beyond world extent is rejected");
+    CHECK(!aoc::worldd::ValidateAndClampTravelTarget(0.0f, 0.0f, 50001.0f).valid, "z above max_z ceiling is rejected");
+    const aoc::worldd::TravelTargetValidation ok = aoc::worldd::ValidateAndClampTravelTarget(1250.0f, -3400.0f, 420.0f);
+    CHECK(ok.valid && !ok.clamped_ground && near_to(ok.clamped_x, 1250.0f) && near_to(ok.clamped_z, 420.0f),
+          "in-bounds coordinates pass unchanged");
+    const aoc::worldd::TravelTargetValidation clamped =
+        aoc::worldd::ValidateAndClampTravelTarget(100.0f, 200.0f, -12000.0f, -10000.0f, 50000.0f);
+    CHECK(clamped.valid && clamped.clamped_ground && near_to(clamped.clamped_z, -9999.5f),
+          "sub-terrain z < min_z is clamped to min_z + 0.5f safety offset");
+    GmTeleportRequest req{"cyb", "", 250.0, -500.0, -15000.0, true}, sanitized{};
+    std::string err;
+    CHECK(svc::ValidateAndClampGmTeleportRequest(req, &sanitized, &err) && near_to(sanitized.z, -9999.5),
+          "ValidateAndClampGmTeleportRequest clamps sub-terrain z and preserves target");
+    req.x = 2000000.0;
+    CHECK(!svc::ValidateAndClampGmTeleportRequest(req, &sanitized, &err) && !err.empty(),
+          "ValidateAndClampGmTeleportRequest rejects out-of-world teleport request");
+}
+
+static void test_command_bus_and_admin_dispatch() {
+    std::printf("command bus: RBAC audit metadata, bounded queue drops, and hotfix reload dispatch\n");
+    svc::CommandAuditMeta audit{"op_gm", svc::kAdminRoleGm, true, "corr-01"};
+    std::string err;
+    CHECK(svc::ValidateAdminCommandAudit(audit, svc::kAdminRoleGm, &err), "verified GM role passes audit check");
+    CHECK(!svc::ValidateAdminCommandAudit(audit, svc::kAdminRoleHotfix, &err), "GM role without hotfix bit is refused");
+    audit.signature_verified = false;
+    CHECK(!svc::ValidateAdminCommandAudit(audit, svc::kAdminRoleGm, &err), "unverified signature is refused");
+
+    svc::CommandBus bus(2);
+    svc::ReloadContentHotfixesCommand cmd1{101, "op_hotfix", "tune loot tables", {"op_hotfix", svc::kAdminRoleHotfix, true, "c1"}};
+    svc::ReloadContentHotfixesCommand cmd2{102, "op_hotfix", "fix spawn timer", {"op_hotfix", svc::kAdminRoleSuperuser, true, "c2"}};
+    svc::ReloadContentHotfixesCommand cmd3{103, "op_hotfix", "overflow", {"op_hotfix", svc::kAdminRoleHotfix, true, "c3"}};
+    svc::ReloadContentHotfixesCommand bad_cmd{0, "", "invalid", {}};
+    CHECK(!bus.submit(bad_cmd) && bus.dropped_count() == 1, "invalid hotfix command is dropped");
+    CHECK(bus.submit(cmd1) && bus.submit(cmd2) && bus.enqueued_count() == 2 && bus.pending() == 2, "two valid commands enqueue");
+    CHECK(!bus.submit(cmd3) && bus.dropped_count() == 2, "command exceeding bounded capacity is dropped");
+
+    std::vector<uint64_t> versions;
+    const size_t drained = bus.drain([&](const svc::ReloadContentHotfixesCommand &c) { versions.push_back(c.expected_version); });
+    CHECK(drained == 2 && versions.size() == 2 && versions[0] == 101 && versions[1] == 102 && bus.drained_count() == 2,
+          "CommandBus drains enqueued hotfix commands in FIFO order");
+
+    svc::AdminQueue queue;
+    uint64_t applied = 0;
+    std::thread drain_worker([&] {
+        for (int i = 0; i < 200 && queue.ran() == 0; ++i) {
+            queue.drain();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    const bool dispatched = svc::SubmitAndDrainHotfixReload(bus, queue, cmd1, std::chrono::milliseconds(500), &applied);
+    drain_worker.join();
+    CHECK(dispatched && applied == 101 && bus.drained_count() == 3, "SubmitAndDrainHotfixReload executes on AdminQueue");
+}
+
 int main() {
   if (!init_gm_travel_globals()) {
     return 2;
@@ -689,6 +751,8 @@ int main() {
   test_client_text_in_the_log();
   test_admin_api();
   test_admin_queue();
+  test_travel_coordinate_safety_and_clamp();
+  test_command_bus_and_admin_dispatch();
   std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

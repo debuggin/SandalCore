@@ -18,6 +18,7 @@
 #pragma once
 
 #include "session/gm_travel.h"
+#include "svc/command_bus.h"
 
 #include <atomic>
 #include <chrono>
@@ -97,5 +98,16 @@ private:
     std::unique_ptr<grpc::Server> server_;
     int                          port_ = 0;
 };
+
+[[nodiscard]] bool ValidateAdminCommandAudit(
+    const CommandAuditMeta& audit, uint32_t required_roles, std::string* error = nullptr);
+
+[[nodiscard]] bool ValidateAndClampGmTeleportRequest(
+    const GmTeleportRequest& request, GmTeleportRequest* out, std::string* error = nullptr,
+    const TravelSafetyBounds& bounds = {});
+
+[[nodiscard]] bool SubmitAndDrainHotfixReload(
+    CommandBus& bus, AdminQueue& queue, const ReloadContentHotfixesCommand& cmd,
+    std::chrono::milliseconds timeout, uint64_t* applied_version = nullptr);
 
 }}}  // namespace aoc::worldd::svc

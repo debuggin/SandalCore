@@ -496,4 +496,58 @@ void WorldAdminServer::stop() {
 
 uint64_t WorldAdminServer::refused() const { return service_->refused_calls.load(); }
 
+bool ValidateAdminCommandAudit(const CommandAuditMeta& audit, uint32_t required_roles, std::string* error) {
+    if (!audit.signature_verified) {
+        if (error) *error = "operator signature is not verified";
+        return false;
+    }
+    if (audit.operator_id.empty()) {
+        if (error) *error = "operator_id is empty";
+        return false;
+    }
+    if (!audit.is_authorized(required_roles)) {
+        if (error) *error = "insufficient operator role mask";
+        return false;
+    }
+    return true;
+}
+
+bool ValidateAndClampGmTeleportRequest(
+    const GmTeleportRequest& request, GmTeleportRequest* out, std::string* error, const TravelSafetyBounds& bounds) {
+    if (request.character.empty()) {
+        if (error) *error = "the character is empty";
+        return false;
+    }
+    if (!request.place.empty()) {
+        if (out) *out = request;
+        return true;
+    }
+    const float z_in = request.has_z ? static_cast<float>(request.z) : 0.0f;
+    const TravelTargetValidation check = ValidateAndClampTravelTarget(
+        static_cast<float>(request.x), static_cast<float>(request.y), z_in, bounds);
+    if (!check.valid) {
+        if (error) *error = "coordinates are out of world safety bounds";
+        return false;
+    }
+    if (out) {
+        *out = request;
+        out->x = static_cast<double>(check.clamped_x);
+        out->y = static_cast<double>(check.clamped_y);
+        if (request.has_z) out->z = static_cast<double>(check.clamped_z);
+    }
+    return true;
+}
+
+bool SubmitAndDrainHotfixReload(
+    CommandBus& bus, AdminQueue& queue, const ReloadContentHotfixesCommand& cmd,
+    std::chrono::milliseconds timeout, uint64_t* applied_version) {
+    if (!bus.submit(cmd)) return false;
+    uint64_t latest = 0;
+    const bool ran = queue.run([&] {
+        bus.drain([&](const ReloadContentHotfixesCommand& item) { latest = item.expected_version; }, 1);
+    }, timeout);
+    if (ran && applied_version) *applied_version = latest;
+    return ran && latest != 0;
+}
+
 }}}  // namespace aoc::worldd::svc
