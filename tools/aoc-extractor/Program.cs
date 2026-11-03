@@ -18,9 +18,15 @@ public static class Program
         {
             (ExtractorOptions opts, bool selfTest) = ParseArgs(args);
             if (selfTest) { await RunSelfTestsAsync().ConfigureAwait(false); return 0; }
-            int count = opts.Command == "extract-db"
-                ? await ExtractDbCommand.ExecuteAsync(opts).ConfigureAwait(false)
-                : await new IoStoreExtractionPipeline().RunAsync(opts).ConfigureAwait(false);
+            if (opts.Command == "extract-tiles") return ExtractTilesCommand.ExecuteExtractTiles(args);
+            if (opts.Command == "verify-standin") return ExtractTilesCommand.ExecuteVerifyStandIn(args);
+            int count = opts.Command switch
+            {
+                "extract-db" => await ExtractDbCommand.ExecuteAsync(opts).ConfigureAwait(false),
+                "extract-vmap" => await ExtractVmapCommand.ExecuteAsync(opts).ConfigureAwait(false),
+                "extract-nav" => await ExtractNavCommand.ExecuteAsync(opts).ConfigureAwait(false),
+                _ => await new IoStoreExtractionPipeline().RunAsync(opts).ConfigureAwait(false)
+            };
             Console.WriteLine($"[aoc-extractor] Completed {opts.Command}: {count} package(s) processed.");
             return 0;
         }
@@ -51,6 +57,7 @@ public static class Program
                 case "--aes-key": aesKey = NextVal(); break;
                 case "--out-sqlite": outSqlite = NextVal(); break;
                 case "--out-nav": outNav = NextVal(); break;
+                case "--out" or "--out-pmtiles" or "--max-zoom" or "--out-dir": _ = NextVal(); break;
                 default:
                     if (arg.StartsWith("--", StringComparison.Ordinal)) throw new ArgumentException($"Unknown option: {arg}");
                     cmd = arg;
@@ -60,6 +67,8 @@ public static class Program
         return (new ExtractorOptions(pakDir, usmap, aesKey, outSqlite, outNav, cmd), selfTest);
     }
 
+    public static Task RunAllSelfTests(CancellationToken ct = default) => RunSelfTestsAsync(ct);
+
     public static async Task RunSelfTestsAsync(CancellationToken ct = default)
     {
         TestUsmapDowngradeUncompressedAndZstd();
@@ -67,15 +76,25 @@ public static class Program
         await TestPipelineChannelAndAesValidationAsync(ct).ConfigureAwait(false);
         TestCliAndConfigRoundTrip();
         ExtractDbCommand.RunSelfTests();
+        ExtractVmapCommand.RunSelfTests();
+        ExtractNavCommand.RunSelfTests();
+        ExtractTilesCommand.RunSelfTest();
         string tmpOut = Path.Combine(Path.GetTempPath(), $"aoc_extract_db_{Guid.NewGuid():N}.db");
+        string tmpNavDir = Path.Combine(Path.GetTempPath(), $"aoc_extract_nav_{Guid.NewGuid():N}");
         string sidecar = ExtractDbCommand.ResolveCatalogOutputPath(tmpOut);
         try
         {
             int rows = await ExtractDbCommand.ExecuteAsync(new ExtractorOptions("", "", DefaultAesKeyHex, tmpOut, "", "extract-db"), ct).ConfigureAwait(false);
-            Assert(rows > 0 && File.Exists(sidecar), "ExtractDbCommand.ExecuteAsync sidecar export");
+            int vmapTiles = await ExtractVmapCommand.ExecuteAsync(new ExtractorOptions("", "", DefaultAesKeyHex, "", tmpNavDir, "extract-vmap"), ct).ConfigureAwait(false);
+            int navTiles = await ExtractNavCommand.ExecuteAsync(new ExtractorOptions("", "", DefaultAesKeyHex, "", tmpNavDir, "extract-nav"), ct).ConfigureAwait(false);
+            Assert(rows > 0 && File.Exists(sidecar) && vmapTiles > 0 && navTiles > 0, "ExtractDb/Vmap/Nav ExecuteAsync exports");
         }
-        finally { if (File.Exists(sidecar)) File.Delete(sidecar); }
-        Console.WriteLine("[SELF-TEST] PASS: all 8 semantic test suites succeeded.");
+        finally
+        {
+            if (File.Exists(sidecar)) File.Delete(sidecar);
+            if (Directory.Exists(tmpNavDir)) Directory.Delete(tmpNavDir, recursive: true);
+        }
+        Console.WriteLine("[SELF-TEST] PASS: all 14 semantic test suites succeeded.");
     }
 
     private static byte[] BuildSyntheticPayload(bool includeV4EnumHeader)
