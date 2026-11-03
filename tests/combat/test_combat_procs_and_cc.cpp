@@ -1,134 +1,305 @@
-#include "../world/test_harness.h"
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
+#include "combat/hit_port.h"
+#include "session/abilities.h"
+#include "session/ability_pipeline.h"
+#include "stats/character_stats.h"
+#include "stats/stat_engine.h"
+#include "stats/stat_program.h"
+
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <string>
+#include <vector>
 
 namespace {
 
-constexpr uint8_t kMaxProcDepth = 3U;
+using namespace aoc::worldd;
 
-struct ProcGuardState {
-    uint8_t active_depth{0};
-    int64_t last_proc_ms{-10'000};
-    int64_t icd_ms{500};
-    uint32_t fired_count{0};
+#define CHECK(expr)                                                                                 \
+    do {                                                                                            \
+        if (!(expr)) {                                                                              \
+            std::fprintf(stderr, "[FAIL] %s:%d: %s\n", __FILE__, __LINE__, #expr);                  \
+            std::exit(1);                                                                           \
+        }                                                                                           \
+    } while (0)
+
+#define CHECK_NEAR(a, b, eps) CHECK(std::fabs(static_cast<double>(a) - static_cast<double>(b)) <= (eps))
+
+class EmptyGearCatalog final : public stats::GearCatalog {
+public:
+    const stats::ItemGear* item(int64_t) const override { return nullptr; }
+    const stats::SetBonus* set(int64_t) const override { return nullptr; }
+    std::string slot_name(int) const override { return ""; }
 };
 
-[[nodiscard]] bool try_fire_proc(
-    ProcGuardState& state,
-    bool is_reaction_source,
-    int64_t now_ms) noexcept {
-    if (is_reaction_source || state.active_depth >= kMaxProcDepth) {
-        return false;
-    }
-    if ((now_ms - state.last_proc_ms) < state.icd_ms) {
-        return false;
-    }
-    ++state.active_depth;
-    state.last_proc_ms = now_ms;
-    ++state.fired_count;
-    return true;
+int32_t add_const_program(stats::StatBundle& b, double val) {
+    const uint16_t idx = static_cast<uint16_t>(b.consts.size());
+    b.consts.push_back(val);
+    stats::Program p;
+    p.locals = 0;
+    p.code = {
+        stats::op::Const,
+        static_cast<uint8_t>(idx & 0xFFu),
+        static_cast<uint8_t>((idx >> 8) & 0xFFu),
+        stats::op::Ret,
+    };
+    const int32_t prog_id = static_cast<int32_t>(b.programs.size());
+    b.programs.push_back(std::move(p));
+    return prog_id;
 }
 
-struct CcTracker {
-    uint8_t dr_stacks{0};
-    int64_t lockout_until_ms{0};
-    int64_t window_reset_ms{0};
-    int32_t active_debuff_stacks{0};
+void add_stat_def(stats::StatBundle& b, int64_t guid, double base_val, uint8_t flags, double min_val,
+                  bool has_min) {
+    const uint32_t stat_idx = static_cast<uint32_t>(b.stats.size());
+    stats::Stat s;
+    s.guid = guid;
+    s.flags = flags;
+    s.base = add_const_program(b, base_val);
+    if (has_min) {
+        s.min = add_const_program(b, min_val);
+    }
+    b.stats.push_back(s);
+    b.by_guid[guid] = stat_idx;
+    b.order.push_back((stat_idx << 1u) | stats::kNodeInit);
+    b.order.push_back((stat_idx << 1u) | stats::kNodeValue);
+}
+
+content::AbilityRules build_ability_rules() {
+    content::AbilityRules rules;
+    rules.stat_regen_time = 1.0;
+    rules.regen_rate = 5.0;
+
+    rules.sprint.guid = content::kGuidSprint;
+    rules.sprint.held = content::Held::Smart;
+    rules.sprint.min_stamina = 1.0;
+    rules.sprint.cost_stat_guid = content::kGuidStamina;
+    rules.sprint.cost_amount = 1.25;
+    rules.sprint.charge_interval = 0.25;
+    rules.sprint.effect_guid = 9101;
+
+    rules.dodge.guid = content::kGuidDodge;
+    rules.dodge.cost_stat_guid = content::kGuidStamina;
+    rules.dodge.cost_amount = 50.0;
+    rules.dodge.cooldown = 0.65;
+    rules.dodge.triggers_cooldown = true;
+    rules.dodge.disable_during_cooldown = true;
+    rules.dodge.effect_guid = 9102;
+
+    rules.rest.guid = content::kGuidRest;
+    rules.rest.held = content::Held::Toggle;
+    rules.rest.requires_out_of_combat = true;
+    rules.rest.effect_guid = 9103;
+
+    content::EffectRule sprint_eff;
+    sprint_eff.guid = 9101;
+    sprint_eff.infinite = true;
+    sprint_eff.stops_regen_moving = true;
+    sprint_eff.end_effect_guid = 9104;
+    sprint_eff.end_effect_duration = 1.0;
+    rules.effects[9101] = sprint_eff;
+
+    content::EffectRule evasion_eff;
+    evasion_eff.guid = 9102;
+    evasion_eff.duration = 0.50;
+    evasion_eff.stops_regen_standing = true;
+    evasion_eff.stops_regen_moving = true;
+    evasion_eff.end_effect_guid = 9104;
+    evasion_eff.end_effect_duration = 1.0;
+    rules.effects[9102] = evasion_eff;
+
+    content::EffectRule rest_eff;
+    rest_eff.guid = 9103;
+    rest_eff.infinite = true;
+    rules.effects[9103] = rest_eff;
+
+    content::EffectRule pause_eff;
+    pause_eff.guid = 9104;
+    pause_eff.duration = 1.0;
+    pause_eff.stops_regen_standing = true;
+    pause_eff.stops_regen_moving = true;
+    rules.effects[9104] = pause_eff;
+
+    return rules;
+}
+
+struct PipelineFixture {
+    static constexpr int64_t kStatCcScale = 8801;
+    static constexpr int64_t kStatProcBonus = 8802;
+
+    stats::StatBundle bundle;
+    EmptyGearCatalog gear;
+    content::AbilityRules rules;
+
+    PipelineFixture() : rules(build_ability_rules()) {
+        add_stat_def(bundle, content::kGuidHealth, 500.0, stats::kStatSpawnMax, 0.0, false);
+        add_stat_def(bundle, content::kGuidMaxHealth, 500.0, 0, 0.0, false);
+        add_stat_def(bundle, content::kGuidStamina, 100.0, stats::kStatSpawnMax, 0.0, false);
+        add_stat_def(bundle, content::kGuidMaxStamina, 100.0, 0, 0.0, false);
+        add_stat_def(bundle, kStatCcScale, 1.0, stats::kStatMulMods | stats::kStatMulCompl, 0.20, true);
+        add_stat_def(bundle, kStatProcBonus, 10.0, 0, 0.0, false);
+
+        stats::ClassDef cls;
+        cls.enum_value = 1;
+        for (uint32_t i = 0; i < static_cast<uint32_t>(bundle.stats.size()); ++i) {
+            cls.members.push_back(i);
+        }
+        bundle.classes.push_back(std::move(cls));
+    }
 };
 
-[[nodiscard]] int64_t apply_cc_or_debuff(
-    CcTracker& tracker,
-    bool is_hard_cc,
-    int64_t base_duration_ms,
-    int64_t now_ms) noexcept {
-    if (base_duration_ms <= 0) {
-        return 0;
-    }
-    if (!is_hard_cc) {
-        ++tracker.active_debuff_stacks;
-        return base_duration_ms;
-    }
-    if (now_ms < tracker.lockout_until_ms) {
-        return 0;
-    }
-    if (now_ms >= tracker.window_reset_ms) {
-        tracker.dr_stacks = 0U;
-    }
-    const int64_t scaled = base_duration_ms >> tracker.dr_stacks;
-    ++tracker.dr_stacks;
-    tracker.window_reset_ms = now_ms + 15'000;
-    if (tracker.dr_stacks >= 3U) {
-        tracker.lockout_until_ms = now_ms + 10'000;
-    }
-    return scaled;
+void case_proc_chain_depth_guard() {
+    PipelineFixture fx;
+    std::string err;
+
+    CHECK(AbilityPipeline::kMaxApplyDepth == 4);
+    CHECK(AbilityPipeline::kMaxEffects == 256u);
+    CHECK(AbilityPipeline::kMaxStepsPerAdvance == 100000u);
+    CHECK(stats::kMaxEffectStacks == 4096);
+
+    stats::CharacterStats cstats(fx.bundle, fx.gear, 1, 10);
+    std::vector<stats::WornItem> empty_worn;
+    CHECK(cstats.start(empty_worn, err));
+
+    std::map<int64_t, double> init_stats = {
+        {content::kGuidStamina, 100.0},
+        {content::kGuidMaxStamina, 100.0},
+    };
+    AbilityRuntime a7(fx.rules, init_stats, 0.0);
+    CHECK(a7.ok());
+
+    AbilityPipeline pipeline(nullptr, cstats, a7, [&]() { return empty_worn; }, 0.0, 77u);
+    CHECK(pipeline.reactions_enabled());
+    CHECK(pipeline.reactions_fired() == 0u);
+
+    pipeline.set_reaction_carriers({6001, 6002});
+    pipeline.set_reactions_enabled(false);
+    CHECK(!pipeline.reactions_enabled());
+
+    combat::IncomingHit hit;
+    hit.instigator = 500;
+    hit.source_type = content::kSourceTypeReaction;
+    hit.source_guid = 6001;
+    hit.hit_guid = 7001;
+    hit.mods.push_back(combat::ResolvedMod{7101, content::kGuidHealth, -50.0});
+    pipeline.receive_hit(hit, 1.0);
+    CHECK(pipeline.reactions_fired() == 0u);
+
+    const auto* hp_after_hit = cstats.find(content::kGuidHealth);
+    CHECK(hp_after_hit != nullptr);
+    CHECK_NEAR(hp_after_hit->value, 450.0f, 1e-4);
+
+    combat::IncomingHit miss_hit = hit;
+    miss_hit.flags = stats::kHitMiss;
+    pipeline.receive_hit(miss_hit, 1.5);
+    CHECK_NEAR(cstats.find(content::kGuidHealth)->value, 450.0f, 1e-4);
+
+    pipeline.set_dead(true);
+    CHECK(pipeline.dead());
 }
 
-int test_proc_chain_depth_guard() {
-    sandal::test::ManualClock clock{0};
-    ProcGuardState state{};
+void verify_dr_complement_scaling(const PipelineFixture& fx, stats::CharacterStats& cstats) {
+    std::string err;
+    std::vector<stats::WornItem> empty_worn;
+    std::vector<stats::StatValue> changed;
 
-    SANDAL_ASSERT(!try_fire_proc(state, true, clock.now_ms()));
-    SANDAL_ASSERT(state.fired_count == 0U);
+    auto make_dr_effect = [](int stacks) {
+        stats::ActiveEffect eff;
+        eff.effect = {stats::kRefTypeEffect, 4001};
+        eff.stacks = stacks;
+        eff.tags = {"CC.Stun.Diminishing"};
+        eff.mods = {{PipelineFixture::kStatCcScale, 0.50}};
+        return eff;
+    };
 
-    SANDAL_ASSERT(try_fire_proc(state, false, clock.now_ms()));
-    SANDAL_ASSERT(state.active_depth == 1U && state.fired_count == 1U);
-    SANDAL_ASSERT(!try_fire_proc(state, false, clock.now_ms()));
+    cstats.set_effects({make_dr_effect(1)});
+    CHECK(cstats.update(empty_worn, changed, err));
+    CHECK_NEAR(cstats.find(PipelineFixture::kStatCcScale)->value, 0.50f, 1e-5);
 
-    clock.advance_ms(499);
-    SANDAL_ASSERT(!try_fire_proc(state, false, clock.now_ms()));
-    clock.advance_ms(1);
-    SANDAL_ASSERT(try_fire_proc(state, false, clock.now_ms()));
+    cstats.set_effects({make_dr_effect(2)});
+    CHECK(cstats.update(empty_worn, changed, err));
+    CHECK_NEAR(cstats.find(PipelineFixture::kStatCcScale)->value, 0.25f, 1e-5);
 
-    clock.advance_ms(500);
-    SANDAL_ASSERT(try_fire_proc(state, false, clock.now_ms()));
-    SANDAL_ASSERT(state.active_depth == kMaxProcDepth);
+    cstats.set_effects({make_dr_effect(3)});
+    CHECK(cstats.update(empty_worn, changed, err));
+    CHECK_NEAR(cstats.find(PipelineFixture::kStatCcScale)->value, 0.20f, 1e-5);
 
-    clock.advance_ms(500);
-    SANDAL_ASSERT(!try_fire_proc(state, false, clock.now_ms()));
-    SANDAL_ASSERT(state.fired_count == 3U);
-    return 0;
+    auto eval = cstats.evaluation(empty_worn, err);
+    CHECK(eval && eval->ok());
+    CHECK(eval->inputs().effects.size() == 1u);
+    CHECK(eval->inputs().effects[0].effect == (stats::RecordRef{stats::kRefTypeEffect, 4001}));
+    CHECK(eval->inputs().effects[0].stacks == 3);
+    CHECK(stats::tag_matches(eval->inputs().effects[0].tags[0], "CC.Stun"));
 }
 
-int test_cc_diminishing_returns_clock() {
-    sandal::test::ManualClock clock{1'000};
-    CcTracker tracker{};
+void case_cc_diminishing_returns_clock() {
+    PipelineFixture fx;
+    std::string err;
+    stats::CharacterStats cstats(fx.bundle, fx.gear, 1, 10);
+    std::vector<stats::WornItem> empty_worn;
+    CHECK(cstats.start(empty_worn, err));
 
-    SANDAL_ASSERT(apply_cc_or_debuff(tracker, false, 4'000, clock.now_ms()) == 4'000);
-    SANDAL_ASSERT(tracker.active_debuff_stacks == 1 && tracker.dr_stacks == 0U);
+    verify_dr_complement_scaling(fx, cstats);
 
-    SANDAL_ASSERT(apply_cc_or_debuff(tracker, true, 4'000, clock.now_ms()) == 4'000);
-    clock.advance_ms(1'000);
-    SANDAL_ASSERT(apply_cc_or_debuff(tracker, true, 4'000, clock.now_ms()) == 2'000);
-    clock.advance_ms(1'000);
-    SANDAL_ASSERT(apply_cc_or_debuff(tracker, true, 4'000, clock.now_ms()) == 1'000);
+    std::map<int64_t, double> init_stats = {
+        {content::kGuidStamina, 100.0},
+        {content::kGuidMaxStamina, 100.0},
+    };
+    AbilityRuntime a7(fx.rules, init_stats, 0.0);
+    CHECK(a7.ok());
 
-    clock.advance_ms(9'999);
-    SANDAL_ASSERT(apply_cc_or_debuff(tracker, true, 4'000, clock.now_ms()) == 0);
+    CHECK(a7.trigger(content::kGuidDodge, 10, 1.0) == Refusal::None);
+    CHECK(a7.evading());
+    CHECK(a7.regeneration_blocked(1.1));
+    CHECK_NEAR(a7.stamina(), 50.0, 1e-5);
+    CHECK_NEAR(a7.dodge_cooldown_until(), 1.65, 1e-5);
 
-    clock.advance_ms(1);
-    SANDAL_ASSERT(apply_cc_or_debuff(tracker, true, 0, clock.now_ms()) == 0);
-    clock.advance_ms(5'000);
-    SANDAL_ASSERT(apply_cc_or_debuff(tracker, true, 4'000, clock.now_ms()) == 4'000);
-    return 0;
+    CHECK(a7.trigger(content::kGuidDodge, 11, 1.3) == Refusal::Cooldown);
+    CHECK(a7.refused() == 1u);
+
+    a7.tick(1.55);
+    CHECK(!a7.evading());
+    CHECK(a7.regeneration_blocked(1.55));
+    CHECK_NEAR(a7.regen_pause_until(), 2.50, 1e-5);
+
+    a7.tick(2.60);
+    CHECK(!a7.regeneration_blocked(2.60));
+    CHECK(a7.trigger(content::kGuidDodge, 12, 2.60) == Refusal::None);
+    CHECK(a7.evading());
+    CHECK_NEAR(a7.stamina(), 0.0, 1e-5);
+
+    a7.tick(3.50);
+    CHECK(a7.trigger(content::kGuidDodge, 13, 3.50) == Refusal::Stamina);
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    const auto cfg = sandal::test::parse_test_cli(argc, argv);
-    int ran = 0;
-    if (sandal::test::should_run_case(cfg, "proc_chain_depth_guard")) {
-        if (test_proc_chain_depth_guard() != 0) {
-            return 1;
+    const char* selected_case = nullptr;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--case") == 0 && i + 1 < argc) {
+            selected_case = argv[++i];
         }
-        ++ran;
     }
-    if (sandal::test::should_run_case(cfg, "cc_diminishing_returns_clock")) {
-        if (test_cc_diminishing_returns_clock() != 0) {
-            return 1;
-        }
-        ++ran;
+
+    if (!selected_case || std::strcmp(selected_case, "proc_chain_depth_guard") == 0) {
+        case_proc_chain_depth_guard();
     }
-    SANDAL_ASSERT(ran > 0);
+    if (!selected_case || std::strcmp(selected_case, "cc_diminishing_returns_clock") == 0) {
+        case_cc_diminishing_returns_clock();
+    }
+    if (selected_case && std::strcmp(selected_case, "proc_chain_depth_guard") != 0 &&
+        std::strcmp(selected_case, "cc_diminishing_returns_clock") != 0) {
+        std::fprintf(stderr, "Unknown --case %s\n", selected_case);
+        return 2;
+    }
+
+    std::printf("[PASS] test_combat_procs_and_cc\n");
     return 0;
 }

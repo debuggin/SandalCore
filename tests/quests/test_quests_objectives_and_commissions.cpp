@@ -1,95 +1,170 @@
 #include "../world/test_harness.h"
 
+#include "dialogue/requirement.h"
+#include "quest/engine.h"
+#include "quest/quest_book.h"
+#include "quest/quest_log.h"
+#include "quest/quest_wire.h"
+
 #include <algorithm>
 #include <cstdint>
+#include <map>
+#include <optional>
+#include <string>
+#include <vector>
 
 namespace {
 
-struct QuestProgress {
-    uint32_t current_kills{0};
-    uint32_t required_kills{5};
-    uint32_t delivered_items{0};
-    uint32_t required_items{3};
-    int64_t completed_at_ms{0};
-    bool ready_to_turn_in{false};
+namespace dlg = aoc::worldd::dialogue;
+namespace qst = aoc::worldd::quest;
+namespace cnt = aoc::worldd::content;
+
+struct QuestFacts final : dlg::Facts {
+    const qst::QuestLog* log{nullptr};
+    std::map<int64_t, int64_t> items{};
+
+    int64_t item_count(
+        const std::vector<int64_t>& records, const std::vector<std::string>&) const override {
+        int64_t sum = 0;
+        for (const int64_t r : records) {
+            const auto it = items.find(r);
+            if (it != items.end()) sum += it->second;
+        }
+        return sum;
+    }
+    std::optional<int64_t> quest_count(int64_t q, const std::string& query) const override {
+        return log ? log->quest_count(q, query) : std::optional<int64_t>(0);
+    }
+    std::optional<int64_t> objective_count(
+        int64_t q, int64_t o, const std::string& query) const override {
+        return log ? log->objective_count(q, o, query) : std::optional<int64_t>(0);
+    }
 };
 
-[[nodiscard]] bool record_quest_objective_step(
-    QuestProgress& q,
-    uint32_t add_kills,
-    uint32_t add_items,
-    int64_t now_ms) noexcept {
-    if (q.ready_to_turn_in || (add_kills == 0U && add_items == 0U)) {
-        return false;
-    }
-    q.current_kills = std::min(q.required_kills, q.current_kills + add_kills);
-    q.delivered_items = std::min(q.required_items, q.delivered_items + add_items);
-    if (q.current_kills == q.required_kills && q.delivered_items == q.required_items) {
-        q.ready_to_turn_in = true;
-        q.completed_at_ms = now_ms;
-    }
-    return true;
-}
+cnt::QuestRow build_multi_step_quest() {
+    cnt::QuestRow q{};
+    q.guid = 5000;
+    q.name = "Cull_And_Scout";
+    q.flavor = "Quest";
 
-struct CommissionPayout {
-    uint32_t dim_glint{0};
-    uint32_t dull_glint{0};
-    uint32_t granted_xp{0};
-    bool claimed{false};
-};
+    cnt::QuestObjectiveRow kill_obj{};
+    kill_obj.guid = 5001;
+    kill_obj.type = "Kill";
+    kill_obj.count = 5;
+    kill_obj.awake = true;
+    kill_obj.advanced = true;
+    kill_obj.elite = 1;
+    kill_obj.kill_instances = {8001};
+    cnt::QuestAction act_pos{};
+    act_pos.action = "ActivateObjective";
+    act_pos.quest = 5000;
+    act_pos.objective = 5003;
+    kill_obj.on_success = {act_pos};
 
-[[nodiscard]] bool claim_commission_reward(
-    CommissionPayout& out,
-    bool objective_complete,
-    uint32_t total_t1_glint,
-    uint32_t base_xp) noexcept {
-    if (!objective_complete || out.claimed || total_t1_glint == 0U) {
-        return false;
-    }
-    out.dim_glint = total_t1_glint / 10U;
-    out.dull_glint = total_t1_glint % 10U;
-    out.granted_xp = base_xp;
-    out.claimed = true;
-    return true;
+    cnt::QuestObjectiveRow craft_obj{};
+    craft_obj.guid = 5002;
+    craft_obj.type = "Collect";
+    craft_obj.collect_type = "Craft";
+    craft_obj.count = 3;
+    craft_obj.awake = true;
+    craft_obj.items = {9001};
+
+    cnt::QuestObjectiveRow pos_obj{};
+    pos_obj.guid = 5003;
+    pos_obj.type = "GoTo";
+    pos_obj.count = 1;
+    pos_obj.awake = false;
+    pos_obj.locations = {cnt::QuestLocation{1000.0, 2000.0, 50.0, 100.0, true}};
+
+    q.objectives = {kill_obj, craft_obj, pos_obj};
+    return q;
 }
 
 int test_quest_objective_counter_step() {
-    sandal::test::ManualClock clock{1'000'000'000LL};
-    QuestProgress q{};
+    cnt::QuestData qdata{};
+    qdata.quests[5000] = build_multi_step_quest();
+    qst::QuestBook qbook(std::move(qdata));
+    qst::QuestLog qlog{};
+    QuestFacts facts{};
+    facts.log = &qlog;
+    dlg::Book dbook(cnt::DialogueData{});
+    dlg::Evaluator ev(dbook, facts);
+    std::vector<qst::Effect> effects{};
+    qst::Engine eng(qlog, qbook, ev, facts, effects, 1000.0);
 
-    SANDAL_ASSERT(!record_quest_objective_step(q, 0U, 0U, clock.now_ms()));
-    SANDAL_ASSERT(record_quest_objective_step(q, 3U, 2U, clock.now_ms()));
-    SANDAL_ASSERT(q.current_kills == 3U && q.delivered_items == 2U && !q.ready_to_turn_in);
+    const auto* def = qbook.quest(5000);
+    SANDAL_ASSERT(def != nullptr && eng.start(*def, 100) != nullptr);
+    const auto* inst = qlog.find(5000);
+    SANDAL_ASSERT(inst != nullptr && inst->objectives[0].active && !inst->objectives[2].active);
 
-    clock.advance_ms(2'500);
-    SANDAL_ASSERT(record_quest_objective_step(q, 5U, 4U, clock.now_ms()));
-    SANDAL_ASSERT(q.current_kills == 5U && q.delivered_items == 3U);
-    SANDAL_ASSERT(q.ready_to_turn_in && q.completed_at_ms == 3'500);
+    eng.kill(8002, 2);
+    eng.kill(8001, 0);
+    SANDAL_ASSERT(inst->objectives[0].count == 0);
 
-    clock.advance_ms(500);
-    SANDAL_ASSERT(!record_quest_objective_step(q, 1U, 1U, clock.now_ms()));
-    SANDAL_ASSERT(q.completed_at_ms == 3'500);
+    for (int i = 0; i < 5; ++i) eng.kill(8001, 1);
+    SANDAL_ASSERT(inst->objectives[0].completed && inst->objectives[2].active);
+
+    eng.collected("Purchase", 9001, 2);
+    SANDAL_ASSERT(inst->objectives[1].count == 0);
+    eng.collected("Craft", 9001, 5);
+    SANDAL_ASSERT(inst->objectives[1].count == 3 && inst->objectives[1].completed);
+
+    eng.position(1500.0, 2000.0, 50.0);
+    SANDAL_ASSERT(inst->status == qst::Status::Active);
+    eng.position(1050.0, 2000.0, 50.0);
+    SANDAL_ASSERT(inst->status == qst::Status::Completed);
     return 0;
 }
 
 int test_commission_board_reward_payout(const sandal::test::DataFreeConfig& cfg) {
     SANDAL_ASSERT(cfg.data_free);
-    sandal::test::ManualClock clock{0};
-    CommissionPayout payout{};
+    SANDAL_ASSERT(qst::giver_flavor("Commission") == 1U);
+    SANDAL_ASSERT(qst::giver_flavor("Quest") == 0U);
 
-    SANDAL_ASSERT(!claim_commission_reward(payout, false, 27U, 500U));
-    SANDAL_ASSERT(!claim_commission_reward(payout, true, 0U, 500U));
-    SANDAL_ASSERT(!payout.claimed && payout.granted_xp == 0U);
+    cnt::QuestRow comm{};
+    comm.guid = 6000;
+    comm.name = "Board_Supply_Order";
+    comm.flavor = "Commission";
+    comm.rewards = {7001};
 
-    clock.advance_ticks(30, 30);
-    SANDAL_ASSERT(claim_commission_reward(payout, true, 27U, 500U));
-    SANDAL_ASSERT(payout.claimed);
-    SANDAL_ASSERT(payout.dim_glint == 2U && payout.dull_glint == 7U);
-    SANDAL_ASSERT(payout.granted_xp == 500U);
+    cnt::QuestObjectiveRow deposit_obj{};
+    deposit_obj.guid = 6001;
+    deposit_obj.type = "TurnIn";
+    deposit_obj.count = 3;
+    deposit_obj.awake = true;
+    deposit_obj.completes = true;
+    deposit_obj.crate = true;
+    deposit_obj.crate_items = {9100};
+    deposit_obj.rewards = {7002};
+    comm.objectives.push_back(deposit_obj);
 
-    SANDAL_ASSERT(!claim_commission_reward(payout, true, 27U, 500U));
-    SANDAL_ASSERT(payout.dim_glint == 2U && payout.dull_glint == 7U);
-    SANDAL_ASSERT(clock.now_ms() == 1000);
+    cnt::QuestData qdata{};
+    qdata.quests[6000] = comm;
+    qst::QuestBook qbook(std::move(qdata));
+    qst::QuestLog qlog{};
+    QuestFacts facts{};
+    facts.log = &qlog;
+    dlg::Book dbook(cnt::DialogueData{});
+    dlg::Evaluator ev(dbook, facts);
+    std::vector<qst::Effect> effects{};
+    qst::Engine eng(qlog, qbook, ev, facts, effects, 2000.0);
+
+    SANDAL_ASSERT(eng.start(*qbook.quest(6000), 200) != nullptr);
+    effects.clear();
+    SANDAL_ASSERT(eng.deposit(9999, 0, 2) == 0);
+    SANDAL_ASSERT(eng.deposit(9100, 0, 2) == 2);
+    SANDAL_ASSERT(qlog.find(6000)->status == qst::Status::Active);
+
+    SANDAL_ASSERT(eng.deposit(9100, 0, 2) == 1);
+    SANDAL_ASSERT(qlog.find(6000)->status == qst::Status::Completed);
+
+    const auto reward_it = std::find_if(effects.begin(), effects.end(), [](const qst::Effect& e) {
+        return e.kind == qst::Effect::Kind::GrantRewards;
+    });
+    SANDAL_ASSERT(reward_it != effects.end() && reward_it->tables.size() == 2U);
+    SANDAL_ASSERT(reward_it->tables[0] == 7001 && reward_it->tables[1] == 7002);
+
+    SANDAL_ASSERT(qlog.finish(6000) && qlog.find(6000) == nullptr && qlog.completions(6000) == 1);
     return 0;
 }
 

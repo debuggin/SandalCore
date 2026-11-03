@@ -1,165 +1,190 @@
-#include "../world/test_harness.h"
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-#include <algorithm>
-#include <array>
+#include "server/tether/services/tether/ics_token_file.h"
+#include "server/tether/services/tether/tether_wire.h"
+#include "spawns/region_data.h"
+#include "spawns/region_index.h"
+#include "world/relevancy.h"
+#include "world/zoi_surface.h"
+
+#include <chrono>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
 
 namespace {
 
-enum class HandoverPhase : uint8_t {
-    AuthoritativeSource = 0,
-    PreWarmTarget = 1,
-    PromotedTarget = 2,
-    TeardownComplete = 3,
-};
+using namespace aoc::worldd;
 
-struct BoundarySessionState {
-    HandoverPhase phase{HandoverPhase::AuthoritativeSource};
-    int64_t last_swap_ms{-1000};
-    bool has_active_cast_or_cc{false};
-    bool target_healthy{true};
-};
+bool test_custom_zoi_boundary_index() {
+    const spawns::region::Rect footprint[] = {{-200000, -100000, 200000, 100000}};
+    const spawns::region::Rect zoi_rects[] = {
+        {-200000, -100000, 0, 100000},
+        {0, -100000, 200000, 100000}};
+    const spawns::region::ZoiRows zois[] = {
+        {1001ULL, "Verra_Zoi_West", 0, 1, 100},
+        {1002ULL, "Verra_Zoi_East", 1, 1, 100}};
 
-[[nodiscard]] float evaluate_handover_step(
-    BoundarySessionState& s,
-    float signed_border_dist_m,
-    int64_t now_ms) noexcept {
-    if (!s.target_healthy && signed_border_dist_m < -150.0F) {
-        return -150.0F;
-    }
-    if (s.phase == HandoverPhase::AuthoritativeSource && signed_border_dist_m <= 100.0F) {
-        s.phase = HandoverPhase::PreWarmTarget;
-    }
-    if (s.phase == HandoverPhase::PreWarmTarget && signed_border_dist_m <= 0.0F) {
-        if (!s.has_active_cast_or_cc && (now_ms - s.last_swap_ms) >= 500) {
-            s.phase = HandoverPhase::PromotedTarget;
-            s.last_swap_ms = now_ms;
-        }
-    }
-    if (s.phase == HandoverPhase::PromotedTarget && signed_border_dist_m <= -50.0F) {
-        s.phase = HandoverPhase::TeardownComplete;
-    }
-    return signed_border_dist_m;
+    const spawns::region::Index custom_idx(footprint, 1, zois, 2, zoi_rects, 2);
+    if (!custom_idx.contains(-5000.0, 0.0) || !custom_idx.contains(5000.0, 0.0)) return false;
+    if (custom_idx.contains(250000.0, 0.0)) return false;
+    if (custom_idx.zoi_guid(-15000.0, 0.0) != 1001ULL) return false;
+    if (custom_idx.zoi_guid(15000.0, 0.0) != 1002ULL) return false;
+    if (custom_idx.zoi_guid(250000.0, 0.0) != 0ULL) return false;
+    return std::strcmp(custom_idx.zoi_name(-15000.0, 0.0), "Verra_Zoi_West") == 0 &&
+           std::strcmp(custom_idx.zoi_name(15000.0, 0.0), "Verra_Zoi_East") == 0;
 }
 
-struct MeshForwardHeader12B {
-    uint8_t version{1};
-    uint8_t flags{0};
-    uint32_t client_flow_ip{0};
-    uint16_t client_port{0};
-    uint8_t server_id{0};
-    uint8_t lease_epoch{0};
-};
+bool test_relevancy_hysteresis_band_200m() {
+    world::RelevancyConfig cfg{};
+    cfg.awake_cm = 15000.0;
+    cfg.snapshot_cm = 35000.0;
+    cfg.hysteresis_cm = 20000.0;
 
-[[nodiscard]] constexpr std::array<uint8_t, 12> encode_mesh_header_12b(const MeshForwardHeader12B& h) noexcept {
-    return {
-        static_cast<uint8_t>('S'),
-        static_cast<uint8_t>('M'),
-        h.version,
-        h.flags,
-        static_cast<uint8_t>((h.client_flow_ip >> 24U) & 0xFFU),
-        static_cast<uint8_t>((h.client_flow_ip >> 16U) & 0xFFU),
-        static_cast<uint8_t>((h.client_flow_ip >> 8U) & 0xFFU),
-        static_cast<uint8_t>(h.client_flow_ip & 0xFFU),
-        static_cast<uint8_t>((h.client_port >> 8U) & 0xFFU),
-        static_cast<uint8_t>(h.client_port & 0xFFU),
-        h.server_id,
-        h.lease_epoch,
-    };
-}
+    if (std::fabs(world::query_radius(cfg) - 55000.0) > 1e-6) return false;
+    if (std::fabs(world::horizontal_distance(0.0, 0.0, 300.0, 400.0) - 500.0) > 1e-6) return false;
 
-[[nodiscard]] constexpr bool decode_mesh_header_12b(
-    const std::array<uint8_t, 12>& wire,
-    uint8_t min_lease_epoch,
-    MeshForwardHeader12B& out) noexcept {
-    if (wire[0] != static_cast<uint8_t>('S') || wire[1] != static_cast<uint8_t>('M') || wire[2] != 1U) {
+    if (world::classify(cfg, 16000.0, 0.0, false, world::ClientState::None) !=
+        world::Ring::Snapshot) {
         return false;
     }
-    if (wire[11] < min_lease_epoch) {
+    if (world::classify(cfg, 34000.0, 0.0, false, world::ClientState::Awake) !=
+        world::Ring::Awake) {
         return false;
     }
-    out.version = wire[2];
-    out.flags = wire[3];
-    out.client_flow_ip = (static_cast<uint32_t>(wire[4]) << 24U) |
-                         (static_cast<uint32_t>(wire[5]) << 16U) |
-                         (static_cast<uint32_t>(wire[6]) << 8U) |
-                         static_cast<uint32_t>(wire[7]);
-    out.client_port = static_cast<uint16_t>((static_cast<uint16_t>(wire[8]) << 8U) | wire[9]);
-    out.server_id = wire[10];
-    out.lease_epoch = wire[11];
-    return true;
+    if (world::classify(cfg, 35500.0, 0.0, false, world::ClientState::Awake) !=
+        world::Ring::Snapshot) {
+        return false;
+    }
+    if (world::classify(cfg, 36000.0, 0.0, true, world::ClientState::Awake) !=
+        world::Ring::Out) {
+        return false;
+    }
+    return world::classify(cfg, 54000.0, 0.0, false, world::ClientState::Dormant) ==
+               world::Ring::Snapshot &&
+           world::classify(cfg, 56000.0, 0.0, false, world::ClientState::Dormant) ==
+               world::Ring::Out;
 }
 
-int test_hysteresis_band_200m_authority() {
-    sandal::test::ManualClock clock{0};
-    BoundarySessionState session{};
+int run_hysteresis_band_200m_authority() {
+    if (!test_custom_zoi_boundary_index()) return 1;
+    if (!test_relevancy_hysteresis_band_200m()) return 1;
 
-    SANDAL_ASSERT(evaluate_handover_step(session, 120.0F, clock.now_ms()) == 120.0F);
-    SANDAL_ASSERT(session.phase == HandoverPhase::AuthoritativeSource);
+    const auto& riverlands = spawns::region::Index::get();
+    if (!riverlands.contains(-1000000.0, 500000.0)) return 1;
+    if (riverlands.zoi_guid(-1000000.0, 500000.0) == 0) return 1;
+    if (riverlands.contains(5000000.0, 5000000.0)) return 1;
 
-    SANDAL_ASSERT(evaluate_handover_step(session, 100.0F, clock.now_ms()) == 100.0F);
-    SANDAL_ASSERT(session.phase == HandoverPhase::PreWarmTarget);
-
-    session.has_active_cast_or_cc = true;
-    SANDAL_ASSERT(evaluate_handover_step(session, 0.0F, clock.now_ms()) == 0.0F);
-    SANDAL_ASSERT(session.phase == HandoverPhase::PreWarmTarget);
-
-    session.has_active_cast_or_cc = false;
-    SANDAL_ASSERT(evaluate_handover_step(session, 0.0F, clock.now_ms()) == 0.0F);
-    SANDAL_ASSERT(session.phase == HandoverPhase::PromotedTarget);
-
-    session.phase = HandoverPhase::PreWarmTarget;
-    clock.advance_ms(499);
-    SANDAL_ASSERT(evaluate_handover_step(session, -5.0F, clock.now_ms()) == -5.0F);
-    SANDAL_ASSERT(session.phase == HandoverPhase::PreWarmTarget);
-
-    clock.advance_ms(1);
-    SANDAL_ASSERT(evaluate_handover_step(session, -5.0F, clock.now_ms()) == -5.0F);
-    SANDAL_ASSERT(session.phase == HandoverPhase::PromotedTarget);
-    SANDAL_ASSERT(evaluate_handover_step(session, -50.0F, clock.now_ms()) == -50.0F);
-    SANDAL_ASSERT(session.phase == HandoverPhase::TeardownComplete);
-
-    session.target_healthy = false;
-    SANDAL_ASSERT(evaluate_handover_step(session, -180.0F, clock.now_ms()) == -150.0F);
+    const auto surf_info = world::zoi_surface_info();
+    if (surf_info.chunks <= 0 || surf_info.uniform < 0) return 1;
+    const auto palette = world::zoi_surface_palette();
+    if (palette.empty()) return 1;
+    const uint64_t surface_guid = world::zoi_at(-1000000.0, 500000.0);
+    if (surface_guid == 0 || surface_guid != riverlands.zoi_guid(-1000000.0, 500000.0)) {
+        return 1;
+    }
     return 0;
 }
 
-int test_mesh_forward_header_12b_epoch() {
-    sandal::test::ManualClock clock{0};
-    const MeshForwardHeader12B hdr{1U, 0x05U, 0x7F000001U, 7777U, 2U, 9U};
-    auto wire = encode_mesh_header_12b(hdr);
-    SANDAL_ASSERT(wire.size() == 12U);
+bool test_tether_wire_header_and_big_endian() {
+    uint8_t scratch[12]{};
+    tether::wire::w32(scratch + 0, 17U);
+    tether::wire::w32(scratch + 4, 1042U);
+    tether::wire::w16(scratch + 8, 512U);
+    tether::wire::w16(scratch + 10, 5U);
+    if (tether::wire::r32(scratch + 0) != 17U || tether::wire::r32(scratch + 4) != 1042U) {
+        return false;
+    }
+    if (tether::wire::r16(scratch + 8) != 512U || tether::wire::r16(scratch + 10) != 5U) {
+        return false;
+    }
 
-    clock.advance_ticks(1, 30);
-    MeshForwardHeader12B parsed{};
-    SANDAL_ASSERT(decode_mesh_header_12b(wire, 9U, parsed));
-    SANDAL_ASSERT(parsed.flags == 0x05U && parsed.client_flow_ip == 0x7F000001U);
-    SANDAL_ASSERT(parsed.client_port == 7777U && parsed.server_id == 2U && parsed.lease_epoch == 9U);
+    tether::wire::Header hdr{};
+    hdr.magic_number = (tether::wire::APP_NUMBER << 16) | (2U << 8) |
+                       static_cast<uint32_t>(tether::wire::MsgId::data);
+    hdr.session_id = 1042U;
+    hdr.window_size = 64U;
+    hdr.fragment_number = 3U;
+    hdr.data_length = 128U;
+    hdr.sequence_number = 17LL;
+    hdr.next_expected_recv_seq = 18LL;
+    hdr.timestamp_msec = 9876543210LL;
 
-    SANDAL_ASSERT(!decode_mesh_header_12b(wire, 10U, parsed));
-    wire[0] = static_cast<uint8_t>('X');
-    SANDAL_ASSERT(!decode_mesh_header_12b(wire, 1U, parsed));
-    SANDAL_ASSERT(clock.now_ms() == 33);
+    if (!hdr.is_valid() || hdr.version() != 2U || hdr.msg_id() != tether::wire::MsgId::data) {
+        return false;
+    }
+    if (std::strcmp(tether::wire::msg_name(hdr.msg_id()), "Data") != 0) return false;
+
+    const auto encoded = tether::wire::encode(hdr);
+    if (encoded.size() != tether::wire::HEADER_SIZE) return false;
+
+    tether::wire::Header decoded{};
+    if (tether::wire::decode(encoded.data(), encoded.size() - 1, decoded)) return false;
+    if (!tether::wire::decode(encoded.data(), encoded.size(), decoded)) return false;
+    return decoded.is_valid() && decoded.session_id == 1042U && decoded.sequence_number == 17LL &&
+           decoded.next_expected_recv_seq == 18LL && decoded.timestamp_msec == 9876543210LL;
+}
+
+bool test_tether_proto_and_message_handover() {
+    tether::wire::Message msg{};
+    msg.tags["message_type_name"] = "request_game_client_connection_info";
+    msg.tags["ics_endpoint"] = "127.0.0.1:443";
+    msg.tags["epoch"] = "18";
+    msg.data_string = "worker-east";
+    msg.data_bytes = {0xDE, 0xAD, 0xBE, 0xEF};
+
+    const auto wire_bytes = msg.encode();
+    if (wire_bytes.empty()) return false;
+    if (tether::wire::hex_dump(wire_bytes.data(), wire_bytes.size(), 8).empty()) return false;
+
+    const auto roundtrip = tether::wire::Message::decode(wire_bytes.data(), wire_bytes.size());
+    if (roundtrip.data_string != "worker-east" || roundtrip.data_bytes != msg.data_bytes) {
+        return false;
+    }
+    if (roundtrip.tags.at("message_type_name") != "request_game_client_connection_info" ||
+        roundtrip.tags.at("ics_endpoint") != "127.0.0.1:443" ||
+        roundtrip.tags.at("epoch") != "18") {
+        return false;
+    }
+
+    if (!aoc::ics_token::is_loopback_ipv4(0x7F000001U)) return false;
+    if (aoc::ics_token::is_loopback_ipv4(0x0A000001U)) return false;
+    const auto fallback = aoc::ics_token::client_tokens("", false);
+    return !fallback.saved && !fallback.auth.empty() &&
+           aoc::ics_token::format_age(std::chrono::seconds(125)) == "0h 2m";
+}
+
+int run_mesh_forward_header_12b_epoch() {
+    if (!test_tether_wire_header_and_big_endian()) return 1;
+    if (!test_tether_proto_and_message_handover()) return 1;
     return 0;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    const auto cfg = sandal::test::parse_test_cli(argc, argv);
-    int ran = 0;
-    if (sandal::test::should_run_case(cfg, "hysteresis_band_200m_authority")) {
-        if (test_hysteresis_band_200m_authority() != 0) {
-            return 1;
+    const char* case_name = nullptr;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--case") == 0 && i + 1 < argc) {
+            case_name = argv[++i];
         }
-        ++ran;
     }
-    if (sandal::test::should_run_case(cfg, "mesh_forward_header_12b_epoch")) {
-        if (test_mesh_forward_header_12b_epoch() != 0) {
-            return 1;
-        }
-        ++ran;
+    if (!case_name) {
+        if (run_hysteresis_band_200m_authority() != 0) return 1;
+        if (run_mesh_forward_header_12b_epoch() != 0) return 1;
+        return 0;
     }
-    SANDAL_ASSERT(ran > 0);
-    return 0;
+    if (std::strcmp(case_name, "hysteresis_band_200m_authority") == 0) {
+        return run_hysteresis_band_200m_authority();
+    }
+    if (std::strcmp(case_name, "mesh_forward_header_12b_epoch") == 0) {
+        return run_mesh_forward_header_12b_epoch();
+    }
+    std::fprintf(stderr, "Unknown --case %s\n", case_name);
+    return 2;
 }

@@ -1,152 +1,156 @@
 #include "../world/test_harness.h"
 
-#include <array>
+#include "protocol/emit/actor_bunch.h"
+#include "protocol/emit/bunch_writer.h"
+#include "protocol/repl/channeling_codec.h"
+#include "protocol/wire/bunch_reassembler.h"
+#include "protocol/wire/bunch_types.h"
+#include "protocol/wire/packet_parser.h"
+#include "protocol/wire/packet_reader.h"
+
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace {
 
-struct BitStreamSlice {
-    const uint8_t* data{nullptr};
-    size_t total_bits{0};
-    size_t cursor_bits{0};
-    bool overflowed{false};
-};
+namespace wire = aoc::protocol::wire;
+namespace emit = aoc::protocol::emit;
+namespace repl = aoc::protocol::repl;
 
-[[nodiscard]] constexpr size_t leftover_bits(const BitStreamSlice& s) noexcept {
-    return (s.cursor_bits <= s.total_bits) ? (s.total_bits - s.cursor_bits) : 0U;
-}
+int test_channeling_codec_roundtrip_and_bounds() {
+    repl::ChannelingData expected{};
+    expected.target.ObjectId = 2U;
+    expected.target.ServerId = 9U;
+    expected.flags = 6U;
+    expected.active = true;
+    expected.start_time = 1234.5;
+    expected.timed = true;
+    expected.duration = 4.25F;
+    expected.tool_record = 0x1020304050LL;
+    expected.tool_guid = repl::GuidValue{1U, 2U, 3U, 4U};
+    SANDAL_ASSERT(repl::channeling_data_fits(expected));
 
-[[nodiscard]] bool read_bits(BitStreamSlice& s, size_t count, uint64_t& out) noexcept {
-    if (s.overflowed || count == 0U || count > 64U || s.data == nullptr) {
-        s.overflowed = true;
-        return false;
-    }
-    if (leftover_bits(s) < count) {
-        s.overflowed = true;
-        return false;
-    }
-    uint64_t acc = 0ULL;
-    for (size_t i = 0U; i < count; ++i) {
-        const size_t bit_idx = s.cursor_bits + i;
-        const uint8_t byte_val = s.data[bit_idx >> 3U];
-        const uint64_t bit_val = (static_cast<uint64_t>(byte_val) >> (bit_idx & 7U)) & 1ULL;
-        acc |= (bit_val << i);
-    }
-    s.cursor_bits += count;
-    out = acc;
-    return true;
-}
+    repl::ChannelingData bad_clear = expected;
+    bad_clear.timed = false;
+    SANDAL_ASSERT(!repl::channeling_data_fits(bad_clear));
 
-[[nodiscard]] bool read_varint32(BitStreamSlice& s, uint32_t& out) noexcept {
-    uint32_t result = 0U;
-    for (uint32_t byte_idx = 0U; byte_idx < 5U; ++byte_idx) {
-        uint64_t raw_byte = 0ULL;
-        if (!read_bits(s, 8U, raw_byte)) {
-            return false;
-        }
-        const uint32_t payload = static_cast<uint32_t>((raw_byte >> 1U) & 0x7FU);
-        result |= (payload << (7U * byte_idx));
-        if ((raw_byte & 1ULL) == 0ULL) {
-            out = result;
-            return true;
-        }
-    }
-    s.overflowed = true;
-    return false;
-}
+    emit::BunchWriter bw{};
+    SANDAL_ASSERT(repl::write_channeling_data(bw, expected));
 
-struct BunchHeader {
-    uint16_t ch_index{0};
-    uint16_t ch_sequence{0};
-    uint16_t payload_bits{0};
-    bool b_open{false};
-    bool b_close{false};
-    bool b_reliable{false};
-    bool valid{false};
-};
+    wire::PacketReader pr(bw.data(), bw.byte_size(), bw.bit_pos());
+    const auto decoded = repl::read_channeling_data(pr);
+    SANDAL_ASSERT(decoded.has_value() && *decoded == expected);
+    SANDAL_ASSERT(pr.remaining_bits() == 0U && !pr.overflowed());
 
-[[nodiscard]] constexpr bool encode_bunch_header(const BunchHeader& hdr, uint64_t& word) noexcept {
-    constexpr uint16_t kMaxPayloadBits = 8192U;
-    if (hdr.ch_index == 0xFFFFU || hdr.payload_bits > kMaxPayloadBits) {
-        return false;
-    }
-    word = static_cast<uint64_t>(hdr.ch_index) |
-           (static_cast<uint64_t>(hdr.ch_sequence & 0x3FFFU) << 16U) |
-           (static_cast<uint64_t>(hdr.payload_bits) << 32U) |
-           (static_cast<uint64_t>(hdr.b_open ? 1U : 0U) << 48U) |
-           (static_cast<uint64_t>(hdr.b_close ? 1U : 0U) << 49U) |
-           (static_cast<uint64_t>(hdr.b_reliable ? 1U : 0U) << 50U) |
-           (1ULL << 63U);
-    return true;
-}
-
-[[nodiscard]] constexpr BunchHeader decode_bunch_header(uint64_t word) noexcept {
-    constexpr uint16_t kMaxPayloadBits = 8192U;
-    if ((word >> 63U) == 0ULL) {
-        return {};
-    }
-    BunchHeader hdr{};
-    hdr.ch_index = static_cast<uint16_t>(word & 0xFFFFULL);
-    hdr.ch_sequence = static_cast<uint16_t>((word >> 16U) & 0x3FFFULL);
-    hdr.payload_bits = static_cast<uint16_t>((word >> 32U) & 0xFFFFULL);
-    hdr.b_open = ((word >> 48U) & 1ULL) != 0ULL;
-    hdr.b_close = ((word >> 49U) & 1ULL) != 0ULL;
-    hdr.b_reliable = ((word >> 50U) & 1ULL) != 0ULL;
-    hdr.valid = (hdr.ch_index != 0xFFFFU) && (hdr.payload_bits <= kMaxPayloadBits);
-    return hdr;
+    wire::PacketReader truncated(bw.data(), bw.byte_size(), bw.bit_pos() - 8U);
+    SANDAL_ASSERT(!repl::read_channeling_data(truncated).has_value());
+    return 0;
 }
 
 int test_bit_reader_varint_and_tail_bounds() {
-    sandal::test::ManualClock clock{0};
-    constexpr std::array<uint8_t, 4> kWireBytes{0x54U, 0x03U, 0x04U, 0x15U};
-    BitStreamSlice reader{kWireBytes.data(), 29U, 0U, false};
+    emit::BunchWriter bw{};
+    bw.write_sip(42U);
+    bw.write_sip(257U);
+    bw.write_serialize_int(19U, 32U);
+    bw.write_bits(21ULL, 5);
 
-    uint32_t v0 = 0U;
-    SANDAL_ASSERT(read_varint32(reader, v0));
-    SANDAL_ASSERT(v0 == 42U && leftover_bits(reader) == 21U);
+    wire::PacketReader reader(bw.data(), bw.byte_size(), bw.bit_pos());
+    SANDAL_ASSERT(reader.read_sip() == 42U);
+    SANDAL_ASSERT(reader.read_sip() == 257U);
 
-    uint32_t v1 = 0U;
-    SANDAL_ASSERT(read_varint32(reader, v1));
-    SANDAL_ASSERT(v1 == 257U && leftover_bits(reader) == 5U);
+    const auto saved = reader.save();
+    SANDAL_ASSERT(reader.read_serialize_int(32U) == 19U);
+    reader.restore(saved);
+    SANDAL_ASSERT(reader.read_serialize_int(32U) == 19U);
 
-    uint64_t tail = 0ULL;
-    SANDAL_ASSERT(read_bits(reader, 5U, tail));
-    SANDAL_ASSERT(tail == 21ULL && leftover_bits(reader) == 0U && !reader.overflowed);
+    SANDAL_ASSERT(reader.remaining_bits() == 5U && !reader.overflowed());
+    SANDAL_ASSERT(reader.read_bits(5) == 21ULL);
+    SANDAL_ASSERT(reader.remaining_bits() == 0U && !reader.overflowed());
 
-    clock.advance_ticks(1, 30);
-    SANDAL_ASSERT(clock.now_ms() == 33);
-    SANDAL_ASSERT(!read_bits(reader, 1U, tail) && reader.overflowed);
+    (void)reader.read_bit();
+    SANDAL_ASSERT(reader.overflowed());
+    return test_channeling_codec_roundtrip_and_bounds();
+}
 
-    constexpr std::array<uint8_t, 6> kBadVarint{0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0x01U};
-    BitStreamSlice bad_reader{kBadVarint.data(), 48U, 0U, false};
-    uint32_t bad_out = 0U;
-    SANDAL_ASSERT(!read_varint32(bad_reader, bad_out) && bad_reader.overflowed);
+wire::ParsedBunch make_partial_fragment(
+    uint32_t seq, bool initial, bool final_frag, size_t start_bit, uint32_t bits) {
+    wire::ParsedBunch b{};
+    b.channel = 3U;
+    b.ch_sequence = seq;
+    b.is_reliable = true;
+    b.is_partial = true;
+    b.partial_initial = initial;
+    b.partial_final = final_frag;
+    b.data_start_bit = start_bit;
+    b.bunch_data_bits = bits;
+    return b;
+}
+
+int test_partial_bunch_reassembler() {
+    const uint8_t raw1[] = {0xAAU};
+    wire::ParsedPacket pkt1{};
+    pkt1.seq = 10U;
+    pkt1.bunches.push_back(make_partial_fragment(100U, true, false, 0U, 8U));
+
+    const uint8_t raw2[] = {0x12U, 0x34U, 0x05U, 0x7FU};
+    wire::ParsedPacket pkt2{};
+    pkt2.seq = 11U;
+    pkt2.bunches.push_back(make_partial_fragment(101U, true, false, 0U, 8U));
+    pkt2.bunches.push_back(make_partial_fragment(102U, false, false, 8U, 8U));
+    pkt2.bunches.push_back(make_partial_fragment(103U, false, true, 16U, 4U));
+    wire::ParsedBunch bogus = make_partial_fragment(200U, true, true, 24U, 7U);
+    bogus.channel = 5U;
+    pkt2.bunches.push_back(bogus);
+    SANDAL_ASSERT(pkt2.bunches[3].is_complete_bunch() && !pkt2.bunches[0].is_complete_bunch());
+
+    const std::vector<wire::ReassemblyInput> inputs{
+        {&pkt1, raw1, sizeof(raw1)},
+        {&pkt2, raw2, sizeof(raw2)},
+    };
+    const auto res = wire::reassemble_partial_bunches(inputs);
+    SANDAL_ASSERT(res.bunches.size() == 1U && res.skip_set.size() == 3U);
+    SANDAL_ASSERT(res.bunches[0].header.channel == 3U && res.bunches[0].total_bits == 20U);
+    SANDAL_ASSERT(res.bunches[0].data[0] == 0x12U && res.bunches[0].data[1] == 0x34U);
+    SANDAL_ASSERT((res.bunches[0].data[2] & 0x0FU) == 0x05U);
     return 0;
 }
 
 int test_bunch_header_framing_roundtrip() {
-    sandal::test::ManualClock clock{1'000'000LL};
-    const BunchHeader input{7U, 16383U, 8192U, true, false, true, true};
-    uint64_t encoded = 0ULL;
-    SANDAL_ASSERT(encode_bunch_header(input, encoded));
+    emit::BunchWriter payload{};
+    payload.write_uint32(0xCAFEBABEU);
+    payload.write_bits(0x13U, 5);
 
-    clock.advance_ms(5);
-    const BunchHeader decoded = decode_bunch_header(encoded);
-    SANDAL_ASSERT(decoded.valid);
-    SANDAL_ASSERT(decoded.ch_index == 7U);
-    SANDAL_ASSERT(decoded.ch_sequence == 16383U);
-    SANDAL_ASSERT(decoded.payload_bits == 8192U);
-    SANDAL_ASSERT(decoded.b_open && !decoded.b_close && decoded.b_reliable);
-    SANDAL_ASSERT(clock.now_ms() == 6);
+    emit::BunchWriter packet_stream{};
+    emit::write_reliable_actor_bunch(
+        packet_stream, 7U, 42U, true, payload.data(), 0U, payload.bit_pos());
 
-    const BunchHeader oversized{7U, 1U, 8193U, false, false, false, true};
-    SANDAL_ASSERT(!encode_bunch_header(oversized, encoded));
+    wire::PacketReader hdr_reader(
+        packet_stream.data(), packet_stream.byte_size(), packet_stream.bit_pos());
+    const auto hdr = wire::parse_bunch_header(hdr_reader, packet_stream.bit_pos());
+    SANDAL_ASSERT(hdr.has_value() && hdr->is_complete_bunch());
+    SANDAL_ASSERT(hdr->channel == 7U && hdr->ch_sequence == 42U);
+    SANDAL_ASSERT(hdr->is_reliable && hdr->has_package_map_exports);
+    SANDAL_ASSERT(hdr->bunch_data_bits == 37U);
 
-    const BunchHeader invalid_ch{0xFFFFU, 1U, 64U, false, false, false, true};
-    SANDAL_ASSERT(!encode_bunch_header(invalid_ch, encoded));
-    SANDAL_ASSERT(!decode_bunch_header(0ULL).valid);
-    return 0;
+    wire::PacketReader payload_reader(
+        packet_stream.data(),
+        packet_stream.byte_size(),
+        hdr->data_start_bit + hdr->bunch_data_bits);
+    payload_reader.set_pos(hdr->data_start_bit);
+    SANDAL_ASSERT(payload_reader.read_bits(32) == 0xCAFEBABEU);
+    SANDAL_ASSERT(payload_reader.read_bits(5) == 0x13U);
+
+    std::vector<wire::ParsedBunch> walked_bunches{};
+    const auto walked = wire::walk_bunches_ex(
+        packet_stream.data(),
+        packet_stream.byte_size(),
+        0U,
+        packet_stream.bit_pos(),
+        [&](const wire::ParsedBunch& b) { walked_bunches.push_back(b); });
+    SANDAL_ASSERT(walked.complete && walked.visited == 1U && walked_bunches.size() == 1U);
+    SANDAL_ASSERT(walked_bunches[0].is_complete_bunch());
+    return test_partial_bunch_reassembler();
 }
 
 }  // namespace

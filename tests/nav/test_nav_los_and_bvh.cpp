@@ -1,114 +1,95 @@
 #include "../world/test_harness.h"
 
-#include <algorithm>
-#include <cstdint>
+#include "nav/area_nav.h"
+#include "tests/nav_fixture.h"
+
+#include <cmath>
+#include <limits>
 
 namespace {
 
-struct Point3 {
-    float x;
-    float y;
-    float z;
-};
+namespace nav = aoc::worldd::nav;
+namespace navfix = aoc::worldd::navfix;
 
-struct Aabb3 {
-    Point3 min;
-    Point3 max;
-};
-
-[[nodiscard]] bool aabb_contains_point(const Aabb3& box, Point3 p) noexcept {
-    return p.x >= box.min.x && p.x <= box.max.x &&
-           p.y >= box.min.y && p.y <= box.max.y &&
-           p.z >= box.min.z && p.z <= box.max.z;
-}
-
-[[nodiscard]] bool aabb_intersects_sphere(const Aabb3& box, Point3 center, float radius) noexcept {
-    if (radius < 0.0F) {
-        return false;
-    }
-    const float cx = std::clamp(center.x, box.min.x, box.max.x) - center.x;
-    const float cy = std::clamp(center.y, box.min.y, box.max.y) - center.y;
-    const float cz = std::clamp(center.z, box.min.z, box.max.z) - center.z;
-    return (cx * cx + cy * cy + cz * cz) <= (radius * radius);
-}
-
-struct DecodedPolyRef {
-    bool valid{false};
-    uint32_t salt{0};
-    uint32_t tile_id{0};
-    uint32_t poly_index{0};
-};
-
-[[nodiscard]] constexpr uint64_t encode_poly_ref64(
-    uint32_t salt,
-    uint32_t tile_id,
-    uint32_t poly_index) noexcept {
-    return (static_cast<uint64_t>(salt & 0xFFFFU) << 48U) |
-           (static_cast<uint64_t>(tile_id & 0xFFFFFFU) << 24U) |
-           static_cast<uint64_t>(poly_index & 0xFFFFFFU);
-}
-
-[[nodiscard]] constexpr DecodedPolyRef decode_poly_ref64(uint64_t ref) noexcept {
-    if (ref == 0ULL) {
-        return {};
-    }
-    return {
-        true,
-        static_cast<uint32_t>((ref >> 48U) & 0xFFFFU),
-        static_cast<uint32_t>((ref >> 24U) & 0xFFFFFFU),
-        static_cast<uint32_t>(ref & 0xFFFFFFU),
-    };
-}
-
-struct Vec2 {
-    float x;
-    float y;
-};
-
-[[nodiscard]] constexpr float cross_2d(Vec2 a, Vec2 b, Vec2 c) noexcept {
-    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-}
-
-[[nodiscard]] constexpr bool segments_intersect_2d(Vec2 a, Vec2 b, Vec2 c, Vec2 d) noexcept {
-    const float d1 = cross_2d(c, d, a);
-    const float d2 = cross_2d(c, d, b);
-    const float d3 = cross_2d(a, b, c);
-    const float d4 = cross_2d(a, b, d);
-    return ((d1 > 0.0F && d2 < 0.0F) || (d1 < 0.0F && d2 > 0.0F)) &&
-           ((d3 > 0.0F && d4 < 0.0F) || (d3 < 0.0F && d4 > 0.0F));
+std::unique_ptr<nav::AreaNav> build_bounded_region_nav(std::string& error) {
+    nav::NavFile file = navfix::build_file(2);
+    file.region.push_back(nav::RegionRect{-10000.0, -10000.0, 10000.0, 10000.0});
+    return nav::AreaNav::from_file(std::move(file), &error);
 }
 
 int test_bvh_chunk_bounds_query() {
-    constexpr Aabb3 kChunk{{-64.0F, -64.0F, 0.0F}, {64.0F, 64.0F, 128.0F}};
-    SANDAL_ASSERT(aabb_contains_point(kChunk, {0.0F, 0.0F, 64.0F}));
-    SANDAL_ASSERT(aabb_contains_point(kChunk, {64.0F, -64.0F, 128.0F}));
-    SANDAL_ASSERT(!aabb_contains_point(kChunk, {64.1F, 0.0F, 64.0F}));
-    SANDAL_ASSERT(!aabb_contains_point(kChunk, {0.0F, 0.0F, -0.1F}));
+    SANDAL_ASSERT(nav::floor_div(0, 8) == 0 && nav::floor_div(7, 8) == 0);
+    SANDAL_ASSERT(nav::floor_div(8, 8) == 1 && nav::floor_div(-1, 8) == -1);
+    SANDAL_ASSERT(nav::floor_div(-8, 8) == -1 && nav::floor_div(-9, 8) == -2);
 
-    const auto* spell = sandal::test::find_standin_ability(1002U);
-    SANDAL_ASSERT(spell != nullptr);
-    SANDAL_ASSERT(aabb_intersects_sphere(kChunk, {80.0F, 0.0F, 32.0F}, spell->range_m));
-    SANDAL_ASSERT(!aabb_intersects_sphere(kChunk, {90.0F, 0.0F, 32.0F}, spell->range_m));
-    SANDAL_ASSERT(!aabb_intersects_sphere(kChunk, {0.0F, 0.0F, 32.0F}, -1.0F));
+    const auto chunk = nav::chunk_of_tile(15, -3);
+    SANDAL_ASSERT(chunk.x == 1 && chunk.y == -1);
+
+    std::string err;
+    auto area = build_bounded_region_nav(err);
+    SANDAL_ASSERT(area != nullptr && err.empty());
+    SANDAL_ASSERT(area->has_region() && !area->windowed());
+    SANDAL_ASSERT(area->tile_count() >= 4U && area->polygon_count() >= 10U);
+    SANDAL_ASSERT(area->in_region(0.0, 0.0) && area->in_region(-10000.0, 9999.0));
+    SANDAL_ASSERT(!area->in_region(10000.0, 0.0) && !area->in_region(0.0, -10000.5));
+    SANDAL_ASSERT(area->ready_at(-1000.0, 0.0));
+    SANDAL_ASSERT(area->chunk_resident({0, 0}));
+
+    const auto c_pos = area->chunk_at(1000.0, 1000.0);
+    const auto c_far = area->chunk_at(-35000.0, -35000.0);
+    SANDAL_ASSERT(c_pos != c_far);
+
+    nav::Vec3 sample{};
+    SANDAL_ASSERT(area->random_point({0.0, 0.0, 1000.0}, 800.0, 0.25, 0.5, &sample));
+    SANDAL_ASSERT(area->in_region(sample.x, sample.y));
+    SANDAL_ASSERT(area->on_navmesh(sample));
+    return 0;
+}
+
+int verify_detour_corridor_pathfinding(const nav::AreaNav& area) {
+    const nav::Vec3 west{-3500.0, 0.0, 1000.0};
+    const nav::Vec3 east{-2500.0, 0.0, 1000.0};
+    const auto around = area.find_path(west, east);
+    SANDAL_ASSERT(around.found && around.complete && around.points.size() >= 3U);
+    SANDAL_ASSERT(around.fail == nav::PathResult::Fail::None);
+
+    double max_abs_y = 0.0;
+    for (const auto& pt : around.points) {
+        if (std::fabs(pt.y) > max_abs_y) {
+            max_abs_y = std::fabs(pt.y);
+        }
+    }
+    SANDAL_ASSERT(max_abs_y > 1900.0);
+
+    const nav::Vec3 inside_pen{-8400.0, 6600.0, 1000.0};
+    const auto into_pen = area.find_path(west, inside_pen);
+    SANDAL_ASSERT(into_pen.found && !into_pen.complete);
+    SANDAL_ASSERT(into_pen.fail == nav::PathResult::Fail::Unreachable);
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    SANDAL_ASSERT(!area.find_path({nan, 0.0, 1000.0}, east).found);
+    SANDAL_ASSERT(!area.find_path({50000.0, 50000.0, 1000.0}, east).found);
     return 0;
 }
 
 int test_detour_polyref64_los_raycast() {
-    SANDAL_ASSERT(!decode_poly_ref64(0ULL).valid);
+    const nav::AreaNav& area = navfix::shared_nav();
 
-    const uint64_t ref = encode_poly_ref64(42U, 1024U, 511U);
-    const auto decoded = decode_poly_ref64(ref);
-    SANDAL_ASSERT(decoded.valid);
-    SANDAL_ASSERT(decoded.salt == 42U);
-    SANDAL_ASSERT(decoded.tile_id == 1024U);
-    SANDAL_ASSERT(decoded.poly_index == 511U);
+    const nav::Vec3 clear_a{-1000.0, -500.0, 1000.0};
+    const nav::Vec3 clear_b{-1000.0, 500.0, 1000.0};
+    nav::Vec3 hit{};
+    SANDAL_ASSERT(area.line_of_sight(clear_a, clear_b));
+    SANDAL_ASSERT(area.raycast(clear_a, clear_b, &hit));
 
-    constexpr Vec2 kWallA{10.0F, -5.0F};
-    constexpr Vec2 kWallB{10.0F, 5.0F};
-    SANDAL_ASSERT(segments_intersect_2d({0.0F, 0.0F}, {20.0F, 0.0F}, kWallA, kWallB));
-    SANDAL_ASSERT(!segments_intersect_2d({0.0F, 8.0F}, {20.0F, 8.0F}, kWallA, kWallB));
-    SANDAL_ASSERT(!segments_intersect_2d({0.0F, 0.0F}, {9.5F, 0.0F}, kWallA, kWallB));
-    return 0;
+    const nav::Vec3 wall_a{-3500.0, 0.0, 1000.0};
+    const nav::Vec3 wall_b{-2500.0, 0.0, 1000.0};
+    SANDAL_ASSERT(!area.line_of_sight(wall_a, wall_b));
+    SANDAL_ASSERT(!area.raycast(wall_a, wall_b, &hit));
+    SANDAL_ASSERT(hit.x > -3500.0 && hit.x < -3050.0);
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    SANDAL_ASSERT(!area.raycast({nan, 0.0, 1000.0}, wall_b, &hit));
+    return verify_detour_corridor_pathfinding(area);
 }
 
 }  // namespace

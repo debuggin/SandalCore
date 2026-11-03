@@ -1,289 +1,247 @@
-#include "../world/test_harness.h"
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-#include <array>
-#include <cstddef>
+#include "combat/npc_ability_replicator.h"
+#include "protocol/schema/generated/UAoCAbilityComponent.h"
+#include "session/abilities.h"
+#include "session/ability_pipeline.h"
+#include "world/actor_registry.h"
+
 #include <cstdint>
-
-#ifndef SANDAL_ASSERT_EQ
-#define SANDAL_ASSERT_EQ(lhs, rhs) SANDAL_ASSERT((lhs) == (rhs))
-#endif
-
-namespace sandal::test {
-namespace harness_ext {
-
-class DeterministicPrng {
-public:
-    explicit constexpr DeterministicPrng(uint64_t seed = 0x9E3779B97F4A7C15ULL) noexcept
-        : state_(seed != 0ULL ? seed : 0x9E3779B97F4A7C15ULL) {}
-
-    [[nodiscard]] constexpr uint64_t next_u64() noexcept {
-        state_ ^= state_ >> 12U;
-        state_ ^= state_ << 25U;
-        state_ ^= state_ >> 27U;
-        return state_ * 0x2545F4914F6CDD1DULL;
-    }
-
-    [[nodiscard]] constexpr uint32_t next_u32(uint32_t bound) noexcept {
-        return bound == 0U ? 0U : static_cast<uint32_t>(next_u64() % bound);
-    }
-
-private:
-    uint64_t state_;
-};
-
-struct TestContext {
-    DataFreeConfig config{};
-    ManualClock clock{0};
-    DeterministicPrng prng{0xB001C0DE9E3779B9ULL};
-};
-
-struct SuiteCase {
-    std::string_view name;
-    int (*fn)(TestContext&);
-};
-
-template <std::size_t N>
-[[nodiscard]] int run_suite(int argc, char** argv, const std::array<SuiteCase, N>& cases) {
-    TestContext ctx{parse_test_cli(argc, argv), ManualClock{0}, DeterministicPrng{0xB001C0DE9E3779B9ULL}};
-    int ran = 0;
-    for (const auto& tc : cases) {
-        if (should_run_case(ctx.config, tc.name)) {
-            ctx.clock = ManualClock{0};
-            ctx.prng = DeterministicPrng{0xB001C0DE9E3779B9ULL};
-            if (tc.fn(ctx) != 0) {
-                return 1;
-            }
-            ++ran;
-        }
-    }
-    SANDAL_ASSERT(ran > 0);
-    return 0;
-}
-
-}  // namespace harness_ext
-using namespace harness_ext;
-}  // namespace sandal::test
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace {
 
-constexpr int64_t kTick30HzNs = 33'333'333LL;
-constexpr float kLeashEvadeMeters = 140.0F;
+using namespace aoc::worldd;
+namespace repl = ::aoc::protocol::repl;
+namespace emit = ::aoc::protocol::emit;
+namespace schema = ::aoc::protocol::schema;
 
-enum class CastState : uint8_t {
-    Idle = 0,
-    Casting = 1,
-    Completed = 2,
-    Cancelled = 3,
+void check_true(bool cond, const char* expr, int line) {
+    if (!cond) {
+        std::fprintf(stderr, "FAIL(%d): %s\n", line, expr);
+        std::exit(1);
+    }
+}
+
+#define ASSERT_TRUE(c) check_true((c), #c, __LINE__)
+
+class EmptyGearCatalog final : public stats::GearCatalog {
+public:
+    const stats::ItemGear* item(int64_t) const override { return nullptr; }
+    const stats::SetBonus* set(int64_t) const override { return nullptr; }
+    std::string slot_name(int) const override { return ""; }
 };
 
-enum class CastEventKind : uint8_t {
-    TimerCompletionCallback = 0,
-    TargetDeath = 1,
-    IncomingStunCcDebuff = 2,
-    LeashEvade = 3,
-};
+void seed_npc_actor(world::ActorRegistry& reg, uint64_t actor_id) {
+    world::WorldActor actor{};
+    actor.id = actor_id;
+    actor.kind = world::ActorKind::Npc;
+    actor.actor.guid = emit::FIntrepidNetworkGUID::from_u64(actor_id);
 
-struct CastTickEvent {
-    CastEventKind kind{CastEventKind::TimerCompletionCallback};
-    uint64_t generation{0};
-    float leash_distance_m{0.0F};
-};
-
-struct MobCastStateMachine {
-    CastState state{CastState::Idle};
-    uint64_t next_generation{0};
-    uint64_t active_generation{0};
-    int64_t cast_end_ns{0};
-    int32_t target_hp{1000};
-    bool has_stun_cc_debuff{false};
-    bool leash_evading{false};
-    uint32_t completed_casts{0};
-    uint32_t cancelled_casts{0};
-    uint32_t stale_callbacks_ignored{0};
-    uint32_t phantom_hits{0};
-};
-
-uint64_t begin_mob_cast(MobCastStateMachine& mob, int64_t now_ns, int64_t duration_ns) noexcept {
-    if (mob.target_hp <= 0 || mob.has_stun_cc_debuff || mob.leash_evading || duration_ns <= 0) {
-        return 0ULL;
-    }
-    ++mob.next_generation;
-    mob.active_generation = mob.next_generation;
-    mob.cast_end_ns = now_ns + duration_ns;
-    mob.state = CastState::Casting;
-    return mob.active_generation;
+    repl::Subobject sub{};
+    sub.name = "AbilityComponent";
+    sub.obj.schema = &schema::gen::kUAoCAbilityComponent;
+    actor.actor.subobjects.push_back(std::move(sub));
+    ASSERT_TRUE(reg.add(std::move(actor)));
 }
 
-bool stop_cast(MobCastStateMachine& mob) noexcept {
-    if (mob.state != CastState::Casting) {
-        return false;
-    }
-    mob.state = CastState::Cancelled;
-    mob.active_generation = 0ULL;
-    ++mob.cancelled_casts;
-    return true;
+content::AbilityRules build_sprint_rest_rules() {
+    content::AbilityRules rules{};
+    rules.stat_regen_time = 1.0;
+    rules.regen_rate = 5.0;
+
+    rules.sprint.guid = content::kGuidSprint;
+    rules.sprint.held = content::Held::Smart;
+    rules.sprint.min_stamina = 1.0;
+    rules.sprint.cost_stat_guid = content::kGuidStamina;
+    rules.sprint.cost_amount = 1.25;
+    rules.sprint.charge_interval = 0.25;
+    rules.sprint.effect_guid = 9101;
+
+    content::EffectRule sprint_eff{};
+    sprint_eff.guid = 9101;
+    sprint_eff.infinite = true;
+    sprint_eff.stops_regen_moving = true;
+    rules.effects[9101] = sprint_eff;
+
+    rules.rest.guid = content::kGuidRest;
+    rules.rest.held = content::Held::Toggle;
+    rules.rest.requires_out_of_combat = true;
+    rules.rest.effect_guid = 9103;
+
+    content::EffectRule rest_eff{};
+    rest_eff.guid = 9103;
+    rest_eff.infinite = true;
+    rules.effects[9103] = rest_eff;
+    return rules;
 }
 
-void apply_cancellation_event(MobCastStateMachine& mob, const CastTickEvent& ev) noexcept {
-    if (ev.kind == CastEventKind::TargetDeath) {
-        mob.target_hp = 0;
-        (void)stop_cast(mob);
-    } else if (ev.kind == CastEventKind::IncomingStunCcDebuff) {
-        mob.has_stun_cc_debuff = true;
-        (void)stop_cast(mob);
-    } else if (ev.kind == CastEventKind::LeashEvade && ev.leash_distance_m >= kLeashEvadeMeters) {
-        mob.leash_evading = true;
-        (void)stop_cast(mob);
-    }
+void verify_npc_replicator_start_and_stop_cast() {
+    world::ActorRegistry reg;
+    constexpr uint64_t kNpcId = 5000u;
+    seed_npc_actor(reg, kNpcId);
+
+    combat::NpcCastState state{};
+    combat::NpcCast cast{};
+    cast.ability = 77001;
+    cast.target = 8000u;
+    cast.montage = 3301u;
+    cast.play_rate = 1.25f;
+
+    repl::ExportChain chain{};
+    ASSERT_TRUE(combat::start_npc_cast(reg, kNpcId, state, cast, chain));
+    ASSERT_TRUE(state.playing);
+    ASSERT_TRUE(state.element == 1);
+    ASSERT_TRUE(state.counter == 1);
+    ASSERT_TRUE(state.next_instance == 1);
+
+    const auto* live = reg.find(kNpcId);
+    ASSERT_TRUE(live != nullptr);
+    ASSERT_TRUE(!live->ability_exports.empty());
+
+    ASSERT_TRUE(combat::end_npc_cast(reg, kNpcId, state));
+    ASSERT_TRUE(!state.playing);
+    ASSERT_TRUE(state.counter == 2);
+    ASSERT_TRUE(live->ability_exports.empty());
+    ASSERT_TRUE(!combat::end_npc_cast(reg, kNpcId, state));
 }
 
-void apply_completion_callback(MobCastStateMachine& mob, const CastTickEvent& ev, int64_t now_ns) noexcept {
-    if (ev.kind != CastEventKind::TimerCompletionCallback) {
-        return;
-    }
-    if (ev.generation == 0ULL || ev.generation != mob.active_generation) {
-        ++mob.stale_callbacks_ignored;
-        return;
-    }
-    if (mob.state != CastState::Casting || now_ns < mob.cast_end_ns) {
-        return;
-    }
-    if (mob.target_hp <= 0 || mob.has_stun_cc_debuff || mob.leash_evading) {
-        ++mob.phantom_hits;
-        (void)stop_cast(mob);
-        return;
-    }
-    mob.state = CastState::Completed;
-    mob.active_generation = 0ULL;
-    ++mob.completed_casts;
+void verify_pipeline_death_and_mount_interrupt_race() {
+    stats::StatBundle bundle{};
+    EmptyGearCatalog gear{};
+    stats::ClassDef cls{};
+    cls.enum_value = 1;
+    bundle.classes.push_back(cls);
+
+    stats::CharacterStats cstats(bundle, gear, 1, 10);
+    std::vector<stats::WornItem> empty_worn;
+    std::string err;
+    ASSERT_TRUE(cstats.start(empty_worn, err));
+
+    const content::AbilityRules rules = build_sprint_rest_rules();
+    std::map<int64_t, double> init_stats = {
+        {content::kGuidStamina, 100.0},
+        {content::kGuidMaxStamina, 100.0},
+    };
+    AbilityRuntime a7(rules, init_stats, 0.0);
+    ASSERT_TRUE(a7.ok());
+
+    AbilityPipeline pipe(nullptr, cstats, a7, [&]() { return empty_worn; }, 0.0, 42u);
+    ASSERT_TRUE(a7.trigger(content::kGuidSprint, 41, 1.0) == Refusal::None);
+    ASSERT_TRUE(a7.sprinting());
+
+    a7.set_mounted(true, 1.2);
+    ASSERT_TRUE(a7.mounted());
+    ASSERT_TRUE(!a7.sprinting());
+    ASSERT_TRUE(a7.trigger(content::kGuidSprint, 42, 1.3) == Refusal::Mounted);
+
+    pipe.set_dead(true);
+    ASSERT_TRUE(pipe.dead());
+    ASSERT_TRUE(pipe.trigger(9001, 43, 1.5) == Refusal::Dead);
 }
 
-template <std::size_t N>
-void resolve_tick_queue(
-    MobCastStateMachine& mob,
-    int64_t now_ns,
-    const std::array<CastTickEvent, N>& queue) noexcept {
-    for (const auto& ev : queue) {
-        apply_cancellation_event(mob, ev);
-    }
-    for (const auto& ev : queue) {
-        apply_completion_callback(mob, ev, now_ns);
-    }
+void verify_generation_token_stale_stop_immunity() {
+    stats::StatBundle bundle{};
+    EmptyGearCatalog gear{};
+    stats::ClassDef cls{};
+    cls.enum_value = 1;
+    bundle.classes.push_back(cls);
+
+    stats::CharacterStats cstats(bundle, gear, 1, 10);
+    std::vector<stats::WornItem> empty_worn;
+    std::string err;
+    ASSERT_TRUE(cstats.start(empty_worn, err));
+
+    const content::AbilityRules rules = build_sprint_rest_rules();
+    std::map<int64_t, double> init_stats = {
+        {content::kGuidStamina, 100.0},
+        {content::kGuidMaxStamina, 100.0},
+    };
+    AbilityRuntime a7(rules, init_stats, 0.0);
+    ASSERT_TRUE(a7.ok());
+    AbilityPipeline pipe(nullptr, cstats, a7, [&]() { return empty_worn; }, 0.0, 99u);
+
+    ASSERT_TRUE(a7.trigger(content::kGuidSprint, 100, 5.0) == Refusal::None);
+    const auto token_a = a7.instance_of(100);
+    ASSERT_TRUE(token_a.has_value());
+    ASSERT_TRUE(a7.cancel(100, 5.5));
+    ASSERT_TRUE(!a7.sprinting());
+
+    ASSERT_TRUE(a7.trigger(content::kGuidSprint, 101, 6.0) == Refusal::None);
+    const auto token_b = a7.instance_of(101);
+    ASSERT_TRUE(token_b.has_value());
+    ASSERT_TRUE(*token_b > *token_a);
+
+    ASSERT_TRUE(!a7.cancel(100, 6.2));
+    ASSERT_TRUE(!pipe.end_request(static_cast<int32_t>(*token_a), 6.2));
+    ASSERT_TRUE(a7.sprinting());
+    ASSERT_TRUE(a7.cancel(101, 6.5));
+    ASSERT_TRUE(!a7.sprinting());
 }
 
-int verify_same_tick_cancel_permutations(const CastTickEvent& cancel_trigger) {
-    constexpr std::array<std::array<std::size_t, 3>, 6> kPermutations{{
-        {0U, 1U, 2U},
-        {0U, 2U, 1U},
-        {1U, 0U, 2U},
-        {1U, 2U, 0U},
-        {2U, 0U, 1U},
-        {2U, 1U, 0U},
-    }};
+void verify_npc_cast_overlap_replaces_prior_element() {
+    world::ActorRegistry reg;
+    constexpr uint64_t kNpcId = 6002u;
+    seed_npc_actor(reg, kNpcId);
 
-    for (const auto& perm : kPermutations) {
-        sandal::test::ManualClock clock{0};
-        MobCastStateMachine mob{};
-        const uint64_t gen = begin_mob_cast(mob, clock.now_ns(), 10LL * kTick30HzNs);
-        SANDAL_ASSERT_EQ(gen, 1ULL);
+    combat::NpcCastState state{};
+    combat::NpcCast cast1{};
+    cast1.ability = 77001;
+    cast1.montage = 3301u;
+    repl::ExportChain chain{};
 
-        clock.advance_ns(10LL * kTick30HzNs);
-        SANDAL_ASSERT_EQ(clock.now_ns(), mob.cast_end_ns);
+    ASSERT_TRUE(combat::start_npc_cast(reg, kNpcId, state, cast1, chain));
+    const int32_t first_elem = state.element;
+    const int64_t first_gen = state.next_instance;
 
-        const std::array<CastTickEvent, 3> base_events{{
-            {CastEventKind::TimerCompletionCallback, gen, 0.0F},
-            cancel_trigger,
-            {CastEventKind::TimerCompletionCallback, gen, 0.0F},
-        }};
-        const std::array<CastTickEvent, 3> ordered{{
-            base_events[perm[0]],
-            base_events[perm[1]],
-            base_events[perm[2]],
-        }};
+    combat::NpcCast cast2{};
+    cast2.ability = 77002;
+    cast2.montage = 3302u;
+    ASSERT_TRUE(combat::start_npc_cast(reg, kNpcId, state, cast2, chain));
+    ASSERT_TRUE(state.element > first_elem);
+    ASSERT_TRUE(state.next_instance == first_gen + 1);
 
-        resolve_tick_queue(mob, clock.now_ns(), ordered);
-        SANDAL_ASSERT(mob.state == CastState::Cancelled);
-        SANDAL_ASSERT_EQ(mob.completed_casts, 0U);
-        SANDAL_ASSERT_EQ(mob.phantom_hits, 0U);
-        SANDAL_ASSERT_EQ(mob.cancelled_casts, 1U);
-        SANDAL_ASSERT_EQ(mob.stale_callbacks_ignored, 2U);
-    }
-    return 0;
+    world::WorldActor* live = reg.find(kNpcId);
+    ASSERT_TRUE(live != nullptr);
+    repl::FastArrayState* arr = combat::npc_ability_detail::active_abilities(*live);
+    ASSERT_TRUE(arr != nullptr);
+    ASSERT_TRUE(arr->find(first_elem) == nullptr);
+    ASSERT_TRUE(arr->find(state.element) != nullptr);
 }
 
-int test_mob_stop_cast_target_death_and_cc_race(sandal::test::TestContext& ctx) {
-    (void)ctx;
-    if (verify_same_tick_cancel_permutations({CastEventKind::TargetDeath, 0ULL, 0.0F}) != 0) {
-        return 1;
-    }
-    if (verify_same_tick_cancel_permutations({CastEventKind::IncomingStunCcDebuff, 0ULL, 0.0F}) != 0) {
-        return 1;
-    }
-    if (verify_same_tick_cancel_permutations({CastEventKind::LeashEvade, 0ULL, 140.0F}) != 0) {
-        return 1;
-    }
-
-    sandal::test::ManualClock clock{0};
-    MobCastStateMachine sub_leash_mob{};
-    const uint64_t gen = begin_mob_cast(sub_leash_mob, clock.now_ns(), 6LL * kTick30HzNs);
-    clock.advance_ns(6LL * kTick30HzNs);
-    const std::array<CastTickEvent, 3> sub_leash_queue{{
-        {CastEventKind::LeashEvade, 0ULL, 139.9F},
-        {CastEventKind::TimerCompletionCallback, gen, 0.0F},
-        {CastEventKind::TimerCompletionCallback, gen, 0.0F},
-    }};
-    resolve_tick_queue(sub_leash_mob, clock.now_ns(), sub_leash_queue);
-    SANDAL_ASSERT(sub_leash_mob.state == CastState::Completed);
-    SANDAL_ASSERT_EQ(sub_leash_mob.completed_casts, 1U);
-    SANDAL_ASSERT_EQ(sub_leash_mob.phantom_hits, 0U);
-    SANDAL_ASSERT_EQ(sub_leash_mob.stale_callbacks_ignored, 1U);
-    return 0;
+void test_mob_stop_cast_target_death_and_cc_race() {
+    verify_npc_replicator_start_and_stop_cast();
+    verify_pipeline_death_and_mount_interrupt_race();
 }
 
-int test_mob_stop_cast_generation_token_immunity(sandal::test::TestContext& ctx) {
-    MobCastStateMachine mob{};
-    const uint64_t gen_n = begin_mob_cast(mob, ctx.clock.now_ns(), 20LL * kTick30HzNs);
-    SANDAL_ASSERT_EQ(gen_n, 1ULL);
-
-    ctx.clock.advance_ns(12LL * kTick30HzNs);
-    SANDAL_ASSERT(stop_cast(mob));
-    SANDAL_ASSERT(mob.state == CastState::Cancelled);
-
-    const uint64_t gen_n_plus_1 = begin_mob_cast(mob, ctx.clock.now_ns(), 20LL * kTick30HzNs);
-    SANDAL_ASSERT_EQ(gen_n_plus_1, 2ULL);
-    SANDAL_ASSERT(mob.state == CastState::Casting);
-
-    ctx.clock.advance_ns(8LL * kTick30HzNs);
-    const std::array<CastTickEvent, 2> stale_queue{{
-        {CastEventKind::TimerCompletionCallback, gen_n, 0.0F},
-        {CastEventKind::TimerCompletionCallback, 999ULL, 0.0F},
-    }};
-    resolve_tick_queue(mob, ctx.clock.now_ns(), stale_queue);
-    SANDAL_ASSERT(mob.state == CastState::Casting);
-    SANDAL_ASSERT_EQ(mob.active_generation, gen_n_plus_1);
-    SANDAL_ASSERT_EQ(mob.completed_casts, 0U);
-    SANDAL_ASSERT_EQ(mob.stale_callbacks_ignored, 2U);
-
-    ctx.clock.advance_ns(12LL * kTick30HzNs);
-    const std::array<CastTickEvent, 2> final_queue{{
-        {CastEventKind::TimerCompletionCallback, gen_n, 0.0F},
-        {CastEventKind::TimerCompletionCallback, gen_n_plus_1, 0.0F},
-    }};
-    resolve_tick_queue(mob, ctx.clock.now_ns(), final_queue);
-    SANDAL_ASSERT(mob.state == CastState::Completed);
-    SANDAL_ASSERT_EQ(mob.completed_casts, 1U);
-    SANDAL_ASSERT_EQ(mob.cancelled_casts, 1U);
-    SANDAL_ASSERT_EQ(mob.stale_callbacks_ignored, 3U);
-    SANDAL_ASSERT_EQ(mob.phantom_hits, 0U);
-    return 0;
+void test_mob_stop_cast_generation_token_immunity() {
+    verify_generation_token_stale_stop_immunity();
+    verify_npc_cast_overlap_replaces_prior_element();
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    constexpr std::array<sandal::test::SuiteCase, 2> kCases{{
-        {"mob_stop_cast_target_death_and_cc_race", &test_mob_stop_cast_target_death_and_cc_race},
-        {"mob_stop_cast_generation_token_immunity", &test_mob_stop_cast_generation_token_immunity},
-    }};
-    return sandal::test::run_suite(argc, argv, kCases);
+    std::string_view selected_case;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--case") == 0 && i + 1 < argc) {
+            selected_case = argv[++i];
+        }
+    }
+
+    if (selected_case.empty() || selected_case == "mob_stop_cast_target_death_and_cc_race") {
+        test_mob_stop_cast_target_death_and_cc_race();
+    }
+    if (selected_case.empty() || selected_case == "mob_stop_cast_generation_token_immunity") {
+        test_mob_stop_cast_generation_token_immunity();
+    }
+    return 0;
 }

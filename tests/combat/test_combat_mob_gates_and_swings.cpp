@@ -1,125 +1,202 @@
-#include "../world/test_harness.h"
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
+#include "combat/bite_area.h"
+#include "combat/combat_world.h"
+#include "combat/npc_ability_data.h"
+#include "npc/ai/npc_ai.h"
+#include "npc/ai/threat.h"
+
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string_view>
+#include <vector>
 
 namespace {
 
-struct MobState {
-    int32_t level{10};
-    int32_t health{500};
-    int32_t max_health{500};
-    bool in_combat{false};
-    bool evading{false};
-    bool casting{false};
-    int64_t next_swing_ms{0};
-    uint32_t swings_landed{0};
-};
+using namespace aoc::worldd;
 
-[[nodiscard]] bool evaluate_mob_aggro_or_leash(
-    MobState& mob,
-    int32_t player_level,
-    float dist_from_mob_m,
-    float dist_from_anchor_m,
-    bool has_los) noexcept {
-    constexpr float kFootstepRadiusM = 8.0F;
-    constexpr float kSightRadiusM = 20.0F;
-    constexpr float kLeashDistanceM = 140.0F;
-    if (mob.in_combat && dist_from_anchor_m > kLeashDistanceM) {
-        mob.in_combat = false;
-        mob.evading = true;
-        mob.casting = false;
-        mob.health = mob.max_health;
-        return false;
+void check_true(bool cond, const char* expr, int line) {
+    if (!cond) {
+        std::fprintf(stderr, "FAIL(%d): %s\n", line, expr);
+        std::exit(1);
     }
-    if (!mob.in_combat && (player_level - mob.level) <= 9) {
-        if (dist_from_mob_m <= kFootstepRadiusM || (has_los && dist_from_mob_m <= kSightRadiusM)) {
-            mob.in_combat = true;
-            mob.evading = false;
-        }
-    }
-    return mob.in_combat;
 }
 
-[[nodiscard]] bool step_mob_swing_or_stop_cast(
-    MobState& mob,
-    bool stop_cast_signal,
-    int64_t swing_cadence_ms,
-    int64_t now_ms) noexcept {
-    if (stop_cast_signal && mob.casting) {
-        mob.casting = false;
-        mob.next_swing_ms = now_ms + swing_cadence_ms;
-        return false;
+void check_near(double actual, double expected, double tol, const char* expr, int line) {
+    if (std::fabs(actual - expected) > tol) {
+        std::fprintf(stderr, "FAIL(%d): %s (actual=%.6f expected=%.6f)\n",
+                     line, expr, actual, expected);
+        std::exit(1);
     }
-    if (!mob.in_combat || mob.casting || now_ms < mob.next_swing_ms) {
-        return false;
-    }
-    ++mob.swings_landed;
-    mob.next_swing_ms = now_ms + swing_cadence_ms;
-    return true;
 }
 
-int test_mob_aggro_and_leash_evade() {
-    sandal::test::ManualClock clock{0};
-    MobState mob{};
+#define ASSERT_TRUE(c) check_true((c), #c, __LINE__)
+#define ASSERT_NEAR(a, b, t) check_near((a), (b), (t), #a " ~= " #b, __LINE__)
 
-    SANDAL_ASSERT(!evaluate_mob_aggro_or_leash(mob, 20, 5.0F, 5.0F, true));
-    SANDAL_ASSERT(!mob.in_combat);
+void verify_notice_and_threat_table() {
+    world::NpcInfo aggro_npc{};
+    aggro_npc.aggro_off = false;
+    world::NpcInfo passive_npc{};
+    passive_npc.aggro_off = true;
 
-    SANDAL_ASSERT(!evaluate_mob_aggro_or_leash(mob, 19, 15.0F, 15.0F, false));
-    clock.advance_ms(2'000);
-    SANDAL_ASSERT(evaluate_mob_aggro_or_leash(mob, 19, 19.5F, 19.5F, true));
-    SANDAL_ASSERT(mob.in_combat && !mob.evading);
+    ASSERT_TRUE(combat::notices_players(true, aggro_npc));
+    ASSERT_TRUE(!combat::notices_players(false, aggro_npc));
+    ASSERT_TRUE(!combat::notices_players(true, passive_npc));
 
-    mob.health = 120;
-    mob.casting = true;
-    SANDAL_ASSERT(evaluate_mob_aggro_or_leash(mob, 19, 10.0F, 140.0F, true));
-    SANDAL_ASSERT(!evaluate_mob_aggro_or_leash(mob, 19, 10.0F, 140.1F, true));
-    SANDAL_ASSERT(!mob.in_combat && mob.evading && !mob.casting);
-    SANDAL_ASSERT(mob.health == mob.max_health);
-    return 0;
+    npc::ai::ThreatTable table;
+    ASSERT_TRUE(table.empty());
+    ASSERT_TRUE(table.add(101, 100.0, 1.0));
+    ASSERT_TRUE(table.add(202, 105.0, 1.5));
+    ASSERT_TRUE(table.size() == 2u);
+    ASSERT_NEAR(table.of(101), 100.0, 1e-6);
+    ASSERT_TRUE(table.pick(101) == 101u);
+
+    ASSERT_TRUE(table.add(202, 10.0, 2.0));
+    ASSERT_NEAR(table.of(202), 115.0, 1e-6);
+    ASSERT_TRUE(table.pick(101) == 202u);
+
+    table.remove(202);
+    ASSERT_TRUE(!table.has(202));
+    ASSERT_TRUE(table.pick(202) == 101u);
 }
 
-int test_mob_swing_timer_cadence() {
-    sandal::test::ManualClock clock{0};
-    const auto* melee = sandal::test::find_standin_ability(1001U);
-    SANDAL_ASSERT(melee != nullptr);
+void verify_ai_aggro_chase_and_leash_evade() {
+    npc::ai::Params params{};
+    params.aggro_radius_cm = 800.0;
+    params.leash_radius_cm = 2000.0;
+    params.sense_interval = 0.0;
+    params.reset_arrive_cm = 100.0;
+    npc::ai::NpcAi ai(params);
 
-    MobState mob{};
-    mob.in_combat = true;
-    mob.next_swing_ms = melee->cooldown_ms;
+    npc::ai::Sense s{};
+    s.now = 1.0;
+    s.self = {0.0, 0.0, 0.0};
+    s.home = {0.0, 0.0, 0.0};
+    s.attack_range_cm = 150.0;
+    s.known.push_back({1001u, {500.0, 0.0, 0.0}, 50.0, true, true});
 
-    clock.advance_ticks(44, 30);
-    SANDAL_ASSERT(!step_mob_swing_or_stop_cast(mob, false, melee->cooldown_ms, clock.now_ms()));
-    SANDAL_ASSERT(mob.swings_landed == 0U);
+    auto ord1 = ai.think(s);
+    ASSERT_TRUE(ai.state() == npc::ai::State::Chase);
+    ASSERT_TRUE(ord1.began_fight);
+    ASSERT_TRUE(ord1.in_combat);
+    ASSERT_TRUE(ord1.target == 1001u);
+    ASSERT_TRUE(ord1.move == npc::ai::Orders::Move::ChaseTo);
 
-    clock.advance_ms(34);
-    SANDAL_ASSERT(step_mob_swing_or_stop_cast(mob, false, melee->cooldown_ms, clock.now_ms()));
-    SANDAL_ASSERT(mob.swings_landed == 1U && mob.next_swing_ms == 3000);
+    s.now = 2.0;
+    s.self = {400.0, 0.0, 0.0};
+    auto ord2 = ai.think(s);
+    ASSERT_TRUE(ai.state() == npc::ai::State::Attack);
+    ASSERT_TRUE(ord2.attack);
+    ASSERT_TRUE(ord2.move == npc::ai::Orders::Move::Stand);
 
-    mob.casting = true;
-    clock.advance_ms(500);
-    SANDAL_ASSERT(!step_mob_swing_or_stop_cast(mob, true, melee->cooldown_ms, clock.now_ms()));
-    SANDAL_ASSERT(!mob.casting && mob.next_swing_ms == 3500);
-    return 0;
+    s.now = 3.0;
+    s.self = {2500.0, 0.0, 0.0};
+    s.known[0].pos = {2600.0, 0.0, 0.0};
+    auto ord3 = ai.think(s);
+    ASSERT_TRUE(ai.state() == npc::ai::State::Reset);
+    ASSERT_TRUE(ord3.began_reset);
+    ASSERT_TRUE(ord3.move == npc::ai::Orders::Move::Home);
+    ASSERT_TRUE(ai.threat().empty());
+
+    s.now = 4.0;
+    s.self = {50.0, 0.0, 0.0};
+    s.known.clear();
+    auto ord4 = ai.think(s);
+    ASSERT_TRUE(ai.state() == npc::ai::State::Idle);
+    ASSERT_TRUE(ord4.reset_done);
+    ASSERT_TRUE(!ord4.in_combat);
+}
+
+void verify_bite_area_and_swing_cadence() {
+    combat::MontageData montage{};
+    montage.length = 2.4;
+    montage.rate_scale = 1.2;
+    montage.anim_end = 1.8;
+    ASSERT_NEAR(montage.seconds(1.0), 2.0, 1e-5);
+    ASSERT_NEAR(montage.task_done_after(1.0), 1.5, 1e-5);
+    ASSERT_NEAR(montage.task_done_after(2.0), 0.75, 1e-5);
+
+    combat::BiteArea area{};
+    area.discovery = combat::BiteArea::Discovery::PrefersActive;
+    area.check_validity = true;
+    area.cone_check = true;
+    area.los_check = true;
+    area.distance = 250.0;
+    area.angle = 90.0;
+    ASSERT_TRUE(area.usable());
+    ASSERT_TRUE(area.gate() == combat::BiteArea::Gate::Validity);
+
+    combat::HitSubject front{0.0, 0.0, 0.0, 150.0, 0.0, 40.0};
+    combat::HitSubject behind{0.0, 0.0, 0.0, -150.0, 0.0, 40.0};
+    combat::HitSubject far_out{0.0, 0.0, 0.0, 400.0, 0.0, 40.0};
+
+    ASSERT_TRUE(combat::hit_lands(area, front, true, [] { return true; }));
+    ASSERT_TRUE(!combat::hit_lands(area, front, true, [] { return false; }));
+    ASSERT_TRUE(!combat::hit_lands(area, behind, true, [] { return true; }));
+    ASSERT_TRUE(!combat::hit_lands(area, far_out, true, [] { return true; }));
+}
+
+void verify_npc_swing_condition_gates() {
+    combat::CondContext ctx{};
+    ctx.has_target = true;
+    ctx.surface_distance = 120.0;
+    ctx.centre_distance = 160.0;
+    ctx.angle = 25.0;
+    ctx.health_fraction = 0.50;
+    ctx.fight_seconds = 8.0;
+
+    combat::CondAtom dist_gate{};
+    dist_gate.kind = combat::CondAtom::Kind::In;
+    dist_gate.value = 200.0;
+    ASSERT_TRUE(combat::eval_atom(dist_gate, ctx));
+
+    combat::CondAtom hp_under{};
+    hp_under.kind = combat::CondAtom::Kind::HealthUnder;
+    hp_under.value = 0.40;
+    ASSERT_TRUE(!combat::eval_atom(hp_under, ctx));
+
+    combat::CondAtom hp_not_under{};
+    hp_not_under.kind = combat::CondAtom::Kind::HealthNotUnder;
+    hp_not_under.value = 0.40;
+    ASSERT_TRUE(combat::eval_atom(hp_not_under, ctx));
+
+    combat::CondGroup group = {
+        {'c', 0, dist_gate},
+        {'a', 0, hp_not_under},
+    };
+    ASSERT_TRUE(combat::eval_group(group, ctx));
+}
+
+void test_mob_aggro_and_leash_evade() {
+    verify_notice_and_threat_table();
+    verify_ai_aggro_chase_and_leash_evade();
+}
+
+void test_mob_swing_timer_cadence() {
+    verify_bite_area_and_swing_cadence();
+    verify_npc_swing_condition_gates();
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    const auto cfg = sandal::test::parse_test_cli(argc, argv);
-    int ran = 0;
-    if (sandal::test::should_run_case(cfg, "mob_aggro_and_leash_evade")) {
-        if (test_mob_aggro_and_leash_evade() != 0) {
-            return 1;
+    std::string_view selected_case;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--case") == 0 && i + 1 < argc) {
+            selected_case = argv[++i];
         }
-        ++ran;
     }
-    if (sandal::test::should_run_case(cfg, "mob_swing_timer_cadence")) {
-        if (test_mob_swing_timer_cadence() != 0) {
-            return 1;
-        }
-        ++ran;
+
+    if (selected_case.empty() || selected_case == "mob_aggro_and_leash_evade") {
+        test_mob_aggro_and_leash_evade();
     }
-    SANDAL_ASSERT(ran > 0);
+    if (selected_case.empty() || selected_case == "mob_swing_timer_cadence") {
+        test_mob_swing_timer_cadence();
+    }
     return 0;
 }
