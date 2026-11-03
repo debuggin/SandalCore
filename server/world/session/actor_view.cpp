@@ -99,6 +99,16 @@ std::string ActorView::describe() const {
            ", relevancy " + std::to_string(stats_.closes_relevancy) + ", destroyed " + std::to_string(stats_.closes_destroyed) + "); throttled passes " + std::to_string(stats_.throttled);
 }
 
+world::RelevancyTier ActorView::classify_tier(double distance_cm) const noexcept {
+    if (!(distance_cm >= 0.0)) return world::RelevancyTier::Culled;
+    const float dist_sq = static_cast<float>(distance_cm * distance_cm);
+    return world::classify_relevancy_tier(dist_sq, config_.relevancy);
+}
+
+bool ActorView::should_update_for_tick(double distance_cm, uint64_t tick_index) const noexcept {
+    return world::should_replicate_on_tick(classify_tier(distance_cm), tick_index);
+}
+
 uint32_t ActorView::allocate_channel(const Connection& conn) const {
     for (uint32_t index = 3; index <= config_.max_channel; ++index) {
         if (conn.channel_open(index) || conn.channel_closing(index)) continue;

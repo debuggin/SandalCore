@@ -62,6 +62,7 @@
 // C.Y.B with C-O-A
 
 #include "net/connection.h"
+#include "net/tick_loop.h"
 #include "protocol/repl/replicator.h"
 #include "protocol/repl/send_ledger.h"
 #include "world/actor_registry.h"
@@ -159,6 +160,8 @@ public:
     const world::RelevancyConfig& relevancy() const { return config_.relevancy; }
     /// The radius the next pass asks the registry's grid for (tests): the snapshot ring, or the largest awake radius seen among the actors that are not wide, plus the hysteresis.
     double query_radius_cm() const { return world::query_radius(config_.relevancy, largest_awake_); }
+    [[nodiscard]] world::RelevancyTier classify_tier(double distance_cm) const noexcept;
+    [[nodiscard]] bool should_update_for_tick(double distance_cm, uint64_t tick_index) const noexcept;
     /// Update chains whose events the view still waits for, over all actors (their ledger records), and the routes of those events: both are
     /// bounded and end at 0 once every chain's fate was reported (tests).
     size_t ledger_records() const {

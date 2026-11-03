@@ -144,14 +144,9 @@ static void set_value(repl::ObjectState& o, const char* path, repl::Value v) {
 /// An NPC with a few of the values the retail ones have: the actor block and two components, small enough to read the log by.
 static world::WorldActor make_npc(uint64_t id, double x, double y, const char* archetype = "Wolf") {
     world::WorldActor w;
-    w.id = id;
-    w.kind = world::ActorKind::Npc;
-    w.x = x;
-    w.y = y;
-    w.z = 12000;
+    w.id = id; w.kind = world::ActorKind::Npc; w.x = x; w.y = y; w.z = 12000;
     repl::Actor& a = w.actor;
-    a.guid = guid(id);
-    a.obj.schema = &schema_named("ANPCCharacter");
+    a.guid = guid(id); a.obj.schema = &schema_named("ANPCCharacter");
     set_value(a.obj, "AuthServerIDReplicated", repl::Value::u64(60));
     repl::RepMovement m;
     m.location = repl::QuantVec{repl::QuantVec::Mode::Scaled, static_cast<int64_t>(x * 100), static_cast<int64_t>(y * 100), 1200000};
@@ -171,25 +166,17 @@ static world::WorldActor make_npc(uint64_t id, double x, double y, const char* a
     a.open.spawn.location = repl::QuantVec{repl::QuantVec::Mode::Scaled, static_cast<int64_t>(x * 10), static_cast<int64_t>(y * 10), 120000};
     a.open.spawn.rotation = repl::Rot{0, 11000, 0};
     repl::Subobject info;
-    info.guid = guid(id + 6);
-    info.name = "BaseCharacterInfo";
-    info.checksum = 0xaff9746f;
-    info.obj.schema = &schema_named("UNPCInfo");
+    info.guid = guid(id + 6); info.name = "BaseCharacterInfo"; info.checksum = 0xaff9746f; info.obj.schema = &schema_named("UNPCInfo");
     set_value(info.obj, "CharacterGuid.A", repl::Value::i64(static_cast<int32_t>(id)));
     set_value(info.obj, "CreatureOwnerName", repl::Value::str(std::string("A ") + archetype));
     set_value(info.obj, "Level", repl::Value::i64(14));
     a.subobjects.push_back(std::move(info));
     repl::Subobject combat;
-    combat.guid = guid(id + 8);
-    combat.name = "CombatInfo";
-    combat.checksum = 0xb9f1a7bc;
-    combat.obj.schema = &schema_named("UNPCCombatInfo");
+    combat.guid = guid(id + 8); combat.name = "CombatInfo"; combat.checksum = 0xb9f1a7bc; combat.obj.schema = &schema_named("UNPCCombatInfo");
     set_value(combat.obj, "bIsDead", repl::Value::boolean(false));
     set_value(combat.obj, "EliteRank", repl::Value::i64(0));
     a.subobjects.push_back(std::move(combat));
-    w.npc.name = std::string("A ") + archetype;
-    w.npc.level = 14;
-    w.npc.archetype = path;
+    w.npc.name = std::string("A ") + archetype; w.npc.level = 14; w.npc.archetype = path;
     return w;
 }
 
@@ -639,22 +626,14 @@ static void test_view_owner_and_component_index() {
 /// An AIntrepidStateIFA with `components` UIntrepidFoliageStateComponents, as FoliageCells makes one (without the map): `items[c]` instances in component c, all Empty.
 static world::WorldActor make_state_actor(uint64_t id, double x, double y, size_t components, size_t items_each) {
     world::WorldActor w;
-    w.id = id;
-    w.kind = world::ActorKind::Foliage;
-    w.x = x;
-    w.y = y;
-    w.z = 12000;
-    w.snapshot_only = true;
-    w.keep_fast_shadow = true;
-    w.dormancy_delay = milliseconds(265);
+    w.id = id; w.kind = world::ActorKind::Foliage; w.x = x; w.y = y; w.z = 12000;
+    w.snapshot_only = true; w.keep_fast_shadow = true; w.dormancy_delay = milliseconds(265);
     repl::Actor& a = w.actor;
-    a.guid = guid(id);
-    a.obj.schema = &schema_named("AIntrepidStateIFA");
+    a.guid = guid(id); a.obj.schema = &schema_named("AIntrepidStateIFA");
     set_value(a.obj, "AuthServerIDReplicated", repl::Value::u64(60));
     repl::RepMovement m;
     m.location = repl::QuantVec{repl::QuantVec::Mode::Scaled, static_cast<int64_t>(x * 100), static_cast<int64_t>(y * 100), 1200000};
-    m.rotation = repl::Rot{0, 0, 0};
-    m.linear_velocity = repl::QuantVec{repl::QuantVec::Mode::Scaled, 0, 0, 0};
+    m.rotation = repl::Rot{0, 0, 0}; m.linear_velocity = repl::QuantVec{repl::QuantVec::Mode::Scaled, 0, 0, 0};
     set_value(a.obj, "ReplicatedMovement", repl::Value(m));
     set_value(a.obj, "RemoteRole", repl::Value::u64(1));
     set_value(a.obj, "Role", repl::Value::u64(4));
@@ -672,8 +651,7 @@ static world::WorldActor make_state_actor(uint64_t id, double x, double y, size_
         repl::FastArrayState* fa = sub.obj.arrays.get(*sub.obj.schema, "IndexedStates");
         for (size_t i = 0; i < items_each; ++i) {
             repl::ElementState es;
-            es.values[1] = repl::Value::u64(3);
-            es.values[2] = repl::Value::u64(i);
+            es.values[1] = repl::Value::u64(3); es.values[2] = repl::Value::u64(i);
             fa->add(std::move(es));
         }
         a.subobjects.push_back(std::move(sub));
@@ -682,9 +660,7 @@ static world::WorldActor make_state_actor(uint64_t id, double x, double y, size_
 }
 
 static size_t open_bits(const std::vector<Seen>& s) {
-    for (const Seen& x : s) {
-        if (x.open) return x.bits;
-    }
+    for (const Seen& x : s) if (x.open) return x.bits;
     return 0;
 }
 // [C-O-A - C-Y-B]
@@ -771,6 +747,36 @@ static void test_state_actor() {
     CHECK(v.state_of(5000) == world::ClientState::None || v.tracked() == 0, "a removed actor is let go");
 }
 
+static void test_tick_loop_and_cadence() {
+    std::printf("tick loop budget and relevancy tier cadence\n");
+    TickLoopBudget budget;
+    CHECK(TickLoopBudget::kTickRateHz == 30 && TickLoopBudget::kTickIntervalUs == 33333 && TickLoopBudget::kTickSloP99Us == 15000, "30 Hz tick loop constants");
+    budget.record_tick_phases(1000, 4000, 3000, 1000);
+    CHECK(budget.tick_index() == 1 && budget.last_duration_us() == 9000 && budget.slo_violation_count() == 0 && budget.overrun_count() == 0, "tick under 15 ms SLO");
+    budget.record_tick_duration_us(20000);
+    CHECK(budget.tick_index() == 2 && budget.slo_violation_count() == 1 && budget.overrun_count() == 0 && budget.max_duration_us() == 20000, "tick over 15 ms SLO but under 33.33 ms");
+    budget.record_tick_duration_us(40000);
+    CHECK(budget.tick_index() == 3 && budget.slo_violation_count() == 2 && budget.overrun_count() == 1 && budget.max_duration_us() == 40000, "tick over 33.33 ms overrun");
+    using world::RelevancyTier;
+    const world::RelevancyConfig cfg;
+    CHECK(world::classify_relevancy_tier(5000.0f * 5000.0f, cfg) == RelevancyTier::Tier0_Close &&
+              world::classify_relevancy_tier(10000.0f * 10000.0f, cfg) == RelevancyTier::Tier1_Mid &&
+              world::classify_relevancy_tier(20000.0f * 20000.0f, cfg) == RelevancyTier::Tier2_Far &&
+              world::classify_relevancy_tier(30000.0f * 30000.0f, cfg) == RelevancyTier::Tier3_Horizon &&
+              world::classify_relevancy_tier(40000.0f * 40000.0f, cfg) == RelevancyTier::Culled,
+          "classify_relevancy_tier across distance bands");
+    CHECK(world::should_replicate_on_tick(RelevancyTier::Tier0_Close, 1) && !world::should_replicate_on_tick(RelevancyTier::Tier1_Mid, 1) &&
+              world::should_replicate_on_tick(RelevancyTier::Tier1_Mid, 2) && world::should_replicate_on_tick(RelevancyTier::Tier2_Far, 6) &&
+              !world::should_replicate_on_tick(RelevancyTier::Tier2_Far, 5) && world::should_replicate_on_tick(RelevancyTier::Tier3_Horizon, 30) &&
+              !world::should_replicate_on_tick(RelevancyTier::Tier3_Horizon, 29) && !world::should_replicate_on_tick(RelevancyTier::Culled, 0),
+          "should_replicate_on_tick cadence 1/1, 1/2, 1/6, 1/30, 0");
+    world::ActorRegistry reg;
+    ActorView v(reg, view_config(), reserved_3_to_6());
+    CHECK(v.classify_tier(5000.0) == RelevancyTier::Tier0_Close && v.should_update_for_tick(10000.0, 2) && !v.should_update_for_tick(10000.0, 3) &&
+              !v.should_update_for_tick(40000.0, 0),
+          "ActorView tier and tick-cadence helpers");
+}
+
 int main() {
     test_view_owner_and_component_index();
     test_registry();
@@ -781,6 +787,7 @@ int main() {
     test_view_never_dormant_and_removal();
     test_view_cap_and_exports();
     test_state_actor();
+    test_tick_loop_and_cadence();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -75,4 +75,19 @@ inline double query_radius(const RelevancyConfig& cfg, double largest_awake_cm =
 
 inline double horizontal_distance(double ax, double ay, double bx, double by) { return std::hypot(ax - bx, ay - by); }
 
+enum class RelevancyTier : uint8_t { Tier0_Close = 0, Tier1_Mid = 1, Tier2_Far = 2, Tier3_Horizon = 3, Culled = 4 };
+
+[[nodiscard]] constexpr RelevancyTier classify_relevancy_tier(float dist_sq, const RelevancyConfig& cfg = {}) noexcept {
+    if (!(dist_sq >= 0.0f)) return RelevancyTier::Culled;
+    const double d = static_cast<double>(dist_sq), a = cfg.awake_cm, s = cfg.snapshot_cm, m = (a + s) * 0.5;
+    if (d <= (a * 0.5) * (a * 0.5)) return RelevancyTier::Tier0_Close;
+    if (d <= a * a) return RelevancyTier::Tier1_Mid;
+    return d <= m * m ? RelevancyTier::Tier2_Far : (d <= s * s ? RelevancyTier::Tier3_Horizon : RelevancyTier::Culled);
+}
+
+[[nodiscard]] constexpr bool should_replicate_on_tick(RelevancyTier tier, uint64_t tick_index) noexcept {
+    constexpr uint64_t kStride[5] = {1, 2, 6, 30, 0};
+    return static_cast<uint8_t>(tier) < 4 && (tick_index % kStride[static_cast<uint8_t>(tier)]) == 0;
+}
+
 }  // namespace aoc::worldd::world
