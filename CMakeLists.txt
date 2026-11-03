@@ -135,6 +135,14 @@ if(WIN32)
     set_target_properties(launcher PROPERTIES FOLDER "Tools")
 endif()
 
+add_custom_target(LauncherBuild
+    COMMAND dotnet build "${CMAKE_CURRENT_SOURCE_DIR}/launcher/SandalLauncher/SandalLauncher.csproj" -c $<CONFIG>
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Building Avalonia 11 C# Desktop Shell (SandalLauncher.csproj)"
+    VERBATIM
+)
+set_target_properties(LauncherBuild PROPERTIES FOLDER "Tools")
+
 # test_ics_token_file: the launcher/tether login-token hand-off (plan A3)
 add_executable(test_ics_token_file
     tests/protocol/test_ics_token_file.cpp

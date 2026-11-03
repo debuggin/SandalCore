@@ -1,0 +1,472 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:SandalLauncher.ViewModels"
+        x:Class="SandalLauncher.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        x:CompileBindings="True"
+        MinWidth="960"
+        MinHeight="600"
+        Width="1180"
+        Height="740"
+        Title="SandalCore Launcher — Verra Control Deck"
+        Background="{DynamicResource SurfacePrimaryBrush}"
+        Foreground="{DynamicResource TextPrimaryBrush}"
+        AutomationProperties.Name="SandalCore Launcher Verra Control Deck Window">
+
+  <Grid RowDefinitions="Auto,*" ColumnDefinitions="260,*">
+
+    <!-- Top Realm Status Header Bar (Spans both panes, UX-03/UX-04/UX-05) -->
+    <Border Grid.Row="0"
+            Grid.Column="0"
+            Grid.ColumnSpan="2"
+            Background="{DynamicResource SurfaceElevatedBrush}"
+            BorderBrush="{DynamicResource BorderSubtleBrush}"
+            BorderThickness="0,0,0,1"
+            Padding="20,12">
+      <Grid ColumnDefinitions="*,Auto,Auto">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
+          <Border Background="{DynamicResource SurfaceOverlayBrush}"
+                  BorderBrush="{DynamicResource AccentGoldBrush}"
+                  BorderThickness="1"
+                  CornerRadius="4"
+                  Padding="8,4">
+            <TextBlock Text="VERRA C2"
+                       Foreground="{DynamicResource AccentGoldBrush}"
+                       FontWeight="Bold"
+                       FontSize="12" />
+          </Border>
+          <StackPanel Spacing="2" VerticalAlignment="Center">
+            <TextBlock Text="SandalCore Launcher — Verra Control Deck"
+                       Foreground="{DynamicResource TextPrimaryBrush}"
+                       FontSize="16"
+                       FontWeight="SemiBold" />
+            <TextBlock Text="{Binding ActiveProfileName}"
+                       Foreground="{DynamicResource TextMutedBrush}"
+                       FontSize="12" />
+          </StackPanel>
+        </StackPanel>
+
+        <!-- Realm Status Pill Header (Color + Shape + Text Non-Color Redundancy, UX-05) -->
+        <Border Grid.Column="1"
+                x:Name="RealmStatusPill"
+                Background="{DynamicResource SurfaceOverlayBrush}"
+                BorderBrush="{DynamicResource StatusOnlineBrush}"
+                BorderThickness="1"
+                CornerRadius="16"
+                Padding="14,6"
+                Margin="0,0,16,0"
+                VerticalAlignment="Center"
+                AutomationProperties.Name="Realm Status Pill">
+          <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+            <TextBlock Text="{Binding RealmStatusBadgeText}"
+                       Foreground="{DynamicResource StatusOnlineBrush}"
+                       FontWeight="SemiBold"
+                       FontSize="12" />
+            <TextBlock Text="{Binding RealmLatencyText}"
+                       Foreground="{DynamicResource TextMutedBrush}"
+                       FontSize="12" />
+          </StackPanel>
+        </Border>
+
+        <!-- View-State Inspection Switcher (Loading / Empty / Error / Degraded / Populated, UX-02) -->
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+          <Button Content="Populated"
+                  Command="{Binding SetPopulatedStateCommand}"
+                  MinHeight="32"
+                  TabIndex="20"
+                  AutomationProperties.Name="Switch to Populated View State" />
+          <Button Content="Loading"
+                  Command="{Binding SetLoadingStateCommand}"
+                  MinHeight="32"
+                  TabIndex="21"
+                  AutomationProperties.Name="Switch to Loading View State" />
+          <Button Content="Empty"
+                  Command="{Binding SetEmptyStateCommand}"
+                  MinHeight="32"
+                  TabIndex="22"
+                  AutomationProperties.Name="Switch to Empty View State" />
+          <Button Content="Degraded"
+                  Command="{Binding SetDegradedStateCommand}"
+                  MinHeight="32"
+                  TabIndex="23"
+                  AutomationProperties.Name="Switch to Degraded View State" />
+          <Button Content="Error"
+                  Command="{Binding SetErrorStateCommand}"
+                  MinHeight="32"
+                  TabIndex="24"
+                  AutomationProperties.Name="Switch to Error View State" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- Left Navigation Rail (2-Pane Responsive Architecture, Fitts >= 44px Targets, Hick <= 5 Items, UX-01/UX-06) -->
+    <Border Grid.Row="1"
+            Grid.Column="0"
+            Background="{DynamicResource SurfaceElevatedBrush}"
+            BorderBrush="{DynamicResource BorderSubtleBrush}"
+            BorderThickness="0,0,1,0"
+            Padding="16"
+            AutomationProperties.Name="Primary Navigation Rail">
+      <Grid RowDefinitions="Auto,*,Auto">
+        <TextBlock Grid.Row="0"
+                   Text="NAVIGATION"
+                   Foreground="{DynamicResource TextMutedBrush}"
+                   FontSize="11"
+                   FontWeight="Bold"
+                   Margin="4,0,0,12" />
+
+        <StackPanel Grid.Row="1" Spacing="8">
+          <Button x:Name="NavProfilesButton"
+                  Content="1. Profiles"
+                  Command="{Binding SelectProfilesCommand}"
+                  HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  MinHeight="44"
+                  Padding="14,10"
+                  TabIndex="1"
+                  AutomationProperties.Name="Profiles Navigation" />
+
+          <Button x:Name="NavRealmControlButton"
+                  Content="2. Realm &amp; Server Control"
+                  Command="{Binding SelectRealmControlCommand}"
+                  HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  MinHeight="44"
+                  Padding="14,10"
+                  TabIndex="2"
+                  AutomationProperties.Name="Realm and Server Control Navigation" />
+
+          <Button x:Name="NavLaunchPresetsButton"
+                  Content="3. Launch Presets"
+                  Command="{Binding SelectLaunchPresetsCommand}"
+                  HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  MinHeight="44"
+                  Padding="14,10"
+                  TabIndex="3"
+                  AutomationProperties.Name="Launch Presets Navigation" />
+
+          <Button x:Name="NavDiagnosticsButton"
+                  Content="4. Diagnostics"
+                  Command="{Binding SelectDiagnosticsCommand}"
+                  HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left"
+                  MinHeight="44"
+                  Padding="14,10"
+                  TabIndex="4"
+                  AutomationProperties.Name="Diagnostics Navigation" />
+        </StackPanel>
+
+        <!-- Single Isolated Primary CTA in Rail Footer (Von Restorff 1-Isolation Budget & Fitts >= 44px, UX-01) -->
+        <StackPanel Grid.Row="2" Spacing="10" Margin="0,16,0,0">
+          <Border Background="{DynamicResource SurfaceOverlayBrush}"
+                  BorderBrush="{DynamicResource BorderSubtleBrush}"
+                  BorderThickness="1"
+                  CornerRadius="6"
+                  Padding="10,8">
+            <StackPanel Spacing="2">
+              <TextBlock Text="ACTIVE CONFIG SOURCE"
+                         Foreground="{DynamicResource TextMutedBrush}"
+                         FontSize="10"
+                         FontWeight="Bold" />
+              <TextBlock Text="{Binding ConfigSourceSummary}"
+                         Foreground="{DynamicResource TextPrimaryBrush}"
+                         FontSize="12"
+                         TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+          </Border>
+
+          <Button x:Name="PrimaryLaunchCtaButton"
+                  Content="LAUNCH VERRA CLIENT"
+                  Command="{Binding LaunchClientCommand}"
+                  Background="{DynamicResource AccentGoldBrush}"
+                  Foreground="{DynamicResource SurfacePrimaryBrush}"
+                  FontWeight="Bold"
+                  HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Center"
+                  MinHeight="48"
+                  TabIndex="5"
+                  AutomationProperties.Name="Launch Verra Client Primary Action" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- Main Content Region: 5 Explicit View States (loading, empty, error, degraded, populated — UX-02) -->
+    <ScrollViewer Grid.Row="1"
+                  Grid.Column="1"
+                  Padding="24"
+                  AutomationProperties.Name="Main Content Workspace">
+      <StackPanel Spacing="18">
+
+        <!-- Workspace Section Title Banner -->
+        <Border Background="{DynamicResource SurfaceElevatedBrush}"
+                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="20,16">
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel Grid.Column="0" Spacing="4">
+              <TextBlock Text="{Binding ActiveSectionTitle}"
+                         Foreground="{DynamicResource AccentGoldBrush}"
+                         FontSize="20"
+                         FontWeight="Bold" />
+              <TextBlock Text="{Binding ActiveSectionSubtitle}"
+                         Foreground="{DynamicResource TextMutedBrush}"
+                         FontSize="13"
+                         TextWrapping="Wrap" />
+            </StackPanel>
+            <Border Grid.Column="1"
+                    Background="{DynamicResource SurfaceOverlayBrush}"
+                    BorderBrush="{DynamicResource BorderSubtleBrush}"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="10,6"
+                    VerticalAlignment="Center">
+              <TextBlock Text="{Binding CurrentViewState}"
+                         Foreground="{DynamicResource AccentGoldBrush}"
+                         FontWeight="SemiBold"
+                         FontSize="12" />
+            </Border>
+          </Grid>
+        </Border>
+
+        <!-- STATE 1: loading (Doherty < 400ms Skeleton & Progress Feedback, UX-01/UX-02) -->
+        <Border x:Name="LoadingStatePanel"
+                Tag="loading"
+                IsVisible="{Binding IsLoadingState}"
+                Background="{DynamicResource SurfaceElevatedBrush}"
+                BorderBrush="{DynamicResource AccentGoldBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="24"
+                AutomationProperties.Name="Loading View State Panel">
+          <StackPanel Spacing="12">
+            <TextBlock Text="LOADING — Synchronizing Verra Realm &amp; Pak Manifest"
+                       Foreground="{DynamicResource AccentGoldBrush}"
+                       FontSize="16"
+                       FontWeight="Bold" />
+            <TextBlock Text="Probing Gateway HTTP/ICS/gRPC endpoints and verifying local client pak directory..."
+                       Foreground="{DynamicResource TextMutedBrush}"
+                       FontSize="13"
+                       TextWrapping="Wrap" />
+            <ProgressBar IsIndeterminate="True"
+                         MinHeight="8"
+                         Foreground="{DynamicResource AccentGoldBrush}"
+                         AutomationProperties.Name="Loading Progress Indicator" />
+          </StackPanel>
+        </Border>
+
+        <!-- STATE 2: empty (Zero-Profile Guided Onboarding & Default Recovery Action, UX-02) -->
+        <Border x:Name="EmptyStatePanel"
+                Tag="empty"
+                IsVisible="{Binding IsEmptyState}"
+                Background="{DynamicResource SurfaceElevatedBrush}"
+                BorderBrush="{DynamicResource BorderSubtleBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="24"
+                AutomationProperties.Name="Empty View State Panel">
+          <StackPanel Spacing="12">
+            <TextBlock Text="EMPTY — No Active Launcher Profile Loaded"
+                       Foreground="{DynamicResource TextPrimaryBrush}"
+                       FontSize="16"
+                       FontWeight="Bold" />
+            <TextBlock Text="No environment profile or client pak directory is currently bound. Initialize the default local-dev sandbox profile to populate gateway endpoints."
+                       Foreground="{DynamicResource TextMutedBrush}"
+                       FontSize="13"
+                       TextWrapping="Wrap" />
+            <Button Content="Initialize Default Sandbox Profile"
+                    Command="{Binding ResetToDefaultProfileCommand}"
+                    Background="{DynamicResource AccentGoldBrush}"
+                    Foreground="{DynamicResource SurfacePrimaryBrush}"
+                    FontWeight="SemiBold"
+                    MinHeight="44"
+                    Padding="16,10"
+                    HorizontalAlignment="Left"
+                    TabIndex="6"
+                    AutomationProperties.Name="Initialize Default Sandbox Profile" />
+          </StackPanel>
+        </Border>
+
+        <!-- STATE 3: error (RFC 9110 / RFC 9457 Deterministic Problem Details + Retry Action, UX-02) -->
+        <Border x:Name="ErrorStatePanel"
+                Tag="error"
+                IsVisible="{Binding IsErrorState}"
+                Background="{DynamicResource SurfaceElevatedBrush}"
+                BorderBrush="{DynamicResource StatusOfflineBrush}"
+                BorderThickness="2"
+                CornerRadius="8"
+                Padding="24"
+                AutomationProperties.Name="Error View State Panel">
+          <StackPanel Spacing="12">
+            <TextBlock Text="{Binding ErrorTitle}"
+                       Foreground="{DynamicResource StatusOfflineBrush}"
+                       FontSize="16"
+                       FontWeight="Bold" />
+            <TextBlock Text="{Binding ErrorDetail}"
+                       Foreground="{DynamicResource TextPrimaryBrush}"
+                       FontSize="13"
+                       TextWrapping="Wrap" />
+            <TextBlock Text="{Binding ErrorRemediation}"
+                       Foreground="{DynamicResource TextMutedBrush}"
+                       FontSize="12"
+                       TextWrapping="Wrap" />
+            <Button Content="Retry Endpoint Probe"
+                    Command="{Binding RetryProbeCommand}"
+                    Background="{DynamicResource AccentEmberBrush}"
+                    Foreground="{DynamicResource TextPrimaryBrush}"
+                    FontWeight="SemiBold"
+                    MinHeight="44"
+                    Padding="16,10"
+                    HorizontalAlignment="Left"
+                    TabIndex="7"
+                    AutomationProperties.Name="Retry Endpoint Probe" />
+          </StackPanel>
+        </Border>
+
+        <!-- STATE 4: degraded (Stale Telemetry / Sequence Gap Detection + Snapshot Resync, UX-02) -->
+        <Border x:Name="DegradedStatePanel"
+                Tag="degraded"
+                IsVisible="{Binding IsDegradedState}"
+                Background="{DynamicResource SurfaceElevatedBrush}"
+                BorderBrush="{DynamicResource StatusDegradedBrush}"
+                BorderThickness="2"
+                CornerRadius="8"
+                Padding="20"
+                AutomationProperties.Name="Degraded View State Panel">
+          <StackPanel Spacing="10">
+            <TextBlock Text="▲ DEGRADED / STALE TELEMETRY — Sequence Gap Detected"
+                       Foreground="{DynamicResource StatusDegradedBrush}"
+                       FontSize="15"
+                       FontWeight="Bold" />
+            <TextBlock Text="{Binding DegradedSummary}"
+                       Foreground="{DynamicResource TextPrimaryBrush}"
+                       FontSize="13"
+                       TextWrapping="Wrap" />
+            <TextBlock Text="{Binding LastUpdatedSummary}"
+                       Foreground="{DynamicResource TextMutedBrush}"
+                       FontSize="12" />
+            <Button Content="Resync Telemetry Snapshot"
+                    Command="{Binding ResyncSnapshotCommand}"
+                    MinHeight="44"
+                    Padding="16,10"
+                    HorizontalAlignment="Left"
+                    TabIndex="8"
+                    AutomationProperties.Name="Resync Telemetry Snapshot" />
+          </StackPanel>
+        </Border>
+
+        <!-- STATE 5: populated (Live SSoT LauncherConfig Cards & Section Controls, UX-02/UX-03) -->
+        <StackPanel x:Name="PopulatedStatePanel"
+                    Tag="populated"
+                    IsVisible="{Binding IsPopulatedState}"
+                    Spacing="16"
+                    AutomationProperties.Name="Populated View State Panel">
+
+          <!-- 3-Column Bento Summary Row (<= 4 KPI Cards per Row, UX-01/UX-03) -->
+          <Grid ColumnDefinitions="*,14,*,14,*">
+            <Border Grid.Column="0"
+                    Background="{DynamicResource SurfaceElevatedBrush}"
+                    BorderBrush="{DynamicResource BorderSubtleBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="16">
+              <StackPanel Spacing="6">
+                <TextBlock Text="GATEWAY HTTP / ICS"
+                           Foreground="{DynamicResource TextMutedBrush}"
+                           FontSize="11"
+                           FontWeight="Bold" />
+                <TextBlock Text="{Binding GatewayHttpAddr}"
+                           Foreground="{DynamicResource TextPrimaryBrush}"
+                           FontSize="15"
+                           FontWeight="SemiBold" />
+                <TextBlock Text="{Binding GatewayIcsAddr}"
+                           Foreground="{DynamicResource AccentGoldBrush}"
+                           FontSize="12" />
+              </StackPanel>
+            </Border>
+
+            <Border Grid.Column="2"
+                    Background="{DynamicResource SurfaceElevatedBrush}"
+                    BorderBrush="{DynamicResource BorderSubtleBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="16">
+              <StackPanel Spacing="6">
+                <TextBlock Text="GATEWAY GRPC / ADMIN"
+                           Foreground="{DynamicResource TextMutedBrush}"
+                           FontSize="11"
+                           FontWeight="Bold" />
+                <TextBlock Text="{Binding GatewayGrpcAddr}"
+                           Foreground="{DynamicResource TextPrimaryBrush}"
+                           FontSize="15"
+                           FontWeight="SemiBold" />
+                <TextBlock Text="{Binding AdminHttpAddr}"
+                           Foreground="{DynamicResource StatusOnlineBrush}"
+                           FontSize="12" />
+              </StackPanel>
+            </Border>
+
+            <Border Grid.Column="4"
+                    Background="{DynamicResource SurfaceElevatedBrush}"
+                    BorderBrush="{DynamicResource BorderSubtleBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="16">
+              <StackPanel Spacing="6">
+                <TextBlock Text="EOS SHIM &amp; TLS ADMIN"
+                           Foreground="{DynamicResource TextMutedBrush}"
+                           FontSize="11"
+                           FontWeight="Bold" />
+                <TextBlock Text="{Binding EosModeSummary}"
+                           Foreground="{DynamicResource TextPrimaryBrush}"
+                           FontSize="15"
+                           FontWeight="SemiBold" />
+                <TextBlock Text="{Binding AdminHttpsAddr}"
+                           Foreground="{DynamicResource TextMutedBrush}"
+                           FontSize="12" />
+              </StackPanel>
+            </Border>
+          </Grid>
+
+          <!-- Section Detail Card: Profiles / Realm & Server Control / Launch Presets / Diagnostics -->
+          <Border Background="{DynamicResource SurfaceElevatedBrush}"
+                  BorderBrush="{DynamicResource BorderSubtleBrush}"
+                  BorderThickness="1"
+                  CornerRadius="8"
+                  Padding="20">
+            <StackPanel Spacing="12">
+              <TextBlock Text="CLIENT PAK DIRECTORY &amp; LAUNCH ARGUMENTS"
+                         Foreground="{DynamicResource AccentGoldBrush}"
+                         FontSize="12"
+                         FontWeight="Bold" />
+              <TextBlock Text="{Binding ClientPakDir}"
+                         Foreground="{DynamicResource TextPrimaryBrush}"
+                         FontSize="13"
+                         TextWrapping="Wrap" />
+              <Border Background="{DynamicResource SurfaceOverlayBrush}"
+                      BorderBrush="{DynamicResource BorderSubtleBrush}"
+                      BorderThickness="1"
+                      CornerRadius="6"
+                      Padding="12,10">
+                <TextBlock Text="{Binding LaunchCommandLinePreview}"
+                           Foreground="{DynamicResource TextMutedBrush}"
+                           FontSize="12"
+                           TextWrapping="Wrap" />
+              </Border>
+              <TextBlock Text="{Binding DiagnosticsReportText}"
+                         Foreground="{DynamicResource TextPrimaryBrush}"
+                         FontSize="12"
+                         TextWrapping="Wrap" />
+              <TextBlock Text="{Binding StatusBannerMessage}"
+                         Foreground="{DynamicResource StatusOnlineBrush}"
+                         FontSize="12"
+                         FontWeight="SemiBold" />
+            </StackPanel>
+          </Border>
+        </StackPanel>
+
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</Window>

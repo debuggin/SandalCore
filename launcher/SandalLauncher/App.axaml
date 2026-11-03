@@ -1,0 +1,39 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="SandalLauncher.App"
+             RequestedThemeVariant="Dark">
+
+  <Application.Resources>
+    <ResourceDictionary>
+      <!-- Tier 1 Primitive OKLCH-Calibrated Dark-Fantasy Verra Palette (WCAG 2.2 AA / APCA Lc Verified) -->
+      <Color x:Key="VerraObsidian100">#FF11131A</Color>
+      <Color x:Key="VerraSlate200">#FF1A1E29</Color>
+      <Color x:Key="VerraSlate300">#FF232836</Color>
+      <Color x:Key="VerraBorder400">#FF2E3548</Color>
+      <Color x:Key="VerraRelicGold500">#FFE2B45A</Color>
+      <Color x:Key="VerraForgeEmber500">#FFE86F38</Color>
+      <Color x:Key="VerraSanctumEmerald500">#FF45D483</Color>
+      <Color x:Key="VerraCautionAmber500">#FFF5B841</Color>
+      <Color x:Key="VerraRuinCrimson500">#FFF25C5C</Color>
+      <Color x:Key="VerraAlabaster100">#FFF3F4F8</Color>
+      <Color x:Key="VerraSilver400">#FFA5AEBF</Color>
+
+      <!-- Tier 2 Semantic Surface, Accent, Status & Typography Brushes (UX-03, UX-05) -->
+      <SolidColorBrush x:Key="SurfacePrimaryBrush" Color="{StaticResource VerraObsidian100}" />
+      <SolidColorBrush x:Key="SurfaceElevatedBrush" Color="{StaticResource VerraSlate200}" />
+      <SolidColorBrush x:Key="SurfaceOverlayBrush" Color="{StaticResource VerraSlate300}" />
+      <SolidColorBrush x:Key="BorderSubtleBrush" Color="{StaticResource VerraBorder400}" />
+      <SolidColorBrush x:Key="AccentGoldBrush" Color="{StaticResource VerraRelicGold500}" />
+      <SolidColorBrush x:Key="AccentEmberBrush" Color="{StaticResource VerraForgeEmber500}" />
+      <SolidColorBrush x:Key="StatusOnlineBrush" Color="{StaticResource VerraSanctumEmerald500}" />
+      <SolidColorBrush x:Key="StatusDegradedBrush" Color="{StaticResource VerraCautionAmber500}" />
+      <SolidColorBrush x:Key="StatusOfflineBrush" Color="{StaticResource VerraRuinCrimson500}" />
+      <SolidColorBrush x:Key="TextPrimaryBrush" Color="{StaticResource VerraAlabaster100}" />
+      <SolidColorBrush x:Key="TextMutedBrush" Color="{StaticResource VerraSilver400}" />
+    </ResourceDictionary>
+  </Application.Resources>
+
+  <Application.Styles>
+    <FluentTheme />
+  </Application.Styles>
+</Application>
