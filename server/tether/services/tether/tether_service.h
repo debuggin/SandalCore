@@ -4,6 +4,7 @@
 
 #pragma once
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif
@@ -12,6 +13,22 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+using TetherSockLen = int;
+#else
+#include <arpa/inet.h>
+#include <cerrno>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+using SOCKET = int;
+using TetherSockLen = socklen_t;
+inline constexpr SOCKET INVALID_SOCKET = -1;
+inline constexpr int SOCKET_ERROR = -1;
+inline constexpr int WSAEINTR = EINTR;
+inline constexpr int WSAEWOULDBLOCK = EWOULDBLOCK;
+inline int closesocket(SOCKET s) noexcept { return ::close(s); }
+inline int WSAGetLastError() noexcept { return errno; }
+#endif
 
 #include <spdlog/spdlog.h>
 #include <atomic>
@@ -59,8 +76,10 @@ public:
     }
 
     bool start(uint16_t port) {
+#ifdef _WIN32
         WSADATA wsa{};
         ::WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
 
         socket_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (socket_ == INVALID_SOCKET) {
@@ -89,7 +108,7 @@ public:
         }
 
         sockaddr_in bound{};
-        int blen = sizeof(bound);
+        TetherSockLen blen = sizeof(bound);
         ::getsockname(socket_,
                       reinterpret_cast<sockaddr*>(&bound), &blen);
         port_ = ntohs(bound.sin_port);
@@ -225,7 +244,7 @@ private:
         std::vector<uint8_t> buf(65535);
         while (running_) {
             sockaddr_in peer{};
-            int plen = sizeof(peer);
+            TetherSockLen plen = sizeof(peer);
             const int n = ::recvfrom(
                 socket_,
                 reinterpret_cast<char*>(buf.data()),

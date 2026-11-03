@@ -38,19 +38,47 @@ struct AddressHash {
 /// Parses "a.b.c.d:port" (numeric IPv4 only).
 std::optional<Address> parse_address(const std::string& host_port);
 
+inline constexpr int kDefaultSocketBufBytes = 1024 * 1024;
+
+struct PacketBatch {
+    static constexpr std::size_t kBatchSize = 64;
+    static constexpr std::size_t kMaxPayloadBytes = 1400;
+    struct Entry { Address peer{}; uint16_t len = 0; uint8_t data[kMaxPayloadBytes]{}; };
+    Entry entries[kBatchSize]{};
+    std::size_t count = 0;
+    void clear() noexcept { count = 0; }
+    bool push(const Address& peer, const uint8_t* payload, std::size_t len) noexcept;
+};
+
 class UdpSocket {
 public:
+    static constexpr int kDefaultSocketBufBytes = 1024 * 1024;
+    static constexpr std::size_t kBatchSize = PacketBatch::kBatchSize;
+    static constexpr std::size_t kMaxPayloadBytes = PacketBatch::kMaxPayloadBytes;
+
     /// Binds to `local`; nullptr with a reason in `error` on failure.
-    static std::unique_ptr<UdpSocket> open(const Address& local, std::string* error);
+    static std::unique_ptr<UdpSocket> open(const Address& local, std::string* error = nullptr);
+    static std::unique_ptr<UdpSocket> open_dual_stack(uint16_t port, std::string* error = nullptr);
     ~UdpSocket();
     UdpSocket(const UdpSocket&) = delete;
     UdpSocket& operator=(const UdpSocket&) = delete;
+
+    void close() noexcept;
+    [[nodiscard]] bool is_open() const noexcept;
+    [[nodiscard]] uint16_t local_port() const { return local_address().port; }
+    [[nodiscard]] int rcvbuf_size() const noexcept;
+    [[nodiscard]] int sndbuf_size() const noexcept;
 
     /// Waits up to `timeout` for a datagram.  Returns its size (0 when none
     /// came), or nullopt if the socket failed.
     std::optional<size_t> receive(uint8_t* buf, size_t cap, Address& from,
                                   std::chrono::milliseconds timeout);
+    std::optional<size_t> recv_from(uint8_t* buf, size_t cap, Address& from,
+                                    std::chrono::milliseconds timeout) { return receive(buf, cap, from, timeout); }
     bool send(const Address& to, const uint8_t* data, size_t len);
+    bool send_to(const Address& to, const uint8_t* data, size_t len) { return send(to, data, len); }
+    std::size_t recv_batch(PacketBatch& batch);
+    std::size_t send_batch(const PacketBatch& batch);
     /// The bound address (the port the system chose for port 0).
     Address local_address() const;
 

@@ -17,6 +17,7 @@
 ///                       client gets the emulator token and the file is never read.
 /// ============================================================================
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #  define WIN32_LEAN_AND_MEAN
 #endif
@@ -25,6 +26,13 @@
 #endif
 #include <winsock2.h>
 #include <windows.h>   // GetModuleFileNameA, SetConsoleTitleA
+#else
+#include <arpa/inet.h>
+#include <climits>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -57,8 +65,14 @@ static void signal_handler(int) {
 // ─── Config helpers ──────────────────────────────────────────────────────────
 
 static std::string exe_dir() {
+#ifdef _WIN32
     char buf[MAX_PATH]{};
     ::GetModuleFileNameA(nullptr, buf, MAX_PATH);
+#else
+    char buf[PATH_MAX]{};
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) buf[n] = '\0';
+#endif
     std::string d(buf);
     const auto slash = d.find_last_of("\\/");
     return (slash != std::string::npos) ? d.substr(0, slash + 1) : "";
@@ -97,7 +111,9 @@ int main(int argc, char* argv[]) {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
     spdlog::flush_on(spdlog::level::info);
 
+#ifdef _WIN32
     ::SetConsoleTitleA("Tether Server  -  AshesOfCreation Emulator");
+#endif
 
     // ── Config ───────────────────────────────────────────────────────────────
     const std::string dir      = exe_dir();
