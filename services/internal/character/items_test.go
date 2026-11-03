@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var created = time.UnixMilli(1_790_000_000_000)
@@ -308,5 +311,147 @@ func TestDeletingACharacterDeletesItsItems(t *testing.T) {
 	}
 	if got, _ := s.Inventory(ctx, b.ID); len(got) != 1 {
 		t.Errorf("the other character's items: %+v", got)
+	}
+}
+
+func TestSaveInventoryDiffValidation(t *testing.T) {
+	s := &Store{}
+	ctx := context.Background()
+	validID := strings.Repeat("a", 32)
+	goodItem := item(Backpack, 2, 7001, guid(10))
+	negQty := goodItem
+	negQty.Quantity = -1
+
+	cases := []struct {
+		name string
+		diff InventoryDiffSave
+		want error
+	}{
+		{"invalid character id", InventoryDiffSave{CharacterID: "bad-id", FencingToken: 1, Upserts: []Item{goodItem}}, ErrInvalid},
+		{"negative fencing token", InventoryDiffSave{CharacterID: validID, FencingToken: -1, Upserts: []Item{goodItem}}, ErrInvalid},
+		{"upsert unknown container", InventoryDiffSave{CharacterID: validID, FencingToken: 1, Upserts: []Item{item("Vault", 0, 7001, guid(11))}}, ErrInvalid},
+		{"upsert slot out of range", InventoryDiffSave{CharacterID: validID, FencingToken: 1, Upserts: []Item{item(Backpack, 70, 7001, guid(12))}}, ErrInvalid},
+		{"upsert negative quantity", InventoryDiffSave{CharacterID: validID, FencingToken: 1, Upserts: []Item{negQty}}, ErrInvalid},
+		{"delete unknown container", InventoryDiffSave{CharacterID: validID, FencingToken: 1, Deletes: []SlotKey{{Container: "Vault", Slot: 0}}}, ErrInvalid},
+		{"delete slot out of range", InventoryDiffSave{CharacterID: validID, FencingToken: 1, Deletes: []SlotKey{{Container: Equipment, Slot: 83}}}, ErrInvalid},
+		{"delete negative slot", InventoryDiffSave{CharacterID: validID, FencingToken: 1, Deletes: []SlotKey{{Container: Backpack, Slot: -1}}}, ErrInvalid},
+		{"duplicate delete slot", InventoryDiffSave{CharacterID: validID, FencingToken: 1, Deletes: []SlotKey{{Container: Backpack, Slot: 1}, {Container: Backpack, Slot: 1}}}, ErrInvalid},
+		{"upsert and delete same slot", InventoryDiffSave{CharacterID: validID, FencingToken: 1, Upserts: []Item{goodItem}, Deletes: []SlotKey{{Container: Backpack, Slot: 2}}}, ErrInvalid},
+		{"mutation nil item", InventoryDiffSave{CharacterID: validID, FencingToken: 1, Mutations: []SlotMutation{{Container: Backpack, Slot: 4, Deleted: false}}}, ErrInvalid},
+		{"invalid wallet entry", InventoryDiffSave{CharacterID: validID, FencingToken: 1, Upserts: []Item{goodItem}, Wallet: []WalletEntry{{CurrencyGuid: 0, Amount: 10}}}, ErrInvalid},
+	}
+	for _, tc := range cases {
+		if err := s.SaveInventoryDiff(ctx, tc.diff); !errors.Is(err, tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, err, tc.want)
+		}
+	}
+}
+
+type fakeFenceRow struct {
+	ok  bool
+	err error
+}
+
+func (r fakeFenceRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	*(dest[0].(*bool)) = r.ok
+	return nil
+}
+
+type fakeDiffTx struct {
+	tokens  map[string]int64
+	queries []string
+}
+
+func (f *fakeDiffTx) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
+	f.queries = append(f.queries, sql)
+	charID, token := args[0].(string), args[1].(int64)
+	cur, exists := f.tokens[charID]
+	if !exists {
+		return fakeFenceRow{err: pgx.ErrNoRows}
+	}
+	if token < cur {
+		return fakeFenceRow{ok: false}
+	}
+	f.tokens[charID] = token
+	return fakeFenceRow{ok: true}
+}
+
+func (f *fakeDiffTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	f.queries = append(f.queries, sql)
+	return pgconn.NewCommandTag("1"), nil
+}
+
+func TestSaveInventoryDiffFencingAndStatementBudget(t *testing.T) {
+	ctx := context.Background()
+	charID := strings.Repeat("b", 32)
+	tx := &fakeDiffTx{tokens: map[string]int64{charID: 10}}
+
+	diff := InventoryDiffSave{
+		CharacterID:  charID,
+		FencingToken: 11,
+		Upserts:      []Item{item(Backpack, 0, 7001, guid(1))},
+		Deletes:      []SlotKey{{Container: Backpack, Slot: 3}},
+	}
+	upserts, deletes, err := validateInventoryDiff(diff)
+	if err != nil {
+		t.Fatalf("validateInventoryDiff: %v", err)
+	}
+	if err := applyInventoryDiffTx(ctx, tx, diff, upserts, deletes); err != nil {
+		t.Fatalf("applyInventoryDiffTx(token=11): %v", err)
+	}
+	// BEGIN (1) + fencing CTE (1) + DELETE unnest (1) + INSERT unnest (1) + COMMIT (1) = 5 statements <= 7.
+	totalStatements := len(tx.queries) + 2
+	if totalStatements > 7 {
+		t.Errorf("2-slot dirty tick statement count = %d, want <= 7", totalStatements)
+	}
+	stale := diff
+	stale.FencingToken = 10
+	if err := applyInventoryDiffTx(ctx, tx, stale, upserts, deletes); !errors.Is(err, ErrStaleFencingToken) {
+		t.Errorf("stale token 10 after 11: got %v, want ErrStaleFencingToken", err)
+	}
+	missing := diff
+	missing.CharacterID = strings.Repeat("c", 32)
+	if err := applyInventoryDiffTx(ctx, tx, missing, upserts, deletes); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown character: got %v, want ErrNotFound", err)
+	}
+}
+
+func TestSaveInventoryDiffLiveDB(t *testing.T) {
+	s, acc := setup(t)
+	ctx := context.Background()
+	ch, err := s.Create(ctx, New{AccountID: acc, Name: "DiffHero", ClassID: 2, Items: smallKit()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedSlot2 := item(Equipment, 2, 6064630214426886486, guid(2))
+	updatedSlot2.Quantity = 5
+	newResource := item(Resource0, 4, 7005, guid(55))
+	diff := InventoryDiffSave{
+		CharacterID:  ch.ID,
+		FencingToken: 42,
+		Upserts:      []Item{updatedSlot2, newResource},
+		Deletes:      []SlotKey{{Container: Backpack, Slot: 3}},
+	}
+	if err := s.SaveInventoryDiff(ctx, diff); err != nil {
+		t.Fatalf("SaveInventoryDiff(token=42): %v", err)
+	}
+	stale := InventoryDiffSave{
+		CharacterID:  ch.ID,
+		FencingToken: 41,
+		Deletes:      []SlotKey{{Container: Quest, Slot: 99}},
+	}
+	if err := s.SaveInventoryDiff(ctx, stale); !errors.Is(err, ErrStaleFencingToken) {
+		t.Fatalf("stale SaveInventoryDiff(token=41): got %v, want ErrStaleFencingToken", err)
+	}
+	got, err := s.Inventory(ctx, ch.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Item{updatedSlot2, item(Equipment, 15, 6064631131688402948, guid(3)), item(Quest, 99, 7002, guid(4)), newResource}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Inventory after diff save:\n got %+v\nwant %+v", got, want)
 	}
 }

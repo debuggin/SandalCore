@@ -13,10 +13,12 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // The storages a character's items are in. Backpack, Equipment and Quest are the values of character_items.container (plan B2); Resource0 to Resource2 (Gathering stage 3,
@@ -167,25 +169,48 @@ const allItemsSQL = `SELECT ` + itemColumns + ` FROM (
 	SELECT ` + itemColumns + `, CASE container WHEN 'Resource0' THEN 3 WHEN 'Resource1' THEN 4 ELSE 5 END FROM character_resource_items WHERE character_id = $1
 ) all_items ORDER BY storage_order, slot`
 
-// insertItems adds the items of a character in tx, in one batch: each into the table of its container.
+// insertItems adds the items of a character in tx using at most two set-based unnest statements (standard and resource).
 func insertItems(ctx context.Context, tx pgx.Tx, characterID string, items []Item) error {
+	std, res := partitionItems(items)
+	if err := execTableItems(ctx, tx, characterID, std, false); err != nil {
+		return err
+	}
+	return execTableItems(ctx, tx, characterID, res, false)
+}
+
+func partitionItems(items []Item) (std, res []Item) {
+	for _, it := range items {
+		if IsResource(it.Container) {
+			res = append(res, it)
+		} else {
+			std = append(std, it)
+		}
+	}
+	return std, res
+}
+
+func execTableItems(ctx context.Context, tx txExecer, characterID string, items []Item, upsert bool) error {
 	if len(items) == 0 {
 		return nil
 	}
-	var batch pgx.Batch
-	for _, it := range items {
-		batch.Queue(`INSERT INTO `+itemTable(it.Container)+` (character_id, `+itemColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-			characterID, it.Container, it.Slot, it.ItemRecordID, it.InstanceGUID, it.Quantity, it.Quality, it.Durability, it.CreatedAt,
-			it.PersistedHealth, it.PersistedMana, it.LockExpiration)
+	table, n := itemTable(items[0].Container), len(items)
+	containers, guids := make([]string, n), make([]string, n)
+	slots, quantities, qualities := make([]int32, n), make([]int32, n), make([]int32, n)
+	records, locks := make([]int64, n), make([]int64, n)
+	durabilities := make([]float32, n)
+	created := make([]time.Time, n)
+	healths, manas := make([]*float32, n), make([]*float32, n)
+	for i, it := range items {
+		containers[i], slots[i], records[i], guids[i] = it.Container, it.Slot, it.ItemRecordID, it.InstanceGUID
+		quantities[i], qualities[i], durabilities[i], created[i] = it.Quantity, it.Quality, it.Durability, it.CreatedAt
+		healths[i], manas[i], locks[i] = it.PersistedHealth, it.PersistedMana, it.LockExpiration
 	}
-	res := tx.SendBatch(ctx, &batch)
-	for range items {
-		if _, err := res.Exec(); err != nil {
-			res.Close()
-			return err
-		}
+	sql := `INSERT INTO ` + table + ` (character_id, ` + itemColumns + `) SELECT $1, * FROM unnest($2::text[], $3::int[], $4::bigint[], $5::text[], $6::int[], $7::int[], $8::real[], $9::timestamptz[], $10::real[], $11::real[], $12::bigint[])`
+	if upsert {
+		sql += ` ON CONFLICT (character_id, container, slot) DO UPDATE SET item_record_id = EXCLUDED.item_record_id, instance_guid = EXCLUDED.instance_guid, quantity = EXCLUDED.quantity, quality = EXCLUDED.quality, durability = EXCLUDED.durability, created_at = EXCLUDED.created_at, persisted_health = EXCLUDED.persisted_health, persisted_mana = EXCLUDED.persisted_mana, lock_expiration = EXCLUDED.lock_expiration WHERE (` + table + `.item_record_id, ` + table + `.instance_guid, ` + table + `.quantity, ` + table + `.quality, ` + table + `.durability, ` + table + `.persisted_health, ` + table + `.persisted_mana, ` + table + `.lock_expiration) IS DISTINCT FROM (EXCLUDED.item_record_id, EXCLUDED.instance_guid, EXCLUDED.quantity, EXCLUDED.quality, EXCLUDED.durability, EXCLUDED.persisted_health, EXCLUDED.persisted_mana, EXCLUDED.lock_expiration)`
 	}
-	return res.Close()
+	_, err := tx.Exec(ctx, sql, characterID, containers, slots, records, guids, quantities, qualities, durabilities, created, healths, manas, locks)
+	return itemsError(err)
 }
 
 // CoA and C | Y | B
@@ -305,6 +330,230 @@ func itemsError(err error) error {
 		return fmt.Errorf("%w: %s", ErrInvalid, pgErr.Message)
 	}
 	return err
+}
+
+// ErrStaleFencingToken rejects a differential character save whose monotonic fencing token is older than the persisted token.
+var ErrStaleFencingToken = errors.New("stale fencing token: split-brain character save rejected")
+
+// SlotKey identifies a container and slot coordinate for differential deletes.
+type SlotKey struct {
+	Container string
+	Slot      int32
+}
+
+// SlotMutation describes a single dirty-slot upsert or delete in a differential inventory save.
+type SlotMutation struct {
+	Container string
+	Slot      int32
+	Deleted   bool
+	Item      *Item
+}
+
+// InventoryDiffSave carries the dirty-slot differential payload and monotonic fencing token for SaveInventoryDiff.
+type InventoryDiffSave struct {
+	CharacterID  string
+	FencingToken int64
+	Upserts      []Item
+	Deletes      []SlotKey
+	Mutations    []SlotMutation
+	Wallet       []WalletEntry
+	Jobs         []ProcessingJob
+	KnownRecipes []int64
+	Warehouse    []WarehouseItem
+}
+
+type diffTx interface {
+	txExecer
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+var fencingReady sync.Map
+
+func ensureFencingColumn(ctx context.Context, pool *pgxpool.Pool) error {
+	if pool == nil {
+		return nil
+	}
+	if _, ok := fencingReady.Load(pool); ok {
+		return nil
+	}
+	_, err := pool.Exec(ctx, `ALTER TABLE characters ADD COLUMN IF NOT EXISTS fencing_token BIGINT NOT NULL DEFAULT 0`)
+	if err == nil {
+		fencingReady.Store(pool, struct{}{})
+	}
+	return err
+}
+
+// SaveInventoryDiff applies a differential dirty-slot save inside an atomic BEGIN..COMMIT transaction guarded by a monotonic fencing token.
+func (s *Store) SaveInventoryDiff(ctx context.Context, diff InventoryDiffSave) error {
+	upserts, deletes, err := validateInventoryDiff(diff)
+	if err != nil {
+		return err
+	}
+	if err := ensureFencingColumn(ctx, s.pool); err != nil {
+		return err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := applyInventoryDiffTx(ctx, tx, diff, upserts, deletes); err != nil {
+		return err
+	}
+	if diff.Jobs != nil {
+		if err := replaceProcessingJobs(ctx, tx, diff.CharacterID, diff.Jobs); err != nil {
+			return err
+		}
+	}
+	if diff.KnownRecipes != nil {
+		if err := replaceKnownRecipes(ctx, tx, diff.CharacterID, diff.KnownRecipes); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func validateInventoryDiff(diff InventoryDiffSave) ([]Item, []SlotKey, error) {
+	if !idPattern.MatchString(diff.CharacterID) {
+		return nil, nil, fmt.Errorf("%w: invalid character id %q (%w)", ErrInvalid, diff.CharacterID, ErrNotFound)
+	}
+	if diff.FencingToken < 0 {
+		return nil, nil, fmt.Errorf("%w: fencing token %d must be non-negative", ErrInvalid, diff.FencingToken)
+	}
+	upserts, deletes, err := collectDiffSlots(diff)
+	if err != nil {
+		return nil, nil, err
+	}
+	if diff.Wallet != nil {
+		if err := ValidateWallet(diff.Wallet); err != nil {
+			return nil, nil, err
+		}
+	}
+	if diff.Jobs != nil {
+		if err := ValidateJobs(diff.Jobs); err != nil {
+			return nil, nil, err
+		}
+	}
+	if diff.KnownRecipes != nil {
+		if err := ValidateKnownRecipes(diff.KnownRecipes); err != nil {
+			return nil, nil, err
+		}
+	}
+	if diff.Warehouse != nil {
+		if err := ValidateWarehouseItems(diff.Warehouse, upserts); err != nil {
+			return nil, nil, err
+		}
+	}
+	return upserts, deletes, nil
+}
+
+func collectDiffSlots(diff InventoryDiffSave) ([]Item, []SlotKey, error) {
+	upserts := append([]Item(nil), diff.Upserts...)
+	deletes := append([]SlotKey(nil), diff.Deletes...)
+	for i, m := range diff.Mutations {
+		if m.Deleted {
+			deletes = append(deletes, SlotKey{Container: m.Container, Slot: m.Slot})
+			continue
+		}
+		if m.Item == nil {
+			return nil, nil, fmt.Errorf("%w: mutation %d for %s/%d has nil item", ErrInvalid, i, m.Container, m.Slot)
+		}
+		it := *m.Item
+		if it.Container == "" {
+			it.Container = m.Container
+		}
+		if it.Slot == 0 && m.Slot != 0 {
+			it.Slot = m.Slot
+		}
+		upserts = append(upserts, it)
+	}
+	if err := ValidateItems(upserts); err != nil {
+		return nil, nil, err
+	}
+	return upserts, deletes, validateDeleteSlots(upserts, deletes)
+}
+
+func validateDeleteSlots(upserts []Item, deletes []SlotKey) error {
+	if len(deletes) > MaxItems {
+		return fmt.Errorf("%w: %d deletes exceed MaxItems %d", ErrInvalid, len(deletes), MaxItems)
+	}
+	seen := make(map[SlotKey]bool, len(upserts)+len(deletes))
+	for _, it := range upserts {
+		seen[SlotKey{Container: it.Container, Slot: it.Slot}] = true
+	}
+	for i, d := range deletes {
+		n, known := SlotCount[d.Container]
+		switch {
+		case !known:
+			return fmt.Errorf("%w: delete %d container %q is not valid", ErrInvalid, i, d.Container)
+		case d.Slot < 0 || d.Slot >= n:
+			return fmt.Errorf("%w: delete %d slot %d is outside 0 to %d for %s", ErrInvalid, i, d.Slot, n-1, d.Container)
+		case seen[d]:
+			return fmt.Errorf("%w: delete %d duplicates or conflicts on %s slot %d", ErrInvalid, i, d.Container, d.Slot)
+		}
+		seen[d] = true
+	}
+	return nil
+}
+
+const fenceCharacterSQL = `WITH locked AS (SELECT id, fencing_token FROM characters WHERE id = $1 FOR UPDATE),
+updated AS (UPDATE characters c SET fencing_token = $2, updated_at = now() FROM locked l WHERE c.id = l.id AND l.fencing_token <= $2)
+SELECT fencing_token <= $2 FROM locked`
+
+func applyInventoryDiffTx(ctx context.Context, tx diffTx, diff InventoryDiffSave, upserts []Item, deletes []SlotKey) error {
+	var ok bool
+	err := tx.QueryRow(ctx, fenceCharacterSQL, diff.CharacterID, diff.FencingToken).Scan(&ok)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrStaleFencingToken
+	}
+	if err := deleteDiffSlots(ctx, tx, diff.CharacterID, deletes); err != nil {
+		return err
+	}
+	stdUpserts, resUpserts := partitionItems(upserts)
+	if err := execTableItems(ctx, tx, diff.CharacterID, stdUpserts, true); err != nil {
+		return err
+	}
+	if err := execTableItems(ctx, tx, diff.CharacterID, resUpserts, true); err != nil {
+		return err
+	}
+	if diff.Wallet != nil {
+		if err := upsertWallet(ctx, tx, diff.CharacterID, diff.Wallet); err != nil {
+			return err
+		}
+	}
+	if diff.Warehouse != nil {
+		return replaceWarehouseItems(ctx, tx, diff.CharacterID, diff.Warehouse)
+	}
+	return nil
+}
+
+func deleteDiffSlots(ctx context.Context, tx txExecer, characterID string, deletes []SlotKey) error {
+	var stdC, resC []string
+	var stdS, resS []int32
+	for _, d := range deletes {
+		if IsResource(d.Container) {
+			resC, resS = append(resC, d.Container), append(resS, d.Slot)
+		} else {
+			stdC, stdS = append(stdC, d.Container), append(stdS, d.Slot)
+		}
+	}
+	if len(stdC) > 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM character_items WHERE character_id = $1 AND (container, slot) IN (SELECT * FROM unnest($2::text[], $3::int[]))`, characterID, stdC, stdS); err != nil {
+			return err
+		}
+	}
+	if len(resC) > 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM character_resource_items WHERE character_id = $1 AND (container, slot) IN (SELECT * FROM unnest($2::text[], $3::int[]))`, characterID, resC, resS); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // KitMaker makes the items of a new character: its class's starting kit. Kit returns fresh instances (new guids, durability,

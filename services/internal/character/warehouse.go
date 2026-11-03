@@ -8,8 +8,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
-
-	"github.com/jackc/pgx/v5"
+	"time"
 )
 
 // The warehouse (the storage milestone, step 0, migration 0017): the items a character keeps in the item chunks, the material tabs and the cargo tab of a town's warehouse, one row each in
@@ -140,28 +139,30 @@ func (s *Store) WarehouseItems(ctx context.Context, characterID string) ([]Wareh
 	return out, nil
 }
 
-// replaceWarehouseItems makes the character's warehouse exactly items in tx.
-func replaceWarehouseItems(ctx context.Context, tx pgx.Tx, characterID string, items []WarehouseItem) error {
+// replaceWarehouseItems makes the character's warehouse exactly items in tx using a single set-based unnest query.
+func replaceWarehouseItems(ctx context.Context, tx txExecer, characterID string, items []WarehouseItem) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM character_warehouse_items WHERE character_id = $1`, characterID); err != nil {
 		return err
 	}
 	if len(items) == 0 {
 		return nil
 	}
-	var batch pgx.Batch
-	for _, w := range items {
-		batch.Queue(`INSERT INTO character_warehouse_items (character_id, `+warehouseColumns+`) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-			characterID, w.Area, w.NodeGUID, w.ContainerGUID, w.Slot, w.ItemRecordID, w.InstanceGUID, w.Quantity, w.Quality, w.Durability, w.CreatedAt,
-			w.PersistedHealth, w.PersistedMana, w.LockExpiration)
+	n := len(items)
+	areas, guids := make([]string, n), make([]string, n)
+	nodes, containers, records, locks := make([]int64, n), make([]int64, n), make([]int64, n), make([]int64, n)
+	slots, quantities, qualities := make([]int32, n), make([]int32, n), make([]int32, n)
+	durabilities := make([]float32, n)
+	created := make([]time.Time, n)
+	healths, manas := make([]*float32, n), make([]*float32, n)
+	for i, w := range items {
+		areas[i], nodes[i], containers[i], slots[i] = w.Area, w.NodeGUID, w.ContainerGUID, w.Slot
+		records[i], guids[i], quantities[i], qualities[i] = w.ItemRecordID, w.InstanceGUID, w.Quantity, w.Quality
+		durabilities[i], created[i] = w.Durability, w.CreatedAt
+		healths[i], manas[i], locks[i] = w.PersistedHealth, w.PersistedMana, w.LockExpiration
 	}
-	res := tx.SendBatch(ctx, &batch)
-	for range items {
-		if _, err := res.Exec(); err != nil {
-			res.Close()
-			return itemsError(err)
-		}
-	}
-	return res.Close()
+	sql := `INSERT INTO character_warehouse_items (character_id, ` + warehouseColumns + `) SELECT $1, * FROM unnest($2::text[], $3::bigint[], $4::bigint[], $5::int[], $6::bigint[], $7::text[], $8::int[], $9::int[], $10::real[], $11::timestamptz[], $12::real[], $13::real[], $14::bigint[])`
+	_, err := tx.Exec(ctx, sql, characterID, areas, nodes, containers, slots, records, guids, quantities, qualities, durabilities, created, healths, manas, locks)
+	return itemsError(err)
 }
 
 // SaveInventoryEverything is SaveInventoryAll plus, when replaceWarehouse, the character's warehouse made exactly warehouse, in the same transaction. The warehouse is checked against the bag's
