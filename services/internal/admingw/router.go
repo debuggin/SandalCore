@@ -32,26 +32,13 @@ const (
 	RoleObserver  Role = "GM_OBSERVER"
 	RoleOperator  Role = "GM_OPERATOR"
 	RoleArchitect Role = "GM_ARCHITECT"
-
-	wsMagicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	wsMagicGUID        = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 )
 
-func (r Role) rank() int {
-	switch r {
-	case RoleObserver:
-		return 1
-	case RoleOperator:
-		return 2
-	case RoleArchitect:
-		return 3
-	default:
-		return 0
-	}
-}
+var roleRanks = map[Role]int{RoleObserver: 1, RoleOperator: 2, RoleArchitect: 3}
 
-func (r Role) AtLeast(min Role) bool {
-	return r.rank() >= min.rank() && min.rank() > 0
-}
+func (r Role) rank() int          { return roleRanks[r] }
+func (r Role) AtLeast(m Role) bool { return r.rank() >= m.rank() && m.rank() > 0 }
 
 type ProblemDetails struct {
 	Type       string `json:"type"`
@@ -62,7 +49,6 @@ type ProblemDetails struct {
 	Code       string `json:"code,omitempty"`
 	RetryAfter int    `json:"retryAfter,omitempty"`
 }
-
 type CommandRequest struct {
 	Command  string         `json:"command"`
 	TargetID string         `json:"targetId,omitempty"`
@@ -70,7 +56,6 @@ type CommandRequest struct {
 	Params   map[string]any `json:"params,omitempty"`
 	Reason   string         `json:"reason,omitempty"`
 }
-
 type CommandReceipt struct {
 	ReceiptID        string `json:"receiptId"`
 	IdempotencyKey   string `json:"idempotencyKey"`
@@ -81,40 +66,56 @@ type CommandReceipt struct {
 	ExecutedAtMs     int64  `json:"executedAtMs"`
 	IdempotentReplay bool   `json:"idempotentReplay"`
 }
-
+type AuditEntry struct {
+	AuditID           string `json:"audit_id"`
+	ActorSub          string `json:"actor_sub"`
+	ActorRole         Role   `json:"actor_role"`
+	CommandDomain     string `json:"command_domain"`
+	ActionName        string `json:"action_name"`
+	TargetEntityID    string `json:"target_entity_id,omitempty"`
+	SQLText           string `json:"sql_text,omitempty"`
+	UndoSQL           string `json:"undo_sql"`
+	DiffSummary       string `json:"diff_summary"`
+	SnapshotEpoch     uint64 `json:"snapshot_epoch"`
+	AppliedAt         string `json:"applied_at"`
+	RolledBack        bool   `json:"rolled_back"`
+	RolledBackAuditID string `json:"rolled_back_audit_id,omitempty"`
+}
 type idempotencyRecord struct {
 	payloadHash [32]byte
 	receipt     CommandReceipt
 }
-
+type hotfixIdemRecord struct {
+	payloadHash     [32]byte
+	applyReceipt    *HotfixApplyReceipt
+	rollbackReceipt *AuditRollbackReceipt
+}
 type Config struct {
 	Catalog    *admincatalog.Catalog
 	Coalescer  *worldstream.Coalescer
 	RoleTokens map[string]Role
 	Now        func() time.Time
 }
-
 type Server struct {
-	catalog    *admincatalog.Catalog
-	coalescer  *worldstream.Coalescer
-	roleTokens map[string]Role
-	now        func() time.Time
-	startedAt  time.Time
-	ready      atomic.Bool
-	subSeq     atomic.Uint64
-	mu         sync.Mutex
-	idemStore  map[string]idempotencyRecord
-	mux        *http.ServeMux
+	catalog                                     *admincatalog.Catalog
+	coalescer                                   *worldstream.Coalescer
+	roleTokens                                  map[string]Role
+	now                                         func() time.Time
+	startedAt                                   time.Time
+	ready                                       atomic.Bool
+	subSeq, snapshotEpoch, auditSeq, reloadCount atomic.Uint64
+	mu                                          sync.Mutex
+	idemStore                                   map[string]idempotencyRecord
+	hotfixIdem                                  map[string]hotfixIdemRecord
+	overlayState                                map[string]HotfixRowDiff
+	auditLog                                    []AuditEntry
+	mux                                         *http.ServeMux
 }
+type authedHandler func(w http.ResponseWriter, r *http.Request, role Role)
 
 func DefaultRoleTokens() map[string]Role {
-	return map[string]Role{
-		"gm-observer-dev-token":  RoleObserver,
-		"gm-operator-dev-token":  RoleOperator,
-		"gm-architect-dev-token": RoleArchitect,
-	}
+	return map[string]Role{"gm-observer-dev-token": RoleObserver, "gm-operator-dev-token": RoleOperator, "gm-architect-dev-token": RoleArchitect}
 }
-
 func NewRouter(cfg Config) *Server {
 	if cfg.Catalog == nil {
 		cfg.Catalog = admincatalog.NewDefaultCatalog()
@@ -129,29 +130,23 @@ func NewRouter(cfg Config) *Server {
 		cfg.Now = time.Now
 	}
 	s := &Server{
-		catalog:    cfg.Catalog,
-		coalescer:  cfg.Coalescer,
-		roleTokens: cfg.RoleTokens,
-		now:        cfg.Now,
-		startedAt:  cfg.Now(),
-		idemStore:  make(map[string]idempotencyRecord),
-		mux:        http.NewServeMux(),
+		catalog: cfg.Catalog, coalescer: cfg.Coalescer, roleTokens: cfg.RoleTokens, now: cfg.Now, startedAt: cfg.Now(),
+		idemStore: make(map[string]idempotencyRecord), hotfixIdem: make(map[string]hotfixIdemRecord),
+		overlayState: make(map[string]HotfixRowDiff), mux: http.NewServeMux(),
 	}
 	s.ready.Store(true)
+	s.snapshotEpoch.Store(1)
 	s.registerRoutes()
 	return s
 }
-
-func (s *Server) SetReady(ready bool) {
-	s.ready.Store(ready)
-}
-
+func (s *Server) SetReady(ready bool)   { s.ready.Store(ready) }
+func (s *Server) SnapshotEpoch() uint64 { return s.snapshotEpoch.Load() }
+func (s *Server) ReloadCount() uint64   { return s.reloadCount.Load() }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	s.mux.ServeHTTP(w, r)
 }
-
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /livez", s.handleLivez)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
@@ -160,10 +155,20 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/v1/world/entities", s.requireRole(RoleObserver, s.handleWorldEntities))
 	s.mux.HandleFunc("GET /api/v1/world/stream", s.requireRole(RoleObserver, s.handleWorldStream))
 	s.mux.HandleFunc("POST /api/v1/gm/command", s.requireRole(RoleOperator, s.handleGMCommand))
+	s.mux.HandleFunc("POST /api/v1/gm/hotfix/dry-run", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleHotfixDryRun)))
+	s.mux.HandleFunc("POST /api/v1/gm/hotfix/apply", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleHotfixApply)))
+	s.mux.HandleFunc("GET /api/v1/gm/audit", s.requireRole(RoleObserver, s.wrapHandler(s.HandleAuditList)))
+	s.mux.HandleFunc("POST /api/v1/gm/audit/rollback", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleAuditRollback)))
 }
-
-type authedHandler func(w http.ResponseWriter, r *http.Request, role Role)
-
+func (s *Server) wrapHandler(fn http.HandlerFunc) authedHandler {
+	return func(w http.ResponseWriter, r *http.Request, _ Role) { fn(w, r) }
+}
+func (s *Server) HandleAuditList(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	entries, epoch := append([]AuditEntry(nil), s.auditLog...), s.snapshotEpoch.Load()
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"snapshot_epoch": epoch, "count": len(entries), "entries": entries})
+}
 func (s *Server) requireRole(min Role, next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token, ok := extractBearerToken(r)
@@ -179,14 +184,12 @@ func (s *Server) requireRole(min Role, next authedHandler) http.HandlerFunc {
 			return
 		}
 		if !role.AtLeast(min) {
-			detail := fmt.Sprintf("Role %s does not satisfy required minimum role %s.", role, min)
-			writeProblem(w, r, http.StatusForbidden, "insufficient-role", detail)
+			writeProblem(w, r, http.StatusForbidden, "insufficient-role", fmt.Sprintf("Role %s does not satisfy required minimum role %s.", role, min))
 			return
 		}
 		next(w, r, role)
 	}
 }
-
 func extractBearerToken(r *http.Request) (string, bool) {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
 	if !strings.HasPrefix(auth, "Bearer ") {
@@ -195,65 +198,58 @@ func extractBearerToken(r *http.Request) (string, bool) {
 	tok := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 	return tok, tok != ""
 }
-
+func extractIdempotencyKey(r *http.Request) (string, bool) {
+	key := firstNonEmpty(r.Header.Get("Idempotency-Key"), r.Header.Get("X-Idempotency-Key"))
+	return key, len(key) >= 1 && len(key) <= 128
+}
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return strings.TrimSpace(a)
+	}
+	return strings.TrimSpace(b)
+}
+func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "invalid-json-body", "Malformed JSON request payload.")
+		return false
+	}
+	return true
+}
 func (s *Server) resolveRole(candidate string) (Role, bool) {
 	var matched Role
-	found := false
-	candBytes := []byte(candidate)
+	found, candBytes := false, []byte(candidate)
 	for tok, role := range s.roleTokens {
 		if len(tok) == len(candBytes) && subtle.ConstantTimeCompare([]byte(tok), candBytes) == 1 {
-			matched = role
-			found = true
+			matched, found = role, true
 		}
 	}
 	return matched, found
 }
-
 func (s *Server) handleLivez(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":       "ok",
-		"probe":        "livez",
-		"serverTimeMs": s.now().UnixMilli(),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "probe": "livez", "serverTimeMs": s.now().UnixMilli()})
 }
-
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if !s.ready.Load() || s.catalog == nil || s.coalescer == nil {
 		writeProblem(w, r, http.StatusServiceUnavailable, "not-ready", "Admin gateway dependencies are not ready.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":         "ready",
-		"probe":          "readyz",
-		"catalogEntries": s.catalog.Count(),
-		"serverTimeMs":   s.now().UnixMilli(),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "probe": "readyz", "catalogEntries": s.catalog.Count(), "serverTimeMs": s.now().UnixMilli()})
 }
-
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if !s.ready.Load() {
 		writeProblem(w, r, http.StatusServiceUnavailable, "unhealthy", "Admin gateway is shutting down.")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":            "healthy",
-		"probe":             "healthz",
-		"uptimeMs":          s.now().Sub(s.startedAt).Milliseconds(),
-		"catalogEntries":    s.catalog.Count(),
-		"worldEntities":     s.coalescer.EntityCount(),
-		"activeSubscribers": s.coalescer.SubscriberCount(),
-		"serverTimeMs":      s.now().UnixMilli(),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "healthy", "probe": "healthz", "uptimeMs": s.now().Sub(s.startedAt).Milliseconds(), "catalogEntries": s.catalog.Count(), "worldEntities": s.coalescer.EntityCount(), "activeSubscribers": s.coalescer.SubscriberCount(), "serverTimeMs": s.now().UnixMilli()})
 }
-
 func (s *Server) handleCatalogSearch(w http.ResponseWriter, r *http.Request, _ Role) {
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	q, kind, limit := strings.TrimSpace(r.URL.Query().Get("q")), strings.TrimSpace(r.URL.Query().Get("kind")), 25
 	if utf8.RuneCountInString(q) > 100 {
 		writeProblem(w, r, http.StatusBadRequest, "invalid-query", "Query parameter 'q' exceeds 100 characters.")
 		return
 	}
-	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
-	limit := 25
 	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
 		parsed, err := strconv.Atoi(rawLimit)
 		if err != nil || parsed < 1 || parsed > 100 {
@@ -263,14 +259,8 @@ func (s *Server) handleCatalogSearch(w http.ResponseWriter, r *http.Request, _ R
 		limit = parsed
 	}
 	items := s.catalog.Search(q, kind, limit)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"query": q,
-		"kind":  kind,
-		"count": len(items),
-		"items": items,
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"query": q, "kind": kind, "count": len(items), "items": items})
 }
-
 func (s *Server) handleWorldEntities(w http.ResponseWriter, r *http.Request, _ Role) {
 	filter, err := parseViewportFilter(r)
 	if err != nil {
@@ -278,19 +268,12 @@ func (s *Server) handleWorldEntities(w http.ResponseWriter, r *http.Request, _ R
 		return
 	}
 	entities := s.coalescer.Snapshot(filter)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"zone":         filter.Zone,
-		"count":        len(entities),
-		"entities":     entities,
-		"serverTimeMs": s.now().UnixMilli(),
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"zone": filter.Zone, "count": len(entities), "entities": entities, "serverTimeMs": s.now().UnixMilli()})
 }
-
 func parseViewportFilter(r *http.Request) (worldstream.ViewportFilter, error) {
 	q := r.URL.Query()
 	filter := worldstream.ViewportFilter{Zone: strings.TrimSpace(q.Get("zone"))}
-	minXStr, minYStr := q.Get("minX"), q.Get("minY")
-	maxXStr, maxYStr := q.Get("maxX"), q.Get("maxY")
+	minXStr, minYStr, maxXStr, maxYStr := q.Get("minX"), q.Get("minY"), q.Get("maxX"), q.Get("maxY")
 	if minXStr == "" && minYStr == "" && maxXStr == "" && maxYStr == "" {
 		return filter, nil
 	}
@@ -301,38 +284,25 @@ func parseViewportFilter(r *http.Request) (worldstream.ViewportFilter, error) {
 	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || minX > maxX || minY > maxY {
 		return worldstream.ViewportFilter{}, fmt.Errorf("invalid viewport bounding box coordinates")
 	}
-	filter.HasBounds = true
-	filter.MinX, filter.MinY, filter.MaxX, filter.MaxY = minX, minY, maxX, maxY
+	filter.HasBounds, filter.MinX, filter.MinY, filter.MaxX, filter.MaxY = true, minX, minY, maxX, maxY
 	return filter, nil
 }
-
 func (s *Server) handleWorldStream(w http.ResponseWriter, r *http.Request, _ Role) {
 	filter, err := parseViewportFilter(r)
 	if err != nil {
 		writeProblem(w, r, http.StatusBadRequest, "invalid-viewport", err.Error())
 		return
 	}
-	maxFrames := 0
-	if rawMax := r.URL.Query().Get("maxFrames"); rawMax != "" {
-		if n, err := strconv.Atoi(rawMax); err == nil && n > 0 {
-			maxFrames = n
-		}
-	}
+	maxFrames, _ := strconv.Atoi(r.URL.Query().Get("maxFrames"))
 	subID := fmt.Sprintf("sub-%d", s.subSeq.Add(1))
 	sub := s.coalescer.Subscribe(subID, filter)
 	defer s.coalescer.Unsubscribe(subID)
-
-	if isWebSocketUpgrade(r) {
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") && r.Header.Get("Sec-WebSocket-Key") != "" {
 		s.serveWebSocketStream(w, r, sub, maxFrames)
 		return
 	}
 	s.serveSSEStream(w, r, sub, maxFrames)
 }
-
-func isWebSocketUpgrade(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") && r.Header.Get("Sec-WebSocket-Key") != ""
-}
-
 func (s *Server) serveSSEStream(w http.ResponseWriter, r *http.Request, sub *worldstream.Subscription, maxFrames int) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Time{})
@@ -340,33 +310,16 @@ func (s *Server) serveSSEStream(w http.ResponseWriter, r *http.Request, sub *wor
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	_ = rc.Flush()
-
-	s.coalescer.Flush()
-	sent := 0
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case delta, ok := <-sub.Updates():
-			if !ok {
-				return
-			}
-			payload, _ := json.Marshal(delta)
-			_ = rc.SetWriteDeadline(s.now().Add(5 * time.Second))
-			if _, err := fmt.Fprintf(w, "event: delta\ndata: %s\n\n", payload); err != nil {
-				return
-			}
-			_ = rc.Flush()
-			sent++
-			if maxFrames > 0 && sent >= maxFrames {
-				return
-			}
+	s.streamSubscriptionLoop(r, sub, maxFrames, func(payload []byte) error {
+		_ = rc.SetWriteDeadline(s.now().Add(5 * time.Second))
+		_, err := fmt.Fprintf(w, "event: delta\ndata: %s\n\n", payload)
+		if err == nil {
+			err = rc.Flush()
 		}
-	}
+		return err
+	})
 }
-
 func (s *Server) serveWebSocketStream(w http.ResponseWriter, r *http.Request, sub *worldstream.Subscription, maxFrames int) {
-	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
 	rc := http.NewResponseController(w)
 	conn, rw, err := rc.Hijack()
 	if err != nil {
@@ -374,23 +327,19 @@ func (s *Server) serveWebSocketStream(w http.ResponseWriter, r *http.Request, su
 		return
 	}
 	defer conn.Close()
-
-	sum := sha1.Sum([]byte(key + wsMagicGUID))
-	accept := base64.StdEncoding.EncodeToString(sum[:])
-	handshake := "HTTP/1.1 101 Switching Protocols\r\n" +
-		"Upgrade: websocket\r\n" +
-		"Connection: Upgrade\r\n" +
-		"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
+	sum := sha1.Sum([]byte(strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key")) + wsMagicGUID))
+	handshake := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + base64.StdEncoding.EncodeToString(sum[:]) + "\r\n\r\n"
 	if _, err := rw.WriteString(handshake); err != nil || rw.Flush() != nil {
 		return
 	}
-	s.coalescer.Flush()
-	s.loopWebSocketFrames(r, conn, sub, maxFrames)
+	s.streamSubscriptionLoop(r, sub, maxFrames, func(payload []byte) error {
+		_ = conn.SetWriteDeadline(s.now().Add(5 * time.Second))
+		return writeWSFrame(conn, payload)
+	})
 }
-
-func (s *Server) loopWebSocketFrames(r *http.Request, conn net.Conn, sub *worldstream.Subscription, maxFrames int) {
-	sent := 0
-	for {
+func (s *Server) streamSubscriptionLoop(r *http.Request, sub *worldstream.Subscription, maxFrames int, emit func([]byte) error) {
+	s.coalescer.Flush()
+	for sent := 0; ; {
 		select {
 		case <-r.Context().Done():
 			return
@@ -399,29 +348,22 @@ func (s *Server) loopWebSocketFrames(r *http.Request, conn net.Conn, sub *worlds
 				return
 			}
 			payload, _ := json.Marshal(delta)
-			_ = conn.SetWriteDeadline(s.now().Add(5 * time.Second))
-			if err := writeWSFrame(conn, payload); err != nil {
+			if emit(payload) != nil {
 				return
 			}
-			sent++
-			if maxFrames > 0 && sent >= maxFrames {
+			if sent++; maxFrames > 0 && sent >= maxFrames {
 				return
 			}
 		}
 	}
 }
-
 func writeWSFrame(conn net.Conn, payload []byte) error {
-	length := len(payload)
-	header := make([]byte, 0, 10)
-	header = append(header, 0x81)
-	switch {
-	case length <= 125:
+	length, header := len(payload), []byte{0x81}
+	if length <= 125 {
 		header = append(header, byte(length))
-	case length <= 65535:
-		header = append(header, 126, 0, 0)
-		binary.BigEndian.PutUint16(header[2:4], uint16(length))
-	default:
+	} else if length <= 65535 {
+		header = append(header, 126, byte(length>>8), byte(length))
+	} else {
 		header = append(header, 127, 0, 0, 0, 0, 0, 0, 0, 0)
 		binary.BigEndian.PutUint64(header[2:10], uint64(length))
 	}
@@ -431,47 +373,35 @@ func writeWSFrame(conn net.Conn, payload []byte) error {
 	_, err := conn.Write(payload)
 	return err
 }
-
 func (s *Server) handleGMCommand(w http.ResponseWriter, r *http.Request, role Role) {
-	idemKey := strings.TrimSpace(r.Header.Get("X-Idempotency-Key"))
-	if len(idemKey) == 0 || len(idemKey) > 128 {
+	idemKey, ok := extractIdempotencyKey(r)
+	if !ok {
 		writeProblem(w, r, http.StatusBadRequest, "missing-idempotency-key", "Header 'X-Idempotency-Key' (1..128 chars) is required.")
 		return
 	}
 	var req CommandRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeProblem(w, r, http.StatusBadRequest, "invalid-command-body", "Malformed JSON command payload.")
+	if !decodeBoundedJSON(w, r, &req) {
 		return
 	}
-	req.Command = strings.ToLower(strings.TrimSpace(req.Command))
-	if req.Command == "" {
+	if req.Command = strings.ToLower(strings.TrimSpace(req.Command)); req.Command == "" {
 		writeProblem(w, r, http.StatusBadRequest, "missing-command", "Field 'command' is required.")
 		return
 	}
-	required := requiredRoleForCommand(req.Command)
-	if !role.AtLeast(required) {
-		detail := fmt.Sprintf("Command %q requires role %s.", req.Command, required)
-		writeProblem(w, r, http.StatusForbidden, "insufficient-role", detail)
+	if required := requiredRoleForCommand(req.Command); !role.AtLeast(required) {
+		writeProblem(w, r, http.StatusForbidden, "insufficient-role", fmt.Sprintf("Command %q requires role %s.", req.Command, required))
 		return
 	}
 	s.dispatchIdempotentCommand(w, r, role, idemKey, req)
 }
-
 func requiredRoleForCommand(cmd string) Role {
-	switch cmd {
-	case "set_node_level", "world_broadcast", "reset_encounter", "shutdown_zone":
+	if cmd == "set_node_level" || cmd == "world_broadcast" || cmd == "reset_encounter" || cmd == "shutdown_zone" {
 		return RoleArchitect
-	default:
-		return RoleOperator
 	}
+	return RoleOperator
 }
-
 func (s *Server) dispatchIdempotentCommand(w http.ResponseWriter, r *http.Request, role Role, idemKey string, req CommandRequest) {
-	 canonical, _ := json.Marshal(req)
+	canonical, _ := json.Marshal(req)
 	pHash := sha256.Sum256(canonical)
-
 	s.mu.Lock()
 	if existing, ok := s.idemStore[idemKey]; ok {
 		s.mu.Unlock()
@@ -484,23 +414,12 @@ func (s *Server) dispatchIdempotentCommand(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusOK, replay)
 		return
 	}
-	receipt := CommandReceipt{
-		ReceiptID:        "rcpt-" + hex.EncodeToString(pHash[:8]),
-		IdempotencyKey:   idemKey,
-		Command:          req.Command,
-		TargetID:         req.TargetID,
-		Role:             role,
-		Status:           "EXECUTED",
-		ExecutedAtMs:     s.now().UnixMilli(),
-		IdempotentReplay: false,
-	}
+	receipt := CommandReceipt{ReceiptID: "rcpt-" + hex.EncodeToString(pHash[:8]), IdempotencyKey: idemKey, Command: req.Command, TargetID: req.TargetID, Role: role, Status: "EXECUTED", ExecutedAtMs: s.now().UnixMilli()}
 	s.idemStore[idemKey] = idempotencyRecord{payloadHash: pHash, receipt: receipt}
 	s.mu.Unlock()
-
 	s.applyCommandSideEffect(req)
 	writeJSON(w, http.StatusOK, receipt)
 }
-
 func (s *Server) applyCommandSideEffect(req CommandRequest) {
 	if req.TargetID == "" {
 		return
@@ -509,35 +428,13 @@ func (s *Server) applyCommandSideEffect(req CommandRequest) {
 		s.coalescer.RemoveEntity(req.TargetID)
 		return
 	}
-	zone := req.Zone
-	if zone == "" {
-		zone = "riverlands"
-	}
-	s.coalescer.UpsertEntity(worldstream.EntitySnapshot{
-		ID:        req.TargetID,
-		Kind:      "npc",
-		Name:      req.Command + ":" + req.TargetID,
-		Zone:      zone,
-		HealthPct: 100,
-		Level:     50,
-		State:     "active",
-		UpdatedAt: s.now().UnixMilli(),
-	})
+	s.coalescer.UpsertEntity(worldstream.EntitySnapshot{ID: req.TargetID, Kind: "npc", Name: req.Command + ":" + req.TargetID, Zone: firstNonEmpty(req.Zone, "riverlands"), HealthPct: 100, Level: 50, State: "active", UpdatedAt: s.now().UnixMilli()})
 }
-
 func writeProblem(w http.ResponseWriter, r *http.Request, status int, code, detail string) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(ProblemDetails{
-		Type:     "https://sandalcore.dev/problems/" + code,
-		Title:    http.StatusText(status),
-		Status:   status,
-		Detail:   detail,
-		Instance: r.URL.Path,
-		Code:     code,
-	})
+	_ = json.NewEncoder(w).Encode(ProblemDetails{Type: "https://sandalcore.dev/problems/" + code, Title: http.StatusText(status), Status: status, Detail: detail, Instance: r.URL.Path, Code: code})
 }
-
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
