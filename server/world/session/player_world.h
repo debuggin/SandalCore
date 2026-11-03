@@ -12,7 +12,7 @@
 #include "quest/quest_service.h"
 #include "session/actor_view.h"
 #include "session/position_saver.h"
-#include "session/riding.h"
+#include "content/content_snapshot.h"
 #include "spawns/gm_garden.h"
 #include "spawns/node_populations.h"
 #include "vendor/town_shops.h"
@@ -58,6 +58,27 @@ public:
     }
     const content::ContentDb* content() const { return content_; }
     const std::string& content_problem() const { return content_problem_; }
+    std::shared_ptr<const content::ContentSnapshot> content_snapshot() const noexcept {
+        return content::detail::atomic_load_ptr(&content_snapshot_);
+    }
+    bool reload_content_snapshot(const content::ContentDb& db, uint64_t version, std::string sha256_digest,
+                                 std::string& error) {
+        const auto active = content::detail::atomic_load_ptr(&content_snapshot_);
+        if (active && version <= active->version) {
+            error = "version regression: candidate version must exceed active version";
+            return false;
+        }
+        auto next = content::ContentSnapshot::load_from_db(db, version, std::move(sha256_digest), error);
+        if (!next) return false;
+        const auto t0 = std::chrono::steady_clock::now();
+        content::detail::atomic_exchange_ptr(&content_snapshot_, std::move(next));
+        const auto t1 = std::chrono::steady_clock::now();
+        if (std::chrono::duration<double, std::milli>(t1 - t0).count() >= content::kMaxHotReloadSwapMs) {
+            error = "content snapshot RCU swap exceeded 50ms budget";
+            return false;
+        }
+        return true;
+    }
     const content::AbilityRules* ability_rules() const { return rules_ ? &*rules_ : nullptr; }
     const items::ItemCatalog* item_catalog() const { return catalog_override_ ? catalog_override_ : catalog_ ? &*catalog_ : nullptr; }
     void set_item_catalog(const items::ItemCatalog* catalog) { catalog_override_ = catalog; }
@@ -337,6 +358,7 @@ private:
 
     const content::ContentDb*                  content_;
     std::string                                content_problem_;
+    mutable std::shared_ptr<const content::ContentSnapshot> content_snapshot_;
     std::optional<content::AbilityRules>       rules_;
     std::optional<items::ContentItemCatalog>   catalog_;
     std::optional<stats::StatBundle>           bundle_;

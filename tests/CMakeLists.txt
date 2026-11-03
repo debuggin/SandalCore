@@ -58,6 +58,7 @@ set(SANDAL_DOMAIN_TEST_TARGETS
     test_health_probes_drain
     test_canonical_json_logger
     test_net_serialize_all_12
+    test_content_hotfix_reload
 )
 
 add_sandal_domain_test_exe(test_world_clock_and_data_free world/test_world_clock_and_data_free.cpp)
@@ -94,6 +95,12 @@ add_sandal_domain_test_exe(test_net_serialize_all_12 protocol/test_net_serialize
 add_test(
     NAME protocol.test_net_serialize_all_12
     COMMAND $<TARGET_FILE:test_net_serialize_all_12>
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+add_sandal_domain_test_exe(test_content_hotfix_reload world/test_content_hotfix_reload.cpp)
+add_test(
+    NAME content_hotfix_reload
+    COMMAND $<TARGET_FILE:test_content_hotfix_reload>
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
 )
 
