@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -433,7 +434,7 @@ func TestSchemaConstraints(t *testing.T) {
 // package, so assertions keep holding when a new migration is added.
 func embeddedVersions(t *testing.T) []int {
 	t.Helper()
-	sub, err := fs.Sub(migrations, "migrations")
+	sub, err := fs.Sub(newSQLMigrationsFS(), "migrations")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,4 +489,204 @@ func advisoryLocksHeld(t *testing.T, pool *pgxpool.Pool) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func TestMigrationCatalog0020And0021(t *testing.T) {
+	report, err := InspectMigrationCatalog()
+	if err != nil {
+		t.Fatalf("InspectMigrationCatalog: %v", err)
+	}
+	if len(report.Versions) < 21 {
+		t.Fatalf("migration count = %d, want >= 21", len(report.Versions))
+	}
+	for i, v := range report.Versions {
+		if v != i+1 {
+			t.Fatalf("version[%d] = %d, want %d", i, v, i+1)
+		}
+	}
+	if !report.HasHotfix0020 || !report.HasSchema0021 {
+		t.Fatalf("missing 0020 (%v) or 0021 (%v)", report.HasHotfix0020, report.HasSchema0021)
+	}
+	if !report.ThreeSchemasOK || !report.FourRolesOK || !report.AllFKsIndexed {
+		t.Fatalf("catalog flags: schemas=%v roles=%v fks=%v",
+			report.ThreeSchemasOK, report.FourRolesOK, report.AllFKsIndexed)
+	}
+	verifyAuditFalsification(t)
+}
+
+func verifyAuditFalsification(t *testing.T) {
+	t.Helper()
+	baseSQL := `
+		CREATE SCHEMA IF NOT EXISTS auth;
+		CREATE SCHEMA IF NOT EXISTS characters;
+		CREATE SCHEMA IF NOT EXISTS world;
+		CREATE ROLE sandal_auth;
+		CREATE ROLE sandal_char;
+		CREATE ROLE sandal_world;
+		CREATE ROLE sandal_admin;
+		CREATE TABLE parent_tbl (id BIGINT PRIMARY KEY);
+		CREATE TABLE world_hotfix_overlays (overlay_id BIGSERIAL PRIMARY KEY);
+		CREATE TABLE hotfix_audit_log (audit_id BIGSERIAL PRIMARY KEY);
+		CREATE TABLE buy_orders (order_id BIGSERIAL PRIMARY KEY);
+		CREATE TABLE spawner_state (
+			spawner_guid BIGINT PRIMARY KEY,
+			parent_id BIGINT NOT NULL,
+			CONSTRAINT fk_parent FOREIGN KEY (parent_id) REFERENCES parent_tbl(id)
+		);`
+	cases := []struct {
+		name string
+		fsys fstest.MapFS
+	}{
+		{"empty", fstest.MapFS{}},
+		{"gap", fstest.MapFS{
+			"0001_a.sql": &fstest.MapFile{Data: []byte("SELECT 1;")},
+			"0003_b.sql": &fstest.MapFile{Data: []byte("SELECT 1;")},
+		}},
+		{"missing_0020_0021", fstest.MapFS{
+			"0001_init.sql": &fstest.MapFile{Data: []byte(baseSQL)},
+		}},
+		{"missing_schemas", fstest.MapFS{
+			"0001_hotfix_overlays.sql": &fstest.MapFile{Data: []byte("SELECT 1;")},
+		}},
+	}
+	for _, tc := range cases {
+		if _, err := AuditMigrationCatalog(tc.fsys); err == nil {
+			t.Fatalf("case %s: expected AuditMigrationCatalog error", tc.name)
+		}
+	}
+	verifyCatalogValidationBranches(t, baseSQL)
+}
+
+func verifyCatalogValidationBranches(t *testing.T, baseSQL string) {
+	t.Helper()
+	r1 := &MigrationCatalogReport{HasHotfix0020: true, HasSchema0021: true}
+	if err := validateCatalogReport(r1); err == nil {
+		t.Fatal("expected missing schemas error")
+	}
+	r1.ThreeSchemasOK = true
+	if err := validateCatalogReport(r1); err == nil {
+		t.Fatal("expected missing roles error")
+	}
+	r1.FourRolesOK = true
+	if err := validateCatalogReport(r1); err == nil {
+		t.Fatal("expected missing table error")
+	}
+	r1.Tables = []string{"world_hotfix_overlays", "hotfix_audit_log", "buy_orders", "spawner_state"}
+	if err := validateCatalogReport(r1); err == nil {
+		t.Fatal("expected unindexed FK error")
+	}
+	var idxs []indexSpec
+	r2 := &MigrationCatalogReport{}
+	collectMigrationAST(baseSQL, r2, &idxs)
+	finalizeCatalogReport(r2, idxs)
+	if r2.AllFKsIndexed || len(r2.UnindexedFKs) == 0 {
+		t.Fatal("expected unindexed table-level FK in baseSQL")
+	}
+}
+
+func TestThreeSchemaSeparationAndFKIndexAudit(t *testing.T) {
+	report, err := InspectMigrationCatalog()
+	if err != nil {
+		t.Fatalf("InspectMigrationCatalog: %v", err)
+	}
+	for _, wantSchema := range []string{"auth", "character", "characters", "world", "realm_state"} {
+		if !slices.Contains(report.Schemas, wantSchema) {
+			t.Errorf("missing schema %q in %v", wantSchema, report.Schemas)
+		}
+	}
+	for _, wantRole := range []string{"sandal_auth", "sandal_char", "sandal_world", "sandal_admin"} {
+		if !slices.Contains(report.Roles, wantRole) {
+			t.Errorf("missing role %q in %v", wantRole, report.Roles)
+		}
+	}
+	for _, wantTable := range []string{"world_hotfix_overlays", "hotfix_audit_log", "buy_orders", "spawner_state"} {
+		if !slices.Contains(report.Tables, wantTable) {
+			t.Errorf("missing table %q in %v", wantTable, report.Tables)
+		}
+	}
+	if len(report.UnindexedFKs) != 0 {
+		t.Fatalf("unindexed FKs: %+v", report.UnindexedFKs)
+	}
+	if os.Getenv("AOC_TEST_DATABASE_URL") != "" {
+		verifyLiveSchemasAndFKs(t)
+	}
+}
+
+func verifyLiveSchemasAndFKs(t *testing.T) {
+	t.Helper()
+	pool := dbtest.Pool(t)
+	ctx := context.Background()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	for _, s := range []string{"auth", "character", "characters", "world", "realm_state"} {
+		var n int
+		if err := pool.QueryRow(ctx,
+			"SELECT count(*) FROM information_schema.schemata WHERE schema_name = $1", s).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("live schema %s: n=%d err=%v", s, n, err)
+		}
+	}
+	for _, q := range []string{
+		"SELECT count(*) FROM auth.accounts",
+		"SELECT count(*) FROM character.characters",
+		"SELECT count(*) FROM characters.characters",
+		"SELECT count(*) FROM world.world_servers",
+		"SELECT count(*) FROM realm_state.spawner_state",
+		"SELECT count(*) FROM realm_state.buy_orders",
+	} {
+		var c int
+		if err := pool.QueryRow(ctx, q).Scan(&c); err != nil {
+			t.Fatalf("query %q: %v", q, err)
+		}
+	}
+}
+
+func TestHotfixOverlaySpecAndQueries(t *testing.T) {
+	sqlQuery := ActiveHotfixOverlaysSQL()
+	for _, token := range []string{
+		"world.world_hotfix_overlays",
+		"target_table = $1",
+		"enabled = TRUE",
+		"min_server_build <= $2",
+		"expires_at IS NULL OR expires_at > NOW()",
+	} {
+		if !strings.Contains(sqlQuery, token) {
+			t.Errorf("ActiveHotfixOverlaysSQL missing token %q", token)
+		}
+	}
+	ctx := context.Background()
+	if _, err := QueryActiveHotfixOverlays(ctx, nil, "", 100); err == nil {
+		t.Fatal("empty targetTable should fail")
+	}
+	if _, err := QueryActiveHotfixOverlays(ctx, nil, "item_record", -1); err == nil {
+		t.Fatal("negative serverBuild should fail")
+	}
+	if _, err := QueryActiveHotfixOverlays(ctx, nil, "item_record", 100); err == nil {
+		t.Fatal("nil pool should fail")
+	}
+	if os.Getenv("AOC_TEST_DATABASE_URL") != "" {
+		verifyLiveHotfixOverlays(t)
+	}
+}
+
+func verifyLiveHotfixOverlays(t *testing.T) {
+	t.Helper()
+	pool := dbtest.Pool(t)
+	ctx := context.Background()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	_, err := pool.Exec(ctx, `
+		DELETE FROM world.world_hotfix_overlays WHERE target_table = 'ability_record' AND record_guid = 9001;
+		INSERT INTO world.world_hotfix_overlays
+			(target_table, record_guid, field_path, override_json, min_server_build, enabled, reason, created_by)
+		VALUES
+			('ability_record', 9001, 'cooldown_ms', '1500'::jsonb, 100, TRUE, 'balance tune', 'ops')`)
+	if err != nil {
+		t.Fatalf("insert overlay: %v", err)
+	}
+	rows, err := QueryActiveHotfixOverlays(ctx, pool, "ability_record", 120)
+	if err != nil || len(rows) != 1 || rows[0].RecordGUID != 9001 {
+		t.Fatalf("QueryActiveHotfixOverlays = %+v, err = %v", rows, err)
+	}
 }
