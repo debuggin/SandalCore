@@ -1,0 +1,174 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:SandalLauncher.ViewModels"
+             xmlns:models="using:SandalLauncher.Models"
+             x:Class="SandalLauncher.Views.ProfileEditorView"
+             x:DataType="vm:ProfileSwitcherViewModel"
+             x:CompileBindings="True"
+             Background="{DynamicResource SurfacePrimaryBrush}"
+             Foreground="{DynamicResource TextPrimaryBrush}"
+             AutomationProperties.Name="Multi-Server Profile Switcher and Editor">
+
+  <StackPanel Spacing="16">
+
+    <!-- Header & Active State Banner (UX-02, UX-03) -->
+    <Border Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="1" CornerRadius="8" Padding="18,14">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Grid.Column="0" Spacing="4">
+          <TextBlock Text="MULTI-SERVER PROFILE SWITCHER &amp; OS VAULT CREDENTIALS" Foreground="{DynamicResource AccentGoldBrush}" FontSize="15" FontWeight="Bold" />
+          <TextBlock Text="{Binding StatusBannerMessage}" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" TextWrapping="Wrap" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <Button Content="+ New Profile" Command="{Binding PrepareNewProfileCommand}" MinHeight="44" Padding="14,10" TabIndex="1" AutomationProperties.Name="Create New Server Profile" />
+          <Button Content="Reload Store" Command="{Binding LoadProfilesCommand}" MinHeight="44" Padding="14,10" TabIndex="2" AutomationProperties.Name="Reload Profiles from Disk" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- STATE 1: loading (Doherty < 400ms Skeleton, UX-01/UX-02) -->
+    <Border x:Name="ProfileLoadingPanel" Tag="loading" IsVisible="{Binding IsLoadingState}" Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource AccentGoldBrush}" BorderThickness="1" CornerRadius="8" Padding="20" AutomationProperties.Name="Profile Loading State Panel">
+      <StackPanel Spacing="10">
+        <TextBlock Text="◌ LOADING — Reading LauncherProfiles.json &amp; OS Credential Vault" Foreground="{DynamicResource AccentGoldBrush}" FontSize="14" FontWeight="Bold" />
+        <ProgressBar IsIndeterminate="True" MinHeight="8" Foreground="{DynamicResource AccentGoldBrush}" AutomationProperties.Name="Profile Store Loading Progress" />
+      </StackPanel>
+    </Border>
+
+    <!-- STATE 2: empty (Zero-Profile Guided Recovery, UX-02) -->
+    <Border x:Name="ProfileEmptyPanel" Tag="empty" IsVisible="{Binding IsEmptyState}" Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="1" CornerRadius="8" Padding="20" AutomationProperties.Name="Profile Empty State Panel">
+      <StackPanel Spacing="10">
+        <TextBlock Text="○ EMPTY — No Server Profiles Configured" Foreground="{DynamicResource TextPrimaryBrush}" FontSize="14" FontWeight="Bold" />
+        <TextBlock Text="Seed default Verra sandbox profiles from SandalConfigLoader or create a new custom realm profile." Foreground="{DynamicResource TextMutedBrush}" FontSize="12" TextWrapping="Wrap" />
+        <Button Content="Seed Default Realm Profiles" Command="{Binding ResetDefaultProfilesCommand}" Background="{DynamicResource AccentGoldBrush}" Foreground="{DynamicResource SurfacePrimaryBrush}" FontWeight="SemiBold" MinHeight="44" Padding="16,10" TabIndex="3" AutomationProperties.Name="Seed Default Realm Profiles" />
+      </StackPanel>
+    </Border>
+
+    <!-- STATE 3: error (RFC 9457 Problem Details + Deterministic Recovery, UX-02) -->
+    <Border x:Name="ProfileErrorPanel" Tag="error" IsVisible="{Binding IsErrorState}" Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource StatusOfflineBrush}" BorderThickness="2" CornerRadius="8" Padding="20" AutomationProperties.Name="Profile Error State Panel">
+      <StackPanel Spacing="10">
+        <TextBlock Text="{Binding ErrorTitle}" Foreground="{DynamicResource StatusOfflineBrush}" FontSize="14" FontWeight="Bold" />
+        <TextBlock Text="{Binding ErrorDetail}" Foreground="{DynamicResource TextPrimaryBrush}" FontSize="12" TextWrapping="Wrap" />
+        <TextBlock Text="{Binding ErrorRemediation}" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" TextWrapping="Wrap" />
+        <Button Content="Reset Default Profiles" Command="{Binding ResetDefaultProfilesCommand}" Background="{DynamicResource AccentEmberBrush}" Foreground="{DynamicResource TextPrimaryBrush}" FontWeight="SemiBold" MinHeight="44" Padding="16,10" TabIndex="4" AutomationProperties.Name="Reset Default Profiles Recovery Action" />
+      </StackPanel>
+    </Border>
+
+    <!-- STATE 4: degraded (OS Vault Fallback Warning Banner, UX-02) -->
+    <Border x:Name="ProfileDegradedPanel" Tag="degraded" IsVisible="{Binding IsDegradedState}" Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource StatusDegradedBrush}" BorderThickness="2" CornerRadius="8" Padding="16" AutomationProperties.Name="Profile Degraded State Panel">
+      <StackPanel Spacing="6">
+        <TextBlock Text="▲ DEGRADED — Headless Encrypted Vault Fallback Active" Foreground="{DynamicResource StatusDegradedBrush}" FontSize="13" FontWeight="Bold" />
+        <TextBlock Text="{Binding DegradedSummary}" Foreground="{DynamicResource TextPrimaryBrush}" FontSize="12" TextWrapping="Wrap" />
+      </StackPanel>
+    </Border>
+
+    <!-- STATE 5: populated (2-Column Roster + Chunked Fieldsets, UX-01/UX-02/UX-03) -->
+    <Grid x:Name="ProfilePopulatedPanel" Tag="populated" IsVisible="{Binding IsPopulatedState}" ColumnDefinitions="260,16,*">
+
+      <!-- Left Column: Saved Server Profiles Roster -->
+      <Border Grid.Column="0" Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="1" CornerRadius="8" Padding="14">
+        <StackPanel Spacing="10">
+          <TextBlock Text="SAVED REALM PROFILES" Foreground="{DynamicResource TextMutedBrush}" FontSize="11" FontWeight="Bold" />
+          <ListBox ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}" Background="{DynamicResource SurfaceOverlayBrush}" MinHeight="240" TabIndex="5" AutomationProperties.Name="Saved Server Profiles List">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="models:LauncherProfile">
+                <StackPanel Spacing="2" Margin="4,6">
+                  <TextBlock Text="{Binding DisplayName}" Foreground="{DynamicResource TextPrimaryBrush}" FontWeight="SemiBold" FontSize="13" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding GatewayHttpAddr}" Foreground="{DynamicResource AccentGoldBrush}" FontSize="11" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </StackPanel>
+      </Border>
+
+      <!-- Right Column: Chunked Profile Editor & OS Credential Vault Controls (3-4 Fields per Group, UX-01) -->
+      <StackPanel Grid.Column="2" Spacing="14">
+
+        <!-- Group 1: Profile Identity & Account (3 Fields) -->
+        <Border Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+          <StackPanel Spacing="10">
+            <TextBlock Text="1. PROFILE IDENTITY &amp; ACCOUNT (ZERO PLAINTEXT SECRETS ON DISK)" Foreground="{DynamicResource AccentGoldBrush}" FontSize="11" FontWeight="Bold" />
+            <Grid ColumnDefinitions="*,12,*,12,*">
+              <StackPanel Grid.Column="0" Spacing="4">
+                <TextBlock Text="Profile ID" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" />
+                <TextBox Text="{Binding EditId}" MinHeight="44" TabIndex="6" AutomationProperties.Name="Profile Identifier Input" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="4">
+                <TextBlock Text="Display Name" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" />
+                <TextBox Text="{Binding EditDisplayName}" MinHeight="44" TabIndex="7" AutomationProperties.Name="Profile Display Name Input" />
+              </StackPanel>
+              <StackPanel Grid.Column="4" Spacing="4">
+                <TextBlock Text="Account Username" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" />
+                <TextBox Text="{Binding EditAccountUsername}" MinHeight="44" TabIndex="8" AutomationProperties.Name="Account Username Input" />
+              </StackPanel>
+            </Grid>
+          </StackPanel>
+        </Border>
+
+        <!-- Group 2: Gateway & Admin Endpoints (4 Fields) -->
+        <Border Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+          <StackPanel Spacing="10">
+            <TextBlock Text="2. GATEWAY HTTP / ICS / GRPC &amp; ADMIN ENDPOINTS" Foreground="{DynamicResource AccentGoldBrush}" FontSize="11" FontWeight="Bold" />
+            <Grid RowDefinitions="Auto,10,Auto" ColumnDefinitions="*,12,*">
+              <StackPanel Grid.Row="0" Grid.Column="0" Spacing="4">
+                <TextBlock Text="Gateway HTTP Address" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" />
+                <TextBox Text="{Binding EditGatewayHttpAddr}" MinHeight="44" TabIndex="9" AutomationProperties.Name="Gateway HTTP Address Input" />
+              </StackPanel>
+              <StackPanel Grid.Row="0" Grid.Column="2" Spacing="4">
+                <TextBlock Text="Gateway ICS UDP Address" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" />
+                <TextBox Text="{Binding EditGatewayIcsAddr}" MinHeight="44" TabIndex="10" AutomationProperties.Name="Gateway ICS Address Input" />
+              </StackPanel>
+              <StackPanel Grid.Row="2" Grid.Column="0" Spacing="4">
+                <TextBlock Text="Gateway gRPC Address" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" />
+                <TextBox Text="{Binding EditGatewayGrpcAddr}" MinHeight="44" TabIndex="11" AutomationProperties.Name="Gateway gRPC Address Input" />
+              </StackPanel>
+              <StackPanel Grid.Row="2" Grid.Column="2" Spacing="4">
+                <TextBlock Text="Admin HTTP Address" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" />
+                <TextBox Text="{Binding EditAdminHttpAddr}" MinHeight="44" TabIndex="12" AutomationProperties.Name="Admin HTTP Address Input" />
+              </StackPanel>
+            </Grid>
+          </StackPanel>
+        </Border>
+
+        <!-- Group 3: Client Pak Directory, TLS Pin & OS Credential Vault (3 Fields) -->
+        <Border Background="{DynamicResource SurfaceElevatedBrush}" BorderBrush="{DynamicResource BorderSubtleBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+          <StackPanel Spacing="10">
+            <TextBlock Text="3. CLIENT PAKS, TLS SHA-256 PIN &amp; OS CREDENTIAL VAULT" Foreground="{DynamicResource AccentGoldBrush}" FontSize="11" FontWeight="Bold" />
+            <Grid ColumnDefinitions="*,12,*">
+              <StackPanel Grid.Column="0" Spacing="4">
+                <TextBlock Text="Client Pak Directory" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" />
+                <TextBox Text="{Binding EditClientPakDir}" MinHeight="44" TabIndex="13" AutomationProperties.Name="Client Pak Directory Input" />
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="4">
+                <TextBlock Text="TLS Certificate SHA-256 Pin (Optional)" Foreground="{DynamicResource TextMutedBrush}" FontSize="12" />
+                <TextBox Text="{Binding EditCertificatePinSha256}" MinHeight="44" TabIndex="14" AutomationProperties.Name="TLS Certificate SHA-256 Pin Input" />
+              </StackPanel>
+            </Grid>
+
+            <CheckBox Content="Enable Retail Epic Online Services (EOS) Authentication Shim" IsChecked="{Binding EditUseEos}" MinHeight="44" TabIndex="15" AutomationProperties.Name="Enable EOS Authentication Checkbox" />
+
+            <Grid ColumnDefinitions="*,10,Auto,10,Auto">
+              <TextBox Grid.Column="0" Text="{Binding SessionTokenInput}" PasswordChar="•" Watermark="Enter session token to seal in OS Credential Vault (never saved to JSON)..." MinHeight="44" TabIndex="16" AutomationProperties.Name="Session Token Vault Input" />
+              <Button Grid.Column="2" Content="Seal Token" Command="{Binding StoreSessionTokenCommand}" MinHeight="44" Padding="14,10" TabIndex="17" AutomationProperties.Name="Seal Session Token in OS Vault" />
+              <Button Grid.Column="4" Content="Purge Token" Command="{Binding ClearSessionTokenCommand}" MinHeight="44" Padding="14,10" TabIndex="18" AutomationProperties.Name="Purge Session Token from OS Vault" />
+            </Grid>
+
+            <TextBlock Text="{Binding VaultStatusText}" Foreground="{DynamicResource StatusOnlineBrush}" FontSize="12" />
+          </StackPanel>
+        </Border>
+
+        <!-- Action Bar: Single Isolated Primary CTA + Inverse Fitts Separated Destructive Gate (UX-01, UX-04) -->
+        <Grid ColumnDefinitions="Auto,*,Auto">
+          <Button Grid.Column="0" Content="SAVE PROFILE TO CATALOG" Command="{Binding SaveProfileCommand}" Background="{DynamicResource AccentGoldBrush}" Foreground="{DynamicResource SurfacePrimaryBrush}" FontWeight="Bold" MinHeight="44" Padding="20,10" TabIndex="19" AutomationProperties.Name="Save Profile Primary Action" />
+
+          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="12">
+            <Button Content="Delete Profile..." Command="{Binding ArmDeleteProfileCommand}" IsVisible="{Binding !IsDeleteConfirmationArmed}" MinHeight="44" Padding="14,10" TabIndex="20" AutomationProperties.Name="Arm Profile Deletion" />
+            <Button Content="Confirm Delete Profile" Command="{Binding DeleteSelectedProfileCommand}" IsVisible="{Binding IsDeleteConfirmationArmed}" Background="{DynamicResource StatusOfflineBrush}" Foreground="{DynamicResource TextPrimaryBrush}" FontWeight="Bold" MinHeight="44" Padding="14,10" TabIndex="21" AutomationProperties.Name="Confirm Profile Deletion" />
+            <Button Content="Cancel" Command="{Binding CancelDeleteProfileCommand}" IsVisible="{Binding IsDeleteConfirmationArmed}" MinHeight="44" Padding="14,10" TabIndex="22" AutomationProperties.Name="Cancel Profile Deletion" />
+          </StackPanel>
+        </Grid>
+
+      </StackPanel>
+    </Grid>
+
+  </StackPanel>
+</UserControl>
