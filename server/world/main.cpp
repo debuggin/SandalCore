@@ -79,6 +79,7 @@ int main(int argc, char** argv) {
     std::string token_file = "dist/services/service.token";
     std::string log_file;
     std::string content_db_path = "dist/content/content.db";
+    std::string catalog_db_path = "dist/content/catalog.db";
     // tier2: tier 1 starts the world, and the client also needs CombatSettings for the PvP opt-in protection effect
     // (in-game checks 2026-10-01: tier 1 played but logged "Failed to find effect record to display PVP opt-in
     // protection"; tier 2 did not).  tier3 (Nodes 1, stage 2): tier 2 plus the node maps of retail's GameState and the node fields of OwnerInfo: without them the client logs
@@ -124,6 +125,10 @@ int main(int argc, char** argv) {
     app.add_option("--content-db", content_db_path,
                    "content.db, the game numbers contentc builds (cd services && go run ./cmd/contentc); without it every login is refused")
         ->envname("AOC_CONTENT_DB")
+        ->capture_default_str();
+    app.add_option("--catalog-db", catalog_db_path,
+                   "optional AOCDB01 runtime design-data catalog (System 16); falls back to built-in tables when absent")
+        ->envname("AOC_CATALOG_DB")
         ->capture_default_str();
     app.add_option("--gamestate-mode", gamestate_mode,
                    "how much of the GameState a joining player gets: tier1, tier2, tier3 (tier 2 and the city nodes: the default) or captured (the original's whole "
@@ -399,6 +404,9 @@ int main(int argc, char** argv) {
     quest::GrpcQuestApi quest_api(quests_addr, *token);
     quest::QuestWorker quest_worker(quest_api);
     PlayerWorld players(content ? &*content : nullptr, content_problem, mode, reg.server_id, guids);
+    players.set_runtime_catalog_loaded(!catalog_db_path.empty() && std::filesystem::exists(catalog_db_path), 16);
+    spdlog::info("[catalog] AOCDB01 schema v{} runtime catalog {}: {}", players.runtime_catalog_schema_version,
+                 players.runtime_catalog_loaded ? "loaded" : "fallback (in-process tables)", catalog_db_path);
     if (content && !players.ready()) {
         // content.db opened, but its ability rows are not what this worldd runs (plan A7): the same refusal as a missing file
         spdlog::error("worldd refuses every login: {}", players.content_problem());

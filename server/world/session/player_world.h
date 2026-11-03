@@ -50,6 +50,12 @@ public:
     ~PlayerWorld();
 
     bool ready() const { return content_ != nullptr; }
+    uint32_t runtime_catalog_schema_version = 16;
+    bool     runtime_catalog_loaded = false;
+    void     set_runtime_catalog_loaded(bool loaded, uint32_t schema_version = 16) {
+        runtime_catalog_loaded = loaded;
+        runtime_catalog_schema_version = schema_version;
+    }
     const content::ContentDb* content() const { return content_; }
     const std::string& content_problem() const { return content_problem_; }
     const content::AbilityRules* ability_rules() const { return rules_ ? &*rules_ : nullptr; }

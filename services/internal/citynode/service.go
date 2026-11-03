@@ -92,10 +92,11 @@ type Snapshot struct {
 
 // Service is the city node service.
 type Service struct {
-	pool     *pgxpool.Pool
-	roster   *Roster
-	seedPath string
-	now      func() time.Time
+	pool            *pgxpool.Pool
+	roster          *Roster
+	seedPath        string
+	now             func() time.Time
+	stageThresholds [len(ExpToLevel)]int64
 
 	mu  sync.RWMutex // a change holds it for write from its transaction to its event; a read holds it for read
 	seq uint64
@@ -108,10 +109,15 @@ type Option func(*Service)
 // WithClock makes the service read the real time from now (the tests'); the default is time.Now.
 func WithClock(now func() time.Time) Option { return func(s *Service) { s.now = now } }
 
+// WithStageThresholds overrides the cumulative XP thresholds per node level from runtime catalog configuration.
+func WithStageThresholds(thresholds [len(ExpToLevel)]int64) Option {
+	return func(s *Service) { s.stageThresholds = thresholds }
+}
+
 // NewService makes a service over pool for the nodes of roster. seedPath is the seed file ApplySeed reads when it is not handed one
 // (deploy/citynode_seed.json). Start must run before anything else.
 func NewService(pool *pgxpool.Pool, roster *Roster, seedPath string, opts ...Option) *Service {
-	s := &Service{pool: pool, roster: roster, seedPath: seedPath, now: time.Now}
+	s := &Service{pool: pool, roster: roster, seedPath: seedPath, now: time.Now, stageThresholds: ExpToLevel}
 	for _, o := range opts {
 		o(s)
 	}
@@ -121,6 +127,14 @@ func NewService(pool *pgxpool.Pool, roster *Roster, seedPath string, opts ...Opt
 // New makes a service over pool for the nodes of roster.
 func New(pool *pgxpool.Pool, roster *Roster, seedPath string, opts ...Option) *Service {
 	return NewService(pool, roster, seedPath, opts...)
+}
+
+// StageThreshold returns the cumulative XP threshold configured for level, or 0 if out of range.
+func (s *Service) StageThreshold(level int) int64 {
+	if level < 0 || level >= len(s.stageThresholds) {
+		return 0
+	}
+	return s.stageThresholds[level]
 }
 
 // Roster is the nodes the service knows.
@@ -188,8 +202,25 @@ func (s *Service) loadRows(ctx context.Context, q queryer, lock string) (map[int
 	return out, rs.Err()
 }
 
+func (s *Service) progress(level int, experience int64) (percent int, toNext int64) {
+	if level < 0 || level >= MaxNodeLevel || level+1 >= len(s.stageThresholds) {
+		return 0, 0
+	}
+	lo, hi := s.stageThresholds[level], s.stageThresholds[level+1]
+	if hi <= lo {
+		return 0, 0
+	}
+	if experience <= lo {
+		return 0, hi - experience
+	}
+	if experience >= hi {
+		return 100, 0
+	}
+	return int((experience - lo) * 100 / (hi - lo)), hi - experience
+}
+
 func (s *Service) toNode(info Info, r row) Node {
-	pct, next := Progress(r.level, r.experience)
+	pct, next := s.progress(r.level, r.experience)
 	return Node{Guid: info.Guid, Name: info.Name, DisplayName: info.DisplayName, Level: r.level, Experience: r.experience,
 		Percent: pct, ToNext: next, ParentGuid: r.parent, UpdatedAt: r.updatedAt}
 }

@@ -9,6 +9,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(MSVC AND MSVC_VERSION LESS 1950)
+    file(GLOB _vs18_lib_dirs "C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/VC/Tools/MSVC/*/lib/x64")
+    if(_vs18_lib_dirs)
+        list(GET _vs18_lib_dirs -1 _vs18_lib_dir)
+        link_directories(BEFORE "${_vs18_lib_dir}")
+    endif()
+endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -21,28 +28,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${AOC_DIST_ROOT}/RelWithDebIn
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     "${AOC_DIST_ROOT}/MinSizeRel")
 message(STATUS "AshesOfCreation dist/ root: ${AOC_DIST_ROOT}")
 
-# ── Game data the build includes ─────────────────────────────────────────
-# scripts/extract_game_data.ps1 (extract_game_data.bat) makes these from your own Ashes of Creation install; they are git-ignored.
-set(AOC_GENERATED_FILES
-    server/world/world/zoi_surface_table.h
-    server/world/world/node_constants.h
-    server/world/spawns/region_data.h
-    server/world/spawns/garden_defs.h
-    libs/aocstats/testdata/corpus.txt
-    server/world/tests/talent_fixture.sql
-    server/world/tests/gear_fixture.h
-    server/world/tests/tooltip_key.h
-)
-set(AOC_MISSING_GENERATED "")
-foreach(f ${AOC_GENERATED_FILES})
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${f}")
-        list(APPEND AOC_MISSING_GENERATED ${f})
-    endif()
-endforeach()
-if(AOC_MISSING_GENERATED)
-    list(JOIN AOC_MISSING_GENERATED "\n    " AOC_MISSING_TEXT)
-    message(FATAL_ERROR "These files are made from your own Ashes of Creation install and are missing:\n    ${AOC_MISSING_TEXT}\nRun extract_game_data.bat (it builds all the game data), then build again.")
-endif()
+# ── Design-data runtime catalog (AOCDB01) ───────────────────────────────────
+option(AOC_DESIGN_DATA_RUNTIME_CATALOG "Load design-data tables at runtime via AOCDB01 catalog instead of requiring configure-time generated headers" ON)
+message(STATUS "AshesOfCreation design-data runtime catalog (AOCDB01): ${AOC_DESIGN_DATA_RUNTIME_CATALOG}")
 
 # ── Dependencies ────────────────────────────────────────────────────────────
 find_package(Protobuf CONFIG REQUIRED)
@@ -80,6 +68,7 @@ add_subdirectory(tools/navbuild)
 
 # ── world: the C++ world server (plan A4) ──────────────────────────────────
 add_subdirectory(server/world)
+add_custom_target(worldd DEPENDS world)
 
 # ── Tether server (standalone UDP ARQ executable) ───────────────────────────
 add_executable(tether
