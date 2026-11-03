@@ -526,22 +526,3 @@ certs/*.srl
 /server/worldd/world/zoi_surface_table.h
 /services/internal/citynode/constants_gen.go
 /tools/mapc/region_rects.tsv
-
-# =============================================================================
-# 12. AGENTIC HARNESS, STEALTH BEADS & GRAPHIFY KNOWLEDGE GRAPH
-# =============================================================================
-# --- Local multi-agent harness, Dolt issue DAG & AST knowledge graph ---
-.agent/
-.agents/
-.beads/
-.dolt/
-.graphify/
-_workspace/
-graphify-out/
-graphify_out/
-*.gate.lock*
-.beads-credential-key
-.beads.gate.lock
-.graphifyignore
-AGENTS.md
-GEMINI.md
