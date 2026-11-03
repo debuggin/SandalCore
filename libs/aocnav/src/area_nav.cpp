@@ -19,7 +19,8 @@ namespace aoc::worldd::nav {
 
 namespace {
 
-static_assert(sizeof(dtPolyRef) == 4, "dtPolyRef is 32 bits (DT_POLYREF64 is not set)");
+static_assert(sizeof(dtPolyRef) == 8, "DT_POLYREF64 must be enabled");
+static_assert(sizeof(dtTileRef) == 8, "DT_POLYREF64 must be enabled");
 
 constexpr int kMaxPolys = 4096;       // polygons of a path
 constexpr int kMaxStraight = 1024;    // points of a straight path
@@ -111,7 +112,7 @@ std::unique_ptr<AreaNav> AreaNav::load(const std::string& path, std::string* err
         p.tileHeight = s.tile_size;
         p.maxTiles = s.max_tiles;
         p.maxPolys = s.max_polys;
-        if (dtStatusFailed(n->mesh_->init(&p))) { if (err) *err = "Detour refused the navmesh parameters"; return nullptr; }
+        if (p.maxTiles <= 0 || static_cast<unsigned int>(p.maxTiles) > (1U << DT_TILE_BITS) || p.maxPolys <= 0 || static_cast<unsigned int>(p.maxPolys) > (1U << DT_POLY_BITS) || dtStatusFailed(n->mesh_->init(&p))) { if (err) *err = "Detour refused the navmesh parameters"; return nullptr; }
         n->query_ = dtAllocNavMeshQuery();
         if (!n->query_ || dtStatusFailed(n->query_->init(n->mesh_, kSearchNodes))) { if (err) *err = "Detour query init failed"; return nullptr; }
         n->filter_ = new dtQueryFilter();
@@ -145,7 +146,7 @@ std::unique_ptr<AreaNav> AreaNav::from_file(NavFile file, std::string* err) {
     p.tileHeight = s.tile_size;
     p.maxTiles = s.max_tiles;
     p.maxPolys = s.max_polys;
-    if (dtStatusFailed(n->mesh_->init(&p))) { if (err) *err = "Detour refused the navmesh parameters"; return nullptr; }
+    if (p.maxTiles <= 0 || static_cast<unsigned int>(p.maxTiles) > (1U << DT_TILE_BITS) || p.maxPolys <= 0 || static_cast<unsigned int>(p.maxPolys) > (1U << DT_POLY_BITS) || dtStatusFailed(n->mesh_->init(&p))) { if (err) *err = "Detour refused the navmesh parameters"; return nullptr; }
     for (const auto& t : n->file_.tiles) {
         std::string why;
         if (!tile_is_sound(t, s.max_polys, &why)) { if (err) *err = "tile (" + std::to_string(t.tx) + ", " + std::to_string(t.ty) + ") is damaged: " + why; return nullptr; }
@@ -206,7 +207,7 @@ bool AreaNav::terrain_height(double x, double y, double* z) const {
     return false;
 }
 
-bool AreaNav::find_poly(const Vec3& p, double half_h, double half_v, uint32_t* ref, float* nearest) const {
+bool AreaNav::find_poly(const Vec3& p, double half_h, double half_v, uint64_t* ref, float* nearest) const {
     float c[3];
     to_local(p, c);
     const float ext[3] = {static_cast<float>(half_h), static_cast<float>(half_v), static_cast<float>(half_h)};
@@ -270,7 +271,7 @@ std::vector<double> AreaNav::floors_at(double x, double y, double z_lo, double z
 }
 
 bool AreaNav::nearest_point(const Vec3& p, double half_h, double half_v, Vec3* out) const {
-    uint32_t ref = 0;
+    dtPolyRef ref = 0;
     float np[3];
     if (!find_poly(p, half_h, half_v, &ref, np)) return false;
     *out = to_world(np);
@@ -278,7 +279,7 @@ bool AreaNav::nearest_point(const Vec3& p, double half_h, double half_v, Vec3* o
 }
 
 bool AreaNav::on_navmesh(const Vec3& p, double tol_h, double tol_v) const {
-    uint32_t ref = 0;
+    dtPolyRef ref = 0;
     float np[3];
     if (!find_poly(p, tol_h, tol_v, &ref, np)) return false;
     const Vec3 w = to_world(np);
@@ -288,7 +289,7 @@ bool AreaNav::on_navmesh(const Vec3& p, double tol_h, double tol_v) const {
 
 PathResult AreaNav::find_path(const Vec3& from, const Vec3& to, double snap_h, double snap_v, int max_iterations) const {
     PathResult res;
-    uint32_t sref = 0, eref = 0;
+    dtPolyRef sref = 0, eref = 0;
     float sp[3], ep[3];
     if (!find_poly(from, snap_h, snap_v, &sref, sp)) { res.fail = PathResult::Fail::NoStartPoly; return res; }
     if (!find_poly(to, snap_h, snap_v, &eref, ep)) { res.fail = PathResult::Fail::NoEndPoly; return res; }
@@ -335,7 +336,7 @@ PathResult AreaNav::find_path(const Vec3& from, const Vec3& to, double snap_h, d
 }
 
 bool AreaNav::raycast(const Vec3& from, const Vec3& to, Vec3* hit) const {
-    uint32_t sref = 0;
+    dtPolyRef sref = 0;
     float sp[3];
     if (!find_poly(from, 60, 200, &sref, sp)) { if (hit) *hit = from; return false; }
     float ep[3];

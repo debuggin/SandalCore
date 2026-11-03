@@ -28,6 +28,7 @@ target_include_directories(recast_detour PUBLIC
     "${RECAST_DIR}/Recast/Include"
     "${RECAST_DIR}/Detour/Include"
 )
+target_compile_definitions(recast_detour PUBLIC DT_POLYREF64=1)
 if(MSVC)
     target_compile_options(recast_detour PRIVATE /W0)
 else()
@@ -47,5 +48,6 @@ add_library(world_nav ALIAS aocnav)
 target_include_directories(aocnav PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
+target_compile_definitions(aocnav PUBLIC DT_POLYREF64=1)
 target_link_libraries(aocnav PUBLIC recast_detour)
 set_target_properties(aocnav PROPERTIES FOLDER "Servers/world")

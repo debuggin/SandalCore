@@ -3,12 +3,16 @@
 #include "nav/area_nav.h"
 #include "tests/nav_fixture.h"
 
+#include <DetourNavMesh.h>
+
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <limits>
 
 namespace {
+
+static_assert(sizeof(dtPolyRef) == 8, "DT_POLYREF64 must be enabled");
+static_assert(sizeof(dtTileRef) == 8, "DT_POLYREF64 must be enabled");
 
 namespace nav = aoc::worldd::nav;
 namespace navfix = aoc::worldd::navfix;
@@ -74,7 +78,38 @@ int verify_detour_corridor_pathfinding(const nav::AreaNav& area) {
     return 0;
 }
 
+int verify_polyref64_encode_decode_and_high_tile_nav() {
+    SANDAL_ASSERT(sizeof(dtPolyRef) == 8U && sizeof(dtTileRef) == 8U);
+    SANDAL_ASSERT(DT_SALT_BITS == 16U && DT_TILE_BITS == 28U && DT_POLY_BITS == 20U);
+
+    dtNavMesh mesh;
+    const unsigned int high_tiles[3] = {4097U, 65537U, (1U << DT_TILE_BITS) - 1U};
+    const unsigned int salts[3] = {1U, 0xBEEFU, (1U << DT_SALT_BITS) - 1U};
+    const unsigned int polys[3] = {7U, 4095U, (1U << DT_POLY_BITS) - 1U};
+    for (int i = 0; i < 3; ++i) {
+        const dtPolyRef ref = mesh.encodePolyId(salts[i], high_tiles[i], polys[i]);
+        SANDAL_ASSERT(ref > 0xFFFFFFFFULL);
+        unsigned int out_salt = 0U, out_tile = 0U, out_poly = 0U;
+        mesh.decodePolyId(ref, out_salt, out_tile, out_poly);
+        SANDAL_ASSERT(out_salt == salts[i] && out_tile == high_tiles[i] && out_poly == polys[i]);
+        SANDAL_ASSERT(mesh.decodePolyIdSalt(ref) == salts[i]);
+        SANDAL_ASSERT(mesh.decodePolyIdTile(ref) == high_tiles[i]);
+        SANDAL_ASSERT(mesh.decodePolyIdPoly(ref) == polys[i]);
+    }
+
+    nav::NavFile file = navfix::build_file(2);
+    file.settings.max_tiles = 16384;
+    file.settings.max_polys = 4096;
+    std::string err;
+    auto high_tile_area = nav::AreaNav::from_file(std::move(file), &err);
+    SANDAL_ASSERT(high_tile_area != nullptr && err.empty());
+    return verify_detour_corridor_pathfinding(*high_tile_area);
+}
+
 int test_detour_polyref64_los_raycast() {
+    if (verify_polyref64_encode_decode_and_high_tile_nav() != 0) {
+        return 1;
+    }
     const nav::AreaNav& area = navfix::shared_nav();
 
     const nav::Vec3 clear_a{-1000.0, -500.0, 1000.0};

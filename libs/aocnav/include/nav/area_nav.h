@@ -219,7 +219,7 @@ private:
 
     void to_local(const Vec3& p, float* out) const;
     Vec3 to_world(const float* p) const;
-    bool find_poly(const Vec3& p, double half_h, double half_v, uint32_t* ref, float* nearest) const;
+    bool find_poly(const Vec3& p, double half_h, double half_v, uint64_t* ref, float* nearest) const;
     bool add_tile(LoadedTile* t, std::string* err);
     void remove_tile(const LoadedTile& t);
     void build_terrain_index();
