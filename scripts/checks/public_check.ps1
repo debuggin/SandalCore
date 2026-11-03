@@ -106,11 +106,23 @@ function Test-SandalEnvSchemaTemplates {
     }
 }
 
-function Test-SandalRetiredLegacyScripts([string]$Root) {
+function Test-SandalRetiredLegacyScripts {
+    param(
+        [Parameter(Mandatory)][Alias('RootPath')][string]$Root,
+        [AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations = $null
+    )
+    if ($null -eq $Violations) {
+        $callerVar = Get-Variable -Name violations -Scope 1 -ErrorAction SilentlyContinue
+        if ($null -ne $callerVar) {
+            $Violations = $callerVar.Value
+        }
+    }
     foreach ($relPath in @('build_launcher.bat', 'build_launcher.ps1', 'scripts/save_run_logs.bat', 'scripts/save_run_logs.ps1')) {
         $retiredPath = Join-Path $Root $relPath
         if (Test-Path -LiteralPath $retiredPath) {
-            $violations.Add("Retired legacy script must not exist: $relPath")
+            if ($null -ne $Violations) {
+                $Violations.Add("Retired legacy script must not exist: $relPath")
+            }
         }
     }
 }
@@ -126,7 +138,7 @@ function Invoke-SandalPublicCheck {
     Test-SandalGitTrackedAssets -RootPath $Root -Violations $violations
     Test-SandalContentLeaks -RootPath $Root -Violations $violations
     Test-SandalEnvSchemaTemplates -RootPath $Root -Violations $violations
-    Test-SandalRetiredLegacyScripts -Root $Root
+    Test-SandalRetiredLegacyScripts -Root $Root -Violations $violations
 
     if ($violations.Count -gt 0) {
         foreach ($violation in $violations) {
