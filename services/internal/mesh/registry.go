@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -35,17 +36,33 @@ var (
 const StaticServerID uint32 = 0
 
 type Registry struct {
-	pool   *pgxpool.Pool
-	ttl    time.Duration // a server silent this long is not placed
-	static string        // address of the static world, "" for none
-	now    func() time.Time
+	pool        *pgxpool.Pool
+	ttl         time.Duration // a server silent this long is not placed
+	static      string        // address of the static world, "" for none
+	now         func() time.Time
+	mu          sync.RWMutex
+	zoneEpoch   map[uint32]uint32
+	zoneOwner   map[uint32]uint32
+	zoneState   map[uint32]HandoverState
+	serverLease map[uint32]time.Time
+	serverEpoch map[uint32]uint32
 }
 
 // Store is an alias for Registry.
 type Store = Registry
 
 func NewRegistry(pool *pgxpool.Pool, heartbeatTTL time.Duration, staticWorld string) *Registry {
-	return &Registry{pool: pool, ttl: heartbeatTTL, static: staticWorld, now: time.Now}
+	return &Registry{
+		pool:        pool,
+		ttl:         heartbeatTTL,
+		static:      staticWorld,
+		now:         time.Now,
+		zoneEpoch:   make(map[uint32]uint32),
+		zoneOwner:   make(map[uint32]uint32),
+		zoneState:   make(map[uint32]HandoverState),
+		serverLease: make(map[uint32]time.Time),
+		serverEpoch: make(map[uint32]uint32),
+	}
 }
 
 func NewStore(pool *pgxpool.Pool, heartbeatTTL time.Duration, staticWorld string) *Registry {
@@ -70,9 +87,16 @@ func (s *Registry) Register(ctx context.Context, address string, regions []strin
 		regions = []string{}
 	}
 	var id int32
+	now := s.now()
 	err := s.pool.QueryRow(ctx,
 		"INSERT INTO world_servers (address, regions, last_heartbeat) VALUES ($1, $2, $3) RETURNING server_id",
-		address, regions, s.now()).Scan(&id)
+		address, regions, now).Scan(&id)
+	if err == nil {
+		s.mu.Lock()
+		s.ensureLeaseMapsLocked()
+		s.serverLease[uint32(id)] = now
+		s.mu.Unlock()
+	}
 	return uint32(id), err
 }
 
@@ -82,13 +106,18 @@ func (s *Registry) Heartbeat(ctx context.Context, id uint32) error {
 	if id == StaticServerID || id > math.MaxInt32 {
 		return ErrUnknownServer // no registration can have this id
 	}
-	tag, err := s.pool.Exec(ctx, "UPDATE world_servers SET last_heartbeat = $2 WHERE server_id = $1", int32(id), s.now())
+	now := s.now()
+	tag, err := s.pool.Exec(ctx, "UPDATE world_servers SET last_heartbeat = $2 WHERE server_id = $1", int32(id), now)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrUnknownServer
 	}
+	s.mu.Lock()
+	s.ensureLeaseMapsLocked()
+	s.serverLease[id] = now
+	s.mu.Unlock()
 	return nil
 }
 
@@ -149,3 +178,140 @@ var hostName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 func plainText(s string) bool {
 	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
 }
+
+func (s *Registry) ensureLeaseMapsLocked() {
+	if s.zoneEpoch == nil {
+		s.zoneEpoch = make(map[uint32]uint32)
+	}
+	if s.zoneOwner == nil {
+		s.zoneOwner = make(map[uint32]uint32)
+	}
+	if s.zoneState == nil {
+		s.zoneState = make(map[uint32]HandoverState)
+	}
+	if s.serverLease == nil {
+		s.serverLease = make(map[uint32]time.Time)
+	}
+	if s.serverEpoch == nil {
+		s.serverEpoch = make(map[uint32]uint32)
+	}
+}
+
+func (s *Registry) clockNow() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+func (s *Registry) isLeaseActiveLocked(serverID uint32) bool {
+	if serverID == StaticServerID || s.serverLease == nil {
+		return false
+	}
+	lastBeat, ok := s.serverLease[serverID]
+	if !ok {
+		return false
+	}
+	ttl := s.ttl
+	if ttl <= 0 {
+		ttl = 15 * time.Second
+	}
+	return s.clockNow().Sub(lastBeat) < ttl
+}
+
+func (s *Registry) RecordLeaseHeartbeat(serverID uint32, epoch uint32) error {
+	if serverID == StaticServerID || serverID > math.MaxInt32 {
+		return ErrUnknownServer
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureLeaseMapsLocked()
+	if prev := s.serverEpoch[serverID]; epoch < prev {
+		return ErrStaleAuthorityEpoch
+	}
+	if epoch > 0 {
+		s.serverEpoch[serverID] = epoch
+	}
+	s.serverLease[serverID] = s.clockNow()
+	return nil
+}
+
+func (s *Registry) IsLeaseActive(serverID uint32) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.isLeaseActiveLocked(serverID)
+}
+
+func (s *Registry) AuthorityEpoch(zoneID uint32) uint32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.zoneEpoch == nil {
+		return 0
+	}
+	return s.zoneEpoch[zoneID]
+}
+
+func (s *Registry) ZoneAuthority(zoneID uint32) (uint32, uint32, HandoverState) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.zoneEpoch == nil {
+		return 0, 0, HandoverStateMirror
+	}
+	return s.zoneOwner[zoneID], s.zoneEpoch[zoneID], s.zoneState[zoneID]
+}
+
+func (s *Registry) FenceZoneAuthority(
+	zoneID, serverID, proposedEpoch uint32, state HandoverState,
+) (MeshForwardHeader, error) {
+	if zoneID == 0 || serverID == StaticServerID || serverID > math.MaxInt32 || proposedEpoch == 0 {
+		return MeshForwardHeader{}, ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureLeaseMapsLocked()
+	if !s.isLeaseActiveLocked(serverID) {
+		return MeshForwardHeader{}, ErrNoServer
+	}
+	currEpoch := s.zoneEpoch[zoneID]
+	if proposedEpoch <= currEpoch {
+		return MeshForwardHeader{}, ErrStaleAuthorityEpoch
+	}
+	prevOwner := s.zoneOwner[zoneID]
+	s.zoneEpoch[zoneID] = proposedEpoch
+	s.zoneOwner[zoneID] = serverID
+	s.zoneState[zoneID] = state
+	if proposedEpoch > s.serverEpoch[serverID] {
+		s.serverEpoch[serverID] = proposedEpoch
+	}
+	return MeshForwardHeader{
+		SourceZoneID:   prevOwner,
+		TargetZoneID:   zoneID,
+		AuthorityEpoch: proposedEpoch,
+	}, nil
+}
+
+func (s *Registry) TransitionHandoverState(
+	zoneID, serverID, epoch uint32, next HandoverState,
+) error {
+	if zoneID == 0 || serverID == StaticServerID || serverID > math.MaxInt32 || epoch == 0 {
+		return ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureLeaseMapsLocked()
+	if !s.isLeaseActiveLocked(serverID) {
+		return ErrNoServer
+	}
+	currEpoch := s.zoneEpoch[zoneID]
+	if epoch < currEpoch {
+		return ErrStaleAuthorityEpoch
+	}
+	if currOwner := s.zoneOwner[zoneID]; currOwner != 0 && currOwner != serverID && epoch == currEpoch {
+		return ErrStaleAuthorityEpoch
+	}
+	s.zoneEpoch[zoneID] = epoch
+	s.zoneOwner[zoneID] = serverID
+	s.zoneState[zoneID] = next
+	return nil
+}
+
