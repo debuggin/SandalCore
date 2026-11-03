@@ -255,7 +255,31 @@ func (s *Service) SaveLog(ctx context.Context, character string, log *questv1.Qu
 			return err
 		}
 	}
-	for i, q := range log.GetInstances() {
+	if err := insertQuestInstances(ctx, tx, id, log.GetInstances()); err != nil {
+		return err
+	}
+	if err := insertCompletedQuests(ctx, tx, id, log.GetCompleted()); err != nil {
+		return err
+	}
+	if err := insertQuestVariables(ctx, tx, id, log.GetVariables()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func insertQuestInstances(ctx context.Context, tx pgx.Tx, id string, instances []*questv1.QuestInstance) error {
+	if len(instances) == 0 {
+		return nil
+	}
+	n := len(instances)
+	guids := make([]string, n)
+	records := make([]int64, n)
+	statuses := make([]int16, n)
+	starts := make([]float64, n)
+	sources := make([]int64, n)
+	positions := make([]int32, n)
+	objectives := make([]string, n)
+	for i, q := range instances {
 		objs := make([]objectiveJSON, 0, len(q.GetObjectives()))
 		for _, o := range q.GetObjectives() {
 			objs = append(objs, objectiveJSON{Guid: o.GetInstanceGuid(), Record: o.GetRecordId(), Active: o.GetActive(), Awake: o.GetAwake(), Hidden: o.GetHidden(),
@@ -265,22 +289,50 @@ func (s *Service) SaveLog(ctx context.Context, character string, log *questv1.Qu
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO character_quests (character_id, instance_guid, record_id, status, start_time, source_guid, position, objectives) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			id, q.GetInstanceGuid(), q.GetRecordId(), int16(q.GetStatus()), q.GetStartTime(), q.GetSourceGuid(), i, raw); err != nil {
-			return err
-		}
+		guids[i] = q.GetInstanceGuid()
+		records[i] = q.GetRecordId()
+		statuses[i] = int16(q.GetStatus())
+		starts[i] = q.GetStartTime()
+		sources[i] = q.GetSourceGuid()
+		positions[i] = int32(i)
+		objectives[i] = string(raw)
 	}
-	for _, c := range log.GetCompleted() {
-		if _, err := tx.Exec(ctx, `INSERT INTO character_quests_completed (character_id, record_id, completions) VALUES ($1, $2, $3)`, id, c.GetRecordId(), c.GetCount()); err != nil {
-			return err
-		}
+	_, err := tx.Exec(ctx, `INSERT INTO character_quests (character_id, instance_guid, record_id, status, start_time, source_guid, position, objectives)
+		SELECT $1, u.guid, u.record_id, u.status, u.start_time, u.source_guid, u.position, u.objectives::jsonb
+		FROM unnest($2::text[], $3::bigint[], $4::smallint[], $5::double precision[], $6::bigint[], $7::int[], $8::text[])
+		AS u(guid, record_id, status, start_time, source_guid, position, objectives)`,
+		id, guids, records, statuses, starts, sources, positions, objectives)
+	return err
+}
+
+func insertCompletedQuests(ctx context.Context, tx pgx.Tx, id string, completed []*questv1.CompletedQuest) error {
+	if len(completed) == 0 {
+		return nil
 	}
-	for _, v := range log.GetVariables() {
-		if _, err := tx.Exec(ctx, `INSERT INTO character_quest_variables (character_id, name, value) VALUES ($1, $2, $3)`, id, v.GetName(), v.GetValue()); err != nil {
-			return err
-		}
+	records := make([]int64, len(completed))
+	counts := make([]int32, len(completed))
+	for i, c := range completed {
+		records[i] = c.GetRecordId()
+		counts[i] = c.GetCount()
 	}
-	return tx.Commit(ctx)
+	_, err := tx.Exec(ctx, `INSERT INTO character_quests_completed (character_id, record_id, completions)
+		SELECT $1, * FROM unnest($2::bigint[], $3::int[])`, id, records, counts)
+	return err
+}
+
+func insertQuestVariables(ctx context.Context, tx pgx.Tx, id string, vars []*questv1.PlayerVariable) error {
+	if len(vars) == 0 {
+		return nil
+	}
+	names := make([]string, len(vars))
+	values := make([]int64, len(vars))
+	for i, v := range vars {
+		names[i] = v.GetName()
+		values[i] = v.GetValue()
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO character_quest_variables (character_id, name, value)
+		SELECT $1, * FROM unnest($2::text[], $3::bigint[])`, id, names, values)
+	return err
 }
 
 // QueueCommand puts a GM command in a character's inbox and returns its id.
@@ -316,19 +368,33 @@ func (s *Service) QueueCommand(ctx context.Context, req *questv1.QueueCommandReq
 	return cmd, err
 }
 
+// Command is a queued GM command claimed from character_quest_commands.
+type Command = *questv1.Command
+
 // TakeCommands returns a character's queued commands, oldest first, and removes them.
 func (s *Service) TakeCommands(ctx context.Context, character string) ([]*questv1.Command, error) {
 	id, err := s.ResolveCharacter(ctx, character)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.pool.Query(ctx, `DELETE FROM character_quest_commands WHERE id IN (SELECT id FROM character_quest_commands WHERE character_id = $1 ORDER BY id LIMIT 64 FOR UPDATE SKIP LOCKED)
-		RETURNING id, kind, quest, name, value`, id)
+	return s.TakeCommandsBatch(ctx, []string{id}, 64)
+}
+
+// TakeCommandsBatch claims up to maxCommands pending GM commands across characterIDs, oldest first, in one round-trip.
+func (s *Service) TakeCommandsBatch(ctx context.Context, characterIDs []string, maxCommands int) ([]Command, error) {
+	if len(characterIDs) == 0 {
+		return nil, nil
+	}
+	if maxCommands <= 0 {
+		maxCommands = 64
+	}
+	rows, err := s.pool.Query(ctx, `DELETE FROM character_quest_commands WHERE id IN (SELECT id FROM character_quest_commands WHERE character_id = ANY($1::text[]) ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED)
+		RETURNING id, kind, quest, name, value`, characterIDs, maxCommands)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*questv1.Command
+	var out []Command
 	for rows.Next() {
 		c := &questv1.Command{}
 		if err := rows.Scan(&c.Id, &c.Kind, &c.Quest, &c.Name, &c.Value); err != nil {

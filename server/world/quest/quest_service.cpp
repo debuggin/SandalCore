@@ -192,11 +192,32 @@ size_t QuestWorker::failed() const {
     return failed_;
 }
 
+namespace {
+
+using CommandBatch = std::vector<std::pair<std::string, std::vector<svc::QuestCommand>>>;
+
+CommandBatch poll_watched_commands(svc::QuestApi& api, const std::vector<std::string>& ids) {
+    CommandBatch got;
+    got.reserve(ids.size());
+    for (const std::string& id : ids) {
+        std::vector<svc::QuestCommand> cmds;
+        if (api.take_commands(id, cmds) == svc::CallStatus::Ok && !cmds.empty()) got.emplace_back(id, std::move(cmds));
+    }
+    return got;
+}
+
+void log_save_failure(const std::string& id, svc::CallStatus st) {
+    spdlog::error("[quests] the log of {} was not saved ({}): the quest service {}", id, svc::call_status_name(st),
+                  st == svc::CallStatus::Refused ? "refused it" : st == svc::CallStatus::NotFound ? "has no such character" : "is not reachable");
+}
+
+}  // namespace
+
 void QuestWorker::run() {
     using clock = std::chrono::steady_clock;
     std::unique_lock<std::mutex> lock(mu_);
     while (true) {
-        // the next thing to do: a save that waits, or the commands' turn
+        // the next thing to do: a coalesced dirty log save that waits, or the watched characters' command poll turn
         const auto now = clock::now();
         const bool poll_due = !watched_.empty() && now >= next_poll_;
         if (stop_ && order_.empty()) return;
@@ -218,11 +239,7 @@ void QuestWorker::run() {
             in_flight_ = false;
             const auto cur = entries_.find(id);
             const bool newer = cur != entries_.end() && !(cur->second.log == entry.log);   // a newer log came in while this one was in flight
-            if (st == svc::CallStatus::Ok) {
-                ++saved_;
-                if (cur != entries_.end() && !newer) entries_.erase(cur);
-                else if (cur != entries_.end()) order_.push_back(id);
-            } else if (st == svc::CallStatus::Unavailable && cur != entries_.end() && !newer && ++cur->second.attempts < config_.max_attempts) {
+            if (st == svc::CallStatus::Unavailable && cur != entries_.end() && !newer && ++cur->second.attempts < config_.max_attempts) {
                 const auto wait = config_.retry_delay * cur->second.attempts;
                 spdlog::warn("[quests] saving the log of {} failed (the quest service is not answering): try {} of {} in {} ms", id, cur->second.attempts + 1, config_.max_attempts, wait.count());
                 lock.unlock();
@@ -230,25 +247,19 @@ void QuestWorker::run() {
                 lock.lock();
                 order_.push_back(id);
             } else {
-                ++failed_;
-                spdlog::error("[quests] the log of {} was not saved ({}): the quest service {}", id, svc::call_status_name(st),
-                              st == svc::CallStatus::Refused ? "refused it" : st == svc::CallStatus::NotFound ? "has no such character" : "is not reachable");
+                if (st == svc::CallStatus::Ok) ++saved_;
+                else { ++failed_; log_save_failure(id, st); }
                 if (cur != entries_.end() && !newer) entries_.erase(cur);
                 else if (cur != entries_.end()) order_.push_back(id);
             }
             if (entries_.empty()) idle_cv_.notify_all();
             continue;
         }
-        // the GM commands of the characters that play
         next_poll_ = now + config_.poll_interval;
         const std::vector<std::string> ids(watched_.begin(), watched_.end());
         in_flight_ = true;
         lock.unlock();
-        std::vector<std::pair<std::string, std::vector<svc::QuestCommand>>> got;
-        for (const std::string& id : ids) {
-            std::vector<svc::QuestCommand> cmds;
-            if (api_.take_commands(id, cmds) == svc::CallStatus::Ok && !cmds.empty()) got.emplace_back(id, std::move(cmds));
-        }
+        CommandBatch got = poll_watched_commands(api_, ids);
         lock.lock();
         in_flight_ = false;
         for (auto& [id, cmds] : got) {

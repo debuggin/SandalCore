@@ -141,12 +141,22 @@ func (s *Store) Professions(ctx context.Context, characterID string) ([]Professi
 
 // saveProfessions writes the professions of a save: each replaces the character's row of its profession (SaveProgress's transaction).
 func saveProfessions(ctx context.Context, tx pgx.Tx, characterID string, ps []Profession) error {
-	for _, p := range ps {
-		if _, err := tx.Exec(ctx, `INSERT INTO character_professions (character_id, profession_guid, certification_tier, level, xp) VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (character_id, profession_guid) DO UPDATE SET certification_tier = EXCLUDED.certification_tier, level = EXCLUDED.level, xp = EXCLUDED.xp, updated_at = now()`,
-			characterID, p.ProfessionGuid, p.CertificationTier, p.Level, p.XP); err != nil {
-			return err
-		}
+	if len(ps) == 0 {
+		return nil
 	}
-	return nil
+	guids := make([]int64, len(ps))
+	tiers := make([]int32, len(ps))
+	levels := make([]int32, len(ps))
+	xps := make([]int64, len(ps))
+	for i, p := range ps {
+		guids[i] = p.ProfessionGuid
+		tiers[i] = p.CertificationTier
+		levels[i] = p.Level
+		xps[i] = p.XP
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO character_professions (character_id, profession_guid, certification_tier, level, xp)
+		SELECT $1, * FROM unnest($2::bigint[], $3::int[], $4::int[], $5::bigint[])
+		ON CONFLICT (character_id, profession_guid) DO UPDATE SET certification_tier = EXCLUDED.certification_tier, level = EXCLUDED.level, xp = EXCLUDED.xp, updated_at = now()`,
+		characterID, guids, tiers, levels, xps)
+	return err
 }
