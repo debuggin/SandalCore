@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import React from "react";
+import { EntityInspector } from "../components/EntityInspector";
+import { GmCommandPalette, type GmRole } from "../components/GmCommandPalette";
 import { StreamStatus } from "../components/StreamStatus";
+import { WorldContextMenu } from "../components/WorldContextMenu";
 import {
   type CameraViewport,
   type LayerToggles,
@@ -58,6 +61,9 @@ export interface VerraMapCanvasProps {
   readonly pmtilesUrl?: string;
   readonly width?: number | string;
   readonly height?: number | string;
+  readonly isCommandPaletteOpen?: boolean;
+  readonly commandQuery?: string;
+  readonly gmRole?: GmRole;
   readonly onEntitySelect?: (entity: WorldEntity | null) => void;
   readonly onCoordinatePick?: (point: VerraUnrealPoint) => void;
 }
@@ -362,62 +368,6 @@ function renderViewStateBanner(
   return null;
 }
 
-function renderEntityInspector(
-  entity: WorldEntity | null,
-  onClose: () => void,
-): React.ReactElement | null {
-  if (!entity) {
-    return null;
-  }
-  const [lng, lat] = verraUnrealToLngLat(entity.xCm, entity.yCm);
-  return (
-    <aside
-      aria-label="Selected Entity Inspector"
-      data-testid="verra-entity-inspector"
-      style={{
-        position: "absolute",
-        top: "56px",
-        right: "12px",
-        width: "280px",
-        padding: "12px",
-        borderRadius: "6px",
-        border: "1px solid #30363D",
-        backgroundColor: "rgba(13, 17, 23, 0.94)",
-        color: "#E6EDF3",
-        fontSize: "12px",
-        fontVariantNumeric: "tabular-nums",
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
-        <strong>{entity.name}</strong>
-        <button
-          type="button"
-          aria-label="Close entity inspector"
-          onClick={onClose}
-          style={{
-            minWidth: "24px",
-            minHeight: "24px",
-            border: "1px solid #30363D",
-            borderRadius: "4px",
-            backgroundColor: "#21262D",
-            color: "#E6EDF3",
-            cursor: "pointer",
-          }}
-        >
-          Close
-        </button>
-      </div>
-      <div>GUID: {entity.guid}</div>
-      <div>Kind: {entity.kind} (Lv. {entity.level})</div>
-      <div>Health: {Number.isFinite(entity.healthPct) ? entity.healthPct.toFixed(1) : "0.0"}%</div>
-      <div>
-        Unreal (cm): X={Math.round(entity.xCm)}, Y={Math.round(entity.yCm)}, Z={Math.round(entity.zCm)}
-      </div>
-      <div>WGS84: {lng.toFixed(4)}, {lat.toFixed(4)}</div>
-    </aside>
-  );
-}
-
 function renderLayerToolbar(
   layers: LayerToggles,
   onToggle: (layer: keyof LayerToggles) => void,
@@ -505,56 +455,6 @@ function renderAccessibleEntityList(
   );
 }
 
-function renderCoordinateContextMenu(
-  picked: VerraUnrealPoint | null,
-  onDismiss: () => void,
-): React.ReactElement | null {
-  if (!picked) {
-    return null;
-  }
-  return (
-    <div
-      role="menu"
-      aria-label="Picked Verra Unreal Coordinate Context Menu"
-      data-testid="verra-coordinate-context-menu"
-      style={{
-        position: "absolute",
-        left: "12px",
-        top: "12px",
-        padding: "10px 12px",
-        borderRadius: "6px",
-        border: "1px solid #30363D",
-        backgroundColor: "rgba(13, 17, 23, 0.95)",
-        fontSize: "12px",
-        fontVariantNumeric: "tabular-nums",
-      }}
-    >
-      <div><strong>Picked Unreal Coordinate (cm)</strong></div>
-      <div data-testid="picked-coordinate-readout">
-        X: {Math.round(picked.xCm)} | Y: {Math.round(picked.yCm)} | Z: {Math.round(picked.zCm)}
-      </div>
-      <button
-        type="button"
-        role="menuitem"
-        data-testid="dismiss-picked-coordinate"
-        onClick={onDismiss}
-        style={{
-          marginTop: "6px",
-          minHeight: "24px",
-          padding: "2px 8px",
-          borderRadius: "4px",
-          border: "1px solid #30363D",
-          backgroundColor: "#21262D",
-          color: "#E6EDF3",
-          cursor: "pointer",
-        }}
-      >
-        Dismiss
-      </button>
-    </div>
-  );
-}
-
 const WORKSPACE_HEADER_STYLE: React.CSSProperties = Object.freeze({
   display: "flex",
   flexWrap: "wrap",
@@ -633,8 +533,24 @@ export function VerraMapCanvas(props: VerraMapCanvasProps): React.ReactElement {
           </div>
         ) : null}
         {renderAccessibleEntityList(storeSnap.entities, storeSnap.selectedEntityGuid, handleSelectEntity)}
-        {renderEntityInspector(selectedEntity, () => handleSelectEntity(null))}
-        {renderCoordinateContextMenu(storeSnap.pickedCoordinate, () => storeSnap.setPickedCoordinate(null))}
+        {selectedEntity ? (
+          <EntityInspector
+            viewState={viewState}
+            entity={selectedEntity}
+            onClose={() => handleSelectEntity(null)}
+          />
+        ) : null}
+        <WorldContextMenu
+          picked={storeSnap.pickedCoordinate}
+          selectedEntityGuid={storeSnap.selectedEntityGuid}
+          selectedEntityOrigin={selectedEntity}
+          onDismiss={() => storeSnap.setPickedCoordinate(null)}
+        />
+        <GmCommandPalette
+          isOpen={Boolean(props.isCommandPaletteOpen)}
+          query={props.commandQuery ?? ""}
+          role={props.gmRole ?? "GM_OPERATOR"}
+        />
       </div>
     </section>
   );
