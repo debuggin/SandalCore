@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Context-isolation manifest for OCI multi-stage builds (OPS-01, OPS-02, SEC-01).
+
+# Version control, issue DAG, knowledge graph & agent harness metadata
+.git
+.git/
+.gitignore
+.gitattributes
+.github
+.github/
+.beads
+.beads/
+.dolt/
+graphify-out
+graphify-out/
+.graphifyignore
+.agents
+.agents/
+_workspace
+_workspace/
+.vscode/
+.vs/
+.idea/
+.clangd/
+
+# Build trees, caches & intermediate artifacts
+build
+build/
+build*/
+cmake-build-*/
+out
+out/
+dist/
+bin/
+obj/
+target/
+vcpkg_installed/
+node_modules
+node_modules/
+**/node_modules/
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# Game data archives, runtime state & debug symbols
+data
+data/
+third_party/CUE4Parse/
+*.pdb
+*.ipdb
+*.iobj
+*.ilk
+*.pch
+*.pak
+*.utoc
+*.ucas
+*.aocnav
+*.pmtiles
+*.db
+*.db-*
+*.sqlite3
+*.log
+*.jsonl
+capture_*.bin
+dump_*.bin
+
+# Secrets, local environment overrides & private keys (SEC-01)
+.env
+.env*
+*.env
+*.secret
+*.token
+*.pem
+*.key
+*.pfx
+certs/*.key
+certs/*.pem
+certs/*.crt
+config/*.local.json
+config/local.json
+
+# Documentation & local scripts excluded from container build context
+docs/
+*.md
