@@ -88,6 +88,10 @@ function Test-SandalEnvSchemaTemplates {
     $configDir = Join-Path $RootPath 'config'
     $examplePath = Join-Path $configDir 'sandal.env.example'
     $profilesDir = Join-Path $configDir 'profiles'
+    if (-not (Test-Path -LiteralPath $examplePath)) {
+        $Violations.Add("Missing env schema template: $examplePath")
+        return
+    }
     $schemaKeys = @([regex]::Matches([System.IO.File]::ReadAllText($examplePath), '(?m)^(?:AOC|SANDAL)_[A-Z0-9_]+(?==)') | ForEach-Object { $_.Value })
     if ($schemaKeys.Count -ne 72) {
         $Violations.Add("sandal.env.example expected 72 keys, found $($schemaKeys.Count)")
@@ -102,18 +106,29 @@ function Test-SandalEnvSchemaTemplates {
     }
 }
 
-$violations = [System.Collections.Generic.List[string]]::new()
-Test-SandalTestsDirectoryBounds -RootPath $RepoRoot -Violations $violations
-Test-SandalGitTrackedAssets -RootPath $RepoRoot -Violations $violations
-Test-SandalContentLeaks -RootPath $RepoRoot -Violations $violations
-Test-SandalEnvSchemaTemplates -RootPath $RepoRoot -Violations $violations
+function Invoke-SandalPublicCheck {
+    [CmdletBinding()]
+    param(
+        [Alias('RepoRoot', 'RootPath')]
+        [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    )
+    $violations = [System.Collections.Generic.List[string]]::new()
+    Test-SandalTestsDirectoryBounds -RootPath $Root -Violations $violations
+    Test-SandalGitTrackedAssets -RootPath $Root -Violations $violations
+    Test-SandalContentLeaks -RootPath $Root -Violations $violations
+    Test-SandalEnvSchemaTemplates -RootPath $Root -Violations $violations
 
-if ($violations.Count -gt 0) {
-    foreach ($violation in $violations) {
-        Write-Host "[FAIL] $violation"
+    if ($violations.Count -gt 0) {
+        foreach ($violation in $violations) {
+            Write-Host "[FAIL] $violation"
+        }
+        return 1
     }
-    exit 1
+
+    Write-Host '[PASS] public_check.ps1 verified'
+    return 0
 }
 
-Write-Output '[PASS] public_check.ps1 verified'
-exit 0
+if ($MyInvocation.InvocationName -ne '.') {
+    exit (Invoke-SandalPublicCheck -Root $repoRoot)
+}

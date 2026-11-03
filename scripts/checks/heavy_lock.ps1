@@ -91,11 +91,16 @@ function Invoke-WithHeavyLock {
     param(
         [string]$Operation = 'build',
         [Parameter(Mandatory)][scriptblock]$Action,
-        [switch]$NoWait
+        [switch]$NoWait,
+        [string]$MutexName = 'Global\SandalCore_HeavyOperation_Lock'
     )
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
     $lockFile = Join-Path $repoRoot 'data\.stamps\heavy_lock.json'
-    $mutex = [System.Threading.Mutex]::new($false, 'Global\SandalCore_HeavyOperation_Lock')
+    $mutex = try {
+        [System.Threading.Mutex]::new($false, $MutexName)
+    } catch [System.UnauthorizedAccessException] {
+        [System.Threading.Mutex]::new($false, ($MutexName -replace '^Global\\', 'Local\'))
+    }
     $acquired = $false
     try {
         while (-not $acquired) {

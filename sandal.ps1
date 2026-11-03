@@ -6,7 +6,9 @@ param(
     [switch]$Json,
     [switch]$NoColor,
     [switch]$DryRun,
-    [switch]$Help
+    [switch]$Help,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$RemainingArgs = @()
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -56,15 +58,17 @@ function Invoke-SandalStatus {
 }
 
 function Invoke-SandalSubcommand {
-    param([string]$Subcommand, [string]$RepoRoot, [switch]$AsJson, [switch]$IsDryRun)
+    param([string]$Subcommand, [string]$RepoRoot, [switch]$AsJson, [switch]$IsDryRun, [string[]]$SubcommandArgs = @())
     if ($Subcommand -eq 'status') {
         Invoke-SandalStatus -RepoRoot $RepoRoot -AsJson:$AsJson
         return
     }
     $targetScript = Join-Path $RepoRoot "scripts/sandal/${Subcommand}.ps1"
-    if (-not $IsDryRun -and (Test-Path -LiteralPath $targetScript -PathType Leaf)) {
-        & $targetScript
-        return
+    if (Test-Path -LiteralPath $targetScript -PathType Leaf) {
+        $global:LASTEXITCODE = 0
+        & $targetScript -DryRun:$IsDryRun -Json:$AsJson -NoColor:$script:UseNoColor -Arguments $SubcommandArgs
+        $code = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+        exit $code
     }
     $payload = @{ ok = $true; command = $Subcommand; dry_run = [bool]$IsDryRun; no_color = $script:UseNoColor }
     if ($AsJson) {
@@ -86,7 +90,7 @@ if ($normCmd -notin $script:ValidCommands) {
 
 try {
     Import-Module (Join-Path $PSScriptRoot 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
-    Invoke-SandalSubcommand -Subcommand $normCmd -RepoRoot $PSScriptRoot -AsJson:$Json -IsDryRun:$DryRun
+    Invoke-SandalSubcommand -Subcommand $normCmd -RepoRoot $PSScriptRoot -AsJson:$Json -IsDryRun:$DryRun -SubcommandArgs $RemainingArgs
     exit 0
 } catch {
     [Console]::Error.WriteLine("What: SandalCore '$normCmd' failed. Why: $($_.Exception.Message) How-to-fix: Run 'pwsh ./sandal.ps1 doctor' to inspect prerequisites (Exit 1).")
