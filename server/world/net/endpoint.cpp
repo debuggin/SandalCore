@@ -5,12 +5,11 @@
 //  net/endpoint.cpp
 // ============================================================================
 #include "net/endpoint.h"
+#include "net/spsc_ring.h"
 #include "protocol/conn/handshake.h"
-#include "protocol/conn/nmt.h"
 #include "protocol/wire/ue5_primitives.h"
 #include <algorithm>
 #include <cstdio>
-#include <optional>
 #include <spdlog/spdlog.h>
 
 namespace aoc { namespace worldd {
@@ -217,8 +216,35 @@ void Endpoint::on_handshake(const Address& from, const uint8_t* data, size_t len
 }
 
 void Endpoint::post_login_result(uint64_t session_id, LoginResult result) {
+    AsyncTaskCompletion item{session_id, std::move(result)};
+    if (rings_->completions.try_push(std::move(item))) return;
     std::lock_guard<std::mutex> lock(results_mu_);
-    results_.emplace_back(session_id, std::move(result));
+    results_.emplace_back(item.session_id, std::move(item.result));
+}
+
+bool Endpoint::enqueue_inbound(const Address& from, const uint8_t* data, size_t len, Clock::time_point now) {
+    return rings_->inbound.try_push(InboundNetFrame::make(from, data, len, now));
+}
+
+size_t Endpoint::drain_inbound(Clock::time_point now) {
+    size_t count = 0;
+    for (InboundNetFrame f{}; rings_->inbound.try_pop(f); ++count) {
+        const auto at = f.received_at == Clock::time_point{} ? now : f.received_at;
+        on_datagram(f.from, f.payload.data(), f.len, at);
+    }
+    return count;
+}
+
+bool Endpoint::enqueue_outbound(const Address& to, const uint8_t* data, size_t len) {
+    return rings_->outbound.try_push(OutboundNetFrame::make(to, data, len));
+}
+
+size_t Endpoint::drain_outbound() {
+    size_t count = 0;
+    for (OutboundNetFrame f{}; rings_->outbound.try_pop(f); ++count) {
+        send_(f.to, std::vector<uint8_t>(f.payload.begin(), f.payload.begin() + f.len));
+    }
+    return count;
 }
 
 void Endpoint::on_login_result(Session& s, LoginResult result, Clock::time_point now) {
@@ -335,13 +361,16 @@ void Endpoint::log_refused_for_limit(Clock::time_point now) {
 }
 
 void Endpoint::tick(Clock::time_point now) {
+    drain_inbound(now);
     signer_.update(seconds(now));
     if (cfg_.players) cfg_.players->tick_world(seconds(now));   // plan E1, stage 2: the NPCs walk
 
     std::vector<std::pair<uint64_t, LoginResult>> done;
+    for (AsyncTaskCompletion c{}; rings_->completions.try_pop(c);) done.emplace_back(c.session_id, std::move(c.result));
     {
         std::lock_guard<std::mutex> lock(results_mu_);
-        done.swap(results_);
+        for (auto& r : results_) done.push_back(std::move(r));
+        results_.clear();
     }
     for (auto& [id, result] : done) {
         const auto at = by_id_.find(id);
@@ -354,18 +383,9 @@ void Endpoint::tick(Clock::time_point now) {
 
     std::vector<std::pair<Address, const char*>> drop;
     for (auto& [addr, s] : sessions_) {
-        if (s->connection.closed_by_client()) {
-            drop.emplace_back(addr, "the client quit");
-            continue;
-        }
-        if (s->connection.timed_out(now)) {
-            drop.emplace_back(addr, "timed out");
-            continue;
-        }
-        if (s->connection.failed()) {
-            drop.emplace_back(addr, "broke the protocol");
-            continue;
-        }
+        if (s->connection.closed_by_client()) { drop.emplace_back(addr, "the client quit"); continue; }
+        if (s->connection.timed_out(now)) { drop.emplace_back(addr, "timed out"); continue; }
+        if (s->connection.failed()) { drop.emplace_back(addr, "broke the protocol"); continue; }
         if (!s->closing && s->control.state() < ControlChannel::State::AwaitJoin && now >= s->deadline) {
             drop.emplace_back(addr, "did not log in in time");
             continue;
@@ -386,6 +406,7 @@ void Endpoint::tick(Clock::time_point now) {
         }
     }
     for (const auto& [addr, why] : drop) remove(addr, why);
+    drain_outbound();
 }
 
 void Endpoint::kick_all(const std::string& text, Clock::time_point now) {

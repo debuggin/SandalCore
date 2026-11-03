@@ -59,22 +59,13 @@
 #pragma once
 // [C-Y-B - CoA]
 
-#include "login/login_service.h"
 #include "net/connection.h"
 #include "net/control_channel.h"
 #include "net/cookie.h"
-#include "net/udp_socket.h"
+#include "net/spsc_ring.h"
 #include "session/player_session.h"
-#include <array>
-#include <cstdint>
-#include <functional>
-#include <memory>
 #include <mutex>
-#include <optional>
-#include <string>
 #include <unordered_map>
-#include <utility>
-#include <vector>
 
 namespace aoc { namespace worldd {
 
@@ -139,6 +130,21 @@ public:
     /// Network thread only, like everything of the Endpoint; the handles are good until the next tick or datagram.
     std::vector<PlayerHandle> players();
 
+    bool enqueue_inbound(const Address& from, const uint8_t* data, size_t len, Clock::time_point now);
+    size_t drain_inbound(Clock::time_point now);
+    bool enqueue_outbound(const Address& to, const uint8_t* data, size_t len);
+    size_t drain_outbound();
+    InboundNetRing& inbound_ring() noexcept { return rings_->inbound; }
+    const InboundNetRing& inbound_ring() const noexcept { return rings_->inbound; }
+    OutboundNetRing& outbound_ring() noexcept { return rings_->outbound; }
+    const OutboundNetRing& outbound_ring() const noexcept { return rings_->outbound; }
+    AsyncTaskCompletionRing& completion_ring() noexcept { return rings_->completions; }
+    const AsyncTaskCompletionRing& completion_ring() const noexcept { return rings_->completions; }
+    TokenSnapshotStore& token_snapshots() noexcept { return token_snapshots_; }
+    const TokenSnapshotStore& token_snapshots() const noexcept { return token_snapshots_; }
+    void publish_token_snapshot(TokenSnapshot snapshot) { token_snapshots_.publish(std::move(snapshot)); }
+    std::shared_ptr<const TokenSnapshot> token_snapshot() const noexcept { return token_snapshots_.load(); }
+
 private:
     struct Session {
         uint64_t id = 0;                  // the id its login was submitted under (by_id_); a session that took
@@ -201,6 +207,13 @@ private:
     size_t rate_dropped_ = 0;                      // datagrams dropped for the rate limit, all sessions
     std::optional<Clock::time_point> limit_logged_;
 
+    struct Rings {
+        InboundNetRing inbound{};
+        OutboundNetRing outbound{};
+        AsyncTaskCompletionRing completions{};
+    };
+    std::unique_ptr<Rings> rings_ = std::make_unique<Rings>();
+    TokenSnapshotStore token_snapshots_{};
     std::mutex results_mu_;
     std::vector<std::pair<uint64_t, LoginResult>> results_;
 };

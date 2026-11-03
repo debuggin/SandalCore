@@ -13,7 +13,6 @@
 #include "net/endpoint.h"
 #include "protocol/wire/ue5_primitives.h"
 #include <spdlog/sinks/ostream_sink.h>
-#include <spdlog/spdlog.h>
 #include <cstdio>
 #include <sstream>
 
@@ -712,11 +711,9 @@ static void test_protocol_breakers() {
         size_t n = 0;
         while (n < 300 && rig.ep.session_count() == 1) {
             t += milliseconds(60);  // the ack after each packet keeps the packet window open
-            exchange(rig, j, kA, {j.client->netspeed(static_cast<uint32_t>(2 + n))}, t);
-            ++n;
+            exchange(rig, j, kA, {j.client->netspeed(static_cast<uint32_t>(2 + n))}, t); ++n;
         }
-        CHECK(rig.ep.session_count() == 0 && n == 257,
-              "the 257th early reliable bunch drops the session: too many held for a gap that never fills");
+        CHECK(rig.ep.session_count() == 0 && n == 257, "the 257th early reliable bunch drops the session: too many held for a gap that never fills");
     }
     {
         Rig rig;
@@ -724,22 +721,40 @@ static void test_protocol_breakers() {
         Clock::time_point t = t0;
         exchange(rig, j, kA, {j.client->hello()}, t);
         auto part = [&](bool initial) {
-            fake::Bunch b = j.client->control([](aoc::protocol::emit::BunchWriter& w) {
-                for (int i = 0; i < 900; ++i) w.write_uint8(0x5A);
-            });
-            b.header.partial = true;
-            b.header.partial_initial = initial;
-            return b;
+            fake::Bunch b = j.client->control([](aoc::protocol::emit::BunchWriter& w) { for (int i = 0; i < 900; ++i) w.write_uint8(0x5A); });
+            b.header.partial = true; b.header.partial_initial = initial; return b;
         };
         size_t n = 0;
         while (n < 100 && (n == 0 || rig.ep.session_count() == 1)) {
-            t += milliseconds(60);
-            exchange(rig, j, kA, {part(n == 0)}, t);
-            ++n;
+            t += milliseconds(60); exchange(rig, j, kA, {part(n == 0)}, t); ++n;
         }
-        CHECK(rig.ep.session_count() == 0 && n == 73,
-              "a reliable partial bunch over 64 KB drops the session (the 73rd 900-byte part)");
+        CHECK(rig.ep.session_count() == 0 && n == 73, "a reliable partial bunch over 64 KB drops the session (the 73rd 900-byte part)");
     }
+}
+
+static void test_lockfree_rings_and_rcu() {
+    std::printf("lock-free SPSC rings and RCU token snapshot\n");
+    static_assert(alignof(InboundNetRing) == 64 && alignof(OutboundNetRing) == 64 && alignof(AsyncTaskCompletionRing) == 64 && alignof(TokenSnapshotStore) == 64);
+    SpscRing<int, 4> ring;
+    CHECK(ring.empty() && ring.capacity() == 4 && ring.try_push(1) && ring.try_push(2) && ring.try_push(3) && ring.try_push(4), "SpscRing fills to capacity");
+    CHECK(!ring.try_push(5) && ring.dropped_count() == 1 && ring.size_approx() == 4, "overflow rejects push and increments dropped_count");
+    CHECK(ring.try_pop() == 1 && ring.try_pop() == 2 && ring.try_push(6) && ring.try_push(7), "wrap-around across capacity boundary");
+    CHECK(ring.try_pop() == 3 && ring.try_pop() == 4 && ring.try_pop() == 6 && ring.try_pop() == 7 && ring.empty(), "FIFO order preserved across wrap-around");
+    TokenSnapshotStore store;
+    store.publish({0, "primary-v1", "secondary-v0", t0});
+    const auto snap1 = store.load();
+    store.publish({0, "primary-v2", "primary-v1", t0});
+    CHECK(snap1->version == 1 && snap1->matches("primary-v1") && snap1->matches("secondary-v0") && !snap1->matches("bad") && store.load()->version == 2,
+          "TokenSnapshotStore lock-free RCU publish/load preserves reader snapshot and rotates tokens");
+    Rig rig;
+    const auto initial = capture::bytes(capture::kInitial);
+    CHECK(rig.ep.enqueue_inbound(kA, initial.data(), initial.size(), t0) && rig.ep.inbound_ring().size_approx() == 1, "enqueue_inbound stages frame in InboundNetRing");
+    rig.ep.tick(t0);
+    CHECK(rig.ep.inbound_ring().empty() && rig.take(kA).size() == 1, "Endpoint::tick drains InboundNetRing and answers Challenge");
+    const uint8_t raw_out[]{9, 8, 7};
+    rig.ep.publish_token_snapshot({0, "tok-a", "tok-b", t0});
+    CHECK(rig.ep.enqueue_outbound(kB, raw_out, sizeof(raw_out)) && rig.ep.drain_outbound() == 1 && rig.take(kB).size() == 1 &&
+          rig.ep.token_snapshot()->matches("tok-a") && UdpSocket::kDefaultSocketBufBytes == 1048576, "OutboundNetRing, Endpoint RCU token snapshot & 1 MB socket buffer");
 }
 
 int main() {
@@ -759,6 +774,7 @@ int main() {
     test_play_timeout_and_junk();
     test_rate_limit();
     test_protocol_breakers();
+    test_lockfree_rings_and_rcu();
 
     logger->flush();
     CHECK(log.str().find(kTicket) == std::string::npos, "the ticket never appears in the log");

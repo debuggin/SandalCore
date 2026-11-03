@@ -42,10 +42,15 @@ constexpr intptr_t kInvalid = -1;
 void close_handle(intptr_t h) { ::close(static_cast<int>(h)); }
 #endif
 
+constexpr int kDefaultSocketBufferBytes = 1048576;
+
 void configure_socket(SocketHandle s) noexcept {
-    const int buf_bytes = UdpSocket::kDefaultSocketBufBytes;
-    ::setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&buf_bytes), sizeof(buf_bytes));
-    ::setsockopt(s, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&buf_bytes), sizeof(buf_bytes));
+    static_assert(kDefaultSocketBufferBytes == UdpSocket::kDefaultSocketBufBytes);
+    for (const int opt : {SO_RCVBUF, SO_SNDBUF}) {
+        for (int bytes = kDefaultSocketBufferBytes; bytes >= 65536; bytes /= 2) {
+            if (::setsockopt(s, SOL_SOCKET, opt, reinterpret_cast<const char*>(&bytes), sizeof(bytes)) == 0) break;
+        }
+    }
 #ifdef _WIN32
     // Without this, an ICMP "port unreachable" from a client that went away
     // makes the next recvfrom fail with WSAECONNRESET.
