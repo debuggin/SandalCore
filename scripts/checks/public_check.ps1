@@ -106,6 +106,15 @@ function Test-SandalEnvSchemaTemplates {
     }
 }
 
+function Test-SandalRetiredLegacyScripts([string]$Root) {
+    foreach ($relPath in @('build_launcher.bat', 'build_launcher.ps1', 'scripts/save_run_logs.bat', 'scripts/save_run_logs.ps1')) {
+        $retiredPath = Join-Path $Root $relPath
+        if (Test-Path -LiteralPath $retiredPath) {
+            $violations.Add("Retired legacy script must not exist: $relPath")
+        }
+    }
+}
+
 function Invoke-SandalPublicCheck {
     [CmdletBinding()]
     param(
@@ -117,6 +126,7 @@ function Invoke-SandalPublicCheck {
     Test-SandalGitTrackedAssets -RootPath $Root -Violations $violations
     Test-SandalContentLeaks -RootPath $Root -Violations $violations
     Test-SandalEnvSchemaTemplates -RootPath $Root -Violations $violations
+    Test-SandalRetiredLegacyScripts -Root $Root
 
     if ($violations.Count -gt 0) {
         foreach ($violation in $violations) {
