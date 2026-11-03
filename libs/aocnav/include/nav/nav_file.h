@@ -45,8 +45,8 @@
 //  in worldd sees nav-local coordinates: nav/area_nav.h speaks world cm.
 // ============================================================================
 #pragma once
-// ~ CoA - C:Y:B ~
 
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <string>
@@ -60,6 +60,62 @@ inline constexpr char kNavMagic2[8] = {'A', 'O', 'C', 'N', 'A', 'V', '0', '2'};
 inline constexpr uint32_t kNavVersion2 = 2;
 inline constexpr int32_t kChunkTiles = 8;            // a chunk is 8 x 8 tiles
 inline constexpr size_t kNavHeaderSize2 = 160;
+
+inline constexpr char kVmapMagic[8] = {'A', 'O', 'C', 'V', 'M', 'A', 'P', '1'};
+inline constexpr uint32_t kVmapVersion = 1;
+inline constexpr size_t kVmapHeaderSize = 72;
+
+enum VmapMaterialFlags : uint16_t {
+    kVmapMatOpaqueLos = 1u << 0,
+    kVmapMatWater = 1u << 1,
+    kVmapMatLava = 1u << 2,
+    kVmapMatBridge = 1u << 3,
+    kVmapMatFoliageTransparent = 1u << 4
+};
+
+#pragma pack(push, 4)
+struct VmapTileTocEntry {
+    int16_t tile_x = 0;
+    int16_t tile_y = 0;
+    uint32_t node_count = 0;
+    uint32_t tri_count = 0;
+    uint64_t byte_offset = 0;
+    uint64_t byte_len = 0;
+    union {
+        uint32_t crc32 = 0;
+        uint32_t reserved;
+    };
+};
+#pragma pack(pop)
+static_assert(sizeof(VmapTileTocEntry) == 32);
+
+struct BvhNode32 {
+    int16_t bmin[3]{};
+    int16_t bmax[3]{};
+    uint32_t left_or_first_tri = 0;
+    uint16_t tri_count = 0;
+    uint16_t material_flags = 0;
+    uint8_t pad[12]{};
+};
+static_assert(sizeof(BvhNode32) == 32);
+
+struct VmapTriangle {
+    float v0[3]{};
+    float v1[3]{};
+    float v2[3]{};
+    uint16_t material_flags = kVmapMatOpaqueLos;
+    int16_t tile_x = 0;
+    int16_t tile_y = 0;
+};
+
+struct VmapArchive {
+    float world_bmin[3]{};
+    float world_bmax[3]{};
+    uint8_t content_sha256[32]{};
+    std::vector<VmapTileTocEntry> toc;
+    std::vector<BvhNode32> nodes;
+    std::vector<VmapTriangle> triangles;
+};
 
 /// One landscape component's heights.
 struct TerrainGrid {
@@ -86,11 +142,11 @@ struct NavSettings {
     float cell_height = 10.f;
     float agent_radius = 35.f;
     float agent_height = 144.f;
-    float agent_max_climb = 45.f;
+    float agent_max_climb = 100.f;
     float agent_max_slope = 52.f;
     float tile_size = 4000.f;
-    int32_t max_tiles = 4096;
-    int32_t max_polys = 1024;
+    int32_t max_tiles = 16384;
+    int32_t max_polys = 256;
     float origin[3] = {0, 0, 0};
 };
 
@@ -158,4 +214,13 @@ bool read_nav_chunk(std::ifstream& in, const NavChunkEntry& e, std::vector<NavTi
 /// FNV-1a 64 of a byte range (the geometry hash).
 uint64_t fnv1a64(const uint8_t* data, size_t size);
 
+bool write_vmap_file(const std::string& path, const VmapArchive& archive, std::string* err) noexcept;
+bool read_vmap_file(const std::string& path, VmapArchive* out, std::string* err) noexcept;
+bool vmap_raycast_los(const VmapArchive& archive, const float start[3], const float end[3], float* out_hit_t) noexcept;
+uint16_t vmap_query_point_materials(const VmapArchive& archive, const float pt[3]) noexcept;
+
 }  // namespace aoc::worldd::nav
+
+namespace aoc {
+namespace nav = worldd::nav;
+}  // namespace aoc

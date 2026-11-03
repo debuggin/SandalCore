@@ -22,8 +22,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <string>
 
 using namespace aoc::worldd::nav;
 
@@ -72,7 +70,6 @@ static int compare_files(const std::string& a_path, const std::string& b_path) {
     std::printf("compare: %zu and %zu chunks, %zu and %zu terrain grids: %s\n", a.chunks.size(), b.chunks.size(), a.terrain.size(), b.terrain.size(), differences ? "DIFFER" : "identical");
     return differences ? 1 : 0;
 }
-// CoA.C.Y.B
 
 static int info_file(const std::string& path, bool verify) {
     const int v = nav_file_version(path);
@@ -145,72 +142,164 @@ static bool read_town_frames(const std::string& content_db, std::vector<TownFram
     return ok;
 }
 
-int main(int argc, char** argv) {
-    std::string geom, out, town_floors, content;
+struct Args {
+    std::string geom;
+    std::string out;
+    std::string vmap_out;
+    std::string town_floors;
+    std::string content;
+    std::string cmp_a;
+    std::string cmp_b;
+    std::string info;
     BuildOptions opt;
-    std::string cmp_a, cmp_b, info;
     bool verify = false;
+};
+
+static bool parse_args(int argc, char** argv, Args* args) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto val = [&](const char* name) -> const char* {
             if (i + 1 >= argc) { std::fprintf(stderr, "aoc_navbuild: %s needs a value\n", name); std::exit(2); }
             return argv[++i];
         };
-        if (a == "--geometry") geom = val("--geometry");
-        else if (a == "--out") out = val("--out");
-        else if (a == "--town-floors") town_floors = val("--town-floors");
-        else if (a == "--content") content = val("--content");
-        else if (a == "--threads") opt.threads = std::atoi(val("--threads"));
-        else if (a == "--nav-margin-cm") opt.nav_margin_cm = std::atof(val("--nav-margin-cm"));
-        else if (a == "--verbose") opt.verbose = true;
-        else if (a == "--compare") { cmp_a = val("--compare"); cmp_b = val("--compare"); }
-        else if (a == "--info") info = val("--info");
-        else if (a == "--verify") verify = true;
-        else { std::fprintf(stderr, "aoc_navbuild: unknown argument %s\n", a.c_str()); return 2; }
+        if (a == "--geometry") args->geom = val("--geometry");
+        else if (a == "--out") args->out = val("--out");
+        else if (a == "--vmap-out") args->vmap_out = val("--vmap-out");
+        else if (a == "--town-floors") args->town_floors = val("--town-floors");
+        else if (a == "--content") args->content = val("--content");
+        else if (a == "--threads") args->opt.threads = std::atoi(val("--threads"));
+        else if (a == "--nav-margin-cm") args->opt.nav_margin_cm = std::atof(val("--nav-margin-cm"));
+        else if (a == "--verbose") args->opt.verbose = true;
+        else if (a == "--compare") { args->cmp_a = val("--compare"); args->cmp_b = val("--compare"); }
+        else if (a == "--info") args->info = val("--info");
+        else if (a == "--verify") args->verify = true;
+        else { std::fprintf(stderr, "aoc_navbuild: unknown argument %s\n", a.c_str()); return false; }
     }
-    if (!cmp_a.empty()) return compare_files(cmp_a, cmp_b);
-    if (!info.empty()) return info_file(info, verify);
-    if (town_floors.empty() != content.empty()) {
-        std::fprintf(stderr, "aoc_navbuild: --town-floors and --content go together (the platforms and the node records they stand at)\n");
+    return true;
+}
+
+static uint16_t classify_mesh_material(const std::string& name) {
+    if (name.find("water") != std::string::npos || name.find("Water") != std::string::npos) return kVmapMatWater;
+    if (name.find("lava") != std::string::npos || name.find("Lava") != std::string::npos) return kVmapMatLava;
+    if (name.find("bridge") != std::string::npos || name.find("Bridge") != std::string::npos) {
+        return static_cast<uint16_t>(kVmapMatBridge | kVmapMatOpaqueLos);
+    }
+    if (name.find("foliage") != std::string::npos || name.find("Foliage") != std::string::npos) {
+        return kVmapMatFoliageTransparent;
+    }
+    return kVmapMatOpaqueLos;
+}
+
+static void transform_vmap_vertex(const GeomPlacement& p, const GeomMesh& m, uint32_t vi, float dst[3]) {
+    if (static_cast<size_t>(vi) * 3u + 2u >= m.v.size()) return;
+    const float lx = m.v[static_cast<size_t>(vi) * 3u + 0u];
+    const float ly = m.v[static_cast<size_t>(vi) * 3u + 1u];
+    const float lz = m.v[static_cast<size_t>(vi) * 3u + 2u];
+    dst[0] = static_cast<float>(p.t[0] + p.r[0] * lx + p.r[1] * ly + p.r[2] * lz);
+    dst[1] = static_cast<float>(p.t[1] + p.r[3] * lx + p.r[4] * ly + p.r[5] * lz);
+    dst[2] = static_cast<float>(p.t[2] + p.r[6] * lx + p.r[7] * ly + p.r[8] * lz);
+}
+
+static VmapArchive build_vmap_from_geometry(const Geometry& g, uint64_t geometry_hash) {
+    VmapArchive vmap{};
+    std::memcpy(vmap.content_sha256, &geometry_hash, sizeof(geometry_hash));
+    vmap.world_bmin[0] = static_cast<float>(g.center_x - g.radius);
+    vmap.world_bmin[1] = static_cast<float>(g.center_y - g.radius);
+    vmap.world_bmin[2] = -100000.0f;
+    vmap.world_bmax[0] = static_cast<float>(g.center_x + g.radius);
+    vmap.world_bmax[1] = static_cast<float>(g.center_y + g.radius);
+    vmap.world_bmax[2] = 100000.0f;
+    uint16_t combined_flags = 0u;
+    for (const auto& p : g.placements) {
+        if (p.mesh >= g.meshes.size()) continue;
+        const auto& m = g.meshes[p.mesh];
+        const uint16_t mat = classify_mesh_material(m.name);
+        combined_flags = static_cast<uint16_t>(combined_flags | mat);
+        for (size_t idx = 0; idx + 2 < m.i.size(); idx += 3) {
+            VmapTriangle tri{};
+            tri.material_flags = mat;
+            transform_vmap_vertex(p, m, m.i[idx + 0u], tri.v0);
+            transform_vmap_vertex(p, m, m.i[idx + 1u], tri.v1);
+            transform_vmap_vertex(p, m, m.i[idx + 2u], tri.v2);
+            vmap.triangles.push_back(tri);
+        }
+    }
+    BvhNode32 root{};
+    for (int axis = 0; axis < 3; ++axis) {
+        root.bmin[axis] = static_cast<int16_t>(std::clamp(vmap.world_bmin[axis], -32768.0f, 32767.0f));
+        root.bmax[axis] = static_cast<int16_t>(std::clamp(vmap.world_bmax[axis], -32768.0f, 32767.0f));
+    }
+    root.tri_count = static_cast<uint16_t>(std::min<size_t>(vmap.triangles.size(), 65535u));
+    root.material_flags = combined_flags;
+    vmap.nodes.push_back(root);
+    VmapTileTocEntry toc{};
+    toc.node_count = static_cast<uint32_t>(vmap.nodes.size());
+    toc.tri_count = static_cast<uint32_t>(vmap.triangles.size());
+    vmap.toc.push_back(toc);
+    return vmap;
+}
+
+static bool load_and_enrich_geometry(const Args& args, Geometry* g, uint64_t* geometry_hash, std::string* err) {
+    std::vector<uint8_t> raw;
+    if (!read_geometry(args.geom, g, &raw, err)) return false;
+    *geometry_hash = fnv1a64(raw.data(), raw.size());
+    std::printf("geometry: %zu terrain grids, %zu meshes, %zu placements%s\n", g->terrain.size(), g->meshes.size(), g->placements.size(),
+                g->region.empty() ? " (E1's circle)" : (", a region of " + std::to_string(g->region.size()) + " rectangles").c_str());
+    if (args.town_floors.empty()) return true;
+    std::vector<aoc::worldd::world::PlatformLayout> layouts;
+    std::vector<TownFrame> frames;
+    if (!aoc::worldd::world::read_town_platforms(args.town_floors, &layouts, err) || !read_town_frames(args.content, &frames, err)) return false;
+    const size_t first_mesh = g->meshes.size(), first_placement = g->placements.size();
+    TownGeometryStats ts;
+    if (!add_town_platforms(g, layouts, frames, &ts, err)) return false;
+    if (!ts.unplaced.empty() || ts.nodes != frames.size()) {
+        *err = std::to_string(frames.size() - ts.nodes) + " of the " + std::to_string(frames.size()) + " towns have no platform in " + args.town_floors;
+        return false;
+    }
+    const uint64_t pair[2] = {*geometry_hash, town_geometry_hash(*g, first_mesh, first_placement)};
+    *geometry_hash = fnv1a64(reinterpret_cast<const uint8_t*>(pair), sizeof pair);
+    std::printf("towns: %zu platforms of %zu layouts (%zu blocks, %zu triangles, %zu quads left out for holes), %zu placements\n",
+                ts.nodes, ts.layouts, ts.blocks, ts.triangles, ts.holes_skipped, ts.placements);
+    return true;
+}
+
+int main(int argc, char** argv) {
+    Args args;
+    if (!parse_args(argc, argv, &args)) return 2;
+    if (!args.cmp_a.empty()) return compare_files(args.cmp_a, args.cmp_b);
+    if (!args.info.empty()) return info_file(args.info, args.verify);
+    if (args.town_floors.empty() != args.content.empty()) {
+        std::fprintf(stderr, "aoc_navbuild: --town-floors and --content go together (the platforms and the node records they stand at)\n");
         return 2;
     }
-    if (geom.empty() || out.empty()) {
-        std::fprintf(stderr, "usage: aoc_navbuild --geometry area_geom.bin --out area_nav.bin [--threads N] [--nav-margin-cm N] [--town-floors town_platforms.bin --content content.db]\n"
+    if (args.geom.empty() || args.out.empty()) {
+        std::fprintf(stderr, "usage: aoc_navbuild --geometry area_geom.bin --out area_nav.bin [--vmap-out area_vmap.bin] [--threads N] [--nav-margin-cm N] [--town-floors town_platforms.bin --content content.db]\n"
                              "       aoc_navbuild --compare A.bin B.bin | --info FILE.bin [--verify]\n");
         return 2;
     }
     Geometry g;
     uint64_t geometry_hash = 0;
     std::string err;
-    {
-        std::vector<uint8_t> raw;
-        if (!read_geometry(geom, &g, &raw, &err)) { std::fprintf(stderr, "aoc_navbuild: %s\n", err.c_str()); return 1; }
-        geometry_hash = fnv1a64(raw.data(), raw.size());
-    }
-    std::printf("geometry: %zu terrain grids, %zu meshes, %zu placements%s\n", g.terrain.size(), g.meshes.size(), g.placements.size(),
-                g.region.empty() ? " (E1's circle)" : (", a region of " + std::to_string(g.region.size()) + " rectangles").c_str());
-    if (!town_floors.empty()) {
-        std::vector<aoc::worldd::world::PlatformLayout> layouts;
-        std::vector<TownFrame> frames;
-        if (!aoc::worldd::world::read_town_platforms(town_floors, &layouts, &err) || !read_town_frames(content, &frames, &err)) { std::fprintf(stderr, "aoc_navbuild: %s\n", err.c_str()); return 1; }
-        const size_t first_mesh = g.meshes.size(), first_placement = g.placements.size();
-        TownGeometryStats ts;
-        if (!add_town_platforms(&g, layouts, frames, &ts, &err)) { std::fprintf(stderr, "aoc_navbuild: %s\n", err.c_str()); return 1; }
-        if (!ts.unplaced.empty() || ts.nodes != frames.size()) { std::fprintf(stderr, "aoc_navbuild: %zu of the %zu towns have no platform in %s\n", frames.size() - ts.nodes, frames.size(), town_floors.c_str()); return 1; }
-        // the file's geometry hash covers the map's file and what the platforms added
-        const uint64_t pair[2] = {geometry_hash, town_geometry_hash(g, first_mesh, first_placement)};
-        geometry_hash = fnv1a64(reinterpret_cast<const uint8_t*>(pair), sizeof pair);
-        std::printf("towns: %zu platforms of %zu layouts (%zu blocks, %zu triangles, %zu quads left out for holes), %zu placements\n", ts.nodes, ts.layouts, ts.blocks, ts.triangles, ts.holes_skipped, ts.placements);
-    }
-    NavFile f;
-    BuildStats st;
-    if (!build_nav(g, geometry_hash, opt, &f, &st, &err)) {
+    if (!load_and_enrich_geometry(args, &g, &geometry_hash, &err)) {
         std::fprintf(stderr, "aoc_navbuild: %s\n", err.c_str());
         return 1;
     }
-    g = Geometry{};   // the meshes and placements are not needed again
-    if (!write_nav_file(f, out, &err)) { std::fprintf(stderr, "aoc_navbuild: %s\n", err.c_str()); return 1; }
-    std::ifstream sz(out, std::ios::binary | std::ios::ate);
+    if (!args.vmap_out.empty()) {
+        const VmapArchive vmap = build_vmap_from_geometry(g, geometry_hash);
+        if (!aoc::nav::write_vmap_file(args.vmap_out, vmap, &err)) {
+            std::fprintf(stderr, "aoc_navbuild: %s\n", err.c_str());
+            return 1;
+        }
+    }
+    NavFile f;
+    BuildStats st;
+    if (!build_nav(g, geometry_hash, args.opt, &f, &st, &err)) {
+        std::fprintf(stderr, "aoc_navbuild: %s\n", err.c_str());
+        return 1;
+    }
+    g = Geometry{};
+    if (!write_nav_file(f, args.out, &err)) { std::fprintf(stderr, "aoc_navbuild: %s\n", err.c_str()); return 1; }
+    std::ifstream sz(args.out, std::ios::binary | std::ios::ate);
     const long long file_bytes = static_cast<long long>(sz.tellg());
     std::printf("navmesh: %d tiles (%d empty), %lld polygons, %lld triangles in, tiles %lld bytes, file %lld bytes, %.1f s\n", st.tiles, st.empty_tiles, st.polys, st.input_triangles, st.bytes,
                 file_bytes, st.seconds);
@@ -219,14 +308,13 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(st.repair.edges_flagged), static_cast<unsigned long long>(st.repair.polys_repaired), static_cast<unsigned long long>(st.repair.polys_hidden));
     if (f.chunked()) {
         NavFile idx;
-        if (read_nav_index(out, &idx, &err)) {
-            uint64_t most = 0;
-            for (const auto& c : idx.chunks) most = std::max<uint64_t>(most, c.tiles);
-            std::printf("navmesh: chunked, %zu chunks of up to %u x %u tiles (%llu at most), %zu terrain grids\n", idx.chunks.size(), f.chunk_tiles, f.chunk_tiles, static_cast<unsigned long long>(most), idx.terrain.size());
-        } else {
+        if (!read_nav_index(args.out, &idx, &err)) {
             std::fprintf(stderr, "aoc_navbuild: the file just written does not read back: %s\n", err.c_str());
             return 1;
         }
+        uint64_t most = 0;
+        for (const auto& c : idx.chunks) most = std::max<uint64_t>(most, c.tiles);
+        std::printf("navmesh: chunked, %zu chunks of up to %u x %u tiles (%llu at most), %zu terrain grids\n", idx.chunks.size(), f.chunk_tiles, f.chunk_tiles, static_cast<unsigned long long>(most), idx.terrain.size());
     }
     return 0;
 }

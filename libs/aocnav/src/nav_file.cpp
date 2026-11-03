@@ -70,7 +70,6 @@ struct Reader {
         return true;
     }
 };
-// -- CoA . C-Y-B --
 
 // --- the version 2 layout, shared by the in-memory and the streaming writer ---------------------------------------------------------
 
@@ -166,7 +165,6 @@ void emit_v2(const NavFile& f, const std::function<void(const void*, size_t)>& s
     }
     for (const auto& c : p.chunks) put_blob(c.tiles, sink);
 }
-// C Y B and C.O.A
 
 void emit_v1(const NavFile& f, const std::function<void(const void*, size_t)>& sink) {
     auto put = [&](auto v) { sink(&v, sizeof v); };
@@ -309,7 +307,6 @@ static bool parse_v2_index(const uint8_t* data, size_t size, NavFile* out, uint6
     for (auto& c : f.chunks) {
         c.cx = cr.get<int32_t>(); c.cy = cr.get<int32_t>(); c.tiles = cr.get<uint32_t>(); c.size = cr.get<uint32_t>(); c.offset = cr.get<uint64_t>(); c.hash = cr.get<uint64_t>();
         if (c.offset < blobs || c.offset > total || c.size > total - c.offset || c.tiles == 0 || c.size < 12ull * c.tiles) return fail("area_nav.bin has a chunk out of place");
-        // (review A M6, B M3) a row cannot hold more tiles than its chunk has room for, and a chunk is listed once, in the directory's order
         if (c.tiles > static_cast<uint64_t>(f.chunk_tiles) * f.chunk_tiles) return fail("area_nav.bin has a chunk with more tiles than a chunk holds");
         if (&c != &f.chunks.front() && !(ChunkKey{(&c - 1)->cx, (&c - 1)->cy} < ChunkKey{c.cx, c.cy})) return fail("area_nav.bin's chunk directory is not sorted or lists a chunk twice");
         tiles += c.tiles;
@@ -319,14 +316,12 @@ static bool parse_v2_index(const uint8_t* data, size_t size, NavFile* out, uint6
     *out = std::move(f);
     return true;
 }
-// (CoA) (C_Y_B)
 
 /// One chunk's tiles from its blob bytes.
-static bool split_chunk(const uint8_t* blob, size_t size, const NavChunkEntry& e, std::vector<NavTileBlob>* out, std::string* err, uint32_t chunk_tiles) {
+static bool split_chunk(Reader r, const NavChunkEntry& e, std::vector<NavTileBlob>* out, std::string* err, uint32_t chunk_tiles) {
     auto fail = [&](const std::string& m) { if (err) *err = "chunk (" + std::to_string(e.cx) + ", " + std::to_string(e.cy) + "): " + m; return false; };
-    if (size != e.size) return fail("its size differs from the directory's");
-    if (fnv1a64(blob, size) != e.hash) return fail("its hash differs from the directory's (the file is damaged)");
-    Reader r{blob, size};
+    if (r.size != e.size) return fail("its size differs from the directory's");
+    if (fnv1a64(r.p, r.size) != e.hash) return fail("its hash differs from the directory's (the file is damaged)");
     out->clear();
     out->reserve(e.tiles);
     for (uint32_t i = 0; i < e.tiles; ++i) {
@@ -336,7 +331,6 @@ static bool split_chunk(const uint8_t* blob, size_t size, const NavChunkEntry& e
         if (!r.ok || r.pos + sz > r.size) return fail("a tile is cut short");
         t.data.resize(sz);
         r.bytes(t.data.data(), sz);
-        // (review B M3) a tile belongs to its chunk, and the tiles are in (ty, tx) order without repeats
         if (chunk_tiles != 0) {
             if (chunk_of_tile(t.tx, t.ty, static_cast<int32_t>(chunk_tiles)) != ChunkKey{e.cx, e.cy}) return fail("a tile lies in another chunk");
             if (!out->empty() && !(std::pair<int32_t, int32_t>{out->back().ty, out->back().tx} < std::pair<int32_t, int32_t>{t.ty, t.tx})) return fail("its tiles are not sorted or repeat");
@@ -359,7 +353,7 @@ bool parse_nav_file(const uint8_t* data, size_t size, NavFile* out, std::string*
         if (total != size) return fail("area_nav.bin has a different size than its header says");
         for (const auto& c : f.chunks) {
             std::vector<NavTileBlob> tiles;
-            if (!split_chunk(data + c.offset, c.size, c, &tiles, err, f.chunk_tiles)) return false;
+            if (!split_chunk(Reader{data + c.offset, c.size}, c, &tiles, err, f.chunk_tiles)) return false;
             for (auto& t : tiles) f.tiles.push_back(std::move(t));
         }
         *out = std::move(f);
@@ -415,7 +409,7 @@ bool read_nav_chunk(std::ifstream& in, const NavChunkEntry& e, std::vector<NavTi
     in.seekg(static_cast<std::streamoff>(e.offset), std::ios::beg);
     in.read(reinterpret_cast<char*>(blob.data()), static_cast<std::streamsize>(blob.size()));
     if (!in) { if (err) *err = "chunk (" + std::to_string(e.cx) + ", " + std::to_string(e.cy) + ") cannot be read"; return false; }
-    return split_chunk(blob.data(), blob.size(), e, out, err, chunk_tiles);
+    return split_chunk(Reader{blob.data(), blob.size()}, e, out, err, chunk_tiles);
 }
 
 bool read_nav_file(const std::string& path, NavFile* out, std::string* err) {
@@ -428,6 +422,201 @@ bool read_nav_file(const std::string& path, NavFile* out, std::string* err) {
     if (len > 0) in.read(reinterpret_cast<char*>(buf.data()), len);
     if (!in) { if (err) *err = "cannot read " + path; return false; }
     return parse_nav_file(buf.data(), buf.size(), out, err);
+}
+
+static uint32_t crc32_ieee(const uint8_t* data, size_t size) noexcept {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < size; ++i) {
+        crc ^= static_cast<uint32_t>(data[i]);
+        for (int b = 0; b < 8; ++b) {
+            const uint32_t mask = 0u - (crc & 1u);
+            crc = (crc >> 1) ^ (0xEDB88320u & mask);
+        }
+    }
+    return ~crc;
+}
+
+static bool finite_vec3(const float v[3]) noexcept {
+    return v && std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
+}
+
+bool write_vmap_file(const std::string& path, const VmapArchive& archive, std::string* err) noexcept {
+    auto fail = [&](const char* m) noexcept { if (err) *err = m; return false; };
+    if (!finite_vec3(archive.world_bmin) || !finite_vec3(archive.world_bmax)) return fail("vmap world bounds are not finite");
+    std::vector<VmapTileTocEntry> toc = archive.toc;
+    if (toc.empty() && (!archive.nodes.empty() || !archive.triangles.empty())) {
+        VmapTileTocEntry def{};
+        def.node_count = static_cast<uint32_t>(archive.nodes.size());
+        def.tri_count = static_cast<uint32_t>(archive.triangles.size());
+        toc.push_back(def);
+    }
+    size_t node_cursor = 0, tri_cursor = 0;
+    for (const auto& e : toc) { node_cursor += e.node_count; tri_cursor += e.tri_count; }
+    if (node_cursor != archive.nodes.size() || tri_cursor != archive.triangles.size()) return fail("vmap TOC counts do not match payload");
+
+    Writer payload;
+    uint64_t offset = kVmapHeaderSize + static_cast<uint64_t>(toc.size()) * sizeof(VmapTileTocEntry);
+    node_cursor = 0;
+    tri_cursor = 0;
+    for (auto& e : toc) {
+        const size_t start_pos = payload.out.size();
+        if (e.node_count > 0) payload.bytes(archive.nodes.data() + node_cursor, static_cast<size_t>(e.node_count) * sizeof(BvhNode32));
+        if (e.tri_count > 0) payload.bytes(archive.triangles.data() + tri_cursor, static_cast<size_t>(e.tri_count) * sizeof(VmapTriangle));
+        const size_t len = payload.out.size() - start_pos;
+        e.byte_offset = offset;
+        e.byte_len = static_cast<uint64_t>(len);
+        e.crc32 = crc32_ieee(payload.out.data() + start_pos, len);
+        offset += e.byte_len;
+        node_cursor += e.node_count;
+        tri_cursor += e.tri_count;
+    }
+
+    Writer header;
+    header.bytes(kVmapMagic, 8);
+    header.put(kVmapVersion);
+    header.put(static_cast<uint32_t>(toc.size()));
+    header.bytes(archive.world_bmin, 12);
+    header.bytes(archive.world_bmax, 12);
+    header.bytes(archive.content_sha256, 32);
+    if (!toc.empty()) header.bytes(toc.data(), toc.size() * sizeof(VmapTileTocEntry));
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return fail("cannot open vmap output file");
+    out.write(reinterpret_cast<const char*>(header.out.data()), static_cast<std::streamsize>(header.out.size()));
+    if (!payload.out.empty()) out.write(reinterpret_cast<const char*>(payload.out.data()), static_cast<std::streamsize>(payload.out.size()));
+    out.flush();
+    return static_cast<bool>(out);
+}
+
+static bool parse_vmap_tiles(const std::vector<uint8_t>& buf, size_t payload_min, VmapArchive* arch, std::string* err) noexcept {
+    auto fail = [&](const char* m) noexcept { if (err) *err = m; return false; };
+    for (const auto& e : arch->toc) {
+        const uint64_t nodes_len = static_cast<uint64_t>(e.node_count) * sizeof(BvhNode32);
+        const uint64_t tris_len = static_cast<uint64_t>(e.tri_count) * sizeof(VmapTriangle);
+        if (e.byte_offset < payload_min || e.byte_offset > buf.size() || e.byte_len > buf.size() - e.byte_offset) {
+            return fail("vmap tile TOC offset/length out of bounds");
+        }
+        if (e.byte_len != nodes_len + tris_len) return fail("vmap tile byte_len mismatch");
+        const uint8_t* tile_ptr = buf.data() + static_cast<size_t>(e.byte_offset);
+        if (crc32_ieee(tile_ptr, static_cast<size_t>(e.byte_len)) != e.crc32) return fail("vmap tile CRC32 mismatch");
+        const size_t n0 = arch->nodes.size();
+        arch->nodes.resize(n0 + e.node_count);
+        if (nodes_len > 0) std::memcpy(arch->nodes.data() + n0, tile_ptr, static_cast<size_t>(nodes_len));
+        const size_t t0 = arch->triangles.size();
+        arch->triangles.resize(t0 + e.tri_count);
+        if (tris_len > 0) std::memcpy(arch->triangles.data() + t0, tile_ptr + static_cast<size_t>(nodes_len), static_cast<size_t>(tris_len));
+    }
+    for (const auto& tri : arch->triangles) {
+        if (!finite_vec3(tri.v0) || !finite_vec3(tri.v1) || !finite_vec3(tri.v2)) return fail("vmap triangle has non-finite vertex");
+    }
+    return true;
+}
+
+bool read_vmap_file(const std::string& path, VmapArchive* out, std::string* err) noexcept {
+    auto fail = [&](const char* m) noexcept { if (err) *err = m; return false; };
+    if (!out) return fail("vmap output pointer is null");
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in) return fail("cannot open vmap file");
+    const auto end_pos = in.tellg();
+    if (end_pos < static_cast<std::streamoff>(kVmapHeaderSize)) return fail("vmap file shorter than 72-byte header");
+    std::vector<uint8_t> buf(static_cast<size_t>(end_pos));
+    in.seekg(0, std::ios::beg);
+    in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+    if (!in) return fail("cannot read vmap file");
+
+    Reader r{buf.data(), buf.size()};
+    char magic[8]{};
+    if (!r.bytes(magic, 8) || std::memcmp(magic, kVmapMagic, 8) != 0) return fail("invalid AOCVMAP1 magic");
+    if (r.get<uint32_t>() != kVmapVersion) return fail("unsupported AOCVMAP1 version");
+    const uint32_t tile_count = r.get<uint32_t>();
+    if (tile_count > 1048576u) return fail("vmap tile_count exceeds limit");
+
+    VmapArchive arch{};
+    r.bytes(arch.world_bmin, 12);
+    r.bytes(arch.world_bmax, 12);
+    r.bytes(arch.content_sha256, 32);
+    if (!r.ok || r.pos != kVmapHeaderSize || !finite_vec3(arch.world_bmin) || !finite_vec3(arch.world_bmax)) {
+        return fail("invalid AOCVMAP1 header");
+    }
+    const size_t toc_bytes = static_cast<size_t>(tile_count) * sizeof(VmapTileTocEntry);
+    if (toc_bytes > buf.size() - kVmapHeaderSize) return fail("vmap file truncated in TOC");
+    arch.toc.resize(tile_count);
+    if (toc_bytes > 0 && !r.bytes(arch.toc.data(), toc_bytes)) return fail("vmap TOC read failed");
+    if (!parse_vmap_tiles(buf, kVmapHeaderSize + toc_bytes, &arch, err)) return false;
+    *out = std::move(arch);
+    return true;
+}
+
+static bool ray_hits_triangle(const float orig[3], const float dir[3], const VmapTriangle& tri, float* out_t) noexcept {
+    const float e1[3] = {tri.v1[0] - tri.v0[0], tri.v1[1] - tri.v0[1], tri.v1[2] - tri.v0[2]};
+    const float e2[3] = {tri.v2[0] - tri.v0[0], tri.v2[1] - tri.v0[1], tri.v2[2] - tri.v0[2]};
+    const float h[3] = {
+        dir[1] * e2[2] - dir[2] * e2[1],
+        dir[2] * e2[0] - dir[0] * e2[2],
+        dir[0] * e2[1] - dir[1] * e2[0],
+    };
+    const float det = e1[0] * h[0] + e1[1] * h[1] + e1[2] * h[2];
+    if (std::fabs(det) < 1e-7f) return false;
+    const float inv_det = 1.0f / det;
+    const float s[3] = {orig[0] - tri.v0[0], orig[1] - tri.v0[1], orig[2] - tri.v0[2]};
+    const float u = inv_det * (s[0] * h[0] + s[1] * h[1] + s[2] * h[2]);
+    if (u < 0.0f || u > 1.0f) return false;
+    const float q[3] = {
+        s[1] * e1[2] - s[2] * e1[1],
+        s[2] * e1[0] - s[0] * e1[2],
+        s[0] * e1[1] - s[1] * e1[0],
+    };
+    const float v = inv_det * (dir[0] * q[0] + dir[1] * q[1] + dir[2] * q[2]);
+    if (v < 0.0f || u + v > 1.0f) return false;
+    const float t = inv_det * (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]);
+    if (t <= 1e-5f || t >= 1.0f) return false;
+    *out_t = t;
+    return true;
+}
+
+bool vmap_raycast_los(const VmapArchive& archive, const float start[3], const float end[3], float* out_hit_t) noexcept {
+    if (!finite_vec3(start) || !finite_vec3(end)) return false;
+    const float dir[3] = {end[0] - start[0], end[1] - start[1], end[2] - start[2]};
+    float closest_t = 1.0f;
+    bool occluded = false;
+    for (const auto& tri : archive.triangles) {
+        if ((tri.material_flags & kVmapMatFoliageTransparent) != 0u) continue;
+        if ((tri.material_flags & (kVmapMatOpaqueLos | kVmapMatBridge)) == 0u) continue;
+        float t = 1.0f;
+        if (ray_hits_triangle(start, dir, tri, &t) && t < closest_t) {
+            closest_t = t;
+            occluded = true;
+        }
+    }
+    if (out_hit_t) *out_hit_t = closest_t;
+    return !occluded;
+}
+
+uint16_t vmap_query_point_materials(const VmapArchive& archive, const float pt[3]) noexcept {
+    if (!finite_vec3(pt)) return 0u;
+    constexpr uint16_t kMask = static_cast<uint16_t>(kVmapMatWater | kVmapMatLava | kVmapMatBridge);
+    uint16_t flags = 0u;
+    for (const auto& n : archive.nodes) {
+        if (pt[0] >= static_cast<float>(n.bmin[0]) && pt[0] <= static_cast<float>(n.bmax[0]) &&
+            pt[1] >= static_cast<float>(n.bmin[1]) && pt[1] <= static_cast<float>(n.bmax[1]) &&
+            pt[2] >= static_cast<float>(n.bmin[2]) && pt[2] <= static_cast<float>(n.bmax[2])) {
+            flags = static_cast<uint16_t>(flags | (n.material_flags & kMask));
+        }
+    }
+    for (const auto& tri : archive.triangles) {
+        const uint16_t m = static_cast<uint16_t>(tri.material_flags & kMask);
+        if (m == 0u) continue;
+        const float min_x = std::min({tri.v0[0], tri.v1[0], tri.v2[0]}) - 1.0f;
+        const float max_x = std::max({tri.v0[0], tri.v1[0], tri.v2[0]}) + 1.0f;
+        const float min_y = std::min({tri.v0[1], tri.v1[1], tri.v2[1]}) - 1.0f;
+        const float max_y = std::max({tri.v0[1], tri.v1[1], tri.v2[1]}) + 1.0f;
+        const float min_z = std::min({tri.v0[2], tri.v1[2], tri.v2[2]}) - 50.0f;
+        const float max_z = std::max({tri.v0[2], tri.v1[2], tri.v2[2]}) + 50.0f;
+        if (pt[0] >= min_x && pt[0] <= max_x && pt[1] >= min_y && pt[1] <= max_y && pt[2] >= min_z && pt[2] <= max_z) {
+            flags = static_cast<uint16_t>(flags | m);
+        }
+    }
+    return flags;
 }
 
 }  // namespace aoc::worldd::nav
