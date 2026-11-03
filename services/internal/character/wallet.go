@@ -121,13 +121,20 @@ type txExecer interface {
 
 // upsertWallet sets the entries of a character's wallet in tx.
 func upsertWallet(ctx context.Context, tx txExecer, characterID string, wallet []WalletEntry) error {
+	if len(wallet) == 0 {
+		return nil
+	}
 	sorted := append([]WalletEntry(nil), wallet...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].CurrencyGuid < sorted[j].CurrencyGuid })
-	for _, e := range sorted {
-		if _, err := tx.Exec(ctx, `INSERT INTO character_wallet (character_id, currency_guid, amount) VALUES ($1, $2, $3)
-			ON CONFLICT (character_id, currency_guid) DO UPDATE SET amount = EXCLUDED.amount, updated_at = now()`, characterID, e.CurrencyGuid, e.Amount); err != nil {
-			return itemsError(err)
-		}
+	currencyGuids := make([]int64, len(sorted))
+	amounts := make([]int64, len(sorted))
+	for i, e := range sorted {
+		currencyGuids[i] = e.CurrencyGuid
+		amounts[i] = e.Amount
 	}
-	return nil
+	_, err := tx.Exec(ctx, `INSERT INTO character_wallet (character_id, currency_guid, amount)
+		SELECT $1, * FROM unnest($2::bigint[], $3::bigint[])
+		ON CONFLICT (character_id, currency_guid) DO UPDATE SET amount = EXCLUDED.amount, updated_at = now()`,
+		characterID, currencyGuids, amounts)
+	return itemsError(err)
 }

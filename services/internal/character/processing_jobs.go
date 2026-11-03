@@ -188,20 +188,52 @@ func replaceProcessingJobs(ctx context.Context, tx pgx.Tx, characterID string, j
 	if _, err := tx.Exec(ctx, `DELETE FROM character_processing_jobs WHERE character_id = $1`, characterID); err != nil {
 		return err
 	}
+	if len(jobs) == 0 {
+		return nil
+	}
+	n := len(jobs)
+	jobGuids := make([]string, n)
+	ordinals := make([]int32, n)
+	stationKeys := make([]string, n)
+	recipeGuids := make([]int64, n)
+	subRecipeGuids := make([]int64, n)
+	quantities := make([]int32, n)
+	queuedAts := make([]time.Time, n)
+	startedAts := make([]time.Time, n)
+	durationMs := make([]int64, n)
+	clientTxns := make([]string, n)
+	resources := make([]string, n)
+	ratingXPs := make([]float64, n)
+	ratingQuantities := make([]float64, n)
+	ratingRarities := make([]float64, n)
 	for i, j := range jobs {
-		resources := j.Resources
-		if resources == nil {
-			resources = []JobResource{}
+		res := j.Resources
+		if res == nil {
+			res = []JobResource{}
 		}
-		body, err := json.Marshal(resources)
+		body, err := json.Marshal(res)
 		if err != nil {
 			return fmt.Errorf("%w: processing job %d: %v", ErrInvalid, i, err)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO character_processing_jobs (character_id, job_guid, ordinal, station_key, recipe_guid, sub_recipe_guid, quantity, queued_at, started_at, duration_ms, client_txn, resources, rating_xp, rating_quantity, rating_rarity)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15)`,
-			characterID, j.JobGUID, i, j.StationKey, j.RecipeGUID, j.SubRecipeGUID, j.Quantity, j.QueuedAt, j.StartedAt, j.DurationMs, j.ClientTxn, string(body), j.RatingXP, j.RatingQuantity, j.RatingRarity); err != nil {
-			return itemsError(err)
-		}
+		jobGuids[i] = j.JobGUID
+		ordinals[i] = int32(i)
+		stationKeys[i] = j.StationKey
+		recipeGuids[i] = j.RecipeGUID
+		subRecipeGuids[i] = j.SubRecipeGUID
+		quantities[i] = j.Quantity
+		queuedAts[i] = j.QueuedAt
+		startedAts[i] = j.StartedAt
+		durationMs[i] = j.DurationMs
+		clientTxns[i] = j.ClientTxn
+		resources[i] = string(body)
+		ratingXPs[i] = j.RatingXP
+		ratingQuantities[i] = j.RatingQuantity
+		ratingRarities[i] = j.RatingRarity
 	}
-	return nil
+	_, err := tx.Exec(ctx, `INSERT INTO character_processing_jobs (character_id, job_guid, ordinal, station_key, recipe_guid, sub_recipe_guid, quantity, queued_at, started_at, duration_ms, client_txn, resources, rating_xp, rating_quantity, rating_rarity)
+		SELECT $1, u.job_guid, u.ordinal, u.station_key, u.recipe_guid, u.sub_recipe_guid, u.quantity, u.queued_at, u.started_at, u.duration_ms, u.client_txn, u.resources::jsonb, u.rating_xp, u.rating_quantity, u.rating_rarity
+		FROM unnest($2::text[], $3::int[], $4::text[], $5::bigint[], $6::bigint[], $7::int[], $8::timestamptz[], $9::timestamptz[], $10::bigint[], $11::text[], $12::text[], $13::double precision[], $14::double precision[], $15::double precision[])
+		AS u(job_guid, ordinal, station_key, recipe_guid, sub_recipe_guid, quantity, queued_at, started_at, duration_ms, client_txn, resources, rating_xp, rating_quantity, rating_rarity)`,
+		characterID, jobGuids, ordinals, stationKeys, recipeGuids, subRecipeGuids, quantities, queuedAts, startedAts, durationMs, clientTxns, resources, ratingXPs, ratingQuantities, ratingRarities)
+	return itemsError(err)
 }

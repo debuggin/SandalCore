@@ -79,10 +79,8 @@ func replaceKnownRecipes(ctx context.Context, tx pgx.Tx, characterID string, rec
 	if _, err := tx.Exec(ctx, `DELETE FROM character_known_recipes WHERE character_id = $1 AND NOT (recipe_guid = ANY($2::bigint[]))`, characterID, recipes); err != nil {
 		return err
 	}
-	for _, r := range recipes {
-		if _, err := tx.Exec(ctx, `INSERT INTO character_known_recipes (character_id, recipe_guid) VALUES ($1, $2) ON CONFLICT (character_id, recipe_guid) DO NOTHING`, characterID, r); err != nil {
-			return itemsError(err)
-		}
-	}
-	return nil
+	_, err := tx.Exec(ctx, `INSERT INTO character_known_recipes (character_id, recipe_guid)
+		SELECT $1, * FROM unnest($2::bigint[])
+		ON CONFLICT (character_id, recipe_guid) DO NOTHING`, characterID, recipes)
+	return itemsError(err)
 }

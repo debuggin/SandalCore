@@ -211,15 +211,23 @@ func replaceSkillRanks(ctx context.Context, tx pgx.Tx, characterID string, trees
 	if _, err := tx.Exec(ctx, `DELETE FROM character_skill_ranks WHERE character_id = $1`, characterID); err != nil {
 		return err
 	}
+	var treeGuids []int64
+	var ords []int32
+	var rankGuids []int64
 	for _, t := range trees {
 		for ord, rank := range t.RankGuids {
-			if _, err := tx.Exec(ctx, `INSERT INTO character_skill_ranks (character_id, tree_guid, ord, rank_guid) VALUES ($1, $2, $3, $4)`,
-				characterID, t.TreeGuid, ord, rank); err != nil {
-				return err
-			}
+			treeGuids = append(treeGuids, t.TreeGuid)
+			ords = append(ords, int32(ord))
+			rankGuids = append(rankGuids, rank)
 		}
 	}
-	return nil
+	if len(rankGuids) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO character_skill_ranks (character_id, tree_guid, ord, rank_guid)
+		SELECT $1, * FROM unnest($2::bigint[], $3::int[], $4::bigint[])`,
+		characterID, treeGuids, ords, rankGuids)
+	return err
 }
 
 // replaceActionBar writes the character's action bar in the transaction.
@@ -227,13 +235,39 @@ func replaceActionBar(ctx context.Context, tx pgx.Tx, characterID string, bar []
 	if _, err := tx.Exec(ctx, `DELETE FROM character_action_bar WHERE character_id = $1`, characterID); err != nil {
 		return err
 	}
-	for _, a := range bar {
-		if _, err := tx.Exec(ctx, `INSERT INTO character_action_bar (character_id, bank, slot, use_type, instigator, ability_id, skill_rank_id, pet_command_id,
-			item_record_id, item_guid, item_rarity, item_quality, combo_button) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-			characterID, a.Bank, a.Slot, a.UseType, a.Instigator, a.AbilityID, a.SkillRankID, a.PetCommandID, a.ItemRecordID, a.ItemGUID,
-			a.ItemRarity, a.ItemQuality, a.ComboButton); err != nil {
-			return err
-		}
+	if len(bar) == 0 {
+		return nil
 	}
-	return nil
+	n := len(bar)
+	banks := make([]int32, n)
+	slots := make([]int32, n)
+	useTypes := make([]int32, n)
+	instigators := make([]int32, n)
+	abilityIDs := make([]int64, n)
+	skillRankIDs := make([]int64, n)
+	petCommandIDs := make([]int64, n)
+	itemRecordIDs := make([]int64, n)
+	itemGUIDs := make([]string, n)
+	itemRarities := make([]int32, n)
+	itemQualities := make([]int32, n)
+	comboButtons := make([]int32, n)
+	for i, a := range bar {
+		banks[i] = a.Bank
+		slots[i] = a.Slot
+		useTypes[i] = a.UseType
+		instigators[i] = a.Instigator
+		abilityIDs[i] = a.AbilityID
+		skillRankIDs[i] = a.SkillRankID
+		petCommandIDs[i] = a.PetCommandID
+		itemRecordIDs[i] = a.ItemRecordID
+		itemGUIDs[i] = a.ItemGUID
+		itemRarities[i] = a.ItemRarity
+		itemQualities[i] = a.ItemQuality
+		comboButtons[i] = a.ComboButton
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO character_action_bar (character_id, bank, slot, use_type, instigator, ability_id, skill_rank_id, pet_command_id,
+		item_record_id, item_guid, item_rarity, item_quality, combo_button)
+		SELECT $1, * FROM unnest($2::int[], $3::int[], $4::int[], $5::int[], $6::bigint[], $7::bigint[], $8::bigint[], $9::bigint[], $10::text[], $11::int[], $12::int[], $13::int[])`,
+		characterID, banks, slots, useTypes, instigators, abilityIDs, skillRankIDs, petCommandIDs, itemRecordIDs, itemGUIDs, itemRarities, itemQualities, comboButtons)
+	return err
 }

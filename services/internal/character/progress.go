@@ -177,29 +177,20 @@ func (s *Store) SaveProgress(ctx context.Context, characterID string, p Progress
 	if err := lockCharacter(ctx, tx, characterID); err != nil {
 		return Character{}, err
 	}
-	c, err := scan(tx.QueryRow(ctx, `
-		UPDATE characters SET
-			level = CASE WHEN $2 = 0 THEN level ELSE $2 END,
-			class_id = CASE WHEN $3 = 0 THEN class_id ELSE $3 END,
-			class_name = CASE WHEN $3 = 0 THEN class_name ELSE $4 END,
-			archetype_id = CASE WHEN $3 = 0 THEN archetype_id ELSE $5 END,
-			updated_at = now()
-		WHERE id = $1
-		RETURNING `+columns, characterID, p.Level, p.ClassID, className, archetype))
+	c, err := scan(tx.QueryRow(ctx, `UPDATE characters SET
+		level = CASE WHEN $2 = 0 THEN level ELSE $2 END, class_id = CASE WHEN $3 = 0 THEN class_id ELSE $3 END,
+		class_name = CASE WHEN $3 = 0 THEN class_name ELSE $4 END, archetype_id = CASE WHEN $3 = 0 THEN archetype_id ELSE $5 END,
+		updated_at = now() WHERE id = $1 RETURNING `+columns, characterID, p.Level, p.ClassID, className, archetype))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Character{}, ErrNotFound
 	}
 	if err != nil {
 		return Character{}, invalidData(err)
 	}
-	for _, e := range p.Experience {
-		if _, err := tx.Exec(ctx, `INSERT INTO character_experience (character_id, leveling_type_guid, xp, debt) VALUES ($1, $2, $3, $4)
-			ON CONFLICT (character_id, leveling_type_guid) DO UPDATE SET xp = EXCLUDED.xp, debt = EXCLUDED.debt, updated_at = now()`,
-			characterID, e.LevelingTypeGuid, e.XP, e.Debt); err != nil {
-			return Character{}, itemsError(err)
-		}
+	if err := upsertExperience(ctx, tx, characterID, p.Experience); err != nil {
+		return Character{}, itemsError(err)
 	}
-	if err := saveProfessions(ctx, tx, characterID, p.Professions); err != nil {
+	if err := upsertProfessions(ctx, tx, characterID, p.Professions); err != nil {
 		return Character{}, itemsError(err)
 	}
 	if p.ReplaceSkillRanks {
@@ -223,6 +214,46 @@ func (s *Store) SaveProgress(ctx context.Context, characterID string, p Progress
 		}
 	}
 	return c, tx.Commit(ctx)
+}
+
+func upsertExperience(ctx context.Context, tx pgx.Tx, characterID string, exp []Experience) error {
+	if len(exp) == 0 {
+		return nil
+	}
+	types := make([]int64, len(exp))
+	xps := make([]int64, len(exp))
+	debts := make([]int64, len(exp))
+	for i, e := range exp {
+		types[i] = e.LevelingTypeGuid
+		xps[i] = e.XP
+		debts[i] = e.Debt
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO character_experience (character_id, leveling_type_guid, xp, debt)
+		SELECT $1, * FROM unnest($2::bigint[], $3::bigint[], $4::bigint[])
+		ON CONFLICT (character_id, leveling_type_guid) DO UPDATE SET xp = EXCLUDED.xp, debt = EXCLUDED.debt, updated_at = now()`,
+		characterID, types, xps, debts)
+	return err
+}
+
+func upsertProfessions(ctx context.Context, tx pgx.Tx, characterID string, ps []Profession) error {
+	if len(ps) == 0 {
+		return nil
+	}
+	guids := make([]int64, len(ps))
+	tiers := make([]int32, len(ps))
+	levels := make([]int32, len(ps))
+	xps := make([]int64, len(ps))
+	for i, p := range ps {
+		guids[i] = p.ProfessionGuid
+		tiers[i] = p.CertificationTier
+		levels[i] = p.Level
+		xps[i] = p.XP
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO character_professions (character_id, profession_guid, certification_tier, level, xp)
+		SELECT $1, * FROM unnest($2::bigint[], $3::int[], $4::int[], $5::bigint[])
+		ON CONFLICT (character_id, profession_guid) DO UPDATE SET certification_tier = EXCLUDED.certification_tier, level = EXCLUDED.level, xp = EXCLUDED.xp, updated_at = now()`,
+		characterID, guids, tiers, levels, xps)
+	return err
 }
 
 // ---- the GM starter set -------------------------------------------------------------------------------------------------------
