@@ -325,6 +325,7 @@ function(world_add_test name)
     endif()
     add_executable(${name} ${src_file})
     target_link_libraries(${name} PRIVATE world_core)
+    set_property(GLOBAL APPEND PROPERTY SANDAL_WORLD_TEST_TARGETS ${name})
     # capture_packets.h lives with the libaocnet tests.
     target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/libs/aocnet/tests)
     # the shared stat corpus (plan B3): the tests that build a content.db fixture take the stat program from it
@@ -362,6 +363,7 @@ foreach(t
     test_world_repl_acks
     test_world_services
     test_world_session
+    test_world_standalone_units
     test_world_talents
     test_world_udp_socket
 )
