@@ -19,7 +19,7 @@ public static class Program
             (ExtractorOptions opts, bool selfTest) = ParseArgs(args);
             if (selfTest) { await RunSelfTestsAsync().ConfigureAwait(false); return 0; }
             if (opts.Command == "extract-tiles") return ExtractTilesCommand.ExecuteExtractTiles(args);
-            if (opts.Command == "verify-standin") return ExtractTilesCommand.ExecuteVerifyStandIn(args);
+            if (opts.Command == "verify-standin") return VerifyStandinCommand.Execute(args);
             int count = opts.Command switch
             {
                 "extract-db" => await ExtractDbCommand.ExecuteAsync(opts).ConfigureAwait(false),
@@ -79,6 +79,8 @@ public static class Program
         ExtractVmapCommand.RunSelfTests();
         ExtractNavCommand.RunSelfTests();
         ExtractTilesCommand.RunSelfTest();
+        ArtifactStampManifest.RunSelfTests();
+        VerifyStandinCommand.RunSelfTests();
         string tmpOut = Path.Combine(Path.GetTempPath(), $"aoc_extract_db_{Guid.NewGuid():N}.db");
         string tmpNavDir = Path.Combine(Path.GetTempPath(), $"aoc_extract_nav_{Guid.NewGuid():N}");
         string sidecar = ExtractDbCommand.ResolveCatalogOutputPath(tmpOut);
@@ -94,7 +96,7 @@ public static class Program
             if (File.Exists(sidecar)) File.Delete(sidecar);
             if (Directory.Exists(tmpNavDir)) Directory.Delete(tmpNavDir, recursive: true);
         }
-        Console.WriteLine("[SELF-TEST] PASS: all 14 semantic test suites succeeded.");
+        Console.WriteLine("[SELF-TEST] PASS: all 16 semantic test suites succeeded.");
     }
 
     private static byte[] BuildSyntheticPayload(bool includeV4EnumHeader)
