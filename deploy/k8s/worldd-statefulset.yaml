@@ -1,0 +1,197 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Production Kubernetes Headless Service, StatefulSet & PodDisruptionBudget for worldd (K8S-01, K8S-02, K8S-04, SEC-13)
+apiVersion: v1
+kind: Service
+metadata:
+  name: worldd
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: worldd
+    app.kubernetes.io/component: zone-authority
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: worldd
+  ports:
+    - name: udp-game
+      port: 7777
+      targetPort: udp-game
+      protocol: UDP
+    - name: udp-mesh
+      port: 7778
+      targetPort: udp-mesh
+      protocol: UDP
+    - name: grpc-admin
+      port: 50056
+      targetPort: grpc-admin
+      protocol: TCP
+    - name: grpc-zone
+      port: 50057
+      targetPort: grpc-zone
+      protocol: TCP
+    - name: http-probe
+      port: 9091
+      targetPort: http-probe
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: worldd
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: worldd
+    app.kubernetes.io/component: zone-authority
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  serviceName: worldd
+  replicas: 3
+  podManagementPolicy: Parallel
+  revisionHistoryLimit: 10
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worldd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worldd
+        app.kubernetes.io/component: zone-authority
+        app.kubernetes.io/part-of: sandalcore
+        app.kubernetes.io/tier: backend
+    spec:
+      automountServiceAccountToken: false
+      priorityClassName: production-critical
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: worldd
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: worldd
+      containers:
+        - name: worldd
+          image: ghcr.io/sandalcore/worldd@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: udp-game
+              containerPort: 7777
+              protocol: UDP
+            - name: udp-mesh
+              containerPort: 7778
+              protocol: UDP
+            - name: grpc-admin
+              containerPort: 50056
+              protocol: TCP
+            - name: grpc-zone
+              containerPort: 50057
+              protocol: TCP
+            - name: http-probe
+              containerPort: 9091
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: sandal-prod-config
+            - secretRef:
+                name: sandal-prod-secrets
+          resources:
+            requests:
+              cpu: "2000m"
+              memory: "4Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http-probe
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http-probe
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-probe
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/usr/local/bin/service", "--drain-wait", "5s"]
+          volumeMounts:
+            - name: worldd-state
+              mountPath: /var/lib/sandal/worldd
+            - name: tmp-run
+              mountPath: /tmp
+            - name: navmesh-data
+              mountPath: /app/dist/nav
+              readOnly: true
+      volumes:
+        - name: tmp-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: navmesh-data
+          persistentVolumeClaim:
+            claimName: sandal-navmesh-ro
+  volumeClaimTemplates:
+    - metadata:
+        name: worldd-state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: fast-nvme-wait-first-consumer
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: worldd-pdb
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: worldd
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worldd

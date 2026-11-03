@@ -1,0 +1,348 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Zero-Trust Kubernetes NetworkPolicies for sandal namespace (K8S-03, SEC-11)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: sandal
+  labels:
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-worldd-zone-authority
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: worldd
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: worldd
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: meshgw
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: worldd
+      ports:
+        - protocol: UDP
+          port: 7777
+        - protocol: UDP
+          port: 7778
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: meshgw
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: admin
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: worldd
+      ports:
+        - protocol: TCP
+          port: 50056
+        - protocol: TCP
+          port: 50057
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: worldd
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: meshgw
+      ports:
+        - protocol: UDP
+          port: 7777
+        - protocol: UDP
+          port: 7778
+        - protocol: TCP
+          port: 50054
+        - protocol: TCP
+          port: 50056
+        - protocol: TCP
+          port: 50057
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-control-plane
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway-system
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: sandalcore
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 50050
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: worldd
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: meshgw
+      ports:
+        - protocol: TCP
+          port: 50054
+        - protocol: TCP
+          port: 50056
+        - protocol: TCP
+          port: 50057
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-meshgw-datapath
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: meshgw
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: meshgw
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: UDP
+          port: 7777
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: sandalcore
+      ports:
+        - protocol: TCP
+          port: 50054
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: worldd
+      ports:
+        - protocol: UDP
+          port: 7777
+        - protocol: UDP
+          port: 7778
+        - protocol: TCP
+          port: 50056
+        - protocol: TCP
+          port: 50057
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-admin-console
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: admin
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: admin
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway-system
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - protocol: TCP
+          port: 8090
+        - protocol: TCP
+          port: 8443
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: worldd
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: meshgw
+      ports:
+        - protocol: TCP
+          port: 50050
+        - protocol: TCP
+          port: 50054
+        - protocol: TCP
+          port: 50056
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-and-redis-backends
+  namespace: sandal
+  labels:
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - postgres
+          - redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/tier: backend
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - worldd
+                  - gateway
+                  - meshgw
+                  - admin
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+  egress: []

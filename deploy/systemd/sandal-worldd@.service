@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Hardened templated systemd unit for bare-metal SandalCore worldd zone shards (OPS-04, STD-10, SEC-13)
+# Usage: systemctl enable --now sandal-worldd@zone-01.service
+
+[Unit]
+Description=SandalCore Authoritative World Zone Shard (%i)
+Documentation=https://github.com/SandalCore/SandalCore
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=sandal
+Group=sandal
+StateDirectory=sandal-worldd/%i
+RuntimeDirectory=sandal-worldd/%i
+ConfigurationDirectory=sandal
+EnvironmentFile=-/etc/sandal/sandal.env
+EnvironmentFile=-/etc/sandal/zones/%i.env
+LoadCredential=service_token:/etc/credstore/sandal_service_token.cred
+ExecStart=/usr/local/bin/worldd --zone=%i --config=/etc/sandal/sandal.env
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=1048576
+
+# Cgroup Resource Ceilings
+MemoryMax=8G
+CPUQuota=400%
+TasksMax=4096
+
+# Filesystem, Capability & Syscall Sandboxing
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,555 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Production Kubernetes Deployments, Services, PDBs & HPAs for stateless Go services (K8S-01, K8S-02, K8S-04, SEC-13)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: control-plane
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  replicas: 3
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/component: control-plane
+        app.kubernetes.io/part-of: sandalcore
+        app.kubernetes.io/tier: backend
+    spec:
+      automountServiceAccountToken: false
+      priorityClassName: production-standard
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      containers:
+        - name: gateway
+          image: ghcr.io/sandalcore/gateway@sha256:e8a404fc10b4fb422c6a6d615c0b9a9c242b9d8f3b2a1c4d5e6f7a8b9c0d1e2f
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+            - name: grpc
+              containerPort: 50050
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: sandal-prod-config
+            - secretRef:
+                name: sandal-prod-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp-run
+              mountPath: /tmp
+      volumes:
+        - name: tmp-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: 50050
+      targetPort: grpc
+      protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway-pdb
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway-hpa
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  minReplicas: 3
+  maxReplicas: 15
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+    scaleDown:
+      stabilizationWindowSeconds: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meshgw
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: meshgw
+    app.kubernetes.io/component: dataplane-proxy
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  replicas: 3
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: meshgw
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: meshgw
+        app.kubernetes.io/component: dataplane-proxy
+        app.kubernetes.io/part-of: sandalcore
+        app.kubernetes.io/tier: backend
+    spec:
+      automountServiceAccountToken: false
+      priorityClassName: production-critical
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: meshgw
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: meshgw
+      containers:
+        - name: meshgw
+          image: ghcr.io/sandalcore/meshgw@sha256:e8a404fc10b4fb422c6a6d615c0b9a9c242b9d8f3b2a1c4d5e6f7a8b9c0d1e2f
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: udp-ingress
+              containerPort: 7777
+              protocol: UDP
+            - name: grpc-mesh
+              containerPort: 50054
+              protocol: TCP
+            - name: http-probe
+              containerPort: 8082
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: sandal-prod-config
+            - secretRef:
+                name: sandal-prod-secrets
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http-probe
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http-probe
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http-probe
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp-run
+              mountPath: /tmp
+      volumes:
+        - name: tmp-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: meshgw
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: meshgw
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: meshgw
+  ports:
+    - name: udp-ingress
+      port: 7777
+      targetPort: udp-ingress
+      protocol: UDP
+    - name: grpc-mesh
+      port: 50054
+      targetPort: grpc-mesh
+      protocol: TCP
+    - name: http-probe
+      port: 8082
+      targetPort: http-probe
+      protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: meshgw-pdb
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: meshgw
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: meshgw
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: meshgw-hpa
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: meshgw
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: meshgw
+  minReplicas: 3
+  maxReplicas: 20
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+    scaleDown:
+      stabilizationWindowSeconds: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: admin
+    app.kubernetes.io/component: admin-console
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  replicas: 2
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: admin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: admin
+        app.kubernetes.io/component: admin-console
+        app.kubernetes.io/part-of: sandalcore
+        app.kubernetes.io/tier: backend
+    spec:
+      automountServiceAccountToken: false
+      priorityClassName: production-standard
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: admin
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: admin
+      containers:
+        - name: admin
+          image: ghcr.io/sandalcore/admin@sha256:e8a404fc10b4fb422c6a6d615c0b9a9c242b9d8f3b2a1c4d5e6f7a8b9c0d1e2f
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8090
+              protocol: TCP
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+            - name: metrics
+              containerPort: 9099
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: sandal-prod-config
+            - secretRef:
+                name: sandal-prod-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp-run
+              mountPath: /tmp
+      volumes:
+        - name: tmp-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: admin
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: admin
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http
+      protocol: TCP
+    - name: https
+      port: 8443
+      targetPort: https
+      protocol: TCP
+    - name: metrics
+      port: 9099
+      targetPort: metrics
+      protocol: TCP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: admin-pdb
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: admin
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  maxUnavailable: 1
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: admin
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: admin-hpa
+  namespace: sandal
+  labels:
+    app.kubernetes.io/name: admin
+    app.kubernetes.io/part-of: sandalcore
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: admin
+  minReplicas: 2
+  maxReplicas: 6
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+    scaleDown:
+      stabilizationWindowSeconds: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
