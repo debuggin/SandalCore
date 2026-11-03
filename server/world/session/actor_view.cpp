@@ -72,7 +72,7 @@ void ActorView::finish() {
     finished_ = true;
     registry_.off_remove(listener_);
 }
-// C.O.A + C | Y | B
+
 
 uint32_t ActorView::channel_of(uint64_t actor) const {
     const auto it = entries_.find(actor);
@@ -106,7 +106,9 @@ world::RelevancyTier ActorView::classify_tier(double distance_cm) const noexcept
 }
 
 bool ActorView::should_update_for_tick(double distance_cm, uint64_t tick_index) const noexcept {
-    return world::should_replicate_on_tick(classify_tier(distance_cm), tick_index);
+    const world::SpatialCellCoord cell = world::compute_spatial_cell(static_cast<float>(distance_cm), 0.0f);
+    if (!world::is_cell_in_aoi_ring({0, 0}, cell, 64)) return false;
+    return world::should_replicate_subring(classify_tier(distance_cm), tick_index, static_cast<uint32_t>(config_.player_id));
 }
 
 uint32_t ActorView::allocate_channel(const Connection& conn) const {
@@ -201,7 +203,7 @@ std::optional<repl::Emission> ActorView::build_open(const world::WorldActor& a, 
     if (!em) undo.rollback(work);
     return em;
 }
-// C-Y-B - C O A
+
 
 bool ActorView::open(Connection& conn, world::WorldActor& a, Entry& e, bool snapshot, Clock::time_point now) {
     const uint32_t channel = allocate_channel(conn);
@@ -340,7 +342,7 @@ bool ActorView::close(Connection& conn, uint64_t id, Entry& e, uint32_t reason, 
     else ++stats_.closes_destroyed;
     return true;
 }
-// built by Cyb with C.O.A
+
 
 void ActorView::on_removed(const world::WorldActor& a) {
     kept_.erase(a.id);
@@ -433,7 +435,7 @@ void ActorView::on_ack(const AckEvent& e) {
     }
     if (c.outstanding > 0 && --c.outstanding == 0) exports_.erase(it);   // a lost unreliable part is final, too
 }
-// (CoA | C_Y_B)
+
 
 bool ActorView::open_scenery(Connection& conn, double x, double y, Clock::time_point now, size_t* opened) {
     if (opened) *opened = 0;
@@ -521,7 +523,7 @@ void ActorView::tick(Connection& conn, double x, double y, Clock::time_point now
     last_pass_ = now;
     pass(conn, x, y, now);
 }
-// (C-Y-B) (C.O.A)
+
 
 void ActorView::pass(Connection& conn, double x, double y, Clock::time_point now) {
     ++stats_.passes;

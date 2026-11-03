@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  world/actor_registry.h  (plan E1, stage 1)
+//  world/actor_registry.h
 //
 //  The world's other actors: the NPCs, the resource nodes and a player's lingering effects, held once for the whole worldd, each as the
 //  replicated state a connection opens (repl::Actor: its values, its subobjects, what SerializeNewActor says) plus what the server itself
@@ -15,7 +15,7 @@
 //
 //  Change tracking.  An actor carries two counters.  `version` moves on every change of what a connection is sent (its replicated values and,
 //  for a connection that has it open, nothing else) and `reliable_version` only on a change that must not be lost; a change of position alone
-//  (`Change::Movement`, stage 2's walking NPCs) moves `version` only, so the view sends it unreliably, as the retail server sends
+//  (`Change::Movement`, walking NPCs) moves `version` only, so the view sends it unreliably, as the retail server sends
 //  ReplicatedMovement every 67 ms.  The view compares both with what it last sent.  `modify` runs a function on the actor and bumps the
 //  counters; changing `actor` any other way would go unnoticed.
 //
@@ -42,17 +42,17 @@ namespace repl = ::aoc::protocol::repl;
 
 enum class ActorKind : uint8_t {
     Npc,         // ANPCCharacter: a creature, a villager, a vendor, a service building
-    Gatherable,  // AGatherableActor: a resource node (visible only in stage 1)
+    Gatherable,  // AGatherableActor: a resource node
     Effect,      // a player's lingering zone (AAoCAbilityLingeringEffect), D2's dance effect
-    Pile,        // a dead player's loot pile (APlayerLootPile; plan E1, stage 3, part 2)
-    Mount,       // a summoned mount (the mounts milestone, stage 2): an ANPCCharacter-layout actor with an owner, never dormant
-    NodeLayout,  // a town's ANodeLayoutReplicator (Nodes 1, stage 3a): the scenery of a city node, awake within 1.45 km, never dormant
-    Foliage,     // a foliage cell's AIntrepidStateIFA (Gathering stage 3, "Foliage gathering"): which instances of the cell are cut or growing; opened as a snapshot, never awake
-    Station,     // a crafting or processing station (crafting, step 0): an ACraftingStationBase actor of a node's building, opened like any other actor, used for its window
+    Pile,        // a dead player's loot pile (APlayerLootPile)
+    Mount,       // a summoned mount: an ANPCCharacter-layout actor with an owner, never dormant
+    NodeLayout,  // a town's ANodeLayoutReplicator: the scenery of a city node, awake within 1.45 km, never dormant
+    Foliage,     // a foliage cell's AIntrepidStateIFA: which instances of the cell are cut or growing; opened as a snapshot, never awake
+    Station,     // a crafting or processing station: an ACraftingStationBase actor of a node's building, opened like any other actor, used for its window
     Shrine,      // an Emberspring (AAoCAttunablePlayerSpawner): a respawn point a player discovers by coming close and attunes to by using it (respawn/embersprings.h)
     Prop,        // an object of a quest (an AInteractableStateMachineBase actor: a body, a crate, a root, a building site): used by its interactable component, it can leave and come back
 };
-// [C | Y | B ~ C-O-A]
+
 
 /// Where an NPC or node came from (the report counts them).
 enum class Source : uint8_t { Data, Captured, Runtime };
@@ -63,7 +63,7 @@ enum class Change : uint8_t {
     State,      // anything else that is replicated: reliable
 };
 
-/// What an NPC is to the server (the AI of stage 3 drives these; stage 1 only reads them).
+/// What an NPC is to the server.
 struct NpcInfo {
     std::string name;                // the display name the client shows (UNPCInfo.CreatureOwnerName)
     int         level = 0;
@@ -73,26 +73,26 @@ struct NpcInfo {
     int64_t     instance_guid = 0;
     int64_t     vendor_guid = 0;     // VendorDef the NPC sells from (0: none)
     int64_t     dialogue_root = 0;   // the conversation the NPC opens when a player uses it (a DialogueRoot; 0: none)
-    double      home_x = 0, home_y = 0, home_z = 0;   // where it spawned: it returns here (stage 2, 3)
+    double      home_x = 0, home_y = 0, home_z = 0;   // where it spawned: it returns here
     double      respawn_seconds = 0;
     double      respawn_variance = 0;
     double      aggro_radius_cm = 0;     // the instance's override or the asset's AggroRadius (0: the Blueprint's, which is not in the data: the AI's default)
-    /// Retest 3 (Timid Grems): the instance overrides the aggro radius WITH 0 (bOverrideAggroRadius on, AggroRadius 0: all 31 instances of the Pop_TimidGrem set, and the Timid Raven, Spider
+    /// The instance overrides the aggro radius WITH 0 (bOverrideAggroRadius on, AggroRadius 0: all 31 instances of the Pop_TimidGrem set, and the Timid Raven, Spider
     /// and Deer sets), which is the data saying "never notices a player on its own"; unlike an instance with no override, whose 0 means "the Blueprint's radius" (the AI's default).  It still
     /// fights back what hurts it.
     bool        aggro_off = false;
     double      leash_radius_cm = 0;     // the asset's LeashRadius (0 for every NPC type of the area)
     uint64_t    controller = 0;      // the AI controller object's ObjectId (the actor's Owner and Controller name it; it has no channel)
     uint64_t    interact_component = 0;   // the ObjectId of its InteractableComponent (0: none), what a client's interaction names
-    /// Gathering stage 3, "Hunting": the PlayerInteractionDef its InteractableComponent's first input names (the block's InteractionInputData[0].PlayerInteractDefinition; 0: none).  For a
+    /// The PlayerInteractionDef its InteractableComponent's first input names (the block's InteractionInputData[0].PlayerInteractDefinition; 0: none).  For a
     /// huntable creature it is the Hunting_<kind> def, which names the gathering interaction its corpse is harvested with (gather/gathering.h hunt_kind); for a vendor it is the vendor's.
     int64_t     interact_def = 0;
-    /// E1 stage 3 fix 3: the ObjectId of its CollisionCylinder (0: none), minted INSIDE the actor's own block (the actor's + 4, retail's slot: the
+    /// The ObjectId of its CollisionCylinder (0: none), minted INSIDE the actor's own block (the actor's + 4, retail's slot: the
     /// AlignmentComponent's - 2 in 211 of 211 captured exports). The hit confirmations and the ability items name it and export it as the actor's
     /// "CollisionCylinder". A GUID outside the block (the draft's + 24) was the next-minted object's (the next NPC's AlignmentComponent, a dance's
     /// LingeringEffectMovementComp): the client, holding that GUID under another path and outer, dropped the connection (NetGuidMismatch).
     uint64_t    collision_cylinder = 0;
-    // plan E1, stage 3, part 2: what its death does (combat/aftermath.h)
+    // What its death does (combat/aftermath.h)
     std::vector<int64_t> loot_tables;   // the RewardTables its asset and instance name (its Blueprint's come from the motion table)
     std::string respawn_rule;           // the instance's: Refill, AllDead, NoRespawn
     uint32_t    spawn_ref = 0;          // 1-based index of the spawn point's recipe (spawns::AreaReport::recipes): what a respawn is made from (0: none)
@@ -151,7 +151,7 @@ struct ShrineInfo {
     uint64_t    seed = 0;         // the spawn point's seed: its SpawnerGuid is made from it
 };
 
-/// Gathering stage 2, "Harvesting": what the harvesting player's own connection sees of a resource node that the shared state cannot say (an object reference to a pawn that only that
+/// What the harvesting player's own connection sees of a resource node that the shared state cannot say (an object reference to a pawn that only that
 /// player's client has).  The node's InteractableComponent holds InteractingPlayer as none; the actor view of the player `player_id` shows `pawn` in it while `show` is set
 /// (gather/node_wire.h).  Every other connection sees none, as the retail captures' second observer does.
 struct GatherSeen {
@@ -168,7 +168,7 @@ struct WorldActor {
     double     yaw_degrees = 0;
     double     awake_radius_cm = 0;       // 0: the relevancy config's (retail: some large creatures 119 m, the rest 150 m)
     bool       never_dormant = false;     // players, mounts and a player's effects are never dormancy-closed (evidence 4)
-    /// Gathering stage 3 (a foliage cell's state actor): retail opens it when something in the cell changes and closes it with Dormancy about 265 ms later [R: the retail capture's open
+    /// For a foliage cell's state actor: retail opens it when something in the cell changes and closes it with Dormancy about 265 ms later [R: the retail capture's open
     /// to its close], whatever the distance: it is never awake.  The view puts it in the snapshot ring wherever it is in range, closes its snapshots `dormancy_delay` after the open
     /// (0: the relevancy config's 134 ms), keeps the shadows of its fast arrays between opens (`keep_fast_shadow`: UE keeps a dormant replicator's state, and the client's list of
     /// cut instances has to be deleted from, not rebuilt) and shows a connection that never had it `first_open_form` of it instead.
@@ -241,7 +241,10 @@ public:
 
     /// The ids of the actors within `radius_cm` (horizontal) of (x, y), in no particular order, appended to `out`.
     void query(double x, double y, double radius_cm, std::vector<uint64_t>& out) const;
-// C Y B captures, CoA code
+    /// Zero-allocation spatial cell AoI query helpers over the 100 m cell grid.
+    [[nodiscard]] size_t count_actors_in_cell_ring(float center_x_cm, float center_y_cm, int32_t max_ring_cells = 3) const noexcept;
+    size_t gather_aoi_candidates(float center_x_cm, float center_y_cm, int32_t max_ring_cells, uint64_t* out_ids, size_t max_out) const noexcept;
+    [[nodiscard]] size_t occupied_cell_count() const noexcept { return grid_.size(); }
 
     /// An actor whose awake radius is more than this is a WIDE one (a town's replicator: 1.45 km): `query` would have to visit a quarter of the world's cells to find it, so the
     /// registry keeps the wide actors apart and `query_wide` finds them.

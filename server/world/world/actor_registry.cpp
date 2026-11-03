@@ -7,6 +7,7 @@
 //  See actor_registry.h.
 // ============================================================================
 #include "world/actor_registry.h"
+#include "world/relevancy.h"
 
 #include <algorithm>
 #include <cmath>
@@ -45,7 +46,7 @@ bool ActorRegistry::add(WorldActor actor) {
     if (observer_) observer_->added(it->second);
     return true;
 }
-// ~ C | Y | B - C.O.A ~
+
 
 bool ActorRegistry::remove(uint64_t id) {
     const auto it = actors_.find(id);
@@ -138,7 +139,43 @@ void ActorRegistry::query(double x, double y, double radius_cm, std::vector<uint
         }
     }
 }
-// CoA - C Y B
+size_t ActorRegistry::count_actors_in_cell_ring(float center_x_cm, float center_y_cm, int32_t max_ring_cells) const noexcept {
+    if (max_ring_cells < 0 || !std::isfinite(center_x_cm) || !std::isfinite(center_y_cm)) return 0;
+    const SpatialCellCoord center = compute_spatial_cell(center_x_cm, center_y_cm);
+    const int64_t side = static_cast<int64_t>(max_ring_cells) * 2 + 1;
+    size_t total = 0;
+    if (static_cast<long double>(side) * static_cast<long double>(side) > static_cast<long double>(grid_.size()) * 2) {
+        for (const auto& [key, ids] : grid_) {
+            const SpatialCellCoord cell{static_cast<int32_t>(key >> 32), static_cast<int32_t>(static_cast<uint32_t>(key))};
+            if (is_cell_in_aoi_ring(center, cell, max_ring_cells)) total += ids.size();
+        }
+        return total;
+    }
+    const int64_t count = side * side;
+    for (int64_t i = 0; i < count; ++i) {
+        const SpatialCellCoord cell{static_cast<int32_t>(static_cast<int64_t>(center.cx) + (i / side) - max_ring_cells),
+                                    static_cast<int32_t>(static_cast<int64_t>(center.cy) + (i % side) - max_ring_cells)};
+        if (!is_cell_in_aoi_ring(center, cell, max_ring_cells)) continue;
+        const auto it = grid_.find(cell_key(cell.cx, cell.cy));
+        if (it != grid_.end()) total += it->second.size();
+    }
+    return total;
+}
+
+size_t ActorRegistry::gather_aoi_candidates(float center_x_cm, float center_y_cm, int32_t max_ring_cells, uint64_t* out_ids, size_t max_out) const noexcept {
+    if (!out_ids || max_out == 0 || max_ring_cells < 0 || !std::isfinite(center_x_cm) || !std::isfinite(center_y_cm)) return 0;
+    const SpatialCellCoord center = compute_spatial_cell(center_x_cm, center_y_cm);
+    size_t written = 0;
+    for (const auto& [key, ids] : grid_) {
+        const SpatialCellCoord cell{static_cast<int32_t>(key >> 32), static_cast<int32_t>(static_cast<uint32_t>(key))};
+        if (!is_cell_in_aoi_ring(center, cell, max_ring_cells)) continue;
+        for (const uint64_t id : ids) {
+            out_ids[written++] = id;
+            if (written == max_out) return written;
+        }
+    }
+    return written;
+}
 
 void ActorRegistry::query_wide(double x, double y, double margin_cm, std::vector<uint64_t>& out) const {
     if (!std::isfinite(x) || !std::isfinite(y)) return;

@@ -77,6 +77,41 @@ inline double horizontal_distance(double ax, double ay, double bx, double by) { 
 
 enum class RelevancyTier : uint8_t { Tier0_Close = 0, Tier1_Mid = 1, Tier2_Far = 2, Tier3_Horizon = 3, Culled = 4 };
 
+inline constexpr float kSpatialCellSizeCm = 10000.0f;
+
+struct SpatialCellCoord {
+    int32_t cx = 0;
+    int32_t cy = 0;
+    constexpr bool operator==(const SpatialCellCoord&) const noexcept = default;
+};
+
+[[nodiscard]] constexpr int32_t spatial_axis_cell(float v_cm) noexcept {
+    const double q = static_cast<double>(v_cm) / static_cast<double>(kSpatialCellSizeCm);
+    if (q <= -2147483648.0) return -2147483647 - 1;
+    if (q >= 2147483647.0) return 2147483647;
+    const int32_t i = static_cast<int32_t>(q);
+    return static_cast<double>(i) > q ? i - 1 : i;
+}
+
+[[nodiscard]] constexpr SpatialCellCoord compute_spatial_cell(float x_cm, float y_cm) noexcept {
+    constexpr float kMaxFinite = 3.402823466e+38f;
+    if (!(x_cm >= -kMaxFinite && x_cm <= kMaxFinite) || !(y_cm >= -kMaxFinite && y_cm <= kMaxFinite)) return {0, 0};
+    return {spatial_axis_cell(x_cm), spatial_axis_cell(y_cm)};
+}
+
+[[nodiscard]] constexpr int32_t spatial_cell_chebyshev_dist(SpatialCellCoord a, SpatialCellCoord b) noexcept {
+    const int64_t dx = static_cast<int64_t>(a.cx) - static_cast<int64_t>(b.cx);
+    const int64_t dy = static_cast<int64_t>(a.cy) - static_cast<int64_t>(b.cy);
+    const int64_t adx = dx < 0 ? -dx : dx;
+    const int64_t ady = dy < 0 ? -dy : dy;
+    const int64_t m = adx > ady ? adx : ady;
+    return m > 2147483647LL ? 2147483647 : static_cast<int32_t>(m);
+}
+
+[[nodiscard]] constexpr bool is_cell_in_aoi_ring(SpatialCellCoord observer, SpatialCellCoord target, int32_t max_ring_cells = 3) noexcept {
+    return max_ring_cells >= 0 && spatial_cell_chebyshev_dist(observer, target) <= max_ring_cells;
+}
+
 [[nodiscard]] constexpr RelevancyTier classify_relevancy_tier(float dist_sq, const RelevancyConfig& cfg = {}) noexcept {
     if (!(dist_sq >= 0.0f)) return RelevancyTier::Culled;
     const double d = static_cast<double>(dist_sq), a = cfg.awake_cm, s = cfg.snapshot_cm, m = (a + s) * 0.5;
@@ -85,9 +120,14 @@ enum class RelevancyTier : uint8_t { Tier0_Close = 0, Tier1_Mid = 1, Tier2_Far =
     return d <= m * m ? RelevancyTier::Tier2_Far : (d <= s * s ? RelevancyTier::Tier3_Horizon : RelevancyTier::Culled);
 }
 
-[[nodiscard]] constexpr bool should_replicate_on_tick(RelevancyTier tier, uint64_t tick_index) noexcept {
+[[nodiscard]] constexpr bool should_replicate_subring(RelevancyTier tier, uint64_t tick, uint32_t actor_bucket) noexcept {
     constexpr uint64_t kStride[5] = {1, 2, 6, 30, 0};
-    return static_cast<uint8_t>(tier) < 4 && (tick_index % kStride[static_cast<uint8_t>(tier)]) == 0;
+    const uint8_t idx = static_cast<uint8_t>(tier);
+    return idx < 4 && ((tick + static_cast<uint64_t>(actor_bucket)) % kStride[idx]) == 0;
+}
+
+[[nodiscard]] constexpr bool should_replicate_on_tick(RelevancyTier tier, uint64_t tick_index) noexcept {
+    return should_replicate_subring(tier, tick_index, 0);
 }
 
 }  // namespace aoc::worldd::world

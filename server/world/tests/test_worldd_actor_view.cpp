@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  test_worldd_actor_view.cpp  (plan E1, stage 1)
+//  test_worldd_actor_view.cpp
 //
 //  The actor system on a simulated clock and a real Connection pair (the server's chains reach a second Connection that acknowledges them):
 //
@@ -56,14 +56,8 @@ static const conn::CustomField kCf{0x38, 0x21, 0xc7, 0x0d, 0x43, 0x5d};
 static const Clock::time_point t0{seconds(1000)};
 
 static ConnectionConfig server_config() {
-    ConnectionConfig c;
-    c.outer = kOuter;
-    c.custom_field = kCf;
-    c.server_initial_seq = 14265;
-    c.client_initial_seq = 15870;
-    return c;
+    ConnectionConfig c; c.outer = kOuter; c.custom_field = kCf; c.server_initial_seq = 14265; c.client_initial_seq = 15870; return c;
 }
-// [C_Y_B ~ CoA]
 
 static ConnectionConfig client_config() {
     ConnectionConfig c = server_config();
@@ -117,28 +111,15 @@ static const schema::ClassSchema& schema_named(const char* name) {
 }
 
 static FIntrepidNetworkGUID guid(uint64_t id, uint32_t server = 60, uint32_t rnd = 0x6ee87ee4) {
-    FIntrepidNetworkGUID g;
-    g.ObjectId = id;
-    g.ServerId = server;
-    g.Randomizer = rnd;
-    return g;
+    FIntrepidNetworkGUID g; g.ObjectId = id; g.ServerId = server; g.Randomizer = rnd; return g;
 }
 
 static repl::ExportLink link(uint64_t id, const char* name, bool no_load, uint32_t checksum) {
-    repl::ExportLink l;
-    l.guid = guid(id, 0, 0);
-    l.name = name;
-    l.no_load = no_load;
-    l.has_checksum = true;
-    l.checksum = checksum;
-    return l;
+    repl::ExportLink l; l.guid = guid(id, 0, 0); l.name = name; l.no_load = no_load; l.has_checksum = true; l.checksum = checksum; return l;
 }
 
 static void set_value(repl::ObjectState& o, const char* path, repl::Value v) {
-    if (!o.state.set(*o.schema, path, std::move(v))) {
-        std::printf("  [FAIL] %s.%s refused\n", o.schema->name, path);
-        g_fail++;
-    }
+    if (!o.state.set(*o.schema, path, std::move(v))) { std::printf("  [FAIL] %s.%s refused\n", o.schema->name, path); g_fail++; }
 }
 
 /// An NPC with a few of the values the retail ones have: the actor block and two components, small enough to read the log by.
@@ -214,7 +195,6 @@ static void test_registry() {
     reg.query(std::nan(""), 0, 100, ids);
     reg.query(0, 0, -5, ids);
     CHECK(ids.empty(), "a query with no number in it finds nothing");
-// [C-Y-B :: CoA]
 
     const uint32_t v = reg.find(1000)->version, rv = reg.find(1000)->reliable_version;
     CHECK(reg.move(1000, 25000, 0, 12000, 90) && reg.find(1000)->version == v + 1 && reg.find(1000)->reliable_version == rv, "a move counts as a change that need not be reliable");
@@ -267,16 +247,11 @@ static std::function<bool(uint32_t)> reserved_3_to_6() { return [](uint32_t i) {
 
 /// One pass at `now` with the player at (x, y); then the exchange with the client.
 static void run(ActorView& v, Pair& p, double x, double y, int steps = 1, milliseconds dt = milliseconds(130)) {
-    for (int i = 0; i < steps; ++i) {
-        v.tick(p.s, x, y, p.t);
-        p.step(&v, dt / 2);
-    }
+    for (int i = 0; i < steps; ++i) { v.tick(p.s, x, y, p.t); p.step(&v, dt / 2); }
 }
 
 static std::vector<Seen> take(Pair& p) {
-    std::vector<Seen> out;
-    out.swap(p.seen);
-    return out;
+    std::vector<Seen> out; out.swap(p.seen); return out;
 }
 
 static void test_view_rings() {
@@ -357,7 +332,6 @@ static void test_view_rings() {
     }
     CHECK(em && em_acked && (reopen_bits == expect_acked || reopen_bits == expect_bits) && expect_acked <= expect_bits,
           "the re-open is the whole state again: the bits of an open from an empty shadow (with the exports the client acknowledged left out)");
-// [C O A ~ Cyb]
 
     // 1000 is at x = 10000: from x = -20000 it is 300 m away, in the snapshot ring
     run(v, p, -20000, 0, 1);
@@ -490,7 +464,6 @@ static void test_view_never_dormant_and_removal() {
     reg2.add(make_npc(1006, 99500, 0));
     v2.tick(p2.s, 100000, 0, p2.t + milliseconds(400));
     CHECK(v2.channel_of(1006) == 7, "and the next open takes it: the lowest free index");
-// ~ C:Y:B & C O A ~
 
     // removal: an open actor is closed with Destroyed, a dormant one is opened and closed
     world::ActorRegistry reg3;
@@ -579,8 +552,6 @@ static void test_view_owner_and_component_index() {
         const auto s = take(p);
         if (player == 7) {
             CHECK(v.state_of(3000) == world::ClientState::Awake && !s.empty() && s[0].open, "player 7's effect is opened for player 7");
-// C-Y-B x CoA
-
         } else {
             CHECK(v.state_of(3000) == world::ClientState::None && s.empty() && v.tracked() == 0, "...and never sent to player 8");
         }
@@ -663,7 +634,6 @@ static size_t open_bits(const std::vector<Seen>& s) {
     for (const Seen& x : s) if (x.open) return x.bits;
     return 0;
 }
-// [C-O-A - C-Y-B]
 
 static void test_state_actor() {
     std::printf("the view: a foliage cell's state actor (a snapshot-only actor with kept fast arrays)\n");
@@ -688,16 +658,12 @@ static void test_state_actor() {
     run(v, p, 0, 0, 1);
     s = take(p);
     uint32_t reason = 99;
-    for (const Seen& x : s) {
-        if (x.close) reason = x.reason;
-    }
+    for (const Seen& x : s) if (x.close) reason = x.reason;
     CHECK(reason == kCloseDormancy && v.state_of(5000) == world::ClientState::Dormant, "280 ms after the open it is closed with Dormancy");
     // a harvest: one item changes; the open carries only that delta (the view kept the arrays' shadows)
     reg.modify(5000, world::Change::State, [](world::WorldActor& a) {
         repl::FastArrayState* fa = a.actor.subobjects[1].obj.arrays.get(*a.actor.subobjects[1].obj.schema, "IndexedStates");
-        repl::ElementState es;
-        es.values[1] = repl::Value::u64(0);
-        es.values[2] = repl::Value::u64(7);
+        repl::ElementState es; es.values[1] = repl::Value::u64(0); es.values[2] = repl::Value::u64(7);
         fa->change(fa->items()[7].id, std::move(es));
     });
     run(v, p, 0, 0, 1);
@@ -724,9 +690,7 @@ static void test_state_actor() {
     CHECK(v.state_of(5000) == world::ClientState::None, "out of the snapshot ring the view forgets the actor");
     reg.modify(5000, world::Change::State, [](world::WorldActor& a) {
         repl::FastArrayState* fa = a.actor.subobjects[0].obj.arrays.get(*a.actor.subobjects[0].obj.schema, "IndexedStates");
-        repl::ElementState es;
-        es.values[1] = repl::Value::u64(1);
-        es.values[2] = repl::Value::u64(2);
+        repl::ElementState es; es.values[1] = repl::Value::u64(1); es.values[2] = repl::Value::u64(2);
         fa->change(fa->items()[2].id, std::move(es));
     });
     run(v, p, 0, 0, 1);
@@ -775,6 +739,25 @@ static void test_tick_loop_and_cadence() {
     CHECK(v.classify_tier(5000.0) == RelevancyTier::Tier0_Close && v.should_update_for_tick(10000.0, 2) && !v.should_update_for_tick(10000.0, 3) &&
               !v.should_update_for_tick(40000.0, 0),
           "ActorView tier and tick-cadence helpers");
+    CHECK((world::compute_spatial_cell(0.0f, 9999.0f) == world::SpatialCellCoord{0, 0}) &&
+              (world::compute_spatial_cell(10000.0f, -1.0f) == world::SpatialCellCoord{1, -1}) &&
+              (world::compute_spatial_cell(-10001.0f, -10000.0f) == world::SpatialCellCoord{-2, -1}) &&
+              (world::compute_spatial_cell(std::nanf(""), 5000.0f) == world::SpatialCellCoord{0, 0}) &&
+              world::spatial_cell_chebyshev_dist({1, -1}, {-2, 3}) == 4 &&
+              world::is_cell_in_aoi_ring({0, 0}, {3, -3}, 3) && !world::is_cell_in_aoi_ring({0, 0}, {4, 0}, 3),
+          "100 m spatial cell bucketing, negative floor, NaN fallback and AoI ring bounds");
+    CHECK(world::should_replicate_subring(RelevancyTier::Tier0_Close, 1, 7) &&
+              world::should_replicate_subring(RelevancyTier::Tier1_Mid, 1, 1) && !world::should_replicate_subring(RelevancyTier::Tier1_Mid, 1, 2) &&
+              world::should_replicate_subring(RelevancyTier::Tier2_Far, 4, 2) && !world::should_replicate_subring(RelevancyTier::Tier2_Far, 4, 1) &&
+              world::should_replicate_subring(RelevancyTier::Tier3_Horizon, 25, 5) && !world::should_replicate_subring(RelevancyTier::Tier3_Horizon, 25, 4) &&
+              !world::should_replicate_subring(RelevancyTier::Culled, 0, 0),
+          "should_replicate_subring staggered tick distribution across actor buckets");
+    reg.add(make_npc(1000, 0, 0)); reg.add(make_npc(1002, 9999, 0)); reg.add(make_npc(1004, 25000, -15000)); reg.add(make_npc(1006, 45000, 0));
+    uint64_t aoi_ids[4] = {};
+    CHECK(reg.occupied_cell_count() == 3 && reg.count_actors_in_cell_ring(0.0f, 0.0f, 0) == 2 && reg.count_actors_in_cell_ring(0.0f, 0.0f, 2) == 3 &&
+              reg.count_actors_in_cell_ring(0.0f, 0.0f, 4) == 4 && reg.count_actors_in_cell_ring(std::nanf(""), 0.0f, 3) == 0 &&
+              reg.gather_aoi_candidates(0.0f, 0.0f, 2, aoi_ids, 4) == 3 && reg.gather_aoi_candidates(0.0f, 0.0f, 4, aoi_ids, 2) == 2,
+          "ActorRegistry zero-allocation spatial AoI cell ring counting and candidate gathering");
 }
 
 int main() {
