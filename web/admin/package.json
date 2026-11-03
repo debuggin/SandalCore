@@ -1,0 +1,36 @@
+{
+  "name": "@sandalcore/admin-web",
+  "version": "0.9.3",
+  "private": true,
+  "description": "SandalCore GM Studio 2D/3D Verra Spatial Canvas and Admin Console",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@deck.gl/core": "^9.0.34",
+    "@deck.gl/layers": "^9.0.34",
+    "@deck.gl/mapbox": "^9.0.34",
+    "maplibre-gl": "^4.7.1",
+    "pmtiles": "^3.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vitest": "^2.1.4"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
