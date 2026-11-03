@@ -1,0 +1,487 @@
+openapi: 3.1.0
+info:
+  title: SandalCore GM Studio & Admin Gateway API
+  version: 1.0.0
+  description: >
+    Stateless Backend-for-Frontend (BFF) contract for the SandalCore GM Studio (:8090),
+    providing 3-tier health probes (STD-08), sub-5ms FTS5/BM25 catalog search,
+    10 Hz coalesced world entity delta streaming, and idempotent GM command dispatch
+    with RFC 9457 Problem Details error payloads.
+  license:
+    name: AGPL-3.0-only
+    identifier: AGPL-3.0-only
+servers:
+  - url: http://localhost:8090
+    description: Local stateless admingw BFF instance
+security:
+  - BearerAuth: []
+paths:
+  /livez:
+    get:
+      operationId: getLivenessProbe
+      summary: Liveness probe (STD-08)
+      security: []
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProbeResponse"
+  /readyz:
+    get:
+      operationId: getReadinessProbe
+      summary: Readiness probe (STD-08)
+      security: []
+      responses:
+        "200":
+          description: BFF catalog and worldstream coalescer are ready to serve traffic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProbeResponse"
+        "503":
+          description: Service not ready
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+  /healthz:
+    get:
+      operationId: getHealthProbe
+      summary: Deep health check (STD-08)
+      security: []
+      responses:
+        "200":
+          description: Detailed gateway health telemetry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Gateway unhealthy or draining
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+  /api/v1/catalog/search:
+    get:
+      operationId: searchCatalog
+      summary: Search items, NPCs, quests, abilities, and zones via prefix/BM25 index
+      description: Requires minimum role `GM_OBSERVER`.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+          description: Prefix or fuzzy search query string
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [item, npc, quest, ability, zone]
+          description: Optional entity kind filter
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        "200":
+          description: Ranked catalog matches
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogSearchResponse"
+        "400":
+          description: Invalid query or limit parameter
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "401":
+          description: Missing or invalid Bearer token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "403":
+          description: Insufficient GM role
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+  /api/v1/world/entities:
+    get:
+      operationId: listWorldEntities
+      summary: Snapshot of active world entities within optional zone/viewport bounds
+      description: Requires minimum role `GM_OBSERVER`.
+      parameters:
+        - name: zone
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: minX
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: minY
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: maxX
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: maxY
+          in: query
+          required: false
+          schema:
+            type: number
+      responses:
+        "200":
+          description: Current viewport entity snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorldEntitiesResponse"
+        "400":
+          description: Invalid bounding box coordinates
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "401":
+          description: Missing or invalid Bearer token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+  /api/v1/world/stream:
+    get:
+      operationId: streamWorldDeltas
+      summary: 10 Hz coalesced WebSocket or Server-Sent Events (SSE) entity delta stream
+      description: >
+        Requires minimum role `GM_OBSERVER`. Supports RFC 6455 WebSocket upgrade (`101 Switching Protocols`)
+        or SSE (`text/event-stream`) delivering coalesced `WorldDelta` frames every 100ms (10 Hz)
+        with non-blocking drop/coalesce backpressure on slow consumers.
+      parameters:
+        - name: zone
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: minX
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: minY
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: maxX
+          in: query
+          required: false
+          schema:
+            type: number
+        - name: maxY
+          in: query
+          required: false
+          schema:
+            type: number
+      responses:
+        "101":
+          description: Switching Protocols to 10 Hz WebSocket WorldDelta stream
+        "200":
+          description: 10 Hz Server-Sent Events stream of WorldDelta frames
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/WorldDelta"
+        "400":
+          description: Invalid viewport filter parameters
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "401":
+          description: Missing or invalid Bearer token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+  /api/v1/gm/command:
+    post:
+      operationId: dispatchGMCommand
+      summary: Dispatch an authenticated, idempotent GM command
+      description: >
+        Requires minimum role `GM_OPERATOR` (`GM_ARCHITECT` for cluster/node-level commands).
+        Enforces idempotent execution via `X-Idempotency-Key`.
+      parameters:
+        - name: X-Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+          description: Client-generated idempotency key for safe command retry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GMCommandRequest"
+      responses:
+        "200":
+          description: Command executed or replayed idempotently
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GMCommandReceipt"
+        "400":
+          description: Missing X-Idempotency-Key or malformed command payload
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "401":
+          description: Missing or invalid Bearer token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "403":
+          description: Role insufficient for requested command
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+        "409":
+          description: X-Idempotency-Key reused with a different command payload
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetails"
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Token
+      description: Bearer token mapped to GM_OBSERVER, GM_OPERATOR, or GM_ARCHITECT role.
+  schemas:
+    ProbeResponse:
+      type: object
+      required: [status, probe, serverTimeMs]
+      properties:
+        status:
+          type: string
+        probe:
+          type: string
+          enum: [livez, readyz]
+        catalogEntries:
+          type: integer
+        serverTimeMs:
+          type: integer
+          format: int64
+    HealthResponse:
+      type: object
+      required: [status, probe, uptimeMs, catalogEntries, worldEntities, activeSubscribers, serverTimeMs]
+      properties:
+        status:
+          type: string
+        probe:
+          type: string
+          enum: [healthz]
+        uptimeMs:
+          type: integer
+          format: int64
+        catalogEntries:
+          type: integer
+        worldEntities:
+          type: integer
+        activeSubscribers:
+          type: integer
+        serverTimeMs:
+          type: integer
+          format: int64
+    CatalogEntry:
+      type: object
+      required: [guid, kind, name]
+      properties:
+        guid:
+          type: string
+        kind:
+          type: string
+          enum: [item, npc, quest, ability, zone]
+        name:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        zone:
+          type: string
+        score:
+          type: number
+          format: double
+    CatalogSearchResponse:
+      type: object
+      required: [query, kind, count, items]
+      properties:
+        query:
+          type: string
+        kind:
+          type: string
+        count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogEntry"
+    EntitySnapshot:
+      type: object
+      required: [id, kind, name, zone, x, y, z, yaw, healthPct, level, updatedAtMs]
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+        name:
+          type: string
+        zone:
+          type: string
+        x:
+          type: number
+          format: double
+        y:
+          type: number
+          format: double
+        z:
+          type: number
+          format: double
+        yaw:
+          type: number
+          format: double
+        healthPct:
+          type: number
+          format: double
+        level:
+          type: integer
+        state:
+          type: string
+        updatedAtMs:
+          type: integer
+          format: int64
+    WorldEntitiesResponse:
+      type: object
+      required: [zone, count, entities, serverTimeMs]
+      properties:
+        zone:
+          type: string
+        count:
+          type: integer
+        entities:
+          type: array
+          items:
+            $ref: "#/components/schemas/EntitySnapshot"
+        serverTimeMs:
+          type: integer
+          format: int64
+    WorldDelta:
+      type: object
+      required: [sequence, serverTimeMs, added, updated, removed]
+      properties:
+        sequence:
+          type: integer
+          format: uint64
+        serverTimeMs:
+          type: integer
+          format: int64
+        zone:
+          type: string
+        added:
+          type: array
+          items:
+            $ref: "#/components/schemas/EntitySnapshot"
+        updated:
+          type: array
+          items:
+            $ref: "#/components/schemas/EntitySnapshot"
+        removed:
+          type: array
+          items:
+            type: string
+        droppedTicks:
+          type: integer
+          format: uint64
+    GMCommandRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: string
+        targetId:
+          type: string
+        zone:
+          type: string
+        params:
+          type: object
+          additionalProperties: true
+        reason:
+          type: string
+    GMCommandReceipt:
+      type: object
+      required: [receiptId, idempotencyKey, command, role, status, executedAtMs, idempotentReplay]
+      properties:
+        receiptId:
+          type: string
+        idempotencyKey:
+          type: string
+        command:
+          type: string
+        targetId:
+          type: string
+        role:
+          type: string
+          enum: [GM_OBSERVER, GM_OPERATOR, GM_ARCHITECT]
+        status:
+          type: string
+        executedAtMs:
+          type: integer
+          format: int64
+        idempotentReplay:
+          type: boolean
+    ProblemDetails:
+      type: object
+      description: RFC 9457 Problem Details for HTTP APIs
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+        retryAfter:
+          type: integer
