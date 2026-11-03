@@ -161,6 +161,113 @@ struct CombatWorldConfig {
     std::string fallback_ability = "Ramkin_Hunter_SpearStrike";
 };
 
+inline constexpr int64_t kCcDrWindowMs = 15000;
+inline constexpr uint8_t kCcDrMaxStage = 3;
+inline constexpr int kMaxProcChainDepth = 1;
+
+struct CcDrResult {
+    int64_t effective_duration_ms = 0;
+    double  scale = 1.0;
+    uint8_t stage = 0;
+    bool    immune = false;
+};
+
+struct CcDrTracker {
+    uint8_t stage = 0;
+    int64_t last_applied_ms = -kCcDrWindowMs;
+
+    static constexpr double stage_scale(uint8_t s) noexcept {
+        switch (s) {
+            case 0: return 1.0;
+            case 1: return 0.5;
+            case 2: return 0.25;
+            default: return 0.0;
+        }
+    }
+
+    CcDrResult apply(int64_t base_duration_ms, int64_t now_ms) noexcept {
+        if (base_duration_ms <= 0) {
+            return {0, 0.0, stage, stage >= kCcDrMaxStage};
+        }
+        if (now_ms - last_applied_ms >= kCcDrWindowMs) {
+            stage = 0;
+        }
+        const uint8_t applied_stage = stage;
+        const double scale = stage_scale(applied_stage);
+        const bool is_immune = (applied_stage >= kCcDrMaxStage);
+        const int64_t effective_ms = is_immune ? 0 : static_cast<int64_t>(base_duration_ms * scale);
+        last_applied_ms = now_ms;
+        if (stage < kCcDrMaxStage) {
+            ++stage;
+        }
+        return {effective_ms, scale, applied_stage, is_immune};
+    }
+
+    void reset() noexcept {
+        stage = 0;
+        last_applied_ms = -kCcDrWindowMs;
+    }
+};
+
+[[nodiscard]] inline constexpr bool can_trigger_proc_at_depth(int proc_depth) noexcept {
+    return proc_depth >= 0 && proc_depth < kMaxProcChainDepth;
+}
+
+class ProcDepthScope {
+public:
+    explicit ProcDepthScope(int& depth) noexcept
+        : depth_(depth), allowed_(can_trigger_proc_at_depth(depth)) {
+        if (allowed_) {
+            ++depth_;
+        }
+    }
+    ~ProcDepthScope() noexcept {
+        if (allowed_) {
+            --depth_;
+        }
+    }
+    ProcDepthScope(const ProcDepthScope&) = delete;
+    ProcDepthScope& operator=(const ProcDepthScope&) = delete;
+
+    [[nodiscard]] bool allowed() const noexcept { return allowed_; }
+    [[nodiscard]] int depth() const noexcept { return depth_; }
+
+private:
+    int& depth_;
+    bool allowed_ = false;
+};
+
+struct ProcGateState {
+    int proc_depth = 0;
+    std::unordered_map<int64_t, int64_t> last_proc_ms;
+
+    [[nodiscard]] bool can_fire(int64_t proc_guid, int64_t icd_ms, int64_t now_ms) const noexcept {
+        if (proc_guid <= 0 || !can_trigger_proc_at_depth(proc_depth)) {
+            return false;
+        }
+        if (icd_ms <= 0) {
+            return true;
+        }
+        const auto it = last_proc_ms.find(proc_guid);
+        if (it == last_proc_ms.end()) {
+            return true;
+        }
+        return now_ms >= it->second && (now_ms - it->second) >= icd_ms;
+    }
+
+    bool try_fire(int64_t proc_guid, int64_t icd_ms, int64_t now_ms,
+                  double roll01 = 0.0, double proc_chance = 1.0) {
+        if (proc_chance <= 0.0 || roll01 < 0.0 || roll01 >= proc_chance) {
+            return false;
+        }
+        if (!can_fire(proc_guid, icd_ms, now_ms)) {
+            return false;
+        }
+        last_proc_ms[proc_guid] = now_ms;
+        return true;
+    }
+};
+
 class CombatWorld {
 public:
     using DeathHook = std::function<void(const DeathEvent&)>;
@@ -276,6 +383,24 @@ public:
 
     /// Forgets a dead NPC's combatant (part 2: the corpse closed or the NPC respawned).
     void forget(uint64_t actor_id);
+
+    CcDrResult apply_cc_with_dr(uint64_t target_actor, int64_t base_duration_ms, int64_t now_ms) {
+        return cc_dr_by_target_[target_actor].apply(base_duration_ms, now_ms);
+    }
+
+    const CcDrTracker* cc_dr_of(uint64_t target_actor) const {
+        const auto it = cc_dr_by_target_.find(target_actor);
+        return it == cc_dr_by_target_.end() ? nullptr : &it->second;
+    }
+
+    bool try_trigger_proc(uint64_t actor_id, int64_t proc_guid, int64_t icd_ms, int64_t now_ms,
+                          double proc_chance = 1.0) {
+        ProcGateState& gate = proc_gates_by_actor_[actor_id];
+        const double roll01 = (proc_chance >= 1.0) ? 0.0 : rng_.rand_double();
+        return gate.try_fire(proc_guid, icd_ms, now_ms, roll01, proc_chance);
+    }
+
+    ProcGateState& proc_gate_of(uint64_t actor_id) { return proc_gates_by_actor_[actor_id]; }
 
     // ---- a game master's hands on an NPC (the admin API's NPC actions; the network thread)
     /// Kills the NPC as a lethal hit would (its death, its flags and the death hook, which gets `gm` set: nobody fought it).  False, with `why`, for an NPC that has no stats to fight with
@@ -432,6 +557,8 @@ private:
     static constexpr size_t kLoggedNpcCasts = 200;
     size_t                 projectiles_logged_ = 0;              // the projectiles that arrived, written to the log so far (the first kLoggedProjectiles)
     static constexpr size_t kLoggedProjectiles = 200;
+    std::unordered_map<uint64_t, CcDrTracker> cc_dr_by_target_;
+    std::unordered_map<uint64_t, ProcGateState> proc_gates_by_actor_;
 };
 
 }  // namespace aoc::worldd::combat

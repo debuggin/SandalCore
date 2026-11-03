@@ -21,6 +21,7 @@
 // ============================================================================
 #include "session/ability_pipeline.h"
 
+#include "combat/combat_world.h"
 #include "content/content_db.h"
 
 #include <spdlog/spdlog.h>
@@ -62,7 +63,7 @@ void AbilityPipeline::set_reaction_carriers(std::vector<int64_t> effect_guids) {
 }
 
 void AbilityPipeline::raise_hit_event(AbilityChange& c, const HitEvent& ev, double t) {
-    if (!reactions_enabled_ || reaction_depth_ > 0 || !catalog_ || catalog_->reactions() == 0 || !ev.hit) return;
+    if (!reactions_enabled_ || !combat::can_trigger_proc_at_depth(reaction_depth_) || !catalog_ || catalog_->reactions() == 0 || !ev.hit) return;
     // a hit with no event tags and no stat mods raises no event [the game's code: the hit's record is tested for tags, mods and the force flag]
     if (ev.hit->tags.empty() && ev.hit->mods.empty()) return;
     // a hit a reaction made raises no reaction
@@ -73,13 +74,14 @@ void AbilityPipeline::raise_hit_event(AbilityChange& c, const HitEvent& ev, doub
 }
 
 void AbilityPipeline::raise_ability_event(AbilityChange& c, const AbilityDef& ability, double t) {
-    if (!reactions_enabled_ || reaction_depth_ > 0 || !catalog_ || catalog_->reactions() == 0) return;
+    if (!reactions_enabled_ || !combat::can_trigger_proc_at_depth(reaction_depth_) || !catalog_ || catalog_->reactions() == 0) return;
     ReactionContext rc;
     rc.consumed = &ability;
     run_reactions(c, kKindAbility, kBitConsume, rc, t);
 }
 
 void AbilityPipeline::run_reactions(AbilityChange& c, int kind, int bit, const ReactionContext& rc, double t) {
+    if (!combat::can_trigger_proc_at_depth(reaction_depth_)) return;
     // the carriers in the order the character got them: the ranks' passives first, then what abilities and hits applied (a snapshot: a reaction's hits change
     // the effects)
     std::vector<int64_t> carriers = reaction_carriers_;
@@ -130,6 +132,8 @@ void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, cons
         spdlog::info("[abilities] the reaction {} lands on targets (mask {}) that are not all served yet: the holder and the hit's targets get its hits", row.name, row.targets_mask);
     }
     if ((row.targets_mask & served) == 0) return;
+    combat::ProcDepthScope depth_scope(reaction_depth_);
+    if (!depth_scope.allowed()) return;
     ++reaction_procs_[row.guid];
     ++reactions_fired_;
     // the reaction's hits are the game's own records, applied under the reaction as their source: the client takes them as the server's (predicted on neither
@@ -141,7 +145,6 @@ void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, cons
     src.confirm = true;
     src.autonomous = false;
     src.simulated = false;
-    ++reaction_depth_;
     size_t applied = 0;
     for (const int64_t hit_guid : row.hits) {
         const HitDef* hit = catalog_->hit(hit_guid);
@@ -161,7 +164,6 @@ void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, cons
             ++applied;
         }
     }
-    --reaction_depth_;
     spdlog::log(reactions_fired_ <= 40 ? spdlog::level::info : spdlog::level::debug, "[abilities] the reaction {} fired ({} of its {} hit(s) applied; event: {})", row.name, applied, row.hits.size(),
                 rc.hit && rc.hit->hit ? "a hit, " + rc.hit->hit->row.name : rc.consumed ? "the cost of " + rc.consumed->row.name + " paid" : std::string("?"));
 }

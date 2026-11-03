@@ -2,23 +2,13 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-#include "content/content_types_economy.h"
 #include "items/currency.h"
 #include "items/inventory.h"
-#include "items/rarity.h"
-#include "items/wallet.h"
-#include "protocol/repl/vendor_codec.h"
-#include "svc/services.h"
 #include "vendor/sell_rules.h"
 #include "vendor/town_shops.h"
 
-#include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <optional>
-#include <string>
-#include <unordered_map>
-#include <vector>
 
 namespace {
 
@@ -128,9 +118,19 @@ bool test_bag_equip_and_stack_move(items::Inventory& inv, const TestCatalog& cat
         svc::ItemContainer::Backpack, 1, 1, kGuidSword, svc::ItemContainer::Resource0, 3, &cat);
     if (mv_bad.ok) return false;
 
+    const auto mv_partial_refused = inv.move(
+        svc::ItemContainer::Resource0, 0, 7, kGuidOreA, svc::ItemContainer::Resource0, 3, &cat);
+    if (mv_partial_refused.ok || inv.count_of(kItemOre) != 23) return false;
+
+    const auto mv_fill_refused = inv.move(
+        svc::ItemContainer::Resource0, 1, 3, kGuidOreB, svc::ItemContainer::Resource0, 0, &cat);
+    if (mv_fill_refused.ok || inv.count_of(kItemOre) != 23) return false;
+
     const auto mv_res = inv.move(
         svc::ItemContainer::Resource0, 1, 3, kGuidOreB, svc::ItemContainer::Resource0, 2, &cat);
-    if (!mv_res.ok || !inv.at(svc::ItemContainer::Resource0, 2)) return false;
+    if (!mv_res.ok || !inv.at(svc::ItemContainer::Resource0, 2) || inv.count_of(kItemOre) != 23) {
+        return false;
+    }
 
     const auto uneq_refused = inv.use(
         svc::ItemContainer::Equipment, items::equip::ResourceBag0, kGuidBag, 0xFFFFFFFFu, cat);
@@ -158,6 +158,12 @@ bool test_tier_up_and_grants(items::Inventory& inv, const TestCatalog& cat) {
 
     const auto tk = inv.take(kItemPotion, 12);
     if (!tk.ok || inv.count_of(kItemPotion) != 3) return false;
+
+    const auto top_up = inv.grant(
+        {make_item(svc::ItemContainer::Backpack, 0, kItemPotion, "00000000000000000000000000000503", 4)},
+        cat);
+    if (!top_up.ok || inv.count_of(kItemPotion) != 7) return false;
+    if (!inv.take(kItemPotion, 4).ok || inv.count_of(kItemPotion) != 3) return false;
 
     const auto tmat = inv.take_materials(kItemOre, rf, 0, 6, 1, true);
     return tmat.ok && inv.count_materials(kItemOre, rf, 0, 6) == 0;
@@ -205,11 +211,73 @@ bool test_glint_and_wallet_math() {
     const auto comp = table->compress({{items::kGlintT1Item, 25}, {items::kGlintT1Item + 1, 8}});
     if (!comp.changed || comp.lines.size() != 2) return false;
 
+    if (items::glint_tier_value(*table, items::kGlintT1Item, 7) != 7) return false;
+    if (items::glint_tier_value(*table, items::kGlintT1Item + 1, 4) != 40) return false;
+    if (items::glint_tier_value(*table, items::kGlintT1Item + 2, 3) != 300) return false;
+    if (items::glint_tier_value(*table, kItemSword, 1).has_value()) return false;
+    if (items::glint_tier_value(*table, items::kGlintT1Item, -1).has_value()) return false;
+    if (items::glint_tier_value(
+            *table, items::kGlintT1Item + 2, std::numeric_limits<int64_t>::max() / 100 + 1)
+            .has_value()) {
+        return false;
+    }
+    if (items::glint_tier_value(0, 9) != 9 || items::glint_tier_value(2, 5) != 500) return false;
+    if (items::glint_tier_value(-1, 1).has_value() || items::glint_tier_value(2, -1).has_value()) {
+        return false;
+    }
+
     items::Wallet wallet({{items::kCopperCurrency, 5000}});
     if (wallet.copper() != 5000 || !wallet.can_pay(3500) || wallet.can_pay(6000)) return false;
     if (!wallet.pay(1200) || wallet.copper() != 3800) return false;
     const int64_t added = wallet.give(items::kMoneyCap);
     return added == (items::kMoneyCap - 3800) && wallet.copper() == items::kMoneyCap;
+}
+
+bool test_checked_currency_ledger_guards() {
+    constexpr int64_t kMaxI64 = std::numeric_limits<int64_t>::max();
+    constexpr uint64_t kMaxU64 = std::numeric_limits<uint64_t>::max();
+
+    int64_t bal = 1000;
+    if (items::try_credit_currency(0, bal, 100) || items::try_credit_currency(-5, bal, 100)) return false;
+    if (items::try_credit_currency(items::kCopperCurrency, bal, -1)) return false;
+    if (items::try_credit_currency(items::kCopperCurrency, bal, kMaxI64 - 999)) return false;
+    if (bal != 1000) return false;
+    if (!items::try_credit_currency(items::kCopperCurrency, bal, 500, 1500) || bal != 1500) return false;
+    if (items::try_credit_currency(items::kCopperCurrency, bal, 1, 1500) || bal != 1500) return false;
+
+    if (items::try_debit_currency(0, bal, 100) || items::try_debit_currency(items::kCopperCurrency, bal, -1)) {
+        return false;
+    }
+    if (items::try_debit_currency(items::kCopperCurrency, bal, 1501) || bal != 1500) return false;
+    if (!items::try_debit_currency(items::kCopperCurrency, bal, 500) || bal != 1000) return false;
+
+    uint64_t ubal = kMaxU64 - 10u;
+    if (items::try_credit_currency(0, ubal, 5u) || items::try_credit_currency(items::kCopperCurrency, ubal, 11u)) {
+        return false;
+    }
+    if (!items::try_credit_currency(items::kCopperCurrency, ubal, 10u) || ubal != kMaxU64) return false;
+    if (items::try_debit_currency(0, ubal, 1u) || !items::try_debit_currency(items::kCopperCurrency, ubal, kMaxU64)) {
+        return false;
+    }
+    if (ubal != 0u || items::try_debit_currency(items::kCopperCurrency, ubal, 1u)) return false;
+
+    int64_t src = 800;
+    int64_t dst = 400;
+    const int64_t total_before = src + dst;
+    if (items::try_transfer_currency(0, src, dst, 100)) return false;
+    if (items::try_transfer_currency(items::kCopperCurrency, src, dst, 801)) return false;
+    if (items::try_transfer_currency(items::kCopperCurrency, src, dst, 300, 600)) return false;
+    if (src != 800 || dst != 400 || (src + dst) != total_before) return false;
+    if (!items::try_transfer_currency(items::kCopperCurrency, src, dst, 250, 1000)) return false;
+    if (src != 550 || dst != 650 || (src + dst) != total_before) return false;
+
+    std::map<int64_t, int64_t> ledger;
+    if (items::try_credit_currency(ledger, 0, 50) || !ledger.empty()) return false;
+    if (!items::try_credit_currency(ledger, items::kCopperCurrency, 300, 500)) return false;
+    if (items::try_credit_currency(ledger, items::kCopperCurrency, 201, 500)) return false;
+    if (items::try_debit_currency(ledger, items::kCopperCurrency, 301)) return false;
+    return items::try_debit_currency(ledger, items::kCopperCurrency, 300) &&
+           ledger[items::kCopperCurrency] == 0;
 }
 
 bool test_vendor_quote_sale_and_repair() {
@@ -256,6 +324,7 @@ bool test_vendor_quote_sale_and_repair() {
 
 int run_vendor_glint_denomination_change() {
     if (!test_glint_and_wallet_math()) return 1;
+    if (!test_checked_currency_ledger_guards()) return 1;
     if (!test_vendor_quote_sale_and_repair()) return 1;
     return 0;
 }

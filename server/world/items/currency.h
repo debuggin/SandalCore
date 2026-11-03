@@ -202,4 +202,125 @@ private:
     std::unordered_map<int64_t, std::pair<size_t, size_t>>     by_item_;   // item record -> (tier, kind)
 };
 
+[[nodiscard]] inline constexpr bool is_valid_currency_id(int64_t currency_id) noexcept {
+    return currency_id > 0;
+}
+
+[[nodiscard]] inline std::optional<int64_t> glint_tier_value(
+    const CurrencyTable& table, int64_t item_id, int64_t quantity = 1) noexcept {
+    if (quantity < 0) return std::nullopt;
+    const CurrencyTier* tier = table.tier_of(item_id);
+    const CurrencyKind* kind = table.kind_of(item_id);
+    if (!tier || !tier->carried || !kind || kind->value <= 0) return std::nullopt;
+    if (quantity == 0) return 0;
+    if (quantity > std::numeric_limits<int64_t>::max() / kind->value) return std::nullopt;
+    return quantity * kind->value;
+}
+
+[[nodiscard]] inline constexpr std::optional<int64_t> glint_tier_value(
+    int tier_ord, int64_t quantity = 1, int64_t rate = 10) noexcept {
+    if (tier_ord < 0 || tier_ord > 18 || quantity < 0 || rate < 1) return std::nullopt;
+    if (quantity == 0) return 0;
+    int64_t unit = 1;
+    for (int i = 0; i < tier_ord; ++i) {
+        if (unit > std::numeric_limits<int64_t>::max() / rate) return std::nullopt;
+        unit *= rate;
+    }
+    if (quantity > std::numeric_limits<int64_t>::max() / unit) return std::nullopt;
+    return quantity * unit;
+}
+
+[[nodiscard]] inline constexpr bool try_credit_currency(
+    int64_t currency_id, int64_t& balance, int64_t amount,
+    int64_t max_cap = std::numeric_limits<int64_t>::max()) noexcept {
+    if (!is_valid_currency_id(currency_id) || balance < 0 || amount < 0 || max_cap < 0) return false;
+    if (balance > max_cap || amount > std::numeric_limits<int64_t>::max() - balance) return false;
+    const int64_t next = balance + amount;
+    if (next > max_cap) return false;
+    balance = next;
+    return true;
+}
+
+[[nodiscard]] inline constexpr bool try_credit_currency(
+    int64_t currency_id, uint64_t& balance, uint64_t amount,
+    uint64_t max_cap = std::numeric_limits<uint64_t>::max()) noexcept {
+    if (!is_valid_currency_id(currency_id) || balance > max_cap) return false;
+    if (amount > std::numeric_limits<uint64_t>::max() - balance) return false;
+    const uint64_t next = balance + amount;
+    if (next > max_cap) return false;
+    balance = next;
+    return true;
+}
+
+[[nodiscard]] inline bool try_credit_currency(
+    std::map<int64_t, int64_t>& ledger, int64_t currency_id, int64_t amount,
+    int64_t max_cap = std::numeric_limits<int64_t>::max()) {
+    const auto it = ledger.find(currency_id);
+    int64_t current = (it == ledger.end()) ? 0 : it->second;
+    if (!try_credit_currency(currency_id, current, amount, max_cap)) return false;
+    ledger[currency_id] = current;
+    return true;
+}
+
+[[nodiscard]] inline constexpr bool try_debit_currency(
+    int64_t currency_id, int64_t& balance, int64_t amount) noexcept {
+    if (!is_valid_currency_id(currency_id) || balance < 0 || amount < 0 || amount > balance) {
+        return false;
+    }
+    balance -= amount;
+    return true;
+}
+
+[[nodiscard]] inline constexpr bool try_debit_currency(
+    int64_t currency_id, uint64_t& balance, uint64_t amount) noexcept {
+    if (!is_valid_currency_id(currency_id) || amount > balance) return false;
+    balance -= amount;
+    return true;
+}
+
+[[nodiscard]] inline bool try_debit_currency(
+    std::map<int64_t, int64_t>& ledger, int64_t currency_id, int64_t amount) {
+    const auto it = ledger.find(currency_id);
+    int64_t current = (it == ledger.end()) ? 0 : it->second;
+    if (!try_debit_currency(currency_id, current, amount)) return false;
+    if (current == 0 && it != ledger.end()) {
+        it->second = 0;
+    } else if (current > 0) {
+        ledger[currency_id] = current;
+    }
+    return true;
+}
+
+[[nodiscard]] inline constexpr bool try_transfer_currency(
+    int64_t currency_id, int64_t& from_balance, int64_t& to_balance, int64_t amount,
+    int64_t max_cap = std::numeric_limits<int64_t>::max()) noexcept {
+    if (&from_balance == &to_balance) {
+        return is_valid_currency_id(currency_id) && from_balance >= 0 && amount >= 0 &&
+               amount <= from_balance && from_balance <= max_cap;
+    }
+    int64_t next_from = from_balance;
+    int64_t next_to = to_balance;
+    if (!try_debit_currency(currency_id, next_from, amount)) return false;
+    if (!try_credit_currency(currency_id, next_to, amount, max_cap)) return false;
+    from_balance = next_from;
+    to_balance = next_to;
+    return true;
+}
+
+[[nodiscard]] inline constexpr bool try_transfer_currency(
+    int64_t currency_id, uint64_t& from_balance, uint64_t& to_balance, uint64_t amount,
+    uint64_t max_cap = std::numeric_limits<uint64_t>::max()) noexcept {
+    if (&from_balance == &to_balance) {
+        return is_valid_currency_id(currency_id) && amount <= from_balance &&
+               from_balance <= max_cap;
+    }
+    uint64_t next_from = from_balance;
+    uint64_t next_to = to_balance;
+    if (!try_debit_currency(currency_id, next_from, amount)) return false;
+    if (!try_credit_currency(currency_id, next_to, amount, max_cap)) return false;
+    from_balance = next_from;
+    to_balance = next_to;
+    return true;
+}
+
 }  // namespace aoc::worldd::items

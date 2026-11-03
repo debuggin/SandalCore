@@ -2,21 +2,14 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-#include "combat/hit_port.h"
+#include "combat/combat_world.h"
 #include "session/abilities.h"
 #include "session/ability_pipeline.h"
-#include "stats/character_stats.h"
-#include "stats/stat_engine.h"
-#include "stats/stat_program.h"
 
 #include <cmath>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <map>
-#include <string>
-#include <vector>
 
 namespace {
 
@@ -154,6 +147,43 @@ struct PipelineFixture {
     }
 };
 
+void verify_proc_icd_and_prng_boundaries() {
+    combat::ProcGateState gate;
+    constexpr int64_t kProcGuid = 9001;
+    constexpr int64_t kIcdMs = 3000;
+
+    CHECK(!gate.can_fire(0, kIcdMs, 1000));
+    CHECK(!gate.try_fire(0, kIcdMs, 1000, 0.0, 1.0));
+    CHECK(gate.can_fire(kProcGuid, kIcdMs, 1000));
+    CHECK(!gate.try_fire(kProcGuid, kIcdMs, 1000, 0.25, 0.25));
+    CHECK(!gate.try_fire(kProcGuid, kIcdMs, 1000, 0.50, 0.25));
+    CHECK(!gate.try_fire(kProcGuid, kIcdMs, 1000, -0.01, 0.25));
+    CHECK(!gate.try_fire(kProcGuid, kIcdMs, 1000, 0.0, 0.0));
+    CHECK(gate.try_fire(kProcGuid, kIcdMs, 1000, 0.2499, 0.25));
+
+    CHECK(!gate.can_fire(kProcGuid, kIcdMs, 1000));
+    CHECK(!gate.can_fire(kProcGuid, kIcdMs, 3999));
+    CHECK(!gate.try_fire(kProcGuid, kIcdMs, 3999, 0.0, 1.0));
+    CHECK(gate.can_fire(kProcGuid, kIcdMs, 4000));
+
+    {
+        combat::ProcDepthScope active_proc(gate.proc_depth);
+        CHECK(active_proc.allowed());
+        CHECK(!gate.can_fire(kProcGuid, kIcdMs, 4000));
+        CHECK(!gate.try_fire(kProcGuid, kIcdMs, 4000, 0.0, 1.0));
+    }
+    CHECK(gate.try_fire(kProcGuid, kIcdMs, 4000, 0.0, 1.0));
+
+    stats::SplitMix rng_a{42u};
+    stats::SplitMix rng_b{42u};
+    for (int i = 0; i < 16; ++i) {
+        const double u_a = rng_a.rand_double();
+        const double u_b = rng_b.rand_double();
+        CHECK_NEAR(u_a, u_b, 1e-15);
+        CHECK(u_a >= 0.0 && u_a < 1.0);
+    }
+}
+
 void case_proc_chain_depth_guard() {
     PipelineFixture fx;
     std::string err;
@@ -202,6 +232,75 @@ void case_proc_chain_depth_guard() {
 
     pipeline.set_dead(true);
     CHECK(pipeline.dead());
+    verify_proc_icd_and_prng_boundaries();
+}
+
+void verify_proc_depth_scope_guard() {
+    CHECK(combat::kMaxProcChainDepth == 1);
+    CHECK(combat::can_trigger_proc_at_depth(0));
+    CHECK(!combat::can_trigger_proc_at_depth(1));
+    CHECK(!combat::can_trigger_proc_at_depth(2));
+    CHECK(!combat::can_trigger_proc_at_depth(-1));
+
+    int depth = 0;
+    {
+        combat::ProcDepthScope outer(depth);
+        CHECK(outer.allowed());
+        CHECK(depth == 1);
+        CHECK(!combat::can_trigger_proc_at_depth(depth));
+        {
+            combat::ProcDepthScope inner(depth);
+            CHECK(!inner.allowed());
+            CHECK(depth == 1);
+        }
+        CHECK(depth == 1);
+    }
+    CHECK(depth == 0);
+}
+
+void verify_four_stage_cc_dr_window() {
+    CHECK(combat::kCcDrWindowMs == 15000);
+    CHECK(combat::kCcDrMaxStage == 3);
+    CHECK_NEAR(combat::CcDrTracker::stage_scale(0), 1.0, 1e-9);
+    CHECK_NEAR(combat::CcDrTracker::stage_scale(1), 0.5, 1e-9);
+    CHECK_NEAR(combat::CcDrTracker::stage_scale(2), 0.25, 1e-9);
+    CHECK_NEAR(combat::CcDrTracker::stage_scale(3), 0.0, 1e-9);
+    CHECK_NEAR(combat::CcDrTracker::stage_scale(4), 0.0, 1e-9);
+
+    combat::CcDrTracker dr;
+    const auto invalid = dr.apply(0, 500);
+    CHECK(invalid.effective_duration_ms == 0);
+    CHECK(dr.stage == 0);
+
+    const auto s0 = dr.apply(4000, 1000);
+    CHECK(s0.stage == 0 && !s0.immune);
+    CHECK_NEAR(s0.scale, 1.0, 1e-9);
+    CHECK(s0.effective_duration_ms == 4000);
+
+    const auto s1 = dr.apply(4000, 5000);
+    CHECK(s1.stage == 1 && !s1.immune);
+    CHECK_NEAR(s1.scale, 0.5, 1e-9);
+    CHECK(s1.effective_duration_ms == 2000);
+
+    const auto s2 = dr.apply(4000, 9000);
+    CHECK(s2.stage == 2 && !s2.immune);
+    CHECK_NEAR(s2.scale, 0.25, 1e-9);
+    CHECK(s2.effective_duration_ms == 1000);
+
+    const auto s3 = dr.apply(4000, 12000);
+    CHECK(s3.stage == 3 && s3.immune);
+    CHECK_NEAR(s3.scale, 0.0, 1e-9);
+    CHECK(s3.effective_duration_ms == 0);
+
+    const auto s3_before_expiry = dr.apply(4000, 12000 + combat::kCcDrWindowMs - 1);
+    CHECK(s3_before_expiry.stage == 3 && s3_before_expiry.immune);
+    CHECK(s3_before_expiry.effective_duration_ms == 0);
+
+    const auto s_reset = dr.apply(4000, s3_before_expiry.effective_duration_ms + 12000 +
+                                            combat::kCcDrWindowMs - 1 + combat::kCcDrWindowMs);
+    CHECK(s_reset.stage == 0 && !s_reset.immune);
+    CHECK_NEAR(s_reset.scale, 1.0, 1e-9);
+    CHECK(s_reset.effective_duration_ms == 4000);
 }
 
 void verify_dr_complement_scaling(const PipelineFixture& fx, stats::CharacterStats& cstats) {
@@ -245,6 +344,8 @@ void case_cc_diminishing_returns_clock() {
     std::vector<stats::WornItem> empty_worn;
     CHECK(cstats.start(empty_worn, err));
 
+    verify_proc_icd_and_prng_boundaries();
+    verify_four_stage_cc_dr_window();
     verify_dr_complement_scaling(fx, cstats);
 
     std::map<int64_t, double> init_stats = {
@@ -290,6 +391,7 @@ int main(int argc, char** argv) {
 
     if (!selected_case || std::strcmp(selected_case, "proc_chain_depth_guard") == 0) {
         case_proc_chain_depth_guard();
+        verify_proc_depth_scope_guard();
     }
     if (!selected_case || std::strcmp(selected_case, "cc_diminishing_returns_clock") == 0) {
         case_cc_diminishing_returns_clock();
