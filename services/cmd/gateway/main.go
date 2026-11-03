@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -33,6 +34,7 @@ import (
 	"aocrop/services/internal/gatewaygrpc"
 	"aocrop/services/internal/ics"
 	"aocrop/services/internal/svcauth"
+	"aocrop/services/internal/telemetry"
 	"aocrop/services/internal/tickets"
 )
 
@@ -92,11 +94,11 @@ func run() error {
 	internal := newInternalServer(ticketStore, token)
 
 	// Bind both ports before saying "listening", so a taken port fails here.
-	icsLis, err := net.Listen("tcp", cfg.GatewayICSAddr)
+	icsLis, err := telemetry.ListenDualStackTCP(ctx, cfg.GatewayICSAddr)
 	if err != nil {
 		return err
 	}
-	grpcLis, err := net.Listen("tcp", cfg.GatewayGRPCAddr)
+	grpcLis, err := telemetry.ListenDualStackTCP(ctx, cfg.GatewayGRPCAddr)
 	if err != nil {
 		icsLis.Close()
 		return err
@@ -118,11 +120,20 @@ func run() error {
 }
 
 // newInternalServer is the gRPC server world servers call (RedeemTicket). It
-// requires the service token.
+// requires the service token and enforces non-strict UUIDv7 idempotency replay.
 func newInternalServer(store gatewaygrpc.Tickets, token svcauth.Token) *grpc.Server {
-	s := grpc.NewServer(token.ServerOptions()...)
+	ledger := telemetry.NewMemoryIdempotencyLedger(0)
+	opts := append(token.ServerOptions(), grpc.ChainUnaryInterceptor(telemetry.UnaryIdempotencyInterceptor(ledger, false)))
+	s := grpc.NewServer(opts...)
 	gatewayv1.RegisterGatewayServiceServer(s, gatewaygrpc.New(store))
 	return s
+}
+
+func newGatewayHTTPServer(addr string, ledger telemetry.IdempotencyLedger, next http.Handler) *http.Server {
+	if next == nil {
+		next = http.NewServeMux()
+	}
+	return telemetry.NewCleartextHTTPServer(addr, telemetry.NewIdempotencyMiddleware(ledger, false)(next))
 }
 
 // shutdown drains the servers within one budget, then cuts what is left: the
