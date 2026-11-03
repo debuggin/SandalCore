@@ -5,6 +5,16 @@ function(add_sandal_domain_test_exe target_name source_relpath)
     target_include_directories(${target_name} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/world"
         "${PROJECT_SOURCE_DIR}"
+        "${PROJECT_SOURCE_DIR}/server/world"
+        "${PROJECT_SOURCE_DIR}/libs/aocnet"
+        "${PROJECT_SOURCE_DIR}/libs/aocnav/include"
+        "${PROJECT_SOURCE_DIR}/libs/aocstats/include"
+    )
+    target_link_libraries(${target_name} PRIVATE
+        world_core
+        aocnav
+        aocstats
+        aocnet
     )
     target_compile_features(${target_name} PRIVATE cxx_std_20)
     set_target_properties(${target_name} PROPERTIES
@@ -47,6 +57,7 @@ set(SANDAL_DOMAIN_TEST_TARGETS
     test_world_config
     test_health_probes_drain
     test_canonical_json_logger
+    test_net_serialize_all_12
 )
 
 add_sandal_domain_test_exe(test_world_clock_and_data_free world/test_world_clock_and_data_free.cpp)
@@ -78,6 +89,14 @@ target_include_directories(test_move_packed_inline_base PRIVATE "${PROJECT_SOURC
 target_link_libraries(test_move_packed_inline_base PRIVATE aocnet)
 add_sandal_domain_test_exe(test_diff_save_334_parity character/test_diff_save_334_parity.cpp)
 add_sandal_domain_test_exe(test_stop_cast_race combat/test_stop_cast_race.cpp)
+add_sandal_domain_test_exe(test_net_serialize_all_12 protocol/test_net_serialize_all_12.cpp)
+add_test(
+    NAME protocol.test_net_serialize_all_12
+    COMMAND $<TARGET_FILE:test_net_serialize_all_12>
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+
+get_property(SANDAL_WORLD_TEST_TARGETS GLOBAL PROPERTY SANDAL_WORLD_TEST_TARGETS)
 
 set(SANDAL_AOCNET_TEST_TARGETS
     test_cs_packet_info
@@ -135,8 +154,19 @@ add_custom_target(sandal_ctest_suite
         test_world_stats
         test_world_effects
         ${SANDAL_DOMAIN_TEST_TARGETS}
+        ${SANDAL_WORLD_TEST_TARGETS}
 )
 set_target_properties(sandal_ctest_suite PROPERTIES FOLDER "Tests")
+
+if(SANDAL_WORLD_TEST_TARGETS)
+    foreach(t IN LISTS SANDAL_WORLD_TEST_TARGETS)
+        add_test(
+            NAME world.${t}
+            COMMAND $<TARGET_FILE:${t}>
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        )
+    endforeach()
+endif()
 
 foreach(t IN LISTS SANDAL_AOCNET_TEST_TARGETS)
     add_test(

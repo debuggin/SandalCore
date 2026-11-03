@@ -14,11 +14,19 @@
 
 namespace aoc { namespace protocol { namespace repl {
 
+using ByteBlob = std::string;
+inline constexpr size_t kMaxDomainBlobBytes = 65536;
+
 enum class S {
     Unknown, Vec3, Vec2, Ticks, Rotator, Quantized, Normal, RepMovement, LoadTracker, UniqueId, Tag, TagContainer,
     StatInt32, Quat, GuidToBool, Alignment, AppearanceId, Customization, ItemInstance, ItemStorageEvent, HitConfirmations,
     MovementInput, VendorPurchase, VendorTransaction, NodeTax, LocalizedMessage, ChannelingData, CraftState, RewardInstance, HashedVariable,
     WarehouseEntry, CraftTags,
+    EssentialCitizenship, NodeInventory, ClientBuyOrder, NodeLayoutGuids, CommissionBoard, UpdateLevelVisibility,
+    RootMotionGroup, SharedRepMaster, ClientSpawnDeployable, MapMarkerOverride, PlayerCommodityCounts, MoveResponsePacked,
+    PredictionKey, ActorLocation, CharacterChatInfo, ServerMovePacked, ClientChatChannel, ConsumerQuest,
+    CurrencyContainer, CurrencyCheat, GatherableInfo, GlobalQuestUpdate, HitInst, HitResult,
+    ItemCheat, MailHeader, NarrativeNPCKill, NetLevelVisTxId, NodeStabledVehicles, PlayerBuyOrderContrib, PlayerCommodityCosts,
 };
 
 inline uint32_t bits_needed(int64_t v) {

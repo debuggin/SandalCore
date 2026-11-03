@@ -266,6 +266,35 @@ std::optional<Value> read_craft_quest_struct(S kind, PacketReader& r) {
     }
 }
 
+bool is_ext_domain_struct(S kind) {
+    return kind >= S::EssentialCitizenship && kind <= S::PlayerCommodityCosts;
+}
+
+bool ext_domain_struct_accepts(S kind, const Value& v) {
+    if (!is_ext_domain_struct(kind)) return false;
+    const auto* b = v.get_if<ByteBlob>();
+    return b && b->size() <= kMaxDomainBlobBytes;
+}
+
+std::optional<Value> read_ext_domain_struct(S kind, PacketReader& r) {
+    if (!is_ext_domain_struct(kind)) return std::nullopt;
+    const auto n = read_count(r, 8);
+    if (!n || *n > kMaxDomainBlobBytes) return std::nullopt;
+    ByteBlob b(*n, '\0');
+    for (uint32_t i = 0; i < *n; ++i) {
+        b[i] = static_cast<char>(r.read_uint8());
+    }
+    return overran(r) ? std::nullopt : std::optional<Value>(Value(std::move(b)));
+}
+
+bool write_ext_domain_struct(S kind, const Value& v, BunchWriter& out) {
+    if (!ext_domain_struct_accepts(kind, v)) return false;
+    const auto& b = *v.get_if<ByteBlob>();
+    if (!write_count(out, b.size())) return false;
+    out.write_bytes(reinterpret_cast<const uint8_t*>(b.data()), b.size());
+    return true;
+}
+
 }  // namespace
 
 std::optional<Value> read_guid_to_bool(PacketReader& r) {
@@ -424,43 +453,40 @@ bool customization_fits(const CharacterCustomization& c) {
 
 S find_struct(std::string_view n) {
     static constexpr std::pair<std::string_view, S> kTable[] = {
-        {"FVector", S::Vec3},
-        {"FVector3d", S::Vec3},
-        {"FVector2D", S::Vec2},
-        {"FVector2d", S::Vec2},
-        {"FDateTime", S::Ticks},
-        {"FTimespan", S::Ticks},
-        {"FRotator", S::Rotator},
-        {"FVector_NetQuantize", S::Quantized},
-        {"FVector_NetQuantize10", S::Quantized},
-        {"FVector_NetQuantize100", S::Quantized},
-        {"FVector_NetQuantizeNormal", S::Normal},
-        {"FRepMovement", S::RepMovement},
-        {"FCharacterLoadTracker", S::LoadTracker},
-        {"FUniqueNetIdRepl", S::UniqueId},
-        {"FGameplayTag", S::Tag},
-        {"FGameplayTagContainer", S::TagContainer},
-        {"FStatInt32InstRep", S::StatInt32},
-        {"FQuat", S::Quat},
-        {"FGuidToBoolWrapper", S::GuidToBool},
-        {"FAlignmentContainer", S::Alignment},
-        {"FAppearanceId", S::AppearanceId},
-        {"FCharacterCustomizationSaveData", S::Customization},
-        {"FItemInstance", S::ItemInstance},
-        {"FItemStorageEvent", S::ItemStorageEvent},
-        {"FSerializedClientHitConfirmations", S::HitConfirmations},
-        {"FPlayerMovementInput", S::MovementInput},
-        {"FVendorPurchaseCart", S::VendorPurchase},
-        {"FVendorTransactionCart", S::VendorTransaction},
-        {"FNodeTaxDetails", S::NodeTax},
-        {"FLocalizedMessage", S::LocalizedMessage},
-        {"FChannelingData", S::ChannelingData},
-        {"FCraftItemState", S::CraftState},
-        {"FRewardInstance", S::RewardInstance},
-        {"FHashedVariable", S::HashedVariable},
-        {"FWarehouseItemChunkSummary", S::WarehouseEntry},
-        {"FWarehouseMaterialTabSummary", S::WarehouseEntry},
-        {"FCraftingResourceTagCostSelection", S::CraftTags},
+        {"FVector", S::Vec3}, {"FVector3d", S::Vec3}, {"FVector2D", S::Vec2}, {"FVector2d", S::Vec2},
+        {"FDateTime", S::Ticks}, {"FTimespan", S::Ticks}, {"FRotator", S::Rotator},
+        {"FVector_NetQuantize", S::Quantized}, {"FVector_NetQuantize10", S::Quantized},
+        {"FVector_NetQuantize100", S::Quantized}, {"FVector_NetQuantizeNormal", S::Normal},
+        {"FRepMovement", S::RepMovement}, {"FCharacterLoadTracker", S::LoadTracker},
+        {"FUniqueNetIdRepl", S::UniqueId}, {"FGameplayTag", S::Tag}, {"FGameplayTagContainer", S::TagContainer},
+        {"FStatInt32InstRep", S::StatInt32}, {"FQuat", S::Quat}, {"FGuidToBoolWrapper", S::GuidToBool},
+        {"FAlignmentContainer", S::Alignment}, {"FAppearanceId", S::AppearanceId},
+        {"FCharacterCustomizationSaveData", S::Customization}, {"FItemInstance", S::ItemInstance},
+        {"FItemStorageEvent", S::ItemStorageEvent}, {"FSerializedClientHitConfirmations", S::HitConfirmations},
+        {"FPlayerMovementInput", S::MovementInput}, {"FVendorPurchaseCart", S::VendorPurchase},
+        {"FVendorTransactionCart", S::VendorTransaction}, {"FNodeTaxDetails", S::NodeTax},
+        {"FLocalizedMessage", S::LocalizedMessage}, {"FChannelingData", S::ChannelingData},
+        {"FCraftItemState", S::CraftState}, {"FRewardInstance", S::RewardInstance},
+        {"FHashedVariable", S::HashedVariable}, {"FWarehouseItemChunkSummary", S::WarehouseEntry},
+        {"FWarehouseMaterialTabSummary", S::WarehouseEntry}, {"FCraftingResourceTagCostSelection", S::CraftTags},
+        {"FEssentialCitizenshipWindowData", S::EssentialCitizenship}, {"FNodeInventoryData", S::NodeInventory},
+        {"FClientBuyOrderData", S::ClientBuyOrder}, {"FNodeLayoutAssetSetGuids", S::NodeLayoutGuids},
+        {"FCommissionBoardList", S::CommissionBoard}, {"FUpdateLevelVisibilityLevelInfo", S::UpdateLevelVisibility},
+        {"FRootMotionSourceGroup", S::RootMotionGroup}, {"FSharedRepMaster", S::SharedRepMaster},
+        {"FClientSpawnDeployableData", S::ClientSpawnDeployable}, {"FMapMarkerOverrideWrapper", S::MapMarkerOverride},
+        {"FPlayerCommodityCounts", S::PlayerCommodityCounts}, {"FCharacterMoveResponsePackedBits", S::MoveResponsePacked},
+        {"FPredictionKey", S::PredictionKey}, {"FActorLocation", S::ActorLocation},
+        {"FCharacterChatInfo", S::CharacterChatInfo}, {"FCharacterServerMovePackedBits", S::ServerMovePacked},
+        {"FClientChatChannelData", S::ClientChatChannel}, {"FConsumerQuestInstance", S::ConsumerQuest},
+        {"FCurrencyContainer", S::CurrencyContainer}, {"FCurrencyContainerCheatHelper", S::CurrencyCheat},
+        {"FGatherableInfoData", S::GatherableInfo}, {"FGlobalQuestUpdate", S::GlobalQuestUpdate},
+        {"FHitInst", S::HitInst}, {"FHitResult", S::HitResult},
+        {"FItemCheatHelper", S::ItemCheat}, {"FMailHeader", S::MailHeader},
+        {"FNarrativeNPCKillData", S::NarrativeNPCKill},
+        {"FNetLevelVisibilityTransactionId", S::NetLevelVisTxId},
+        {"FNodeStabledVehicleStorageCache", S::NodeStabledVehicles},
+        {"FPlayerBuyOrderContributions", S::PlayerBuyOrderContrib},
+        {"FPlayerCommodityCostsPerNode", S::PlayerCommodityCosts},
     };
     for (const auto& [name, kind] : kTable) {
         if (n == name) return kind;
@@ -469,15 +495,17 @@ S find_struct(std::string_view n) {
 }
 
 bool domain_struct_accepts(S kind, const Value& v) {
-    return item_vendor_struct_accepts(kind, v) || craft_quest_struct_accepts(kind, v);
+    return item_vendor_struct_accepts(kind, v) || craft_quest_struct_accepts(kind, v) || ext_domain_struct_accepts(kind, v);
 }
 
 std::optional<Value> read_domain_struct(S kind, PacketReader& r) {
     if (auto v = read_item_vendor_struct(kind, r)) return v;
-    return read_craft_quest_struct(kind, r);
+    if (auto v = read_craft_quest_struct(kind, r)) return v;
+    return read_ext_domain_struct(kind, r);
 }
 
 bool write_domain_struct(S kind, const Value& v, BunchWriter& out) {
+    if (write_ext_domain_struct(kind, v, out)) return true;
     switch (kind) {
         case S::ItemInstance:
             return write_item_instance(out, *v.get_if<ItemInstance>());

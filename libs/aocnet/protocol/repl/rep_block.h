@@ -68,6 +68,8 @@
 
 namespace aoc { namespace protocol { namespace repl {
 
+using ByteBlob = std::string;
+
 /// The last value sent per handle for one object on one connection.
 struct RepShadow {
     std::map<uint16_t, Value> sent;
@@ -167,8 +169,16 @@ std::optional<Value> zero_value(const schema::RepCommand& cmd);
 inline bool is_unset_optional_command(const schema::RepCommand& c) {
     if (c.type != schema::PropType::Unknown || !c.path) return false;
     const std::string_view p(c.path);
-    constexpr std::string_view kName = "MapMarkerOverride";
-    return p.size() >= kName.size() && p.substr(p.size() - kName.size()) == kName;
+    static constexpr std::string_view kSuffixes[] = {
+        "GeneralQuestMarker",
+        "MapMarkerOverride",
+        "ChildSocketGuids",
+        "UsedChildSocketGuids",
+    };
+    for (const std::string_view suffix : kSuffixes) {
+        if (p.size() >= suffix.size() && p.substr(p.size() - suffix.size()) == suffix) return true;
+    }
+    return false;
 }
 
 // ---- the field loop ---------------------------------------------------------
