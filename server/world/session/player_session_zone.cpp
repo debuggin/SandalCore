@@ -79,6 +79,7 @@ PlayerSession::GmMoveResult PlayerSession::move_to(Connection& conn, double x, d
     constexpr uint8_t mode = repl::kMoveFalling;   // the client lands and walks again by itself
     queue(gm ? "GM teleport" : "floor net teleport", [ts, x, y, z, mode](bootstrap::PlayerBootstrap& pb) { return pb.correction(ts, repl::Vec3d{x, y, z}, repl::Vec3d{}, mode); }, conn, /*must_build=*/true);
     if (gm) ++gm_teleports_;
+    if (npc_world_) std::ignore = npc_world_->update_border_authority(static_cast<uint64_t>(pb_.setup().player_id), x, y);
     r.to = checker_.good();
     spdlog::info("[{}] {}: teleported by {} from ({:.0f}, {:.0f}, {:.0f}) to ({:.0f}, {:.0f}, {:.0f}){}", gm ? "gm" : "floor-net", name(), by, r.from.x, r.from.y, r.from.z, x, y, z,
                  r.dismounted ? "; dismounted first" : "");

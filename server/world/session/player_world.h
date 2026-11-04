@@ -184,6 +184,28 @@ public:
         const auto it = outside_.find(player_id);
         return it != outside_.end() && it->second;
     }
+    world::AuthorityState    authority_state(uint64_t player_id) const noexcept {
+        const auto it = authority_states_.find(player_id);
+        return it != authority_states_.end() ? it->second : world::AuthorityState::Local;
+    }
+    world::AuthorityState    update_border_authority(uint64_t player_id, double x, double y) noexcept {
+        const auto next = area_.evaluate_handover(x, y, authority_state(player_id));
+        authority_states_[player_id] = next;
+        return next;
+    }
+    uint64_t                 lease_epoch(uint64_t player_id) const noexcept {
+        const auto it = lease_epochs_.find(player_id);
+        return it != lease_epochs_.end() ? it->second : 0;
+    }
+    bool                     try_advance_lease_epoch(uint64_t player_id, uint64_t candidate_epoch) noexcept {
+        if (!world::is_newer_lease_epoch(candidate_epoch, lease_epoch(player_id))) return false;
+        lease_epochs_[player_id] = candidate_epoch;
+        return true;
+    }
+    void                     forget_border_authority(uint64_t player_id) noexcept {
+        authority_states_.erase(player_id);
+        lease_epochs_.erase(player_id);
+    }
 
     void set_combat_config(combat::CombatWorldConfig config) { combat_config_ = std::move(config); }
     const combat::CombatWorldConfig& combat_config() const { return combat_config_; }
@@ -457,6 +479,8 @@ private:
     std::unordered_map<uint64_t, bool>         exit_loud_;
     static constexpr double kRegionLogSeconds = 30.0;
     uint64_t                                   region_exits_ = 0;
+    std::unordered_map<uint64_t, world::AuthorityState> authority_states_;
+    std::unordered_map<uint64_t, uint64_t>     lease_epochs_;
     uint64_t                                   window_failures_logged_ = 0;
     nav::TileRepair                            window_repairs_logged_;
 };

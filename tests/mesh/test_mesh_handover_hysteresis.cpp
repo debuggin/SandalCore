@@ -4,18 +4,13 @@
 
 #include "server/tether/services/tether/ics_token_file.h"
 #include "server/tether/services/tether/tether_wire.h"
-#include "spawns/region_data.h"
-#include "spawns/region_index.h"
+#include "spawns/area.h"
+#include "world/mesh_border.h"
 #include "world/relevancy.h"
 #include "world/zoi_surface.h"
 
-#include <chrono>
-#include <cmath>
-#include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <string>
-#include <vector>
 
 namespace {
 
@@ -71,9 +66,39 @@ bool test_relevancy_hysteresis_band_200m() {
                world::Ring::Out;
 }
 
+bool test_border_hysteresis_and_area_handover() {
+    if (std::fabs(world::kBorderHysteresisBandCm - 2000.0f) > 1e-5f) return false;
+
+    using world::AuthorityState;
+    if (world::evaluate_border_handover(-2500.0f, AuthorityState::HandoverPending) != AuthorityState::Local) return false;
+    if (world::evaluate_border_handover(-2500.0f, AuthorityState::RemoteGhost) != AuthorityState::Local) return false;
+
+    AuthorityState s_local = AuthorityState::Local;
+    AuthorityState s_pending = AuthorityState::HandoverPending;
+    for (float d : {-2000.0f, -500.0f, 0.0f, 500.0f, 2000.0f, -1500.0f, 1500.0f}) {
+        s_local = world::evaluate_border_handover(d, s_local);
+        s_pending = world::evaluate_border_handover(d, s_pending);
+        if (s_local != AuthorityState::Local || s_pending != AuthorityState::HandoverPending) return false;
+    }
+
+    if (world::evaluate_border_handover(2500.0f, AuthorityState::Local) != AuthorityState::HandoverPending) return false;
+    if (world::evaluate_border_handover(2500.0f, AuthorityState::HandoverPending) != AuthorityState::RemoteGhost) return false;
+    if (world::evaluate_border_handover(2500.0f, AuthorityState::RemoteGhost) != AuthorityState::RemoteGhost) return false;
+
+    spawns::AreaConfig area{};
+    area.center_x = 0.0;
+    area.center_y = 0.0;
+    area.radius_cm = 100000.0;
+    if (std::fabs(area.signed_border_distance_cm(97500.0, 0.0) - (-2500.0f)) > 1e-3f) return false;
+    if (area.evaluate_handover(97500.0, 0.0, AuthorityState::HandoverPending) != AuthorityState::Local) return false;
+    if (area.evaluate_handover(101000.0, 0.0, AuthorityState::Local) != AuthorityState::Local) return false;
+    return area.evaluate_handover(102500.0, 0.0, AuthorityState::Local) == AuthorityState::HandoverPending;
+}
+
 int run_hysteresis_band_200m_authority() {
     if (!test_custom_zoi_boundary_index()) return 1;
     if (!test_relevancy_hysteresis_band_200m()) return 1;
+    if (!test_border_hysteresis_and_area_handover()) return 1;
 
     const auto& riverlands = spawns::region::Index::get();
     if (!riverlands.contains(-1000000.0, 500000.0)) return 1;
@@ -159,9 +184,28 @@ bool test_tether_proto_and_message_handover() {
            aoc::ics_token::format_age(std::chrono::seconds(125)) == "0h 2m";
 }
 
+bool test_monotonic_lease_epoch_handover() {
+    if (world::is_newer_lease_epoch(10ULL, 10ULL)) return false;
+    if (world::is_newer_lease_epoch(9ULL, 10ULL)) return false;
+    if (!world::is_newer_lease_epoch(11ULL, 10ULL)) return false;
+
+    using world::AuthorityState;
+    if (world::complete_border_handover(AuthorityState::HandoverPending, 10ULL, 10ULL) != AuthorityState::HandoverPending) {
+        return false;
+    }
+    if (world::complete_border_handover(AuthorityState::HandoverPending, 9ULL, 10ULL) != AuthorityState::HandoverPending) {
+        return false;
+    }
+    if (world::complete_border_handover(AuthorityState::HandoverPending, 11ULL, 10ULL) != AuthorityState::RemoteGhost) {
+        return false;
+    }
+    return world::complete_border_handover(AuthorityState::Local, 11ULL, 10ULL) == AuthorityState::Local;
+}
+
 int run_mesh_forward_header_12b_epoch() {
     if (!test_tether_wire_header_and_big_endian()) return 1;
     if (!test_tether_proto_and_message_handover()) return 1;
+    if (!test_monotonic_lease_epoch_handover()) return 1;
     return 0;
 }
 

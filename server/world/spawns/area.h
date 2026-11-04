@@ -22,6 +22,7 @@
 
 #include "bootstrap/character_setup.h"
 #include "spawns/region_index.h"
+#include "world/mesh_border.h"
 
 #include <cmath>
 #include <cstdint>
@@ -46,6 +47,16 @@ struct AreaConfig {
     bool contains(double x, double y) const {
         if (region) return region::Index::get().contains(x, y);
         return std::hypot(x - center_x, y - center_y) <= radius_cm;
+    }
+
+    [[nodiscard]] float signed_border_distance_cm(double x, double y) const noexcept {
+        return static_cast<float>(std::hypot(x - center_x, y - center_y) - radius_cm);
+    }
+
+    [[nodiscard]] world::AuthorityState evaluate_handover(
+        double x, double y, world::AuthorityState current_state,
+        float hysteresis_cm = world::kBorderHysteresisBandCm) const noexcept {
+        return world::evaluate_border_handover(signed_border_distance_cm(x, y), current_state, hysteresis_cm);
     }
 
     /// The guid of the zone of influence that owns (x, y); 0 when the area has no zones (a circle) or the point is outside every zone.
