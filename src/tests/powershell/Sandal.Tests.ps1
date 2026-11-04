@@ -14,6 +14,29 @@ if (-not $inPester) {
     function Context([string]$Name, [scriptblock]$Fixture) { Write-Host "  [Context] $Name"; & $Fixture }
     function BeforeAll([scriptblock]$Action) { & $Action }
     function It([string]$Name, [scriptblock]$Test) { & $Test; Write-Host "    [PASS] $Name" }
+    function Should {
+        param([switch]$BeTrue, [switch]$BeFalse, [object]$Be)
+        $actual = @($input)[0]
+        if ($BeTrue -and -not [bool]$actual) { throw "Expected True, got '$actual'" }
+        if ($BeFalse -and [bool]$actual) { throw "Expected False, got '$actual'" }
+        if ($PSBoundParameters.ContainsKey('Be') -and $actual -ne $Be) { throw "Expected '$Be', got '$actual'" }
+    }
+} elseif ((Get-Module Pester).Version.Major -lt 5) {
+    function Should {
+        $mapped = [System.Collections.Generic.List[object]]::new()
+        foreach ($a in $args) {
+            if ($a -is [string] -and $a -eq '-BeTrue') {
+                $mapped.AddRange([object[]]@('Be', $true))
+            } elseif ($a -is [string] -and $a -eq '-BeFalse') {
+                $mapped.AddRange([object[]]@('Be', $false))
+            } elseif ($a -is [string] -and $a.StartsWith('-')) {
+                $mapped.Add($a.Substring(1))
+            } else {
+                $mapped.Add($a)
+            }
+        }
+        $input | Pester\Should @mapped
+    }
 }
 
 function Invoke-SandalLogRedaction {
@@ -214,6 +237,14 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                     throw "Invalid JSON payload for sandal.ps1 $verb -DryRun -Json: $out"
                 }
             }
+        }
+
+        It 'runs sandal.ps1 test -Filter go -Json without -DryRun, exits 0, and emits valid JSON' {
+            $raw = (@(& pwsh -NoProfile -File $script:SandalCli test -Filter go -Json) -join "`n")
+            $LASTEXITCODE | Should -Be 0
+            $out = $raw | ConvertFrom-Json
+            $out.ok | Should -BeTrue
+            $out.command | Should -Be 'test'
         }
     }
 }

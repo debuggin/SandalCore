@@ -55,13 +55,33 @@ $opts = Resolve-BuildOptions `
     -BaseNoColor ([bool]($NoColor -or $inheritedNoColor -or -not [string]::IsNullOrEmpty($env:NO_COLOR))) `
     -RawArgs @($Arguments)
 
+function Out-Host {
+    [CmdletBinding()]
+    param([Parameter(ValueFromPipeline = $true)] $InputObject)
+    begin {}
+    process {
+        if (-not $opts.Json) {
+            Microsoft.PowerShell.Utility\Out-Host -InputObject $InputObject
+        }
+    }
+    end {}
+}
+
 if (-not $opts.DryRun) {
     $null = Ensure-SandalGameData -RepoRoot $rootPath -CheckOnly
-    & (Join-Path $rootPath 'scripts\build.ps1') -Config $opts.Config
+    if ($opts.Json) {
+        & (Join-Path $rootPath 'scripts\build.ps1') -Config $opts.Config 6>&1 | Out-Host
+    } else {
+        & (Join-Path $rootPath 'scripts\build.ps1') -Config $opts.Config
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "scripts/build.ps1 failed with exit code $LASTEXITCODE."
     }
-    & (Join-Path $rootPath 'scripts\services.ps1') -Action build
+    if ($opts.Json) {
+        & (Join-Path $rootPath 'scripts\services.ps1') -Action build 6>&1 | Out-Host
+    } else {
+        & (Join-Path $rootPath 'scripts\services.ps1') -Action build
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "scripts/services.ps1 -Action build failed with exit code $LASTEXITCODE."
     }

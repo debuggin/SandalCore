@@ -55,18 +55,38 @@ $opts = Resolve-RunOptions `
     -BaseNoColor ([bool]($NoColor -or $inheritedNoColor -or -not [string]::IsNullOrEmpty($env:NO_COLOR))) `
     -RawArgs @($Arguments)
 
+function Out-Host {
+    [CmdletBinding()]
+    param([Parameter(ValueFromPipeline = $true)] $InputObject)
+    begin {}
+    process {
+        if (-not $opts.Json) {
+            Microsoft.PowerShell.Utility\Out-Host -InputObject $InputObject
+        }
+    }
+    end {}
+}
+
 if (-not $opts.DryRun) {
     $null = Ensure-SandalGameData -RepoRoot $rootPath
     $worlddExe = Join-Path $rootPath 'dist\Release\worldd.exe'
     if (-not (Test-Path -LiteralPath $worlddExe -PathType Leaf)) {
-        & (Join-Path $rootPath 'scripts\build.ps1') -Config Release
+        if ($opts.Json) {
+            & (Join-Path $rootPath 'scripts\build.ps1') -Config Release 6>&1 | Out-Host
+        } else {
+            & (Join-Path $rootPath 'scripts\build.ps1') -Config Release
+        }
         if ($LASTEXITCODE -ne 0) {
             throw "scripts/build.ps1 failed with exit code $LASTEXITCODE."
         }
     }
     $gatewayExe = Join-Path $rootPath 'dist\services\gateway.exe'
     if (-not (Test-Path -LiteralPath $gatewayExe -PathType Leaf)) {
-        & (Join-Path $rootPath 'scripts\services.ps1') -Action build
+        if ($opts.Json) {
+            & (Join-Path $rootPath 'scripts\services.ps1') -Action build 6>&1 | Out-Host
+        } else {
+            & (Join-Path $rootPath 'scripts\services.ps1') -Action build
+        }
         if ($LASTEXITCODE -ne 0) {
             throw "scripts/services.ps1 -Action build failed with exit code $LASTEXITCODE."
         }

@@ -59,16 +59,67 @@ $opts = Resolve-TestOptions `
     -BaseJson ([bool]($Json -or $inheritedJson)) `
     -RawArgs @($Arguments)
 
+function Out-Host {
+    [CmdletBinding()]
+    param([Parameter(ValueFromPipeline = $true)] $InputObject)
+    begin {}
+    process {
+        if (-not $opts.Json) {
+            Microsoft.PowerShell.Utility\Out-Host -InputObject $InputObject
+        }
+    }
+    end {}
+}
+
 if (-not $opts.DryRun) {
     $null = Sync-SandalDistStage -RepoRoot $rootPath -Config $opts.Config
-    $testScript = Join-Path $rootPath 'scripts\run_tests.ps1'
-    $testArgs = @('-Config', $opts.Config)
-    if (-not [string]::IsNullOrWhiteSpace($opts.Filter)) {
-        $testArgs += @('-Filter', $opts.Filter)
+    $normFilter = if ([string]::IsNullOrWhiteSpace($opts.Filter)) { '' } else { $opts.Filter.Trim().ToLowerInvariant() }
+    if ($normFilter -in @('', 'cpp')) {
+        $hasBuiltTests = [bool](@(Get-ChildItem (Join-Path $rootPath "dist\tests\$($opts.Config)") -Filter 'test_*.exe' -ErrorAction SilentlyContinue).Count -gt 0)
+        if ($opts.Json) {
+            & (Join-Path $rootPath 'scripts\run_tests.ps1') -Config $opts.Config -NoBuild:$hasBuiltTests 6>&1 | Out-Host
+        } else {
+            & (Join-Path $rootPath 'scripts\run_tests.ps1') -Config $opts.Config -NoBuild:$hasBuiltTests
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "scripts/run_tests.ps1 failed with exit code $LASTEXITCODE."
+        }
     }
-    & $testScript @testArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "scripts/run_tests.ps1 failed with exit code $LASTEXITCODE."
+    if ($normFilter -in @('', 'go')) {
+        Get-ChildItem (Join-Path $rootPath 'src\tests\go\*_test.go') | ForEach-Object {
+            if ($opts.Json) {
+                & go test $_.FullName 6>&1 | Out-Host
+            } else {
+                & go test $_.FullName
+            }
+            if ($LASTEXITCODE -ne 0) {
+                throw "go test failed for $($_.Name)"
+            }
+        }
+    }
+    if ($normFilter -in @('', 'powershell', 'pester')) {
+        if ($opts.Json) {
+            $res = Invoke-Pester -Path (Join-Path $rootPath 'src\tests\powershell\*.Tests.ps1') -PassThru 6>$null
+            $res | Out-Host
+        } else {
+            $res = Invoke-Pester -Path (Join-Path $rootPath 'src\tests\powershell\*.Tests.ps1') -PassThru
+        }
+        if ($res.FailedCount -gt 0) {
+            throw "Invoke-Pester failed with $($res.FailedCount) failed test(s)."
+        }
+    }
+    if ($normFilter -notin @('', 'cpp', 'go', 'powershell', 'pester')) {
+        Get-ChildItem (Join-Path $rootPath 'src\tests\go\*_test.go') | Where-Object { $_.Name -match $opts.Filter } | ForEach-Object {
+            if ($opts.Json) { & go test $_.FullName 6>&1 | Out-Host } else { & go test $_.FullName }
+            if ($LASTEXITCODE -ne 0) { throw "go test failed for $($_.Name)" }
+        }
+        $pesterMatches = @(Get-ChildItem (Join-Path $rootPath 'src\tests\powershell\*.Tests.ps1') | Where-Object { $_.Name -match $opts.Filter })
+        if ($pesterMatches.Count -gt 0) {
+            $paths = @($pesterMatches | ForEach-Object { $_.FullName })
+            $res = if ($opts.Json) { Invoke-Pester -Path $paths -PassThru 6>$null } else { Invoke-Pester -Path $paths -PassThru }
+            if ($opts.Json) { $res | Out-Host }
+            if ($res.FailedCount -gt 0) { throw "Invoke-Pester failed with $($res.FailedCount) failed test(s)." }
+        }
     }
 }
 

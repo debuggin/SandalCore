@@ -57,6 +57,9 @@ Describe 'SandalCore Wave 04.6: Container, Compose, Kubernetes & Systemd Packagi
         $script:K8sDir = Join-Path $script:DeployDir 'k8s'
         $script:SystemdUnit = Join-Path $script:DeployDir 'systemd\sandal-worldd@.service'
         $script:ComposeFile = Join-Path $script:DeployDir 'compose.yml'
+        $script:MaterializedComposeFile = Join-Path $script:RepoRoot 'deploy\compose.yml'
+        $script:MaterializedEnvFile = Join-Path $script:RepoRoot 'deploy\.env'
+        $script:EnvoyConfigFile = Join-Path $script:DeployDir 'envoy\envoy.yaml'
         $script:DockerignoreFile = if (Test-Path -LiteralPath (Join-Path $script:DeployDir '.dockerignore')) { Join-Path $script:DeployDir '.dockerignore' } else { Join-Path $script:RepoRoot '.dockerignore' }
     }
 
@@ -280,6 +283,199 @@ networks:
                 'WantedBy=multi-user.target'
             )) {
                 $unitRaw.Contains($directive) | Should -BeTrue
+            }
+        }
+    }
+
+    Context '5. All 5 Enterprise Dockerfiles, Protobuf Auto-Codegen & Envoy Ingress Proxy (OPS-01..OPS-03, SEC-11)' {
+        It 'Enforces @sha256 digest pinning, non-root USER, EXPOSE port/proto annotations, ARG+ENV defaults, OCI LABELs, and exec-form HEALTHCHECK across all 5 Dockerfiles' {
+            $dockerfileContracts = @(
+                @{
+                    Name        = 'cpp.Dockerfile'
+                    Users       = @('USER 65532:65532')
+                    ExposePorts = @('7777/udp', '50061/tcp', '50051/tcp', '50055/tcp')
+                    ArgsAndEnvs = @('TARGET_BINARY', 'WORLDD_UDP_PORT', 'WORLDD_ADMIN_PORT', 'TETHER_TCP_PORT', 'TETHER_ADMIN_PORT', 'SERVICE_BIND_ADDR')
+                },
+                @{
+                    Name        = 'go.Dockerfile'
+                    Users       = @('USER 65532:65532')
+                    ExposePorts = @('8081/tcp', '8082/tcp', '50050/tcp', '50052/tcp', '50053/tcp', '50054/tcp', '50056/tcp', '50057/tcp')
+                    ArgsAndEnvs = @('SERVICE_NAME', 'SERVICE_HTTP_PORT', 'SERVICE_GRPC_PORT', 'SERVICE_BIND_ADDR', 'AOC_ENV')
+                },
+                @{
+                    Name        = 'postgres.Dockerfile'
+                    Users       = @('USER postgres', 'USER 70:70')
+                    ExposePorts = @('5432/tcp')
+                    ArgsAndEnvs = @('PGPORT', 'POSTGRES_USER', 'POSTGRES_DB')
+                },
+                @{
+                    Name        = 'web.Dockerfile'
+                    Users       = @('USER 65532:65532')
+                    ExposePorts = @('8088/tcp')
+                    ArgsAndEnvs = @('WEB_PORT', 'WEB_BIND_ADDR')
+                },
+                @{
+                    Name        = 'envoy.Dockerfile'
+                    Users       = @('USER 65532:65532')
+                    ExposePorts = @('8080/tcp', '9090/tcp', '9901/tcp')
+                    ArgsAndEnvs = @('ENVOY_HTTP_INGRESS_PORT', 'ENVOY_GRPC_INGRESS_PORT', 'ENVOY_ADMIN_PORT')
+                }
+            )
+
+            foreach ($spec in $dockerfileContracts) {
+                $dfPath = Join-Path $script:DockerDir $spec.Name
+                (Test-Path -LiteralPath $dfPath) | Should -BeTrue
+                $raw = [System.IO.File]::ReadAllText($dfPath, [System.Text.Encoding]::UTF8)
+
+                $fromLines = @([regex]::Matches($raw, '(?m)^FROM\s+.+$') | ForEach-Object { $_.Value })
+                ($fromLines.Count -ge 1) | Should -BeTrue
+                foreach ($fromLine in $fromLines) {
+                    $fromLine | Should -Match '@sha256:[0-9a-f]{64}\b'
+                    ($fromLine -match ':latest(?!@sha256:)\b') | Should -BeFalse
+                }
+
+                foreach ($userDir in $spec.Users) {
+                    $raw.Contains($userDir) | Should -BeTrue
+                }
+                ($raw -match '(?m)^USER\s+(?:0|root)\b') | Should -BeFalse
+
+                $exposeLine = ([regex]::Matches($raw, '(?m)^EXPOSE\s+.+$') | ForEach-Object { $_.Value }) -join ' '
+                ($exposeLine.Length -gt 0) | Should -BeTrue
+                foreach ($portProto in $spec.ExposePorts) {
+                    $exposeLine.Contains($portProto) | Should -BeTrue
+                }
+
+                foreach ($paramName in $spec.ArgsAndEnvs) {
+                    $raw | Should -Match "(?m)^ARG\s+${paramName}\b"
+                    $raw | Should -Match "\b${paramName}="
+                }
+
+                $raw.Contains('org.opencontainers.image.source=') | Should -BeTrue
+                $raw.Contains('org.opencontainers.image.revision=') | Should -BeTrue
+                ($raw.Contains('org.opencontainers.image.licenses=') -or $raw.Contains('org.opencontainers.image.description=')) | Should -BeTrue
+                $raw | Should -Match '(?ms)HEALTHCHECK\s+.*CMD\s+\["[^"]+"'
+            }
+        }
+
+        It 'Verifies go.Dockerfile auto-generates build/gen/go and constants_gen.go when missing, and cpp.Dockerfile auto-generates build/gen/proto via CMake' {
+            $goDf = [System.IO.File]::ReadAllText((Join-Path $script:DockerDir 'go.Dockerfile'), [System.Text.Encoding]::UTF8)
+            $goDf.Contains('/workspace/build/gen/go/aoc/proto/v1') | Should -BeTrue
+            $goDf.Contains('--go_out=/workspace/build/gen/go') | Should -BeTrue
+            $goDf.Contains('--go-grpc_out=/workspace/build/gen/go') | Should -BeTrue
+            $goDf.Contains('/workspace/build/gen/go/citynodeconsts/constants_gen.go') | Should -BeTrue
+            $goDf.Contains('gen_node_constants.py') | Should -BeTrue
+
+            $cppDf = [System.IO.File]::ReadAllText((Join-Path $script:DockerDir 'cpp.Dockerfile'), [System.Text.Encoding]::UTF8)
+            $cppDf.Contains('cmake -S src -B build/linux') | Should -BeTrue
+            $cppDf.Contains('-DAOC_PROTO_GEN_DIR=/workspace/build/gen/proto') | Should -BeTrue
+            $cppDf.Contains('gen_node_constants.py') | Should -BeTrue
+        }
+
+        It 'Validates src/deploy/envoy/envoy.yaml ingress_http (0.0.0.0:8080 + WebSocket), ingress_grpc (0.0.0.0:9090 h2c + 7 gRPC packages), circuit breakers, and active health checks' {
+            (Test-Path -LiteralPath $script:EnvoyConfigFile) | Should -BeTrue
+            $envoyRaw = [System.IO.File]::ReadAllText($script:EnvoyConfigFile, [System.Text.Encoding]::UTF8)
+
+            foreach ($token in @(
+                'name: ingress_http',
+                'address: 0.0.0.0',
+                'port_value: 8080',
+                'upgrade_type: websocket',
+                'prefix: "/api/v1/auth/"',
+                'prefix: "/api/v1/catalog/"',
+                'prefix: "/api/v1/world/"',
+                'prefix: "/api/v1/gm/"',
+                'prefix: "/"',
+                'name: ingress_grpc',
+                'port_value: 9090',
+                'max_concurrent_streams: 1024',
+                'prefix: "/aoc.auth.v1."',
+                'prefix: "/aoc.gateway.v1."',
+                'prefix: "/aoc.character.v1."',
+                'prefix: "/aoc.mesh.v1."',
+                'prefix: "/aoc.citynode.v1."',
+                'prefix: "/aoc.quest.v1."',
+                'prefix: "/aoc.worldadmin.v1."',
+                'circuit_breakers:',
+                'max_connections: 10000',
+                'health_checks:',
+                'tcp_health_check: {}',
+                'grpc_health_check: {}'
+            )) {
+                $envoyRaw.Contains($token) | Should -BeTrue
+            }
+        }
+    }
+
+    Context '6. 12-Service Compose Topology, 3-Zone Network Isolation & Docker Compose Config Validation (OPS-03, SEC-11)' {
+        It 'Validates all 12 services, 3-zone network isolation (edge_net, internal service_net, internal data_net), cap_drop/no-new-privileges/read_only/tmpfs hardening, 127.0.0.1 launcher ports, and docker compose config --quiet' {
+            $composePaths = @($script:ComposeFile)
+            if (Test-Path -LiteralPath $script:MaterializedComposeFile) {
+                $composePaths += $script:MaterializedComposeFile
+            }
+
+            $expectedServices = @(
+                'postgres', 'auth', 'character', 'citynode', 'quest', 'mesh',
+                'gateway', 'meshgw', 'web-admin', 'tether_server', 'worldd', 'ingress-proxy'
+            )
+            $excludedFromDataNet = @('ingress-proxy', 'web-admin', 'tether_server', 'worldd')
+            $requiredOnDataNet = @('postgres', 'auth', 'character', 'citynode', 'quest', 'gateway', 'meshgw')
+
+            foreach ($cPath in $composePaths) {
+                $raw = [System.IO.File]::ReadAllText($cPath, [System.Text.Encoding]::UTF8)
+
+                $anchorMatch = [regex]::Match($raw, '(?ms)^x-hardened:\s*&hardened\r?\n(.*?)(?=^services:\r?\n)')
+                $anchorMatch.Success | Should -BeTrue
+                $anchorBlock = $anchorMatch.Groups[1].Value
+                $anchorBlock.Contains('read_only: true') | Should -BeTrue
+                $anchorBlock.Contains('cap_drop:') | Should -BeTrue
+                $anchorBlock.Contains('- ALL') | Should -BeTrue
+                $anchorBlock.Contains('no-new-privileges:true') | Should -BeTrue
+                $anchorBlock.Contains('tmpfs:') | Should -BeTrue
+
+                foreach ($svc in $expectedServices) {
+                    $svcMatch = [regex]::Match($raw, "(?ms)^  $([regex]::Escape($svc)):\r?\n(.*?)(?=^  [a-z0-9_-]+:\r?\n|^networks:\r?\n|^volumes:\r?\n)")
+                    $svcMatch.Success | Should -BeTrue
+                    $svcBlock = $svcMatch.Groups[1].Value
+                    $usesHardenedAnchor = $svcBlock.Contains('<<: *hardened')
+                    if (-not $usesHardenedAnchor) {
+                        $svcBlock.Contains('read_only: true') | Should -BeTrue
+                        $svcBlock.Contains('cap_drop:') | Should -BeTrue
+                        $svcBlock.Contains('- ALL') | Should -BeTrue
+                        $svcBlock.Contains('no-new-privileges:true') | Should -BeTrue
+                        $svcBlock.Contains('tmpfs:') | Should -BeTrue
+                    } else {
+                        $usesHardenedAnchor | Should -BeTrue
+                    }
+
+                    if ($excludedFromDataNet -contains $svc) {
+                        $svcBlock.Contains('- data_net') | Should -BeFalse
+                    }
+                    if ($requiredOnDataNet -contains $svc) {
+                        $svcBlock.Contains('- data_net') | Should -BeTrue
+                    }
+                }
+
+                $netSection = [regex]::Match($raw, '(?ms)^networks:\r?\n(.*?)(?=^volumes:\r?\n|\z)').Groups[1].Value
+                $netSection.Contains('edge_net:') | Should -BeTrue
+                $netSection | Should -Match '(?ms)service_net:\r?\n\s+driver:\s*bridge\r?\n\s+internal:\s*true'
+                $netSection | Should -Match '(?ms)data_net:\r?\n\s+driver:\s*bridge\r?\n\s+internal:\s*true'
+
+                foreach ($portBinding in @(
+                    '127.0.0.1:${POSTGRES_PORT:-5432}:5432',
+                    '127.0.0.1:${TETHER_TCP_PORT:-50051}:50051/tcp',
+                    '127.0.0.1:${WORLDD_UDP_PORT:-7777}:7777/udp',
+                    '127.0.0.1:${INGRESS_HTTP_PORT:-8080}:8080/tcp',
+                    '127.0.0.1:${GATEWAY_HTTP_PORT:-8081}:8080/tcp',
+                    '127.0.0.1:${MESHGW_HTTP_PORT:-8082}:8080/tcp',
+                    '127.0.0.1:${INGRESS_GRPC_PORT:-9090}:9090/tcp'
+                )) {
+                    $raw.Contains($portBinding) | Should -BeTrue
+                }
+            }
+
+            if ((Test-Path -LiteralPath $script:MaterializedComposeFile) -and (Test-Path -LiteralPath $script:MaterializedEnvFile) -and ($null -ne (Get-Command docker -ErrorAction SilentlyContinue))) {
+                & docker compose -f $script:MaterializedComposeFile --env-file $script:MaterializedEnvFile config --quiet
+                $LASTEXITCODE | Should -Be 0
             }
         }
     }

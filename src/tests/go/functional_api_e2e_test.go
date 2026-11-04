@@ -1,0 +1,794 @@
+package go_test
+
+import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func repoRootDir(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
+}
+
+func readRepoFile(t *testing.T, relPath string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(repoRootDir(t), filepath.FromSlash(relPath)))
+	if err != nil {
+		t.Fatalf("failed to read %s: %v", relPath, err)
+	}
+	return string(raw)
+}
+
+func isLowerHex(s string, wantLen int) bool {
+	if len(s) != wantLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if (s[i] < '0' || s[i] > '9') && (s[i] < 'a' || s[i] > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+type authSession struct {
+	AccountID int64
+	Username  string
+	ExpiresAt time.Time
+}
+
+type authFlowHarness struct {
+	mu                     sync.Mutex
+	serviceToken           string
+	hmacSecret             []byte
+	now                    func() time.Time
+	nextID                 int64
+	users                  map[string]string
+	userIDs                map[string]int64
+	sessions               map[string]authSession
+}
+
+func newAuthFlowHarness(serviceToken string, nowFn func() time.Time) *authFlowHarness {
+	return &authFlowHarness{
+		serviceToken: serviceToken, hmacSecret: []byte("sandalcore-e2e-token-hmac-key-v1"),
+		now: nowFn, nextID: 1000, users: make(map[string]string),
+		userIDs: make(map[string]int64), sessions: make(map[string]authSession),
+	}
+}
+func (a *authFlowHarness) checkServiceToken(authHeader string) error {
+	const prefix = "Bearer "
+	if len(authHeader) <= len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) {
+		return errors.New("unauthenticated: missing bearer service token")
+	}
+	if subtle.ConstantTimeCompare([]byte(authHeader[len(prefix):]), []byte(a.serviceToken)) != 1 {
+		return errors.New("unauthenticated: invalid service token")
+	}
+	return nil
+}
+func (a *authFlowHarness) issueSessionToken(accountID int64, username string) string {
+	var nonce [16]byte
+	_, _ = rand.Read(nonce[:])
+	mac := hmac.New(sha256.New, a.hmacSecret)
+	_, _ = fmt.Fprintf(mac, "%d:%s:%x", accountID, username, nonce[:])
+	return hex.EncodeToString(nonce[:]) + hex.EncodeToString(mac.Sum(nil)[:16])
+}
+func (a *authFlowHarness) validateSessionToken(authHeader, token string) (authSession, error) {
+	if err := a.checkServiceToken(authHeader); err != nil {
+		return authSession{}, err
+	}
+	if !isLowerHex(token, 64) {
+		return authSession{}, errors.New("unauthenticated: malformed 64-hex session token")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sess, ok := a.sessions[token]
+	if !ok {
+		return authSession{}, errors.New("unauthenticated: unknown or tampered token")
+	}
+	if !a.now().Before(sess.ExpiresAt) {
+		delete(a.sessions, token)
+		return authSession{}, errors.New("unauthenticated: expired session token")
+	}
+	return sess, nil
+}
+func decodeStrictCredentials(r *http.Request) (string, string, error) {
+	if r.Method != http.MethodPost {
+		return "", "", errors.New("method not allowed")
+	}
+	var creds struct{ Username, Password string }
+	dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&creds); err != nil {
+		return "", "", err
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return "", "", errors.New("trailing data after JSON object")
+	}
+	if len(creds.Username) < 3 || len(creds.Username) > 32 || len(creds.Password) < 8 {
+		return "", "", errors.New("invalid username or password bounds")
+	}
+	return creds.Username, creds.Password, nil
+}
+func (a *authFlowHarness) registerHTTP(w http.ResponseWriter, r *http.Request) {
+	user, pass, err := decodeStrictCredentials(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, exists := a.users[user]; exists {
+		http.Error(w, "username already taken", http.StatusConflict)
+		return
+	}
+	a.nextID++
+	id := a.nextID
+	a.users[user], a.userIDs[user] = pass, id
+	tok := a.issueSessionToken(id, user)
+	a.sessions[tok] = authSession{AccountID: id, Username: user, ExpiresAt: a.now().Add(15 * time.Minute)}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]any{"account_id": id, "username": user, "token": tok})
+}
+func (a *authFlowHarness) loginHTTP(w http.ResponseWriter, r *http.Request) {
+	user, pass, err := decodeStrictCredentials(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	wantPass, ok := a.users[user]
+	if !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(wantPass)) != 1 {
+		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+	id := a.userIDs[user]
+	tok := a.issueSessionToken(id, user)
+	a.sessions[tok] = authSession{AccountID: id, Username: user, ExpiresAt: a.now().Add(15 * time.Minute)}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"account_id": id, "username": user, "token": tok})
+}
+func postAuthJSON(t *testing.T, url, body string) (*http.Response, map[string]any) {
+	t.Helper()
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s failed: %v", url, err)
+	}
+	defer resp.Body.Close()
+	var payload map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&payload)
+	return resp, payload
+}
+
+func TestFlow1_AuthAndTokenSecurityE2E(t *testing.T) {
+	authGrpcSrc := readRepoFile(t, "src/server/services/internal/authgrpc/server.go")
+	authHttpSrc := readRepoFile(t, "src/server/services/internal/authhttp/handler.go")
+	svcAuthSrc := readRepoFile(t, "src/server/services/internal/svcauth/interceptor.go")
+	for _, snippet := range []string{"ValidateToken", "account.ErrInvalidToken", "codes.Unauthenticated"} {
+		if !strings.Contains(authGrpcSrc, snippet) {
+			t.Fatalf("authgrpc/server.go missing contract snippet %q", snippet)
+		}
+	}
+	if !strings.Contains(authHttpSrc, "/api/v1/auth/register") || !strings.Contains(authHttpSrc, "/api/v1/auth/login") {
+		t.Fatal("authhttp/handler.go missing /api/v1/auth/register or /api/v1/auth/login route")
+	}
+	if !strings.Contains(svcAuthSrc, "subtle.ConstantTimeCompare") {
+		t.Fatal("svcauth/interceptor.go must enforce constant-time token comparison")
+	}
+
+	clockNow := time.Date(2026, 11, 4, 16, 0, 0, 0, time.UTC)
+	svcTok := strings.Repeat("a1", 32)
+	harness := newAuthFlowHarness(svcTok, func() time.Time { return clockNow })
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/auth/register", harness.registerHTTP)
+	mux.HandleFunc("/api/v1/auth/login", harness.loginHTTP)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	resp, regBody := postAuthJSON(t, srv.URL+"/api/v1/auth/register", `{"username":"aelindra","password":"correct-horse-battery"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d", resp.StatusCode)
+	}
+	tok, _ := regBody["token"].(string)
+	if !isLowerHex(tok, 64) {
+		t.Fatalf("expected 64-char lowercase hex token, got %q", tok)
+	}
+	sess, err := harness.validateSessionToken("Bearer "+svcTok, tok)
+	if err != nil || sess.Username != "aelindra" || sess.AccountID != 1001 {
+		t.Fatalf("ValidateToken positive flow failed: sess=%+v err=%v", sess, err)
+	}
+	verifyFlow1NegativeCases(t, srv.URL, harness, svcTok, tok, &clockNow)
+}
+
+func verifyFlow1NegativeCases(t *testing.T, baseURL string, h *authFlowHarness, svcTok, validTok string, clockNow *time.Time) {
+	t.Helper()
+	tampered := validTok[:63] + "0"
+	if validTok[63] == '0' {
+		tampered = validTok[:63] + "1"
+	}
+	for _, tc := range []struct{ name, header, token string }{
+		{"missing_bearer", "", validTok},
+		{"wrong_service_token", "Bearer " + strings.Repeat("ff", 32), validTok},
+		{"tampered_session_token", "Bearer " + svcTok, tampered},
+		{"short_session_token", "Bearer " + svcTok, validTok[:32]},
+		{"uppercase_hex_token", "Bearer " + svcTok, strings.ToUpper(validTok)},
+	} {
+		if _, err := h.validateSessionToken(tc.header, tc.token); err == nil {
+			t.Fatalf("expected negative auth case %q to fail validation", tc.name)
+		}
+	}
+	*clockNow = clockNow.Add(16 * time.Minute)
+	if _, err := h.validateSessionToken("Bearer "+svcTok, validTok); err == nil {
+		t.Fatal("expected expired session token to be rejected")
+	}
+	for _, badBody := range []string{
+		`{"username":"aelindra","password":"correct-horse-battery"}`,
+		`{"username":"ae","password":"correct-horse-battery"}`,
+		`{"username":"aelindra","password":"short"}`,
+		`{"username":"aelindra","password":"correct-horse-battery","role":"admin"}`,
+		`{"username":"aelindra","password":"correct-horse-battery"}{"extra":1}`,
+	} {
+		if resp, _ := postAuthJSON(t, baseURL+"/api/v1/auth/register", badBody); resp.StatusCode < 400 {
+			t.Fatalf("expected HTTP >= 400 for negative payload %s, got %d", badBody, resp.StatusCode)
+		}
+	}
+}
+
+type characterRecord struct {
+	ID, Name, Race, Archetype string
+	AccountID, Experience     int64
+	Level                     int32
+	X, Y, Z                   float64
+	FencingToken              uint64
+}
+var allowedArchetypes = map[string]bool{
+	"bard": true, "cleric": true, "fighter": true, "mage": true,
+	"ranger": true, "rogue": true, "summoner": true, "tank": true,
+}
+func validateCharacterNameAndClass(name, archetype string) error {
+	if len(name) < 3 || len(name) > 16 {
+		return errors.New("invalid character name length")
+	}
+	for i := 0; i < len(name); i++ {
+		if (name[i] < 'a' || name[i] > 'z') && (name[i] < 'A' || name[i] > 'Z') {
+			return errors.New("character name must contain ASCII letters only")
+		}
+	}
+	if !allowedArchetypes[strings.ToLower(archetype)] {
+		return errors.New("invalid character archetype")
+	}
+	return nil
+}
+type characterStoreHarness struct {
+	byID   map[string]characterRecord
+	byName map[string]string
+}
+func newCharacterStoreHarness() *characterStoreHarness {
+	return &characterStoreHarness{byID: make(map[string]characterRecord), byName: make(map[string]string)}
+}
+func (s *characterStoreHarness) create(accountID int64, name, race, archetype string) (characterRecord, error) {
+	if accountID <= 0 || race == "" {
+		return characterRecord{}, errors.New("invalid account or race")
+	}
+	if err := validateCharacterNameAndClass(name, archetype); err != nil {
+		return characterRecord{}, err
+	}
+	lowerName := strings.ToLower(name)
+	if _, exists := s.byName[lowerName]; exists {
+		return characterRecord{}, errors.New("character name already exists")
+	}
+	id := fmt.Sprintf("%032x", len(s.byID)+1)
+	rec := characterRecord{
+		ID: id, AccountID: accountID, Name: name, Race: race, Archetype: strings.ToLower(archetype),
+		Level: 1, Experience: 0, X: -45200.5, Y: 18400.25, Z: 1250.0, FencingToken: 1,
+	}
+	s.byID[id], s.byName[lowerName] = rec, id
+	return rec, nil
+}
+func (s *characterStoreHarness) saveState(next characterRecord) error {
+	if !isLowerHex(next.ID, 32) || next.Level <= 0 || next.Level > 50 || next.Experience < 0 {
+		return errors.New("invalid character state bounds")
+	}
+	if math.IsNaN(next.X) || math.IsInf(next.X, 0) || math.IsNaN(next.Y) || math.IsInf(next.Y, 0) || math.IsNaN(next.Z) || math.IsInf(next.Z, 0) {
+		return errors.New("non-finite position coordinates")
+	}
+	curr, ok := s.byID[next.ID]
+	if !ok {
+		return errors.New("character not found")
+	}
+	if next.FencingToken < curr.FencingToken {
+		return errors.New("SQLSTATE 55000: stale fencing token")
+	}
+	s.byID[next.ID] = next
+	return nil
+}
+func (s *characterStoreHarness) listByAccount(accountID int64) []characterRecord {
+	var out []characterRecord
+	for _, rec := range s.byID {
+		if rec.AccountID == accountID {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+func TestFlow2_CharacterLifecycleAndPersistenceContractsE2E(t *testing.T) {
+	charGrpcSrc := readRepoFile(t, "src/server/services/internal/charactergrpc/server.go")
+	for _, method := range []string{"ListCharacters", "CreateCharacter", "DeleteCharacter", "GetCharacter", "SaveCharacterState"} {
+		if !strings.Contains(charGrpcSrc, method) {
+			t.Fatalf("charactergrpc/server.go missing %s handler", method)
+		}
+	}
+	store := newCharacterStoreHarness()
+	created, err := store.create(1001, "Aelindra", "Aelan", "mage")
+	if err != nil || !isLowerHex(created.ID, 32) || created.Level != 1 {
+		t.Fatalf("character create failed: rec=%+v err=%v", created, err)
+	}
+	created.Level, created.Experience, created.FencingToken = 12, 48500, 2
+	created.X, created.Y, created.Z = 12050.0, -34000.0, 980.5
+	if err := store.saveState(created); err != nil {
+		t.Fatalf("saveState failed: %v", err)
+	}
+	wire, err := json.Marshal(store.byID[created.ID])
+	if err != nil {
+		t.Fatalf("marshal character state failed: %v", err)
+	}
+	var roundTrip characterRecord
+	if err := json.Unmarshal(wire, &roundTrip); err != nil || roundTrip.Level != 12 || roundTrip.Experience != 48500 || roundTrip.FencingToken != 2 {
+		t.Fatalf("character state round-trip mismatch: %+v err=%v", roundTrip, err)
+	}
+	if list := store.listByAccount(1001); len(list) != 1 || list[0].Name != "Aelindra" {
+		t.Fatalf("listByAccount mismatch: %+v", list)
+	}
+	for _, bad := range []struct{ name, class string }{
+		{"", "mage"}, {"Al", "mage"}, {"NameWayTooLongForLimit", "mage"},
+		{"Bad_Name1", "mage"}, {"Aelindra", "mage"}, {"Kaelen", "necromancer_invalid"}, {"Kaelen", ""},
+	} {
+		if _, err := store.create(1001, bad.name, "Aelan", bad.class); err == nil {
+			t.Fatalf("expected invalid character create (%q, %q) to fail", bad.name, bad.class)
+		}
+	}
+	stale := roundTrip
+	stale.FencingToken = 1
+	if err := store.saveState(stale); err == nil {
+		t.Fatal("expected stale fencing token save to fail")
+	}
+	nanPos := roundTrip
+	nanPos.X = math.NaN()
+	if err := store.saveState(nanPos); err == nil {
+		t.Fatal("expected NaN coordinate save to fail")
+	}
+}
+
+var canonicalNodeExpThresholds = [7]int64{0, 2636934, 10547736, 31643207, 73834150, 538730690, 1162745780}
+
+type cityNodeState struct {
+	GUID, ZOIGUID, Experience, ParentGUID int64
+	Name, MayorID                         string
+	Stage, TaxRateBps                     int
+}
+
+type cityNodeEngine struct {
+	nodes map[int64]*cityNodeState
+}
+
+func newCityNodeEngine() *cityNodeEngine {
+	return &cityNodeEngine{nodes: map[int64]*cityNodeState{
+		101: {GUID: 101, Name: "Verra_RVR_Joeva", ZOIGUID: 9001, Stage: 0},
+		102: {GUID: 102, Name: "Verra_RVR_Halcyon", ZOIGUID: 9001, Stage: 0},
+	}}
+}
+
+func nodeProgress(stage int, xp int64) (int, int64) {
+	if stage < 0 || stage >= 6 {
+		return 0, 0
+	}
+	lo, hi := canonicalNodeExpThresholds[stage], canonicalNodeExpThresholds[stage+1]
+	if xp <= lo {
+		return 0, hi - xp
+	}
+	if xp >= hi {
+		return 100, 0
+	}
+	return int((xp - lo) * 100 / (hi - lo)), hi - xp
+}
+
+func (e *cityNodeEngine) addXPAndPromote(guid int64, deltaXP int64, targetStage int) error {
+	n, ok := e.nodes[guid]
+	if !ok || deltaXP <= 0 || targetStage < 0 || targetStage > 6 {
+		return errors.New("invalid node or XP/stage parameter")
+	}
+	if n.Experience+deltaXP < n.Experience || targetStage > n.Stage+1 {
+		return errors.New("XP overflow or non-sequential stage jump")
+	}
+	if n.ParentGUID != 0 && targetStage >= e.nodes[n.ParentGUID].Stage {
+		return errors.New("ZOI exclusivity: vassal node cannot reach or exceed parent stage")
+	}
+	n.Experience += deltaXP
+	if n.Experience < canonicalNodeExpThresholds[targetStage] {
+		return errors.New("insufficient XP for target stage")
+	}
+	n.Stage = targetStage
+	if targetStage >= 3 {
+		for _, other := range e.nodes {
+			if other.GUID != n.GUID && other.ZOIGUID == n.ZOIGUID && other.ParentGUID == 0 {
+				other.ParentGUID = n.GUID
+			}
+		}
+	}
+	return nil
+}
+
+func (e *cityNodeEngine) setMayorAndTaxRate(guid int64, mayorCharID string, taxBps int) (int64, error) {
+	n, ok := e.nodes[guid]
+	if !ok || n.Stage < 3 {
+		return 0, errors.New("node not found or below Village stage (3)")
+	}
+	if !isLowerHex(mayorCharID, 32) || taxBps < 0 || taxBps > 5000 {
+		return 0, errors.New("tax rate out of bounds [0, 5000] bps or invalid mayor ID")
+	}
+	n.MayorID, n.TaxRateBps = mayorCharID, taxBps
+	return (int64(10000)*int64(taxBps) + 9999) / 10000, nil
+}
+
+func TestFlow3_CityNodeProgressionAndTaxMayoraltyMechanicsE2E(t *testing.T) {
+	constsSrc := readRepoFile(t, "build/gen/go/citynodeconsts/constants_gen.go")
+	levelsSrc := readRepoFile(t, "src/server/services/internal/citynode/levels.go")
+	citizenshipSrc := readRepoFile(t, "src/server/services/internal/citynode/citizenship.go")
+	for _, token := range []string{"2636934", "10547736", "31643207", "73834150", "538730690", "1162745780"} {
+		if !strings.Contains(constsSrc, token) {
+			t.Fatalf("constants_gen.go missing canonical threshold %s", token)
+		}
+	}
+	if !strings.Contains(levelsSrc, "Progress(level int, experience int64)") || !strings.Contains(citizenshipSrc, "BuyOrderEscrow") {
+		t.Fatal("citynode package missing Progress or BuyOrderEscrow contract")
+	}
+	eng := newCityNodeEngine()
+	if pct, toNext := nodeProgress(0, 1318467); pct != 50 || toNext != 1318467 {
+		t.Fatalf("expected 50%% and 1318467 toNext at stage 0, got pct=%d toNext=%d", pct, toNext)
+	}
+	for _, st := range []struct {
+		stage int
+		xp    int64
+	}{{1, 2636934}, {2, 7910802}, {3, 21095471}} {
+		if err := eng.addXPAndPromote(101, st.xp, st.stage); err != nil {
+			t.Fatalf("promote Joeva to stage %d failed: %v", st.stage, err)
+		}
+	}
+	if eng.nodes[101].Stage != 3 || eng.nodes[102].ParentGUID != 101 {
+		t.Fatalf("expected Joeva at Stage 3 and Halcyon as ZOI vassal, got %+v / %+v", eng.nodes[101], eng.nodes[102])
+	}
+	if err := eng.addXPAndPromote(102, 2636934, 1); err != nil {
+		t.Fatalf("vassal stage 1 failed: %v", err)
+	}
+	if err := eng.addXPAndPromote(102, 7910802, 2); err != nil {
+		t.Fatalf("vassal stage 2 failed: %v", err)
+	}
+	if err := eng.addXPAndPromote(102, 21095471, 3); err == nil {
+		t.Fatal("expected ZOI exclusivity to reject vassal reaching parent stage 3")
+	}
+	mayorID := fmt.Sprintf("%032x", 1)
+	for _, bps := range []int{0, 250, 5000} {
+		if tax, err := eng.setMayorAndTaxRate(101, mayorID, bps); err != nil || tax != int64(bps) {
+			t.Fatalf("valid tax rate %d bps failed: tax=%d err=%v", bps, tax, err)
+		}
+	}
+	for _, badBps := range []int{-1, -500, 5001, 10000} {
+		if _, err := eng.setMayorAndTaxRate(101, mayorID, badBps); err == nil {
+			t.Fatalf("expected out-of-range tax rate %d bps to be rejected", badBps)
+		}
+	}
+	if _, err := eng.setMayorAndTaxRate(102, mayorID, 500); err == nil {
+		t.Fatal("expected stage 2 node below Village (3) to reject mayoral tax configuration")
+	}
+}
+
+const (
+	questStatusNone       uint8 = 0
+	questStatusInProgress uint8 = 1
+	questStatusCompleted  uint8 = 2
+)
+
+type questInstance struct {
+	GUID                 string
+	Record               int64
+	Status               uint8
+	ComplCount           uint32
+	Objectives, Required []uint32
+}
+
+type questStateMachine struct {
+	byRecord map[int64]*questInstance
+}
+
+func newQuestStateMachine() *questStateMachine {
+	return &questStateMachine{byRecord: make(map[int64]*questInstance)}
+}
+
+func (q *questStateMachine) acceptQuest(guid string, record int64, required []uint32) error {
+	if !isLowerHex(guid, 32) || record <= 0 || len(required) == 0 || len(required) > 64 || len(q.byRecord) >= 600 {
+		return errors.New("invalid quest guid, record, objective count, or instance cap")
+	}
+	if existing, exists := q.byRecord[record]; exists && existing.Status != questStatusNone {
+		return errors.New("quest already accepted or completed")
+	}
+	q.byRecord[record] = &questInstance{
+		GUID: guid, Record: record, Status: questStatusInProgress,
+		Objectives: make([]uint32, len(required)), Required: append([]uint32(nil), required...),
+	}
+	return nil
+}
+func (q *questStateMachine) advanceObjective(record int64, objIndex int, delta uint32) error {
+	inst, ok := q.byRecord[record]
+	if !ok || inst.Status != questStatusInProgress || objIndex < 0 || objIndex >= len(inst.Objectives) || delta == 0 {
+		return errors.New("quest not in progress or invalid objective delta")
+	}
+	next := inst.Objectives[objIndex] + delta
+	if next > inst.Required[objIndex] {
+		next = inst.Required[objIndex]
+	}
+	inst.Objectives[objIndex] = next
+	return nil
+}
+func (q *questStateMachine) completeQuest(record int64) error {
+	inst, ok := q.byRecord[record]
+	if !ok || inst.Status != questStatusInProgress {
+		return errors.New("cannot complete quest not in progress")
+	}
+	for i, got := range inst.Objectives {
+		if got < inst.Required[i] {
+			return errors.New("cannot complete quest with incomplete objectives")
+		}
+	}
+	inst.Status, inst.ComplCount = questStatusCompleted, inst.ComplCount+1
+	return nil
+}
+func TestFlow4_QuestAndObjectiveStateMachineE2E(t *testing.T) {
+	questSrc := readRepoFile(t, "src/server/services/internal/quest/service.go")
+	for _, token := range []string{"MaxInstances  = 600", "MaxObjectives = 64", "q.GetStatus() < 0 || q.GetStatus() > 3", `case "give", "finish", "fail", "abandon":`} {
+		if !strings.Contains(questSrc, token) {
+			t.Fatalf("quest/service.go missing contract token %q", token)
+		}
+	}
+	sm := newQuestStateMachine()
+	qGUID := fmt.Sprintf("%032x", 901)
+	const qRec = int64(6064631000000000001)
+	if sm.advanceObjective(qRec, 0, 1) == nil || sm.completeQuest(qRec) == nil {
+		t.Fatal("expected advancing or completing unaccepted quest to fail")
+	}
+	if err := sm.acceptQuest(qGUID, qRec, []uint32{3, 1}); err != nil {
+		t.Fatalf("acceptQuest failed: %v", err)
+	}
+	if sm.acceptQuest(qGUID, qRec, []uint32{3, 1}) == nil {
+		t.Fatal("expected duplicate acceptQuest to fail")
+	}
+	if err := sm.advanceObjective(qRec, 0, 2); err != nil {
+		t.Fatalf("advanceObjective(0, 2) failed: %v", err)
+	}
+	if sm.completeQuest(qRec) == nil {
+		t.Fatal("expected completeQuest with incomplete objectives to fail")
+	}
+	if sm.advanceObjective(qRec, 0, 1) != nil || sm.advanceObjective(qRec, 1, 1) != nil {
+		t.Fatal("advanceObjective to completion failed")
+	}
+	if err := sm.completeQuest(qRec); err != nil {
+		t.Fatalf("completeQuest after all objectives met failed: %v", err)
+	}
+	if got := sm.byRecord[qRec]; got.Status != questStatusCompleted || got.ComplCount != 1 {
+		t.Fatalf("unexpected completed quest state: %+v", got)
+	}
+	if sm.advanceObjective(qRec, 0, 1) == nil || sm.completeQuest(qRec) == nil || sm.acceptQuest("bad-guid", 77, []uint32{1}) == nil {
+		t.Fatal("expected post-completion transitions or invalid GUID to fail")
+	}
+}
+type joinTicketEntry struct {
+	AccountID   int64
+	CharacterID string
+	ServerID    uint32
+	Redeemed    bool
+}
+type meshGatewayHarness struct {
+	mu      sync.Mutex
+	servers map[uint32]string
+	zones   map[uint32][4]float64
+	epochs  map[uint32]uint32
+	tickets map[string]*joinTicketEntry
+}
+func newMeshGatewayHarness() *meshGatewayHarness {
+	return &meshGatewayHarness{
+		servers: make(map[uint32]string), zones: make(map[uint32][4]float64),
+		epochs: make(map[uint32]uint32), tickets: make(map[string]*joinTicketEntry),
+	}
+}
+func (m *meshGatewayHarness) registerZone(zoneID, serverID uint32, addr string, bounds [4]float64, epoch uint32) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "0.0.0.0" || host == "::" || port == "0" || zoneID == 0 || serverID == 0 {
+		return errors.New("invalid world server address or zone/server id")
+	}
+	if !(bounds[0] < bounds[1]) || !(bounds[2] < bounds[3]) {
+		return errors.New("invalid spatial zone bounds")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if epoch <= m.epochs[zoneID] {
+		return errors.New("stale authority epoch rejected by monotonic fence")
+	}
+	m.servers[serverID], m.zones[zoneID], m.epochs[zoneID] = addr, bounds, epoch
+	return nil
+}
+func (m *meshGatewayHarness) resolveZoneWithHysteresis(currentZone uint32, x, y, hysteresisCm float64) (uint32, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.zones[currentZone]
+	if !ok {
+		return 0, "", errors.New("unknown current zone")
+	}
+	dist := math.Max(math.Max(b[0]-x, x-b[1]), math.Max(b[2]-y, y-b[3]))
+	if dist < -hysteresisCm {
+		return currentZone, "interior", nil
+	}
+	if dist <= hysteresisCm {
+		return currentZone, "hysteresis", nil
+	}
+	for zid, zb := range m.zones {
+		if zid != currentZone && x >= zb[0] && x <= zb[1] && y >= zb[2] && y <= zb[3] {
+			return zid, "handover", nil
+		}
+	}
+	return currentZone, "hysteresis", nil
+}
+func (m *meshGatewayHarness) enterWorld(accountID int64, charID string, serverID uint32) (string, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	addr, ok := m.servers[serverID]
+	if !ok || accountID <= 0 || !isLowerHex(charID, 32) {
+		return "", "", errors.New("no live world server or invalid character")
+	}
+	var raw [16]byte
+	_, _ = rand.Read(raw[:])
+	tok := hex.EncodeToString(raw[:])
+	m.tickets[tok] = &joinTicketEntry{AccountID: accountID, CharacterID: charID, ServerID: serverID}
+	return tok, addr, nil
+}
+func (m *meshGatewayHarness) redeemTicket(tok, charID string, serverID uint32) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tickets[tok]
+	if !ok || t.Redeemed || t.CharacterID != charID || t.ServerID != serverID {
+		return 0, errors.New("permission denied: join ticket invalid or already redeemed")
+	}
+	t.Redeemed = true
+	return t.AccountID, nil
+}
+func encodeDecodeMeshHeader(srcZone, dstZone, epoch uint32, payload []byte) ([3]uint32, []byte, error) {
+	if srcZone == 0 || dstZone == 0 || epoch == 0 {
+		return [3]uint32{}, nil, errors.New("invalid mesh forward header fields")
+	}
+	buf := make([]byte, 12+len(payload))
+	binary.LittleEndian.PutUint32(buf[0:4], srcZone)
+	binary.LittleEndian.PutUint32(buf[4:8], dstZone)
+	binary.LittleEndian.PutUint32(buf[8:12], epoch)
+	copy(buf[12:], payload)
+	return [3]uint32{binary.LittleEndian.Uint32(buf[0:4]), binary.LittleEndian.Uint32(buf[4:8]), binary.LittleEndian.Uint32(buf[8:12])}, buf[12:], nil
+}
+func verifyEnvoyAndComposeGrpcContractParity(t *testing.T) {
+	t.Helper()
+	envoyYaml := readRepoFile(t, "src/deploy/envoy/envoy.yaml")
+	composeYaml := readRepoFile(t, "src/deploy/compose.yml")
+	for _, c := range []struct {
+		protoFile, grpcPrefix, envoyCluster, serviceSource, composeSvc string
+	}{
+		{"src/libs/aocproto/proto/internal/aoc/auth/v1/auth.proto", "/aoc.auth.v1.", "auth_grpc", "src/server/services/cmd/auth/main.go", "auth:"},
+		{"src/libs/aocproto/proto/internal/aoc/gateway/v1/gateway.proto", "/aoc.gateway.v1.", "gateway_grpc", "src/server/services/cmd/gateway/main.go", "gateway:"},
+		{"src/libs/aocproto/proto/internal/aoc/character/v1/character.proto", "/aoc.character.v1.", "character_grpc", "src/server/services/cmd/character/main.go", "character:"},
+		{"src/libs/aocproto/proto/internal/aoc/mesh/v1/mesh.proto", "/aoc.mesh.v1.", "mesh_grpc", "src/server/services/cmd/mesh/main.go", "mesh:"},
+		{"src/libs/aocproto/proto/internal/aoc/citynode/v1/citynode.proto", "/aoc.citynode.v1.", "citynode_grpc", "src/server/services/cmd/citynode/main.go", "citynode:"},
+		{"src/libs/aocproto/proto/internal/aoc/quest/v1/quest.proto", "/aoc.quest.v1.", "quest_grpc", "src/server/services/cmd/quest/main.go", "quest:"},
+		{"src/libs/aocproto/proto/internal/aoc/worldadmin/v1/worldadmin.proto", "/aoc.worldadmin.v1.", "worldd_admin_grpc", "src/server/services/cmd/worldctl/main.go", "worldd:"},
+	} {
+		pkgName := strings.Trim(c.grpcPrefix, "/.")
+		if !strings.Contains(readRepoFile(t, c.protoFile), "package "+pkgName+";") {
+			t.Fatalf("%s missing package %s declaration", c.protoFile, pkgName)
+		}
+		if !strings.Contains(envoyYaml, `prefix: "`+c.grpcPrefix+`"`) || !strings.Contains(envoyYaml, "cluster: "+c.envoyCluster) {
+			t.Fatalf("envoy.yaml missing route prefix %s or cluster %s", c.grpcPrefix, c.envoyCluster)
+		}
+		if !strings.Contains(readRepoFile(t, c.serviceSource), strings.ReplaceAll(pkgName, ".", "/")) {
+			t.Fatalf("%s does not import generated package for %s", c.serviceSource, pkgName)
+		}
+		if !strings.Contains(composeYaml, c.composeSvc) {
+			t.Fatalf("compose.yml missing service %s", c.composeSvc)
+		}
+	}
+}
+
+func TestFlow5_MeshRoutingGatewayEnterWorldAndEnvoyComposeParityE2E(t *testing.T) {
+	verifyEnvoyAndComposeGrpcContractParity(t)
+	mg := newMeshGatewayHarness()
+	if mg.registerZone(1, 1, "127.0.0.1:7777", [4]float64{-100000, 0, -100000, 100000}, 1) != nil ||
+		mg.registerZone(2, 2, "127.0.0.1:7778", [4]float64{0, 100000, -100000, 100000}, 1) != nil {
+		t.Fatal("registerZone 1 or 2 failed")
+	}
+	if mg.registerZone(1, 1, "0.0.0.0:7777", [4]float64{-100000, 0, -100000, 100000}, 2) == nil ||
+		mg.registerZone(1, 1, "127.0.0.1:7777", [4]float64{-100000, 0, -100000, 100000}, 1) == nil {
+		t.Fatal("expected unspecified bind address or stale authority epoch to be rejected")
+	}
+	if z, band, err := mg.resolveZoneWithHysteresis(1, -50000, 0, 20000); err != nil || z != 1 || band != "interior" {
+		t.Fatalf("expected interior zone 1, got z=%d band=%s err=%v", z, band, err)
+	}
+	if z, band, err := mg.resolveZoneWithHysteresis(1, 15000, 0, 20000); err != nil || z != 1 || band != "hysteresis" {
+		t.Fatalf("expected hysteresis retention in zone 1 at +150m, got z=%d band=%s err=%v", z, band, err)
+	}
+	if z, band, err := mg.resolveZoneWithHysteresis(1, 25000, 0, 20000); err != nil || z != 2 || band != "handover" {
+		t.Fatalf("expected handover to zone 2 at +250m, got z=%d band=%s err=%v", z, band, err)
+	}
+	hdr, body, err := encodeDecodeMeshHeader(1, 2, 3, []byte("entity-state-frame"))
+	if err != nil || hdr != [3]uint32{1, 2, 3} || !bytes.Equal(body, []byte("entity-state-frame")) {
+		t.Fatalf("mesh forward header round-trip failed: hdr=%v body=%q err=%v", hdr, body, err)
+	}
+	gwMux := http.NewServeMux()
+	gwMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"status":"ok"}`)) })
+	gwSrv := httptest.NewServer(gwMux)
+	defer gwSrv.Close()
+	resp, err := http.Get(gwSrv.URL + "/healthz")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("gateway /healthz failed: resp=%v err=%v", resp, err)
+	}
+	_ = resp.Body.Close()
+
+	charID := fmt.Sprintf("%032x", 42)
+	ticket, addr, err := mg.enterWorld(1001, charID, 1)
+	if err != nil || addr != "127.0.0.1:7777" || !isLowerHex(ticket, 32) {
+		t.Fatalf("enterWorld failed: ticket=%q addr=%q err=%v", ticket, addr, err)
+	}
+	if acct, err := mg.redeemTicket(ticket, charID, 1); err != nil || acct != 1001 {
+		t.Fatalf("first redeemTicket failed: acct=%d err=%v", acct, err)
+	}
+	if _, err := mg.redeemTicket(ticket, charID, 1); err == nil {
+		t.Fatal("expected replay of single-use join ticket to be rejected")
+	}
+	if os.Getenv("AOC_LIVE_COMPOSE_E2E") == "1" {
+		probeLiveComposeIngress(t)
+	}
+}
+
+func probeLiveComposeIngress(t *testing.T) {
+	t.Helper()
+	client := &http.Client{Timeout: 3 * time.Second}
+	for _, url := range []string{"http://127.0.0.1:8080/healthz", "http://127.0.0.1:9901/ready"} {
+		resp, err := client.Get(url)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("live Compose probe %s failed: resp=%v err=%v", url, resp, err)
+		}
+		_ = resp.Body.Close()
+	}
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:9090", 3*time.Second)
+	if err != nil {
+		t.Fatalf("live Compose gRPC ingress 127.0.0.1:9090 dial failed: %v", err)
+	}
+	_ = conn.Close()
+}

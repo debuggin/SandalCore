@@ -19,7 +19,6 @@ build/
 /build/
 dist/
 /dist/
-deploy/
 /deploy/
 MinSizeRel/
 out/

@@ -26,6 +26,9 @@ _workspace/
 # Build trees, caches & intermediate artifacts
 build
 build/
+build/x64/
+build/dotnet/
+build/venv/
 build*/
 cmake-build-*/
 out
@@ -44,6 +47,23 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Explicitly allow generated code, third-party build inputs, content & source tree
+!build/gen/
+!build/gen/**
+!build/third_party/
+!build/third_party/**
+!dist/content/
+!dist/content/**
+!src/
+!src/**
+
+# Ignore desktop control-app & internal notes inside source/docs
+src/tools/control-app/
+docs/
+docs/notes/
+tests/fixtures/
+*.md
+
 # Game data archives, runtime state & debug symbols
 data
 data/
@@ -58,7 +78,9 @@ third_party/CUE4Parse/
 *.ucas
 *.aocnav
 *.pmtiles
+!dist/content/*.pmtiles
 *.db
+!dist/content/*.db
 *.db-*
 *.sqlite3
 *.log
@@ -81,8 +103,3 @@ certs/*.crt
 config/certs/*.key
 config/*.local.json
 config/local.json
-
-# Documentation, test fixtures & local scripts excluded from container build context
-docs/
-tests/fixtures/
-*.md
