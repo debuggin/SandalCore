@@ -65,6 +65,9 @@ set(SANDAL_DOMAIN_TEST_TARGETS
     test_swarm_500_bots_30hz
     test_boundary_oscillation_10k
     test_transport_matrix_36
+    test_v1_udp_jitter_loss
+    test_v2_pg17_wal_stall
+    test_v3_mutated_bitstreams
 )
 
 add_sandal_domain_test_exe(test_world_clock_and_data_free world/test_world_clock_and_data_free.cpp)
@@ -121,6 +124,9 @@ add_sandal_domain_test_exe(test_content_snapshot_rcu world/test_content_snapshot
 add_sandal_domain_test_exe(test_swarm_500_bots_30hz mesh/test_swarm_500_bots_30hz.cpp)
 add_sandal_domain_test_exe(test_boundary_oscillation_10k mesh/test_boundary_oscillation_10k.cpp)
 add_sandal_domain_test_exe(test_transport_matrix_36 mesh/test_transport_matrix_36.cpp)
+add_sandal_domain_test_exe(test_v1_udp_jitter_loss chaos/test_v1_udp_jitter_loss.cpp)
+add_sandal_domain_test_exe(test_v2_pg17_wal_stall chaos/test_v2_pg17_wal_stall.cpp)
+add_sandal_domain_test_exe(test_v3_mutated_bitstreams chaos/test_v3_mutated_bitstreams.cpp)
 
 get_property(SANDAL_WORLD_TEST_TARGETS GLOBAL PROPERTY SANDAL_WORLD_TEST_TARGETS)
 
@@ -275,6 +281,9 @@ add_sandal_domain_case_test(world.content_snapshot_rcu test_content_snapshot_rcu
 add_sandal_domain_case_test(mesh.swarm_500_bots_30hz test_swarm_500_bots_30hz swarm_500_bots_30hz)
 add_sandal_domain_case_test(mesh.boundary_oscillation_10k test_boundary_oscillation_10k boundary_oscillation_10k)
 add_sandal_domain_case_test(mesh.transport_matrix_36 test_transport_matrix_36 transport_matrix_36)
+add_sandal_domain_case_test(chaos.v1_udp_jitter_loss test_v1_udp_jitter_loss v1_udp_jitter_loss)
+add_sandal_domain_case_test(chaos.v2_pg17_wal_stall test_v2_pg17_wal_stall v2_pg17_wal_stall)
+add_sandal_domain_case_test(chaos.v3_mutated_bitstreams test_v3_mutated_bitstreams v3_mutated_bitstreams)
 
 find_program(SANDAL_PWSH_EXECUTABLE NAMES pwsh powershell REQUIRED)
 add_test(
