@@ -310,3 +310,143 @@ func TestPlaceTieBreakIgnoresRowOrder(t *testing.T) {
 		t.Errorf("Place = %d %v, want %d (the higher id of equal heartbeats)", id, err, b)
 	}
 }
+
+func TestRegistryLeaseHeartbeatAndFenceValidation(t *testing.T) {
+	var zeroReg Registry
+	if zeroReg.IsLeaseActive(1) || zeroReg.AuthorityEpoch(1) != 0 {
+		t.Fatal("zero Registry should report inactive lease and zero epoch")
+	}
+	if srv, ep, st := zeroReg.ZoneAuthority(1); srv != 0 || ep != 0 || st != HandoverStateMirror {
+		t.Fatalf("zero ZoneAuthority = (%d, %d, %d), want (0, 0, Mirror)", srv, ep, st)
+	}
+
+	s := NewRegistry(nil, 0, "127.0.0.1:7777")
+	if err := s.RecordLeaseHeartbeat(StaticServerID, 1); !errors.Is(err, ErrUnknownServer) {
+		t.Fatalf("RecordLeaseHeartbeat(0) = %v, want ErrUnknownServer", err)
+	}
+	if err := s.RecordLeaseHeartbeat(uint32(math.MaxInt32)+1, 1); !errors.Is(err, ErrUnknownServer) {
+		t.Fatalf("RecordLeaseHeartbeat(>MaxInt32) = %v, want ErrUnknownServer", err)
+	}
+	if err := s.RecordLeaseHeartbeat(10, 5); err != nil || !s.IsLeaseActive(10) {
+		t.Fatalf("RecordLeaseHeartbeat(10, 5) = %v, active=%v", err, s.IsLeaseActive(10))
+	}
+	if err := s.RecordLeaseHeartbeat(10, 4); !errors.Is(err, ErrStaleAuthorityEpoch) {
+		t.Fatalf("RecordLeaseHeartbeat stale epoch = %v, want ErrStaleAuthorityEpoch", err)
+	}
+	for _, tc := range []struct {
+		zoneID, srvID, epoch uint32
+		state                HandoverState
+		want                 error
+	}{
+		{0, 10, 1, HandoverStateAuthority, ErrInvalid},
+		{1, 0, 1, HandoverStateAuthority, ErrInvalid},
+		{1, uint32(math.MaxInt32) + 1, 1, HandoverStateAuthority, ErrInvalid},
+		{1, 10, 0, HandoverStateAuthority, ErrInvalid},
+		{1, 99, 1, HandoverStateAuthority, ErrNoServer},
+	} {
+		if _, err := s.FenceZoneAuthority(tc.zoneID, tc.srvID, tc.epoch, tc.state); !errors.Is(err, tc.want) {
+			t.Fatalf("FenceZoneAuthority(%+v) = %v, want %v", tc, err, tc.want)
+		}
+	}
+}
+
+func TestRegistryHandoverStateLifecycleAndEpochFence(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	s := NewRegistry(nil, 5*time.Second, "")
+	s.now = func() time.Time { return now }
+	if err := s.RecordLeaseHeartbeat(1, 1); err != nil {
+		t.Fatalf("RecordLeaseHeartbeat(1, 1) = %v", err)
+	}
+	if err := s.RecordLeaseHeartbeat(2, 2); err != nil {
+		t.Fatalf("RecordLeaseHeartbeat(2, 2) = %v", err)
+	}
+
+	hdr1, err := s.FenceZoneAuthority(10, 1, 1, HandoverStateAuthority)
+	if err != nil || hdr1.SourceZoneID != 0 || hdr1.TargetZoneID != 10 || hdr1.AuthorityEpoch != 1 {
+		t.Fatalf("initial FenceZoneAuthority = %+v, err=%v", hdr1, err)
+	}
+	if err := s.TransitionHandoverState(10, 1, 1, HandoverStatePromoting); err != nil {
+		t.Fatalf("TransitionHandoverState(Promoting) = %v", err)
+	}
+	if err := s.TransitionHandoverState(10, 1, 0, HandoverStateAuthority); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("TransitionHandoverState(epoch=0) = %v, want ErrInvalid", err)
+	}
+	if err := s.TransitionHandoverState(10, 2, 1, HandoverStateAuthority); !errors.Is(err, ErrStaleAuthorityEpoch) {
+		t.Fatalf("non-owner same-epoch transition = %v, want ErrStaleAuthorityEpoch", err)
+	}
+	hdr2, err := s.FenceZoneAuthority(10, 2, 2, HandoverStateDemoting)
+	if err != nil || hdr2.SourceZoneID != 1 || hdr2.AuthorityEpoch != 2 {
+		t.Fatalf("second FenceZoneAuthority = %+v, err=%v", hdr2, err)
+	}
+	if err := s.TransitionHandoverState(10, 2, 2, HandoverStateAuthority); err != nil {
+		t.Fatalf("TransitionHandoverState(Authority) = %v", err)
+	}
+	now = now.Add(6 * time.Second)
+	if s.IsLeaseActive(2) {
+		t.Fatal("expected server 2 lease to expire after TTL")
+	}
+	if err := s.TransitionHandoverState(10, 2, 3, HandoverStateMirror); !errors.Is(err, ErrNoServer) {
+		t.Fatalf("TransitionHandoverState expired lease = %v, want ErrNoServer", err)
+	}
+}
+
+func TestZoneRouterUpsertAndPromoteValidation(t *testing.T) {
+	r := NewZoneRouter(math.NaN())
+	if r.HysteresisCm() != DefaultBoundaryHysteresisCm {
+		t.Fatalf("HysteresisCm() = %v, want %v", r.HysteresisCm(), DefaultBoundaryHysteresisCm)
+	}
+	if err := r.UpsertZone(ZoneBounds{ZoneID: 0, MaxX: 10, MaxY: 10, ServerID: 1, Address: "127.0.0.1:7001"}); !errors.Is(err, ErrInvalidZoneBounds) {
+		t.Fatalf("UpsertZone(ZoneID=0) = %v, want ErrInvalidZoneBounds", err)
+	}
+	if err := r.UpsertZone(ZoneBounds{ZoneID: 1, MinX: 10, MaxX: 10, MaxY: 10, ServerID: 1, Address: "127.0.0.1:7001"}); !errors.Is(err, ErrInvalidZoneBounds) {
+		t.Fatalf("UpsertZone(MinX==MaxX) = %v, want ErrInvalidZoneBounds", err)
+	}
+	if err := r.UpsertZone(ZoneBounds{ZoneID: 1, MaxX: 100, MaxY: 100, ServerID: 1, Address: "0.0.0.0:7001"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("UpsertZone(unspecified address) = %v, want ErrInvalid", err)
+	}
+	if err := r.UpsertZone(ZoneBounds{ZoneID: 1, MaxX: 100, MaxY: 100, ServerID: 1, Address: "127.0.0.1:7001", AuthorityEpoch: 3}); err != nil {
+		t.Fatalf("UpsertZone valid = %v", err)
+	}
+	if err := r.UpsertZone(ZoneBounds{ZoneID: 1, MaxX: 100, MaxY: 100, ServerID: 1, Address: "127.0.0.1:7001", AuthorityEpoch: 0}); !errors.Is(err, ErrStaleAuthorityEpoch) {
+		t.Fatalf("UpsertZone epoch=0 after epoch=3 = %v, want ErrStaleAuthorityEpoch", err)
+	}
+	if _, err := r.PromoteZoneAuthority(99, 2, "127.0.0.1:7002", 4); !errors.Is(err, ErrUnknownZone) {
+		t.Fatalf("PromoteZoneAuthority unknown = %v, want ErrUnknownZone", err)
+	}
+	if _, err := r.PromoteZoneAuthority(1, 0, "127.0.0.1:7002", 4); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("PromoteZoneAuthority serverID=0 = %v, want ErrInvalid", err)
+	}
+}
+
+func TestZoneRouterBoundarySweepHysteresisAndForwardHeader(t *testing.T) {
+	emptyRouter := NewZoneRouter(0)
+	if _, _, err := emptyRouter.ResolveAuthorityZone(0, 0, 0); !errors.Is(err, ErrUnknownZone) {
+		t.Fatalf("empty ResolveAuthorityZone = %v, want ErrUnknownZone", err)
+	}
+	r := newTwoZoneRouter(t)
+	if z, band, err := r.ResolveAuthorityZone(0, -50000, 0); err != nil || z != 1 || band != BorderBandInterior {
+		t.Fatalf("ResolveAuthorityZone(0, -50000, 0) = (%d, %v, %v)", z, band, err)
+	}
+	for _, step := range []struct {
+		x        float64
+		wantZone uint32
+		wantBand BorderBand
+	}{
+		{-25000, 1, BorderBandInterior},
+		{-5000, 1, BorderBandHysteresis},
+		{15000, 1, BorderBandHysteresis},
+		{25000, 2, BorderBandHandover},
+	} {
+		z, band, err := r.ResolveAuthorityZone(1, step.x, 0)
+		if err != nil || z != step.wantZone || band != step.wantBand {
+			t.Fatalf("sweep x=%v: got (%d, %v, %v), want (%d, %v, nil)", step.x, z, band, err, step.wantZone, step.wantBand)
+		}
+	}
+	if err := r.ValidateForwardHeader(MeshForwardHeader{SourceZoneID: 0, TargetZoneID: 2, AuthorityEpoch: 1}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ValidateForwardHeader(zero source) = %v, want ErrInvalid", err)
+	}
+	if err := r.ValidateForwardHeader(MeshForwardHeader{SourceZoneID: 1, TargetZoneID: 99, AuthorityEpoch: 1}); !errors.Is(err, ErrUnknownZone) {
+		t.Fatalf("ValidateForwardHeader(unknown target) = %v, want ErrUnknownZone", err)
+	}
+}
+

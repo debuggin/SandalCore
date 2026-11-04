@@ -64,6 +64,7 @@ set(SANDAL_DOMAIN_TEST_TARGETS
     test_content_snapshot_rcu
     test_swarm_500_bots_30hz
     test_boundary_oscillation_10k
+    test_transport_matrix_36
 )
 
 add_sandal_domain_test_exe(test_world_clock_and_data_free world/test_world_clock_and_data_free.cpp)
@@ -119,6 +120,7 @@ add_sandal_domain_test_exe(test_three_ring_stress world/test_three_ring_stress.c
 add_sandal_domain_test_exe(test_content_snapshot_rcu world/test_content_snapshot_rcu.cpp)
 add_sandal_domain_test_exe(test_swarm_500_bots_30hz mesh/test_swarm_500_bots_30hz.cpp)
 add_sandal_domain_test_exe(test_boundary_oscillation_10k mesh/test_boundary_oscillation_10k.cpp)
+add_sandal_domain_test_exe(test_transport_matrix_36 mesh/test_transport_matrix_36.cpp)
 
 get_property(SANDAL_WORLD_TEST_TARGETS GLOBAL PROPERTY SANDAL_WORLD_TEST_TARGETS)
 
@@ -272,6 +274,7 @@ add_sandal_domain_case_test(world.three_ring_stress test_three_ring_stress three
 add_sandal_domain_case_test(world.content_snapshot_rcu test_content_snapshot_rcu content_snapshot_rcu)
 add_sandal_domain_case_test(mesh.swarm_500_bots_30hz test_swarm_500_bots_30hz swarm_500_bots_30hz)
 add_sandal_domain_case_test(mesh.boundary_oscillation_10k test_boundary_oscillation_10k boundary_oscillation_10k)
+add_sandal_domain_case_test(mesh.transport_matrix_36 test_transport_matrix_36 transport_matrix_36)
 
 find_program(SANDAL_PWSH_EXECUTABLE NAMES pwsh powershell REQUIRED)
 add_test(
