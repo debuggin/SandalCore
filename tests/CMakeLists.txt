@@ -59,6 +59,11 @@ set(SANDAL_DOMAIN_TEST_TARGETS
     test_canonical_json_logger
     test_net_serialize_all_12
     test_content_hotfix_reload
+    test_os_pal_determinism
+    test_three_ring_stress
+    test_content_snapshot_rcu
+    test_swarm_500_bots_30hz
+    test_boundary_oscillation_10k
 )
 
 add_sandal_domain_test_exe(test_world_clock_and_data_free world/test_world_clock_and_data_free.cpp)
@@ -70,6 +75,8 @@ add_test(NAME world.health_probes_drain COMMAND test_health_probes_drain)
 add_sandal_domain_test_exe(test_canonical_json_logger world/test_canonical_json_logger.cpp)
 add_test(NAME world.canonical_json_logger COMMAND test_canonical_json_logger)
 add_sandal_domain_test_exe(test_os_pal_determinism world/test_os_pal_determinism.cpp)
+add_test(NAME world.os_pal_determinism COMMAND $<TARGET_FILE:test_os_pal_determinism> WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+add_test(NAME world.test_world_ability_content COMMAND $<TARGET_FILE:test_world_ability_content> WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
 add_sandal_domain_test_exe(test_world_zoi_and_nodes world/test_world_zoi_and_nodes.cpp)
 add_sandal_domain_test_exe(test_nav_ground_snap nav/test_nav_ground_snap.cpp)
 add_sandal_domain_test_exe(test_nav_los_and_bvh nav/test_nav_los_and_bvh.cpp)
@@ -103,6 +110,15 @@ add_test(
     COMMAND $<TARGET_FILE:test_content_hotfix_reload>
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
 )
+add_test(
+    NAME world.content_hotfix_reload
+    COMMAND $<TARGET_FILE:test_content_hotfix_reload>
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+add_sandal_domain_test_exe(test_three_ring_stress world/test_three_ring_stress.cpp)
+add_sandal_domain_test_exe(test_content_snapshot_rcu world/test_content_snapshot_rcu.cpp)
+add_sandal_domain_test_exe(test_swarm_500_bots_30hz mesh/test_swarm_500_bots_30hz.cpp)
+add_sandal_domain_test_exe(test_boundary_oscillation_10k mesh/test_boundary_oscillation_10k.cpp)
 
 get_property(SANDAL_WORLD_TEST_TARGETS GLOBAL PROPERTY SANDAL_WORLD_TEST_TARGETS)
 
@@ -252,6 +268,10 @@ add_sandal_domain_case_test(character.dirty_slot_diff_save_10k_parity test_diff_
 add_sandal_domain_case_test(character.diff_save_fencing_epoch_and_rollback test_diff_save_334_parity diff_save_fencing_epoch_and_rollback)
 add_sandal_domain_case_test(combat.mob_stop_cast_target_death_and_cc_race test_stop_cast_race mob_stop_cast_target_death_and_cc_race)
 add_sandal_domain_case_test(combat.mob_stop_cast_generation_token_immunity test_stop_cast_race mob_stop_cast_generation_token_immunity)
+add_sandal_domain_case_test(world.three_ring_stress test_three_ring_stress three_ring_stress)
+add_sandal_domain_case_test(world.content_snapshot_rcu test_content_snapshot_rcu content_snapshot_rcu)
+add_sandal_domain_case_test(mesh.swarm_500_bots_30hz test_swarm_500_bots_30hz swarm_500_bots_30hz)
+add_sandal_domain_case_test(mesh.boundary_oscillation_10k test_boundary_oscillation_10k boundary_oscillation_10k)
 
 find_program(SANDAL_PWSH_EXECUTABLE NAMES pwsh powershell REQUIRED)
 add_test(
