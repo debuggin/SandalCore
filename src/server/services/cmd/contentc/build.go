@@ -30,7 +30,7 @@ import (
 
 // Version is contentc's version, recorded in meta (contentc.version). Raise it
 // when a change alters what content.db holds.
-const Version = "37"
+const Version = "40"
 
 // Options say what Build reads and writes.
 type Options struct {
@@ -137,7 +137,12 @@ var keep = map[string]bool{
 	"AoCAbilityRecordBase":          true,
 	"AbilityHitRecordBase":          true,
 	"EffectRecordBase":              true,
-	"StatModRecordBase":             true,
+	"EffectGroupRecordBase":         true, // version 38: the consumables' effect groups (one effect of a group at a time)
+	// version 39: the effect-control records the written effects name (crowd control, the abilities it stops, when an effect breaks)
+	"CrowdControlRecordBase":     true,
+	"AbilityDisableRecordBase":   true,
+	"FragileEffectDefRecordBase": true,
+	"StatModRecordBase":          true,
 	// plan B2: the item tables
 	"ItemRecordBase":              true,
 	"ItemStatBlockRecordBase":     true,
@@ -719,4 +724,3 @@ func buildSystem16(w *writer, src *source, meta map[string]string) error {
 	return w.exec(`INSERT OR REPLACE INTO sky_clock_config (id, day_compression, night_compression, cycle_length_sec) VALUES (1, ?, ?, ?)`,
 		dayComp, nightComp, cycleSec)
 }
-

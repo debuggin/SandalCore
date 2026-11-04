@@ -171,6 +171,7 @@ struct ItemUse {
     bool                 consume_on_use = false;
     double               cooldown = 0;
     bool                 disabled_in_combat = false;
+    int64_t              cast_ability = 0;
     std::vector<int64_t> actions;
 };
 

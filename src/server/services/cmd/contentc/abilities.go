@@ -36,6 +36,9 @@ var montageIDs string
 //go:embed ability_names.tsv
 var abilityNames string
 
+//go:embed montage_assets.tsv
+var montageAssets string
+
 // seedByName reads ability_names.tsv and adds every ability row of each name to the seed; a name no row has is an error (the list is stale).
 func seedByName(abilities map[int64]*designdb.Row, seed map[int64]bool) (int, error) {
 	byName := map[string][]int64{}
@@ -208,6 +211,8 @@ type abBuilder struct {
 	abilities, effects, hits, mods, projectiles, zones map[int64]*designdb.Row
 	targetingNames                                     map[int64]string
 	reactions, cooldowns, targetingRows                map[int64]*designdb.Row
+	groups                                             map[int64]*designdb.Row
+	groupsWritten                                      map[int64]bool
 }
 
 func indexRows(rows []designdb.Row) map[int64]*designdb.Row {
@@ -243,6 +248,24 @@ func montageNetGuids() (map[string]map[int]uint64, error) {
 			out[f[0]] = map[int]uint64{}
 		}
 		out[f[0]][idx] = guid
+	}
+	for i, line := range strings.Split(montageAssets, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		f := strings.Split(line, "\t")
+		if len(f) != 2 {
+			return nil, fmt.Errorf("montage_assets.tsv line %d: %d columns, want 2", i+1, len(f))
+		}
+		guid, err := strconv.ParseUint(f[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("montage_assets.tsv line %d: bad number", i+1)
+		}
+		if out[f[0]] == nil {
+			out[f[0]] = map[int]uint64{}
+		}
+		out[f[0]][-1] = guid
 	}
 	return out, nil
 }
@@ -318,7 +341,38 @@ func newAbBuilder(w *writer, src *source) (*abBuilder, error) {
 		projectiles: indexRows(src.rows["ProjectileRecordBase"]), zones: indexRows(src.rows["LingeringEffectRecordBase"]),
 		reactions: indexRows(src.rows["ReactionRecordBase"]), cooldowns: indexRows(src.rows["ModifyCooldownRecordBase"]),
 		targetingRows: indexRows(src.rows["AbilityTargetingRecordBase"]),
+		groups:        indexRows(src.rows["EffectGroupRecordBase"]), groupsWritten: map[int64]bool{},
 	}, nil
+}
+
+func (b *abBuilder) seedConsumableAbilities(abilitySeed map[int64]bool, opt *Options) error {
+	itemRows, err := b.w.tx.Query(`SELECT DISTINCT u.cast_ability_guid FROM item_use u JOIN item_tag t ON t.item_guid = u.item_guid
+		WHERE u.activation = 'CastAbility' AND u.cast_ability_guid <> 0 AND (t.tag = 'Item.Consumable' OR t.tag LIKE 'Item.Consumable.%')`)
+	if err != nil {
+		return fmt.Errorf("read item_use (buildProgression and buildGear must run before buildAbilities): %w", err)
+	}
+	consumables, consumablesNew := 0, 0
+	for itemRows.Next() {
+		var ag int64
+		if err := itemRows.Scan(&ag); err != nil {
+			itemRows.Close()
+			return err
+		}
+		if b.abilities[ag] == nil {
+			continue
+		}
+		consumables++
+		if !abilitySeed[ag] {
+			abilitySeed[ag] = true
+			consumablesNew++
+		}
+	}
+	if err := itemRows.Err(); err != nil {
+		return err
+	}
+	itemRows.Close()
+	opt.logf("consumable items: %d abilities, %d of them not seeded before", consumables, consumablesNew)
+	return nil
 }
 
 // seedClosure reads the ranks of every skill tree (plan D1's skill_rank: the one table of ranks); the abilities and effects they grant seed the closure.
@@ -364,6 +418,9 @@ func (b *abBuilder) seedClosure(opt *Options) (map[int64]bool, map[int64]bool, e
 		return nil, nil, err
 	}
 	opt.logf("ability_names.tsv: %d more abilities", named)
+	if err := b.seedConsumableAbilities(abilitySeed, opt); err != nil {
+		return nil, nil, err
+	}
 	opt.logf("skill_rank: %d distinct ability/effect pairs, %d abilities, %d effects granted by ranks (and the always-on ones)", nranks, len(abilitySeed), len(effectSeed))
 	return abilitySeed, effectSeed, nil
 }
@@ -705,7 +762,10 @@ func buildAbilities(w *writer, src *source, opt *Options, meta map[string]string
 	if err := b.buildLoot(opt, meta); err != nil { // plan E1, stage 3, part 2: the reward tables (their expressions join the set)
 		return err
 	}
-	return b.buildGather(opt, meta) // Gathering stage 2: the gathering tables (their formulas join the set)
+	if err := b.buildGather(opt, meta); err != nil { // Gathering stage 2: the gathering tables (their formulas join the set)
+		return err
+	}
+	return b.writeEffectControl(opt, meta, sortedBools(c.effectSet))
 }
 
 // [CoA ~ C_Y_B]

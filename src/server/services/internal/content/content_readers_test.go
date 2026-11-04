@@ -497,8 +497,8 @@ func assertCorruptRowErrors(t *testing.T) {
 		exec(t, raw, `INSERT INTO ab_ability VALUES (100, 'BadAb', 'BadAb', 'not-json', '', '', '', '', 0, 0, '', '', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, '{}')`)
 		exec(t, raw, `INSERT INTO ab_montage VALUES (100, 0, '/A', 'not-json', '', 0, '', '[]', 0, NULL)`)
 		exec(t, raw, `INSERT INTO ab_montage VALUES (101, 0, '/A', '[]', '', 0, '', 'not-json', 0, NULL)`)
-		exec(t, raw, `INSERT INTO ab_effect VALUES (200, 'BadAbEff', '', '', 'not-json', '[]', 0, 0, 0, 0, '', 0, 0, '', 0, 0, 0, 0, 0, 0, '{}')`)
-		exec(t, raw, `INSERT INTO ab_effect VALUES (201, 'BadAbEff2', '', '', '[]', 'not-json', 0, 0, 0, 0, '', 0, 0, '', 0, 0, 0, 0, 0, 0, '{}')`)
+		exec(t, raw, `INSERT INTO ab_effect VALUES (200, 'BadAbEff', '', '', 'not-json', '[]', 0, 0, 0, 0, '', 0, 0, '', 0, 0, 0, 0, 0, 0, '{}', 0)`)
+		exec(t, raw, `INSERT INTO ab_effect VALUES (201, 'BadAbEff2', '', '', '[]', 'not-json', 0, 0, 0, 0, '', 0, 0, '', 0, 0, 0, 0, 0, 0, '{}', 0)`)
 	})
 	if _, err := db.Curves(); err == nil {
 		t.Fatal("expected error for invalid curve interp")

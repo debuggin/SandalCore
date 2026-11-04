@@ -27,6 +27,7 @@ endif()
 add_library(world_ability_content STATIC
     content/ability_content.cpp
     content/ability_content.h
+    content/ability_content_control.cpp
 )
 target_include_directories(world_ability_content PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(world_ability_content PUBLIC

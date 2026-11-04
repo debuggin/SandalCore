@@ -49,7 +49,7 @@ constexpr const char* kSetBonusSql =
     "WHERE set_guid = ?1 ORDER BY tier_ord, bonus_ord";
 constexpr const char* kEquipSlotSql = "SELECT slot, name FROM equip_slot";
 constexpr const char* kItemUseSql =
-    "SELECT item_guid, activation, consume_on_use, cooldown, disabled_in_combat FROM item_use WHERE item_guid = ?1";
+    "SELECT item_guid, activation, consume_on_use, cooldown, disabled_in_combat, cast_ability_guid FROM item_use WHERE item_guid = ?1";
 constexpr const char* kItemActionSql = "SELECT action_guid FROM item_action WHERE item_guid = ?1 ORDER BY ord";
 constexpr const char* kActionSql =
     "SELECT guid, name, response_type, class_guid, class_name, remove_up_to_quantity FROM action_response WHERE guid = ?1";

@@ -61,7 +61,7 @@ func TestCreateMakesTheDocumentedTables(t *testing.T) {
 		}
 		got = append(got, n)
 	}
-	want := []string{"ab_ability", "ab_ability_effect", "ab_ability_hit", "ab_cost", "ab_effect", "ab_effect_cost", "ab_effect_hit", "ab_expr", "ab_hit",
+	want := []string{"ab_ability", "ab_ability_effect", "ab_ability_hit", "ab_cost", "ab_effect", "ab_effect_cost", "ab_effect_group", "ab_effect_hit", "ab_expr", "ab_hit",
 		"ab_hit_effect", "ab_hit_projectile", "ab_hit_zone", "ab_mod", "ab_montage", "ab_projectile", "ab_projectile_hit", "ab_targeting", "ab_zone",
 		"ab_zone_hit",
 		// reactions (contentc version 35): the reactions, the hits they apply, the recursive hits and their targeting, the cooldown modifiers
@@ -92,6 +92,7 @@ func TestCreateMakesTheDocumentedTables(t *testing.T) {
 	want = append(want, CurrencyTables...)   // Glint tiers (contentc version 24): the currencies and the bags' stack-size stats
 	want = append(want, WarehouseTables...)     // storage, step 0 (contentc version 25): the warehouse defs, tabs and item chunks
 	want = append(want, RespawnTables...)       // Embersprings (contentc version 26): the places, the respawn definitions and the instances that name one
+	want = append(want, EffectControlTables...) // The creature effects milestone (contentc version 39): the crowd-control, ability-disable and fragility tables
 	want = append(want, WorldSystem16Tables...) // System 16 world data (contentc version 37)
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {

@@ -17,9 +17,12 @@ constexpr const char *kSetBonusSql =
 constexpr const char *kEquipSlotSql = "SELECT slot, name FROM equip_slot";
 constexpr const char *kItemUseSql =
     "SELECT item_guid, activation, consume_on_use, cooldown, "
-    "disabled_in_combat FROM item_use WHERE item_guid = ?1";
+    "disabled_in_combat, cast_ability_guid FROM item_use WHERE item_guid = ?1";
 constexpr const char *kItemActionSql =
     "SELECT action_guid FROM item_action WHERE item_guid = ?1 ORDER BY ord";
+constexpr const char *kItemHasTagSql =
+    "SELECT 1 FROM item_tag WHERE item_guid = ?1 AND (tag = ?2 OR tag LIKE ?2 "
+    "|| '.%') LIMIT 1";
 constexpr const char *kActionSql =
     "SELECT guid, name, response_type, class_guid, class_name, "
     "remove_up_to_quantity FROM action_response WHERE guid = ?1";
@@ -469,15 +472,44 @@ std::optional<ItemUse> ContentDb::item_use(int64_t item_guid,
       return std::nullopt;
     }
     sqlite3_stmt *s = q.get();
-    if (!check_cols(s, "item_use " + std::to_string(item_guid), "?tiri", error))
+    if (!check_cols(s, "item_use " + std::to_string(item_guid), "?tirii",
+                    error))
       return std::nullopt;
-    u = {col_i64(s, 0), col_str(s, 1), col_i64(s, 2) != 0, col_real(s, 3),
-         col_i64(s, 4) != 0};
+    u = {col_i64(s, 0),      col_str(s, 1), col_i64(s, 2) != 0,
+         col_real(s, 3),     col_i64(s, 4) != 0, col_i64(s, 5)};
   }
   if (!guid_list(db_, {kItemActionSql, "item action"}, item_guid, u.actions,
                  error))
     return std::nullopt;
   return u;
+}
+bool ContentDb::item_has_tag(int64_t item_guid, const std::string &tag,
+                             std::string &error) const {
+  error.clear();
+  Stmt q(db_, kItemHasTagSql, item_guid);
+  if (!q.ok())
+    return fail_db(db_, "item tag query failed", error);
+  sqlite3_bind_text(q.get(), 2, tag.c_str(), -1, SQLITE_TRANSIENT);
+  const int step = q.step();
+  if (step == SQLITE_ROW)
+    return true;
+  if (step != SQLITE_DONE)
+    fail_db(db_, "item tag query failed", error);
+  return false;
+}
+int64_t ContentDb::consumable_ability(int64_t item_guid,
+                                      std::string &error) const {
+  const auto use = item_use(item_guid, error);
+  if (!use || use->activation != "CastAbility" || !use->consume_on_use ||
+      use->cast_ability == 0)
+    return 0;
+  for (const char *tag : {"Item.Consumable.Scroll", "Item.Consumable.Elixir"}) {
+    if (item_has_tag(item_guid, tag, error))
+      return use->cast_ability;
+    if (!error.empty())
+      return 0;
+  }
+  return 0;
 }
 std::optional<ActionResponse>
 ContentDb::action_response(int64_t guid, std::string &error) const {

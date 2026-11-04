@@ -46,6 +46,8 @@ public:
     std::optional<std::map<int, std::string>> equip_slot_names(std::string& error) const;
 
     std::optional<ItemUse> item_use(int64_t item_guid, std::string& error) const;
+    bool item_has_tag(int64_t item_guid, const std::string& tag, std::string& error) const;
+    int64_t consumable_ability(int64_t item_guid, std::string& error) const;
     std::optional<ActionResponse> action_response(int64_t guid, std::string& error) const;
     std::optional<RewardTable> reward_table(int64_t guid, std::string& error) const;
     std::optional<int32_t> variation_quality(int64_t variation, std::string& error) const;

@@ -537,7 +537,8 @@ CREATE TABLE item_use (
     activation         TEXT NOT NULL,
     consume_on_use     INTEGER NOT NULL,
     cooldown           REAL NOT NULL,
-    disabled_in_combat INTEGER NOT NULL
+    disabled_in_combat INTEGER NOT NULL,
+    cast_ability_guid  INTEGER NOT NULL DEFAULT 0 -- contentc version 38: the ability a CastAbility item casts when it is used (the item's ActivationCastId; 0: none)
 );
 -- The item's ActivationActionsIds, in the record's order.
 CREATE TABLE item_action (
@@ -791,5 +792,8 @@ func Create(db *sql.DB) error {
 	if err := createSystem16(db); err != nil {
 		return err
 	}
-	return createWarehouse(db)
+	if err := createWarehouse(db); err != nil {
+		return err
+	}
+	return createEffectControl(db) // extends ab_effect: after the ability tables
 }

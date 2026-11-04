@@ -160,6 +160,41 @@ struct EffectRow {
     int64_t     requirement_expr = 0;
     int64_t     crowd_control_guid = 0;
     std::string extra;
+    int64_t     group_guid = 0;
+    std::string group_name, group_stack_type;
+    int         group_limit = 0;
+    bool        compare_source = false;
+    bool        recalc_on_tick = false;
+    bool        stacks_lost_on_elapse = false;
+    int64_t     stacks_lost_expr = 0;
+    double      extended_max = 0;
+    int64_t     extension_expr = 0;
+};
+
+struct CrowdControlRow {
+    int64_t     guid = 0;
+    std::string name;
+    int64_t     applied_status = 0;
+    double      snare_strength = 0;       // the share of its speed a snared character loses (0.5: half speed)
+    std::string animation_request;        // ECrowdControlAnimationRequest: None, Custom, Stunned, Tripped
+    int         priority = 0;
+    int64_t     disable_guid = 0;         // the ab_ability_disable row that says which abilities it stops (0: none)
+    bool        face_source = false, ignore_non_combatant = false, restart_montage = false, override_client_move = false;
+    std::string push_parameterization, push_magnitude, push_duration;
+    double      push_dir_x = 0, push_dir_y = 0, push_dir_z = 0, push_arrival_distance = 0;
+    bool        end_push_at_arrival = false;
+};
+
+struct AbilityDisableRow {
+    int64_t     guid = 0;
+    std::string name, filter;
+};
+
+struct FragilityRow {
+    int64_t     guid = 0;
+    std::string name, fragility_type, break_threshold, accumulation_rate;
+    double      tick_frequency = 0;
+    std::string break_immediately, evaluate_accumulation, bindings;
 };
 
 /// ab_effect_hit: a hit an effect fires in a phase (PreApply, Apply, Tick, Consume, Remove, Expire, End).
@@ -226,6 +261,12 @@ struct ReactionRow {
 struct RecursiveHitRow {
     int     ord = 0;
     int64_t child_hit = 0, targeting = 0;
+    double  radius_cm = 0;   // the record's sphere (0: it names one actor, or its shape is another)
+};
+
+struct ModifyCooldownRow {
+    int64_t     guid = 0, delta_expr = 0;
+    std::string name, abilities;   // abilities: JSON, the ability guids
 };
 
 class AbilityContent {
@@ -282,6 +323,12 @@ public:
     std::optional<ReactionRow> reaction(int64_t guid, std::string& error) const;
     /// ab_hit_recursive: the hits a hit fires when it lands, in order (empty without the reaction tables).
     bool hit_recursive(int64_t hit, std::vector<RecursiveHitRow>& out, std::string& error) const;
+    void modify_cooldowns(std::vector<ModifyCooldownRow>& out) const;
+
+    std::optional<CrowdControlRow>   crowd_control(int64_t guid, std::string& error) const;
+    std::optional<AbilityDisableRow> ability_disable(int64_t guid, std::string& error) const;
+    std::optional<FragilityRow>      fragility(int64_t guid, std::string& error) const;
+    bool effect_fragilities(int64_t effect, std::vector<int64_t>& out, std::string& error) const;
 
     /// The guids of every ability, hit, effect, projectile or zone of the tables, in guid order (what a catalog that holds them all loads).
     /// Reaction lists the reactions (empty without the reaction tables).

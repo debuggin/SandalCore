@@ -173,6 +173,34 @@ Outcome Inventory::consume(svc::ItemContainer storage, int slot, const std::stri
     return out;
 }
 
+Outcome Inventory::use_up(svc::ItemContainer storage, int slot, const std::string& guid, int32_t count) {
+    Outcome out;
+    const auto refuse = [&](std::string why) {
+        out.ok = false;
+        out.refusal = std::move(why);
+        out.events.clear();
+        return out;
+    };
+    const svc::InventoryItem* item = at(storage, slot);
+    if (!item) return refuse(std::string("no item in ") + container_name(storage) + " slot " + std::to_string(slot));
+    if (!guid_of(guid) || item->instance_guid != guid) {
+        return refuse(std::string("the item in ") + container_name(storage) + " slot " + std::to_string(slot) + " is not the instance named (" + guid + ")");
+    }
+    if (count < 1 || count > item->quantity) {
+        return refuse("the stack in " + std::string(container_name(storage)) + " slot " + std::to_string(slot) + " holds " + std::to_string(item->quantity) +
+                      ", not " + std::to_string(count) + " to use");
+    }
+    const svc::InventoryItem before = *item;
+    Event remove = make_storage_event(repl::StorageEventType::Remove, storage, slot, before, true);
+    remove.count = count < before.quantity ? count : 0;
+    out.events.push_back(std::move(remove));
+    if (count < before.quantity) slots_[{static_cast<uint8_t>(storage), slot}].quantity = before.quantity - count;
+    else slots_.erase({static_cast<uint8_t>(storage), slot});
+    out.ok = true;
+    out.equipment_changed = storage == svc::ItemContainer::Equipment;
+    return out;
+}
+
 Outcome Inventory::tier_up(svc::ItemContainer storage, int slot, const std::string& guid, int32_t full, svc::InventoryItem product, const ItemRarityFacts& facts, const ItemCatalog& catalog) {
     Outcome out;
     const auto refuse = [&](std::string why) {
@@ -359,15 +387,16 @@ bool Inventory::can_grant(const std::vector<svc::InventoryItem>& items, const It
 
 ResourceRepair Inventory::repair_resources(const ItemCatalog& catalog) {
     ResourceRepair out;
-    std::vector<svc::InventoryItem> candidates;
+    std::vector<std::pair<svc::InventoryItem, ItemInfo>> candidates;   // each with the answer of its one lookup (a second lookup could come back empty)
     for (int s = 0; s < kBackpackSlots; ++s) {
         const svc::InventoryItem* it = find(svc::ItemContainer::Backpack, s);
         if (!it) continue;
         const auto info = catalog.info(it->item_record_id);
-        if (info && info->resource) candidates.push_back(*it);
+        if (info && info->resource) candidates.emplace_back(*it, *info);
     }
-    for (svc::InventoryItem it : candidates) {
-        const ItemInfo info = *catalog.info(it.item_record_id);
+    for (const auto& candidate : candidates) {
+        svc::InventoryItem it = candidate.first;
+        const ItemInfo& info = candidate.second;
         bool placed = false;
         for (int i = 0; i < kResourceContainers && !placed; ++i) {
             const svc::ItemContainer c = resource_container(i);

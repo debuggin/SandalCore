@@ -120,13 +120,19 @@ constexpr const char* kHitEffectsSql = "SELECT kind, ord, effect_guid, requireme
                                        "FROM ab_hit_effect WHERE hit_guid = ?1 ORDER BY kind, ord";
 constexpr const char* kHitProjectilesSql = "SELECT projectile_guid FROM ab_hit_projectile WHERE hit_guid = ?1 AND kind = 'fire' ORDER BY ord";
 constexpr const char* kEffectByGuidSql =
-    "SELECT guid, name, display_name, category, tags, effect_tags, infinite_duration, duration_expr, tick_timer, ignore_initial_tick, stack_type, "
-    "global_stack_limit, in_place_stack_limit_expr, stack_duration_refresh, persists_through_death, persists_relog, dispellable, significant, "
-    "requirement_expr, crowd_control_guid, extra FROM ab_effect WHERE guid = ?1";
+    "SELECT e.guid, e.name, e.display_name, e.category, e.tags, e.effect_tags, e.infinite_duration, e.duration_expr, e.tick_timer, e.ignore_initial_tick, e.stack_type, "
+    "e.global_stack_limit, e.in_place_stack_limit_expr, e.stack_duration_refresh, e.persists_through_death, e.persists_relog, e.dispellable, e.significant, "
+    "e.requirement_expr, e.crowd_control_guid, e.extra, e.group_guid, COALESCE(g.name, ''), COALESCE(g.stack_type, ''), COALESCE(g.global_stack_limit, 0), "
+    "COALESCE(c.compare_source, 0), COALESCE(c.recalc_on_tick, 0), COALESCE(c.stacks_lost_on_elapse, 0), COALESCE(c.stacks_lost_expr, 0), COALESCE(c.extended_max, 0), "
+    "COALESCE(c.extension_expr, 0) "
+    "FROM ab_effect e LEFT JOIN ab_effect_group g ON g.guid = e.group_guid LEFT JOIN ab_effect_control c ON c.effect_guid = e.guid WHERE e.guid = ?1";
 constexpr const char* kEffectByNameSql =
-    "SELECT guid, name, display_name, category, tags, effect_tags, infinite_duration, duration_expr, tick_timer, ignore_initial_tick, stack_type, "
-    "global_stack_limit, in_place_stack_limit_expr, stack_duration_refresh, persists_through_death, persists_relog, dispellable, significant, "
-    "requirement_expr, crowd_control_guid, extra FROM ab_effect WHERE name = ?1";
+    "SELECT e.guid, e.name, e.display_name, e.category, e.tags, e.effect_tags, e.infinite_duration, e.duration_expr, e.tick_timer, e.ignore_initial_tick, e.stack_type, "
+    "e.global_stack_limit, e.in_place_stack_limit_expr, e.stack_duration_refresh, e.persists_through_death, e.persists_relog, e.dispellable, e.significant, "
+    "e.requirement_expr, e.crowd_control_guid, e.extra, e.group_guid, COALESCE(g.name, ''), COALESCE(g.stack_type, ''), COALESCE(g.global_stack_limit, 0), "
+    "COALESCE(c.compare_source, 0), COALESCE(c.recalc_on_tick, 0), COALESCE(c.stacks_lost_on_elapse, 0), COALESCE(c.stacks_lost_expr, 0), COALESCE(c.extended_max, 0), "
+    "COALESCE(c.extension_expr, 0) "
+    "FROM ab_effect e LEFT JOIN ab_effect_group g ON g.guid = e.group_guid LEFT JOIN ab_effect_control c ON c.effect_guid = e.guid WHERE e.name = ?1";
 constexpr const char* kEffectHitsSql = "SELECT phase, ord, hit_guid FROM ab_effect_hit WHERE effect_guid = ?1 ORDER BY phase, ord";
 constexpr const char* kModsSql = "SELECT ord, stat_mod_guid, stat_guid, stat_name, value_expr, shield_absorb FROM ab_mod WHERE owner_kind = ?1 AND owner_guid = ?2 ORDER BY ord";
 constexpr const char* kProjectileSql = "SELECT guid, name, projectile_type, speed, range, life_time, max_hits, chain_hit_count, chain_radius, sphere_radius "
@@ -143,7 +149,16 @@ constexpr const char* kGuidListSql[] = {"SELECT guid FROM ab_ability ORDER BY gu
 constexpr const char* kReactionSql = "SELECT guid, name, instigator, targets_mask, bind_hit, bind_effect, bind_ability, bind_projectile, bind_zone, bind_movement, "
                                      "bind_fishing, bind_stat, global_limit, instigator_limit, eval_applying_hit, proc_on_apply, trigger_expr FROM ab_reaction WHERE guid = ?1";
 constexpr const char* kReactionHitsSql = "SELECT hit_guid FROM ab_reaction_hit WHERE reaction_guid = ?1 ORDER BY ord";
-constexpr const char* kHitRecursiveSql = "SELECT ord, child_hit_guid, targeting_guid FROM ab_hit_recursive WHERE hit_guid = ?1 ORDER BY ord";
+constexpr const char* kHitRecursiveSql = "SELECT r.ord, r.child_hit_guid, r.targeting_guid, COALESCE(t.radius, 0) FROM ab_hit_recursive r LEFT JOIN ab_targeting_def t ON t.guid = r.targeting_guid "
+                                         "WHERE r.hit_guid = ?1 ORDER BY r.ord";
+// contentc version 39: the records the effects name to control their holder (ab_effect_control itself is joined into the effect statements above)
+constexpr const char* kCrowdControlSql =
+    "SELECT guid, name, applied_status, snare_strength, animation_request, priority, disable_guid, face_source, ignore_non_combatant, restart_montage, override_client_move, "
+    "push_parameterization, push_magnitude, push_duration, push_dir_x, push_dir_y, push_dir_z, push_arrival_distance, end_push_at_arrival FROM ab_crowd_control WHERE guid = ?1";
+constexpr const char* kAbilityDisableSql = "SELECT guid, name, filter FROM ab_ability_disable WHERE guid = ?1";
+constexpr const char* kFragilitySql = "SELECT guid, name, fragility_type, break_threshold, accumulation_rate, tick_frequency, break_immediately, evaluate_accumulation, bindings "
+                                      "FROM ab_fragility WHERE guid = ?1";
+constexpr const char* kEffectFragilitiesSql = "SELECT fragility_guid FROM ab_effect_fragility WHERE effect_guid = ?1 ORDER BY ord";
 
 }  // namespace
 
@@ -205,7 +220,7 @@ std::optional<AbilityContent> AbilityContent::open(const std::string& path, std:
     for (const char* sql : {kStatProgramSql, kExprSql, kClassAbilitiesSql, kAutoRanksSql, kAbilityByGuidSql, kAbilityByNameSql, kCostsSql, kEffectCostsSql,
                             kMontagesSql, kAbilityHitsSql, kAbilityEffectsSql, kHitSql, kHitEffectsSql, kEffectByGuidSql, kEffectByNameSql, kEffectHitsSql,
                             kModsSql, kProjectileSql, kProjectileHitsSql, kZoneSql, kZoneHitsSql, kAllExprsSql, kGuidListSql[0], kGuidListSql[1], kGuidListSql[2],
-                            kGuidListSql[3], kGuidListSql[4]}) {
+                            kGuidListSql[3], kGuidListSql[4], kCrowdControlSql, kAbilityDisableSql, kFragilitySql, kEffectFragilitiesSql}) {
         Stmt q(c.db_, sql);
         if (!q.ok()) {
             error = path + " lacks a table or column the ability reader uses: " + db_message(c.db_);
@@ -347,6 +362,16 @@ bool read_effect(sqlite3_stmt* s, EffectRow& e, std::string& error) {
     e.requirement_expr = col_i64(s, 18);
     e.crowd_control_guid = col_i64(s, 19);
     e.extra = col_text(s, 20);
+    e.group_guid = col_i64(s, 21);
+    e.group_name = col_text(s, 22);
+    e.group_stack_type = col_text(s, 23);
+    e.group_limit = col_int(s, 24);
+    e.compare_source = col_bool(s, 25);
+    e.recalc_on_tick = col_bool(s, 26);
+    e.stacks_lost_on_elapse = col_bool(s, 27);
+    e.stacks_lost_expr = col_i64(s, 28);
+    e.extended_max = col_f64(s, 29);
+    e.extension_expr = col_i64(s, 30);
     return true;
 }
 // Cyb with C | O | A
@@ -680,6 +705,7 @@ bool AbilityContent::hit_recursive(int64_t hit, std::vector<RecursiveHitRow>& ou
         r.ord = col_int(s, 0);
         r.child_hit = col_i64(s, 1);
         r.targeting = col_i64(s, 2);
+        r.radius_cm = sqlite3_column_double(s, 3);
         out.push_back(r);
         return true;
     }, error);
