@@ -36,7 +36,7 @@
   packages, so it needs the network once. A full run takes about 10 minutes on a fast PC (the longest step is the map read for the navigation mesh) and up to
   4 GB of memory for any one program; the first build of the C++ libraries (vcpkg) comes on top and can take a long time.
 
-  Every step is skipped when what it reads is unchanged since the last run (a stamp per step in dist\content\.extract), so build_all.bat and the launchers can call
+  Every step is skipped when what it reads is unchanged since the last run (a stamp per step in dist\content\.extract), so scripts\build_all.ps1 and the launchers can call
   this every time. The supported client build is the one of 2026-01-29 (AOCClient-Win64-Shipping.exe 235,606,624 bytes, CacheDB.dbc 144,085,052 bytes); with another
   build the script warns and goes on.
 
@@ -341,8 +341,8 @@ if (-not $found) {
         'Sandal Core builds its game data from your own installed copy of the game (the game files are only read).',
         'It looked at: -GameRoot, the GAME_ROOT variable, game_executable in config\paths.json, the Steam libraries (libraryfolders.vdf) and the usual folders on every fixed drive.',
         'Install the game (Steam), or tell the script where it is and run this again:',
-        '    extract_game_data.bat -GameRoot "D:\...\steamapps\common\Ashes of Creation\Game"',
-        '-GameRoot counts for that run only. To keep it for build_all.bat and the launchers, set GAME_ROOT once and open a new window:',
+        '    scripts\extract_game_data.ps1 -GameRoot "D:\...\steamapps\common\Ashes of Creation\Game"',
+        '-GameRoot counts for that run only. To keep it for scripts\build_all.ps1 and the launchers, set GAME_ROOT once and open a new window:',
         '    setx GAME_ROOT "D:\...\steamapps\common\Ashes of Creation\Game"',
         '(the folder that holds AOCClient.exe and the AOC folder).',
         'More: README.md, "Build and run", "If something goes wrong".')
@@ -381,7 +381,7 @@ if (-not $go)     { $missing += 'Go (go on PATH)' }
 if (-not (Test-Path -LiteralPath $usmapSrc)) { $missing += 'layouts\aoc.usmap (part of the repository)' }
 if ($missing.Count -gt 0) {
     Fail ('Missing: ' + ($missing -join '; ') + '.') @(
-        'Run install_dependencies.bat to install what is missing, open a new window (so the new PATH applies), then run this again.',
+        'Run scripts\install_dependencies.ps1 to install what is missing, open a new window (so the new PATH applies), then run this again.',
         'More: README.md, "Build and run", "What to install".')
 }
 Say ("Tools       : Python {0}, .NET SDK, Go; {1} jobs for C++, {2} threads for the navigation mesh" -f $python.Version, $Jobs, $NavThreads)
