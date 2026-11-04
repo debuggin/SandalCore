@@ -25,10 +25,14 @@ func readMigrationSQL(t *testing.T, filename string) string {
 	t.Helper()
 	candidates := []string{
 		filepath.Join("sql", "migrations", filename),
+		filepath.Join("services", "sql", "migrations", filename),
+		filepath.Join("..", "..", "sql", "migrations", filename),
+		filepath.Join("..", "..", "..", "services", "sql", "migrations", filename),
 		filepath.Join("..", "..", "..", "sql", "migrations", filename),
 	}
 	if _, caller, _, ok := runtime.Caller(0); ok {
 		candidates = append(candidates,
+			filepath.Clean(filepath.Join(filepath.Dir(caller), "..", "..", "sql", "migrations", filename)),
 			filepath.Clean(filepath.Join(filepath.Dir(caller), "..", "..", "..", "sql", "migrations", filename)))
 	}
 	for _, p := range candidates {

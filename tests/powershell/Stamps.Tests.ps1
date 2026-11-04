@@ -51,7 +51,7 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
                 'tools/schemagen/gen_gear_fixture.py'      = 'print("gear")'
                 'tools/schemagen/gen_talent_fixture.py'    = 'print("talent")'
                 'tools/schemagen/gen_town_layouts.py'      = 'print("layouts")'
-                'deploy/citynode_seed.json'                = '{"nodes":{"lionhold":{"level":3}}}'
+                'config/seeds/citynode_seed.json'          = '{"nodes":{"lionhold":{"level":3}}}'
                 'libs/aocnav/nav.cpp'                      = 'int nav = 1;'
                 'tools/navbuild/main.cpp'                  = 'int main() { return 0; }'
                 'third_party/recastnavigation/recast.cpp'  = 'int rc = 1;'

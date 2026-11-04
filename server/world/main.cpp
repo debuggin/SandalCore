@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
     std::string gateway = "127.0.0.1:50054";
     std::string character = "127.0.0.1:50052";
     std::string citynode = "127.0.0.1:50055";
-    std::string citynode_seed = "deploy/citynode_seed.json";
+    std::string citynode_seed = "config/seeds/citynode_seed.json";
     bool no_citynode = false;
     std::string token_file = "dist/services/service.token";
     std::string log_file;
@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
     // Nodes 1, stage 1: the city nodes' live state (services/cmd/citynode); worldd watches it and runs with the seed's levels when it is not there
     app.add_option("--citynode", citynode, "citynode service gRPC address (WatchNodes)")->envname("AOC_CITYNODE_GRPC_ADDR")->capture_default_str();
     app.add_option("--citynode-seed", citynode_seed,
-                   "the node seed (deploy/citynode_seed.json): the levels worldd uses until the citynode service answers, and while it cannot be reached")
+                   "the node seed (config/seeds/citynode_seed.json): the levels worldd uses until the citynode service answers, and while it cannot be reached")
         ->envname("AOC_CITYNODE_SEED")
         ->capture_default_str();
     app.add_flag("--no-citynode", no_citynode, "do not call the citynode service: the nodes stay at the seed's levels")->envname("AOC_NO_CITYNODE");

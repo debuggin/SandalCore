@@ -9,7 +9,7 @@ RUN apk add --no-cache \
 WORKDIR /src
 COPY vcpkg.json CMakeLists.txt CMakePresets.json ./
 COPY third_party/recastnavigation/ ./third_party/recastnavigation/
-COPY proto/ ./proto/
+COPY libs/aocproto/proto/ ./libs/aocproto/proto/
 COPY libs/ ./libs/
 COPY tools/ ./tools/
 COPY server/ ./server/

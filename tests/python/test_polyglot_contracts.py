@@ -8,7 +8,7 @@ import sqlite3
 import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-HOTFIX_SQL_PATH = REPO_ROOT / "sql" / "hotfixes" / "0001_initial_overlay.sql"
+HOTFIX_SQL_PATH = REPO_ROOT / "config" / "hotfixes" / "0001_initial_overlay.sql"
 SERVER_JSON_PATH = REPO_ROOT / "config" / "server.json"
 REALM_JSON_PATH = REPO_ROOT / "config" / "realm.json"
 

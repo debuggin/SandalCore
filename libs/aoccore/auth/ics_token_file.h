@@ -120,7 +120,7 @@ struct ClientTokens { std::string auth, refresh; bool saved; };
 /// otherwise the emulator's fixed pair. The file is not touched unless the
 /// first two hold.
 inline ClientTokens client_tokens(const std::string& token_file, bool peer_is_loopback) {
-    const ClientTokens emulator{"emulator-ics-token-deadbeef", "emulator-refresh-deadbeef", false};
+    const ClientTokens emulator{"sage-trident-steppe-reef-b47f99ef90d9ce08", "crest-sable-ripple-delta-6a201bdf73fb5637", false};
     if (token_file.empty() || !peer_is_loopback) return emulator;
     const std::string saved = read(token_file);
     if (saved.empty()) return emulator;

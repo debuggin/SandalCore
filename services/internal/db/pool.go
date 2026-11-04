@@ -31,13 +31,20 @@ type sqlMigrationsFS struct {
 }
 
 func newSQLMigrationsFS() sqlMigrationsFS {
-	for _, candidate := range []string{"sql", "../sql", "../../sql", "../../../sql"} {
+	for _, candidate := range []string{"sql", "services/sql", "src/server/services/sql", "../sql", "../../sql", "../../../services/sql", "../../../sql"} {
 		if info, err := os.Stat(filepath.Join(candidate, "migrations")); err == nil && info.IsDir() {
 			return sqlMigrationsFS{root: os.DirFS(candidate)}
 		}
 	}
 	if _, callerFile, _, ok := runtime.Caller(0); ok {
-		repoSQL := filepath.Clean(filepath.Join(filepath.Dir(callerFile), "..", "..", "..", "sql"))
+		for _, rel := range [][]string{{"..", "..", "sql"}, {"..", "..", "..", "services", "sql"}, {"..", "..", "..", "sql"}} {
+			parts := append([]string{filepath.Dir(callerFile)}, rel...)
+			dir := filepath.Clean(filepath.Join(parts...))
+			if info, err := os.Stat(filepath.Join(dir, "migrations")); err == nil && info.IsDir() {
+				return sqlMigrationsFS{root: os.DirFS(dir)}
+			}
+		}
+		repoSQL := filepath.Clean(filepath.Join(filepath.Dir(callerFile), "..", "..", "sql"))
 		return sqlMigrationsFS{root: os.DirFS(repoSQL)}
 	}
 	return sqlMigrationsFS{root: os.DirFS("sql")}

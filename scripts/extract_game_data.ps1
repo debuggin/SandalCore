@@ -399,7 +399,7 @@ function Get-CodeNav      { Get-CodeHash @('libs\aocnav', 'tools\navbuild', 'thi
 # The level each node starts at in the server's seed file (deploy\citynode_seed.json): the towns' buildings are listed at those levels (tools\schemagen\gen_town_layouts.py), so a change of a
 # level there changes the list and the navigation mesh.  Only "nodes" counts: the workshops and the comment do not change what the map holds.
 function Get-SeedLevels {
-    $path = Join-Path $repoRoot 'deploy\citynode_seed.json'
+    $path = Join-Path $repoRoot 'config\seeds\citynode_seed.json'; if (-not (Test-Path -LiteralPath $path)) { $path = Join-Path $repoRoot 'src\config\seeds\citynode_seed.json' }
     if (-not (Test-Path -LiteralPath $path)) { return 'no seed file' }
     try { $seed = [IO.File]::ReadAllText($path) | ConvertFrom-Json } catch { return 'seed file unreadable' }
     $pairs = New-Object System.Collections.Generic.List[string]

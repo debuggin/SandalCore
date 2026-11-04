@@ -191,9 +191,9 @@ int verify_overlay_and_wal_fallback(const std::filesystem::path& db_path) {
     SANDAL_ASSERT(content::ContentSnapshotRegistry::enable_sqlite_wal_fallback(raw_db, err));
     SANDAL_ASSERT(err.empty());
     SANDAL_ASSERT(content::ContentSnapshotRegistry::apply_sql_overlay_file(
-        raw_db, "sql/hotfixes/0001_initial_overlay.sql", err));
+        raw_db, "config/hotfixes/0001_initial_overlay.sql", err));
     SANDAL_ASSERT(content::ContentSnapshotRegistry::apply_sql_overlay_file(
-        raw_db, "sql/hotfixes/0001_initial_overlay.sql", err));
+        raw_db, "config/hotfixes/0001_initial_overlay.sql", err));
 
     sqlite3_stmt* stmt = nullptr;
     SANDAL_ASSERT(sqlite3_prepare_v2(raw_db,

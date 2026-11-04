@@ -21,7 +21,7 @@ function Get-SandalStageGraph {
         'navbuild'    = @{ Upstream = @('headers'); Inputs = @('libs/aocnav', 'tools/navbuild', 'third_party/recastnavigation', 'vcpkg.json') }
         'roads'       = @{ Upstream = @('region'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc', 'services/cmd/contentc', 'services/internal/content') }
         'townfloors'  = @{ Upstream = @(); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
-        'townlayouts' = @{ Upstream = @('database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc', 'tools/schemagen/gen_town_layouts.py', 'deploy/citynode_seed.json') }
+        'townlayouts' = @{ Upstream = @('database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc', 'tools/schemagen/gen_town_layouts.py', 'config/seeds/citynode_seed.json') }
         'navmesh'     = @{ Upstream = @('region', 'navbuild', 'townfloors', 'townlayouts', 'database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
     }
 }

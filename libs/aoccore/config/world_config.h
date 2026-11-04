@@ -23,7 +23,7 @@ struct WorldConfig {
     bool gm_starter_set{true};
     std::string database_url{"postgres://aoc:aoc@127.0.0.1:5433/aoc?sslmode=disable"};
     std::string content_db_path{"dist/content/content.db"};
-    std::string hotfix_dir{"sql/hotfixes"};
+    std::string hotfix_dir{"config/hotfixes"};
     std::string pmtiles_path{"dist/content/verra.pmtiles"};
     std::string navmesh_dir{"dist/nav"};
     std::string riverlands_navmesh_path{"dist/nav/riverlands.aocnav"};

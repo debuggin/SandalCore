@@ -7,7 +7,7 @@
     scripts\services.ps1 build   build auth, character, citynode, nodectl, quests, questctl, worldctl, charimport, mesh, gateway into dist\services
     scripts\services.ps1 run     build, then start auth, character, citynode, quests, mesh, gateway and worldd hidden; each logs
                                  to dist\services\logs\<name>.log (the previous run's: <name>.prev.log).  citynode
-                                 (Nodes 1) serves the city nodes on :50055 and applies deploy\citynode_seed.json once, at its
+                                 (Nodes 1) serves the city nodes on :50055 and applies config\seeds\citynode_seed.json once, at its
                                  first start; dist\services\nodectl.exe is its command line (services\README.md, "City nodes").
                                  worldctl.exe (the GM travel tools: players, places, tp, speed) talks to worldd's admin API on
                                  :50056 (services\README.md, "GM travel tools")
@@ -92,10 +92,11 @@ function Format-Process($procs) {
 }
 
 try {
+    $env:COMPOSE_CONVERT_WINDOWS_PATHS = '1'
     switch ($Action) {
         'up' {
             & docker compose -f $compose up -d --wait
-            if ($LASTEXITCODE -ne 0) { throw 'docker compose up failed (is Docker Desktop running?)' }
+            if ($LASTEXITCODE -ne 0) { throw 'docker compose up failed (is Docker running?)' }
             # The init script creates aoc_test only on a fresh volume; make sure it exists.
             $exists = & docker compose -f $compose exec -T postgres psql -U aoc -d aoc -tAc "SELECT 1 FROM pg_database WHERE datname = 'aoc_test'"
             if ("$exists".Trim() -ne '1') {
@@ -118,7 +119,7 @@ try {
             $env:Path = (Join-Path (& go env GOPATH) 'bin') + ';' + $env:Path   # buf and its plugins
             Push-Location $svc
             try {
-                & buf lint ../proto/internal
+                & buf lint ../libs/aocproto/proto/internal
                 if ($LASTEXITCODE -ne 0) { throw 'buf lint failed' }
                 # Generate into a temp dir and compare, so the tree is never touched
                 # and a checkout with CRLF line endings does not look stale.
@@ -171,10 +172,6 @@ try {
         }
         'build' { Build }
         'run' {
-            $running = @(Get-ServiceProcess)
-            if ($running.Count -gt 0) {
-                throw ("already running from ${out}: " + (Format-Process $running) + ". Run 'scripts\services.ps1 stop' first.")
-            }
             if (-not (Test-Path $worldd)) {
                 throw "$worldd is missing: build it with scripts\build.ps1 -Target worldd"
             }
@@ -182,50 +179,85 @@ try {
                 $who = 'the character service will refuse to create characters and worldd every login'
                 Write-Host "warning: $contentDb does not exist: $who. Build it: cd services; go run ./cmd/contentc (services\README.md, 'Content')" -ForegroundColor Yellow
             }
-            Build
+
+            # Check running processes first to prevent compiling locked binaries
+            $runningProcs = @(Get-ServiceProcess)
+
+            if ($runningProcs.Count -eq 0) {
+                Build
+            } else {
+                Write-Host "Notice: Skipping rebuild because active services were detected." -ForegroundColor Cyan
+            }
+
             New-ServiceToken
             $started = @()
-            # The services log with slog to stderr. They run hidden, so their
-            # output goes to dist\services\logs; the previous run's is kept.
-            New-Item -ItemType Directory -Force $logs | Out-Null
-            # citynode starts before mesh and the gateway: worldd (started last) asks it for the node levels, and retries if it is late
-            # quests (the saved quest logs) starts with it: worldd loads a character's log at login and retries if it is late
             $names = @('auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'worldd')
             $savedStatic = $env:AOC_MESH_STATIC_WORLD
-            # worldd registers itself; a static world would take players
-            # whenever its heartbeats lapse, and worldd cannot redeem its tickets.
             $env:AOC_MESH_STATIC_WORLD = ''
+
+            New-Item -ItemType Directory -Force $logs | Out-Null
+
+            # Configured once for silent background execution
+            $startup = New-CimInstance -ClassName Win32_ProcessStartup -Property @{
+                ShowWindow = 0
+            } -ClientOnly
+
             try {
                 foreach ($name in $names) {
                     $exe = if ($name -eq 'worldd') { $worldd } else { Join-Path $out "$name.exe" }
+
+                    $alreadyRunning = $runningProcs | Where-Object { $_.Path -eq $exe -and -not $_.HasExited }
+                    if ($alreadyRunning) {
+                        Write-Host "Skipping $name (PID $($alreadyRunning.Id) is already running)" -ForegroundColor Yellow
+                        continue
+                    }
+
                     $exeArgs = if ($name -eq 'worldd' -or $name -eq 'character') { " --content-db `"$contentDb`"" } else { '' }
                     $log = Join-Path $logs "$name.log"
                     $outLog = Join-Path $logs "$name.out.log"
                     foreach ($f in $log, $outLog) {
                         if (Test-Path $f) { Move-Item -Force $f ($f -replace '\.log$', '.prev.log') }
                     }
-                    # cmd does the redirection and exits with the service's exit
-                    # code. Start-Process's own -Redirect* would make the service
-                    # inherit this script's handles, so a caller reading this
-                    # script's output would wait until the services exit.
-                    $p = Start-Process -FilePath $env:ComSpec -WorkingDirectory $root -WindowStyle Hidden -PassThru `
-                        -ArgumentList "/d /s /c `"`"$exe`"$exeArgs 1>`"$outLog`" 2>`"$log`"`""
-                    $null = $p.Handle   # without this ExitCode can stay empty for a process that exits at once
+
+                    $cmdString = "/d /s /c `"`"$exe`"$exeArgs 1>`"$outLog`" 2>`"$log`"`""
+
+                    # Define startup configuration specifically as a Win32_ProcessStartup object
+                    $startup = New-CimInstance -ClassName Win32_ProcessStartup -Property @{
+                        ShowWindow = [uint16]0  # 0 = SW_HIDE, explicitly typed as uint16 for CIM
+                    } -ClientOnly
+
+                    # Explicitly cast arguments to strings to prevent CIM Type mismatch
+                    $cimArgs = @{
+                        CommandLine               = [string]"`"$env:ComSpec`" $cmdString"
+                        CurrentDirectory          = [string]$root
+                        ProcessStartupInformation = $startup
+                    }
+
+                    $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $cimArgs
+
+                    if ($result.ReturnValue -ne 0) {
+                        throw "Failed to start $name (WMI ReturnValue: $($result.ReturnValue))"
+                    }
+
+                    $p = Get-Process -Id $result.ProcessId -ErrorAction SilentlyContinue
                     $started += [pscustomobject]@{ Name = $name; Process = $p; Log = $log }
                 }
             } finally {
                 $env:AOC_MESH_STATIC_WORLD = $savedStatic
             }
-            # A service that cannot reach the database or bind its port exits within a moment.
-            Start-Sleep -Seconds 2
-            $dead = @($started | Where-Object { $_.Process.HasExited })
-            if ($dead.Count -gt 0) {
-                Get-ServiceProcess | Stop-Process -Force -ErrorAction SilentlyContinue
-                $why = ($dead | ForEach-Object {
-                    '{0} exited with code {1} (see {2})' -f $_.Name, $_.Process.ExitCode, $_.Log
-                }) -join '; '
-                throw "startup failed: $why"
+
+            if ($started.Count -gt 0) {
+                Start-Sleep -Seconds 2
+                $dead = @($started | Where-Object { $_.Process.HasExited })
+                if ($dead.Count -gt 0) {
+                    Get-ServiceProcess | Stop-Process -Force -ErrorAction SilentlyContinue
+                    $why = ($dead | ForEach-Object {
+                        '{0} exited with code {1} (see {2})' -f $_.Name, $_.Process.ExitCode, $_.Log
+                    }) -join '; '
+                    throw "startup failed: $why"
+                }
             }
+
             Write-Host ('running: ' + (Format-Process @(Get-ServiceProcess)) + ". Logs: $logs\<name>.log. Addresses: services\README.md. Stop: scripts\services.ps1 stop")
         }
         'stop' {

@@ -73,12 +73,13 @@ add_custom_target(worldd DEPENDS world)
 # ── Tether server (standalone UDP ARQ executable) ───────────────────────────
 add_executable(tether
     server/tether/tether_server_main.cpp
-    server/tether/services/tether/tether_service.h
+    server/tether/tether_service.h
 )
 add_custom_target(tether_server DEPENDS tether)
 
 target_include_directories(tether PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/server/tether"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/aoccore"
 )
 
 target_link_libraries(tether
@@ -110,12 +111,12 @@ if(WIN32)
         launcher/SandalLauncher/launcher_main.cpp
         launcher/SandalLauncher/launcher_auth.cpp
         launcher/SandalLauncher/launcher_ui.cpp
-        server/tether/services/tether/ics_token_acl.cpp
+        libs/aoccore/auth/ics_token_acl.cpp
     )
     add_custom_target(SandalLauncher DEPENDS launcher)
     target_include_directories(launcher PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/launcher/SandalLauncher"
-        "${CMAKE_CURRENT_SOURCE_DIR}/server/tether"
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/aoccore"
     )
     target_link_libraries(launcher
         PRIVATE
@@ -146,10 +147,10 @@ set_target_properties(LauncherBuild PROPERTIES FOLDER "Tools")
 # test_ics_token_file: the launcher/tether login-token hand-off (plan A3)
 add_executable(test_ics_token_file
     tests/protocol/test_ics_token_file.cpp
-    server/tether/services/tether/ics_token_acl.cpp
+    libs/aoccore/auth/ics_token_acl.cpp
 )
 target_include_directories(test_ics_token_file PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/server/tether"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/aoccore"
 )
 target_compile_features(test_ics_token_file PRIVATE cxx_std_20)
 if(MSVC)

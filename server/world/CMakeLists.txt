@@ -533,7 +533,7 @@ target_compile_definitions(test_world_gm_travel_admin PRIVATE
 world_add_test(test_world_city_nodes)
 target_compile_definitions(test_world_city_nodes PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
-    NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json")
+    NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/config/seeds/citynode_seed.json")
 
 # the nodes the client is told of (Nodes 1, stage 2): the maps, summaries and sieges of the registry's levels against the retail capture's, the session's answers (their order, the
 # live update, the GM console) and the GM control over gRPC against an in-process fake of the node service
@@ -541,7 +541,7 @@ world_add_test(test_world_node_state)
 target_sources(test_world_node_state PRIVATE tests/test_worldd_node_state_control.cpp)
 target_compile_definitions(test_world_node_state PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
-    NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json"
+    NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/config/seeds/citynode_seed.json"
     MOUNT_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
     MOUNT_SPEEDS_PATH="${PROJECT_SOURCE_DIR}/dist/content/mount_speeds.tsv")
 
@@ -550,11 +550,11 @@ target_compile_definitions(test_world_node_state PRIVATE
 world_add_test(test_world_node_layout)
 target_compile_definitions(test_world_node_layout PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
-    NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json")
+    NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/config/seeds/citynode_seed.json")
 world_add_test(test_world_node_layout_view tests/test_worldd_node_layout_view.cpp)
 target_compile_definitions(test_world_node_layout_view PRIVATE
     NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
-    NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json")
+    NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/config/seeds/citynode_seed.json")
 
 # the towns' people (Nodes 1, stage 3b): the selection of each node's NPCs at each level against the Python oracle's golden counts (tests/node_pop_golden.h), the live manager (a level change
 # spawns and despawns the right sets, a respawn follows the level, the ground's pending rules), the any-of siege rule and the roads by node level, on the real content.db
@@ -568,7 +568,7 @@ foreach(t
 )
     target_compile_definitions(${t} PRIVATE
         NODES_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
-        NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/deploy/citynode_seed.json"
+        NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/config/seeds/citynode_seed.json"
         NODES_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv"
         NODES_ROADS_LEVELS_PATH="${PROJECT_SOURCE_DIR}/dist/content/roads_levels.tsv")
 endforeach()

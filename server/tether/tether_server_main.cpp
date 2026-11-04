@@ -39,8 +39,8 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <nlohmann/json.hpp>
 
-#include "services/tether/tether_service.h"
-#include "services/tether/ics_token_file.h"
+#include "tether_service.h"
+#include "auth/ics_token_file.h"
 
 #include <chrono>
 #include <csignal>

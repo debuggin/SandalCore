@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  services/tether/ics_token_acl.cpp
+//  auth/ics_token_acl.cpp
 //
 //  The saved login token is a bearer secret for 24 hours, so only the user
 //  who signed in may read it.  On Windows the file gets a protected DACL with
@@ -10,7 +10,7 @@
 //  this machine X:\ grants Authenticated Users Modify).  Elsewhere: mode 0600.
 //  Kept out of ics_token_file.h so the header does not pull in <windows.h>.
 // ============================================================================
-#include "services/tether/ics_token_file.h"
+#include "auth/ics_token_file.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN

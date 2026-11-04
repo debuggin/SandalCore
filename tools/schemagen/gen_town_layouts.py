@@ -49,7 +49,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
 DEFAULT_DB = os.path.join(ROOT, 'dist', 'content', 'content.db')
 DEFAULT_OUT = os.path.join(ROOT, 'dist', 'content', 'town_layout_items.tsv')
-DEFAULT_SEED = os.path.join(ROOT, 'deploy', 'citynode_seed.json')
+DEFAULT_SEED = os.path.join(ROOT, 'config', 'seeds', 'citynode_seed.json')
 
 # The five bowls (server/worldd/world/town_platform.h kTownBowls): the node records by guid.
 BOWLS = [108646108518008, 108646121231993, 108646608033403, 108646610851452, 108646615701117]

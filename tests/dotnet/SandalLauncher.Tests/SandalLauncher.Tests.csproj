@@ -17,6 +17,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\launcher\SandalLauncher\SandalLauncher.csproj" />
+    <ProjectReference Include="..\..\..\launcher\SandalLauncher\SandalLauncher.csproj" />
   </ItemGroup>
 </Project>

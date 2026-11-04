@@ -9,7 +9,7 @@ LABEL org.opencontainers.image.source="https://github.com/SandalCore/SandalCore"
       org.opencontainers.image.created="${BUILD_CREATED}" \
       org.opencontainers.image.title="sandal-postgres"
 
-COPY --chown=70:70 sql/migrations/ /docker-entrypoint-initdb.d/migrations/
+COPY --chown=70:70 services/sql/migrations/ /docker-entrypoint-initdb.d/migrations/
 COPY --chown=70:70 deploy/postgres/init/ /docker-entrypoint-initdb.d/
 USER 70:70
 EXPOSE 5432/tcp

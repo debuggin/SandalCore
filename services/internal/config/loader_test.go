@@ -147,7 +147,7 @@ func TestGatewayGRPCPublic(t *testing.T) {
 func TestCityNodeSettings(t *testing.T) {
 	t.Setenv("AOC_CITYNODE_GRPC_ADDR", "")
 	t.Setenv("AOC_CITYNODE_SEED", "")
-	if c := Load(); c.CityNodeGRPCAddr != "127.0.0.1:50055" || c.CityNodeSeed != "deploy/citynode_seed.json" {
+	if c := Load(); c.CityNodeGRPCAddr != "127.0.0.1:50055" || c.CityNodeSeed != "config/seeds/citynode_seed.json" {
 		t.Errorf("defaults = %q %q", c.CityNodeGRPCAddr, c.CityNodeSeed)
 	}
 	t.Setenv("AOC_CITYNODE_GRPC_ADDR", "127.0.0.1:9055")

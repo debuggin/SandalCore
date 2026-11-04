@@ -47,7 +47,7 @@
 #define NODES_CONTENT_DB_PATH "dist/content/content.db"
 #endif
 #ifndef NODES_SEED_PATH
-#define NODES_SEED_PATH "deploy/citynode_seed.json"
+#define NODES_SEED_PATH "config/seeds/citynode_seed.json"
 #endif
 #ifndef STATS_CORPUS_PATH
 #define STATS_CORPUS_PATH "server/worldd/stats/testdata/corpus.txt"
@@ -210,7 +210,7 @@ void test_live(world::CityNodes& nodes) {
     // the seed file
     size_t applied = 0, skipped = 0;
     std::string error;
-    CHECK(nodes.apply_seed_file(NODES_SEED_PATH, error, &applied, &skipped), "deploy/citynode_seed.json is read");
+    CHECK(nodes.apply_seed_file(NODES_SEED_PATH, error, &applied, &skipped), "config/seeds/citynode_seed.json is read");
     CHECKF(applied == 2 && skipped == 0, "two levels from the seed (%zu, %zu skipped): %s", applied, skipped, error.c_str());
     CHECK(nodes.source() == world::LevelSource::Seed && nodes.level_of(joeva->guid) == 4 && nodes.level_of(halcyon->guid) == 3 && nodes.level_of(aela->guid) == 0,
           "the seed: Joeva at Town (4), Halcyon at Village (3), the rest at Wilderness");

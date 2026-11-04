@@ -5,7 +5,7 @@
 #  libaocproto: unified C++ protobuf & gRPC internal service stubs (CPP-02)
 # ============================================================================
 
-set(AOC_PROTO_DIR "${PROJECT_SOURCE_DIR}/proto/internal")
+set(AOC_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/proto/internal")
 set(AOC_PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${AOC_PROTO_GEN_DIR}")
 

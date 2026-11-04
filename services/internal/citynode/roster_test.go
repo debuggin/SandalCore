@@ -229,14 +229,18 @@ func TestParseSeed(t *testing.T) {
 	}
 }
 
-// deploy/citynode_seed.json, the file the launcher's services apply, is the fresh start of decision D2.
+// config/seeds/citynode_seed.json, the file the launcher's services apply, is the fresh start of decision D2.
 func TestDeploySeed(t *testing.T) {
-	s, err := citynode.LoadSeed(filepath.Join("..", "..", "..", "deploy", "citynode_seed.json"), citynode.DefaultRoster())
+	seedPath := filepath.Join("..", "..", "..", "config", "seeds", "citynode_seed.json")
+	if _, err := os.Stat(seedPath); err != nil {
+		seedPath = filepath.Join("..", "..", "..", "..", "config", "seeds", "citynode_seed.json")
+	}
+	s, err := citynode.LoadSeed(seedPath, citynode.DefaultRoster())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(s.Levels) != 2 || s.Levels[joeva] != 4 || s.Levels[halcyon] != 3 || len(s.Parents) != 1 || s.Parents[halcyon] != joeva {
-		t.Errorf("deploy/citynode_seed.json = %+v; want Joeva Town (4), Halcyon Village (3) as Joeva's vassal, nothing else", s)
+		t.Errorf("config/seeds/citynode_seed.json = %+v; want Joeva Town (4), Halcyon Village (3) as Joeva's vassal, nothing else", s)
 	}
 	// the workshops: Joeva four factories and a farm, Halcyon a factory, Miraleth a factory and a farm
 	kinds := func(node int64) (factories, farms int) {

@@ -3,8 +3,8 @@
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 version: v2
 inputs:
-  - directory: ../proto/internal
-  - proto_file: ../proto/ics_xclient.proto
+  - directory: ../libs/aocproto/proto/internal
+  - proto_file: ../libs/aocproto/proto/ics_xclient.proto
 plugins:
   - local: protoc-gen-go
     out: gen

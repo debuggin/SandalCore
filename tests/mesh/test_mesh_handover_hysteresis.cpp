@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-#include "server/tether/services/tether/ics_token_file.h"
-#include "server/tether/services/tether/tether_wire.h"
+#include "libs/aoccore/auth/ics_token_file.h"
+#include "server/tether/tether_wire.h"
 #include "spawns/area.h"
 #include "world/mesh_border.h"
 #include "world/relevancy.h"

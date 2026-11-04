@@ -30,7 +30,13 @@ if ($null -ne (Get-Module Pester) -and (Get-Module Pester).Version.Major -lt 5) 
 
 Describe 'SandalCore Network Stack Optimizer -Revert vs -Rollback (tune_network_stack.ps1)' {
     BeforeAll {
-        $script:ScriptPath = Join-Path $PSScriptRoot '../tune_network_stack.ps1'
+        $repoRoot = $PSScriptRoot
+        while ($repoRoot -and -not (Test-Path -LiteralPath (Join-Path $repoRoot 'sandal.ps1'))) {
+            $parent = Split-Path -Parent $repoRoot
+            if ($parent -eq $repoRoot) { break }
+            $repoRoot = $parent
+        }
+        $script:ScriptPath = Join-Path $repoRoot 'scripts/tune_network_stack.ps1'
         $rawText = Get-Content -LiteralPath $script:ScriptPath -Raw
         if ($rawText -match '\$MyInvocation\.InvocationName') {
             . $script:ScriptPath

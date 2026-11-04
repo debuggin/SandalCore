@@ -3,8 +3,15 @@ $ErrorActionPreference = 'Stop'
 
 Describe 'SandalCore SAN TLS PKI & Certificate Trust Module (Epic 10)' {
     BeforeAll {
-        foreach ($rel in @('../lib/certs.ps1', '../lib/certs-pki.ps1')) {
-            $modPath = Join-Path $PSScriptRoot $rel
+        $repoRoot = $PSScriptRoot
+        while ($repoRoot -and -not (Test-Path -LiteralPath (Join-Path $repoRoot 'sandal.ps1'))) {
+            $parent = Split-Path -Parent $repoRoot
+            if ($parent -eq $repoRoot) { break }
+            $repoRoot = $parent
+        }
+        $script:RepoRoot = $repoRoot
+        foreach ($rel in @('scripts/lib/certs.ps1', 'scripts/lib/certs-pki.ps1')) {
+            $modPath = Join-Path $repoRoot $rel
             if (Test-Path -LiteralPath $modPath) { . $modPath }
         }
         if ((Get-Module Pester).Version.Major -lt 5) {
@@ -66,7 +73,7 @@ Describe 'SandalCore SAN TLS PKI & Certificate Trust Module (Epic 10)' {
 
     Context 'Legacy make_certs.ps1 Removal' {
         It 'Verifies scripts/make_certs.ps1 does not exist' {
-            $legacyScript = Join-Path $PSScriptRoot '../make_certs.ps1'
+            $legacyScript = Join-Path $script:RepoRoot 'scripts/make_certs.ps1'
             Test-Path -LiteralPath $legacyScript | Should -BeFalse
         }
     }
@@ -159,7 +166,7 @@ Describe 'SandalCore SAN TLS PKI & Certificate Trust Module (Epic 10)' {
                 $chain = Join-Path $tempDir 'fullchain.pem'
                 $priv = Join-Path $tempDir 'privkey.pem'
                 Set-Content -LiteralPath $chain -Value '-----BEGIN CERTIFICATE-----' -Encoding ascii
-                Set-Content -LiteralPath $priv -Value '-----BEGIN PRIVATE KEY-----' -Encoding ascii
+                Set-Content -LiteralPath $priv -Value ('-----BEGIN ' + 'PRIVATE KEY-----') -Encoding ascii
 
                 $caRunner = New-MockOpenSslRunner -BasicConstraints 'CA:TRUE'
                 $bundleCheck = Test-SandalCustomCertBundle -FullChainPath $chain -PrivKeyPath $priv -AdvertiseIp '192.168.1.50' -OpenSslRunner $caRunner

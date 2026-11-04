@@ -22,7 +22,7 @@ type Config struct {
 	AuthGRPCAddr      string        // AOC_AUTH_GRPC_ADDR: internal token validation
 	CharacterGRPCAddr string        // AOC_CHARACTER_GRPC_ADDR
 	CityNodeGRPCAddr  string        // AOC_CITYNODE_GRPC_ADDR: the city node service (Nodes 1)
-	CityNodeSeed      string        // AOC_CITYNODE_SEED: the node seed file citynode applies once (default deploy/citynode_seed.json)
+	CityNodeSeed      string        // AOC_CITYNODE_SEED: the node seed file citynode applies once (default config/seeds/citynode_seed.json)
 	QuestsGRPCAddr    string        // AOC_QUESTS_GRPC_ADDR: the quest service (quests, slice 1), default 127.0.0.1:50058
 	WorldAdminAddr    string        // AOC_WORLD_ADMIN_ADDR: world's admin API (worldctl, the admin app to come); world listens here, default 127.0.0.1:50056
 	WorldStreamAddr   string        // AOC_WORLD_STREAM_ADDR: world's world stream (worldctl watch, admin tools); world listens here, default 127.0.0.1:50057
@@ -60,7 +60,7 @@ func LoadWithEnvFile(path string) (Config, error) {
 		AuthGRPCAddr:      str("AOC_AUTH_GRPC_ADDR", "127.0.0.1:50051"),
 		CharacterGRPCAddr: str("AOC_CHARACTER_GRPC_ADDR", "127.0.0.1:50052"),
 		CityNodeGRPCAddr:  str("AOC_CITYNODE_GRPC_ADDR", "127.0.0.1:50055"),
-		CityNodeSeed:      str("AOC_CITYNODE_SEED", "deploy/citynode_seed.json"),
+		CityNodeSeed:      str("AOC_CITYNODE_SEED", "config/seeds/citynode_seed.json"),
 		QuestsGRPCAddr:    str("AOC_QUESTS_GRPC_ADDR", "127.0.0.1:50058"),
 		WorldAdminAddr:    str("AOC_WORLD_ADMIN_ADDR", "127.0.0.1:50056"),
 		WorldStreamAddr:   str("AOC_WORLD_STREAM_ADDR", "127.0.0.1:50057"),

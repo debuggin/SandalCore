@@ -33,7 +33,7 @@ inline int WSAGetLastError() noexcept { return errno; }
 #include <spdlog/spdlog.h>
 #include <atomic>
 
-#include "services/tether/ics_token_file.h"
+#include "auth/ics_token_file.h"
 #include "tether_wire.h"
 
 struct TetherSession {

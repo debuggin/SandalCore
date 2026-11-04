@@ -51,21 +51,27 @@ var (
 func locateMigrationsDir(t *testing.T) string {
 	t.Helper()
 	for _, cand := range []string{
-		filepath.Join("sql", "migrations"),
-		filepath.Join("..", "sql", "migrations"),
-		filepath.Join("..", "..", "sql", "migrations"),
+		filepath.Join("services", "sql", "migrations"),
+		filepath.Join("..", "services", "sql", "migrations"),
+		filepath.Join("..", "..", "services", "sql", "migrations"),
+		filepath.Join("..", "..", "server", "services", "sql", "migrations"),
 	} {
 		if info, err := os.Stat(cand); err == nil && info.IsDir() {
 			return cand
 		}
 	}
 	if _, file, _, ok := runtime.Caller(0); ok {
-		dir := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "sql", "migrations"))
-		if info, err := os.Stat(dir); err == nil && info.IsDir() {
-			return dir
+		for _, rel := range [][]string{
+			{filepath.Dir(file), "..", "..", "services", "sql", "migrations"},
+			{filepath.Dir(file), "..", "..", "server", "services", "sql", "migrations"},
+		} {
+			dir := filepath.Clean(filepath.Join(rel...))
+			if info, err := os.Stat(dir); err == nil && info.IsDir() {
+				return dir
+			}
 		}
 	}
-	t.Fatal("unable to locate sql/migrations directory")
+	t.Fatal("unable to locate services/sql/migrations directory")
 	return ""
 }
 

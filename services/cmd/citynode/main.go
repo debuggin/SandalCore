@@ -5,7 +5,7 @@
 // citynode serves aoc.citynode.v1.CityNodeService, the live state of the game world's city nodes (Nodes 1): each node's level,
 // XP and vassal link, the node clock, and the stream of changes. worldd, nodectl and the admin app to come all call it.
 //
-//	citynode [--seed deploy/citynode_seed.json]
+//	citynode [--seed config/seeds/citynode_seed.json]
 //
 // It uses the same database as the other services (AOC_DATABASE_URL; migration 0009 makes its tables) and the same service token
 // (AOC_SERVICE_TOKEN_FILE). At its first start it applies the seed file once, in one transaction (city_node_seed.applied_at): a
@@ -35,7 +35,7 @@ import (
 
 func main() {
 	seed := flag.String("seed", config.Load().CityNodeSeed,
-		"the node seed file, applied once at the first start; default $AOC_CITYNODE_SEED or deploy/citynode_seed.json")
+		"the node seed file, applied once at the first start; default $AOC_CITYNODE_SEED or config/seeds/citynode_seed.json")
 	flag.Parse()
 	if err := run(*seed); err != nil {
 		slog.Error("citynode stopped", "err", err)

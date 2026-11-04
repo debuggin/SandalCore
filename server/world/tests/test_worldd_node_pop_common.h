@@ -71,7 +71,7 @@ inline int g_pass = 0, g_fail = 0;
 #define NODES_CONTENT_DB_PATH "dist/content/content.db"
 #endif
 #ifndef NODES_SEED_PATH
-#define NODES_SEED_PATH "deploy/citynode_seed.json"
+#define NODES_SEED_PATH "config/seeds/citynode_seed.json"
 #endif
 #ifndef NODES_MOTION_PATH
 #define NODES_MOTION_PATH "dist/content/npc_motion.tsv"

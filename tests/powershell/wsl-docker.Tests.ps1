@@ -2,11 +2,17 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$wslConfigLib = Join-Path $PSScriptRoot '../lib/wsl-config.ps1'
+$repoRoot = $PSScriptRoot
+while ($repoRoot -and -not (Test-Path -LiteralPath (Join-Path $repoRoot 'sandal.ps1'))) {
+    $parent = Split-Path -Parent $repoRoot
+    if ($parent -eq $repoRoot) { break }
+    $repoRoot = $parent
+}
+$wslConfigLib = Join-Path $repoRoot 'scripts/lib/wsl-config.ps1'
 if (Test-Path $wslConfigLib) {
     . $wslConfigLib
 }
-$wslDockerLib = Join-Path $PSScriptRoot '../lib/wsl-docker.ps1'
+$wslDockerLib = Join-Path $repoRoot 'scripts/lib/wsl-docker.ps1'
 if (Test-Path $wslDockerLib) {
     . $wslDockerLib
 }
@@ -50,11 +56,17 @@ if ($null -ne (Get-Module Pester) -and (Get-Module Pester).Version.Major -lt 5) 
 
 Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
     BeforeAll {
-        $cfgPath = Join-Path $PSScriptRoot '../lib/wsl-config.ps1'
+        $repoRoot = $PSScriptRoot
+        while ($repoRoot -and -not (Test-Path -LiteralPath (Join-Path $repoRoot 'sandal.ps1'))) {
+            $parent = Split-Path -Parent $repoRoot
+            if ($parent -eq $repoRoot) { break }
+            $repoRoot = $parent
+        }
+        $cfgPath = Join-Path $repoRoot 'scripts/lib/wsl-config.ps1'
         if (Test-Path $cfgPath) {
             . $cfgPath
         }
-        $dkrPath = Join-Path $PSScriptRoot '../lib/wsl-docker.ps1'
+        $dkrPath = Join-Path $repoRoot 'scripts/lib/wsl-docker.ps1'
         if (Test-Path $dkrPath) {
             . $dkrPath
         }

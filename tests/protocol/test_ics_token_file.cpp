@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // test_ics_token_file: the launcher/tether token hand-off file
-// (services/tether/ics_token_file.h).
-#include "services/tether/ics_token_file.h"
+// (auth/ics_token_file.h).
+#include "auth/ics_token_file.h"
 
 #include <chrono>
 #include <cstdio>
@@ -27,7 +27,7 @@ static void put(const std::string& path, const std::string& bytes) {
 }
 
 static bool is_emulator_pair(const aoc::ics_token::ClientTokens& t) {
-    return t.auth == "emulator-ics-token-deadbeef" && t.refresh == "emulator-refresh-deadbeef" && !t.saved;
+    return t.auth == "sage-trident-steppe-reef-b47f99ef90d9ce08" && t.refresh == "crest-sable-ripple-delta-6a201bdf73fb5637" && !t.saved;
 }
 
 int main() {
