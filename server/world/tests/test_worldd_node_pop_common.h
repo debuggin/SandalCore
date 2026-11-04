@@ -155,6 +155,9 @@ inline std::vector<spawns::NodeSpawn> select(const world::CityNodes &nodes, cons
     return spawns::select_node_spawns(*g_env.pop, g_env.templates, *g_env.data, wire, site,
                                       spawns::AreaConfig::riverlands(), filter, st);
 }
+inline std::vector<spawns::NodeSpawn> select_real(const world::CityNodeInfo &info, int level, spawns::NodePopStats &st) {
+    return select(*g_env.nodes, *g_env.wire, info, level, st);
+}
 inline std::vector<spawns::NodeSpawn> select_in_area(const world::CityNodes &nodes, const world::NodeWire &wire,
                                                      const world::CityNodeInfo &info, int level,
                                                      const spawns::AreaConfig &area) {
@@ -249,6 +252,10 @@ inline bool init_node_pop_db(std::string &error) {
 }
 inline int init_node_pop_env() {
     spdlog::set_level(std::getenv("AOC_TEST_LOG") ? spdlog::level::debug : spdlog::level::off);
+    if (!fs::exists(db_path()) || !fs::exists(motion_path())) {
+        std::printf("[skip] no content.db or npc_motion.tsv: skipped\n");
+        std::exit(0);
+    }
     std::string error;
     if (!init_node_pop_db(error)) return 2;
     g_env.nodes = fresh_nodes();

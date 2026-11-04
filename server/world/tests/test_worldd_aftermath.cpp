@@ -535,8 +535,8 @@ void test_zone(Fixture& f) {
 }
 
 int main() {
-    if (!real_db_present()) {
-        std::printf("test_worldd_aftermath: no content.db at %s (set AOC_CONTENT_DB): skipped\n", real_db_path().c_str());
+    if (!real_db_present() || !std::filesystem::exists(NPC_MOTION_PATH)) {
+        std::printf("[skip] test_worldd_aftermath: no content.db or npc_motion.tsv at %s: skipped\n", real_db_path().c_str());
         return 0;
     }
     Fixture f;

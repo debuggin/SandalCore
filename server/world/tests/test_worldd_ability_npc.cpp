@@ -693,8 +693,8 @@ void print_ability_npc_report(const NpcRunState& st, size_t n_cases) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (!real_db_present()) {
-        std::printf("no content.db at %s (cd services && go run ./cmd/contentc): the NPC casts' acceptance test is skipped\n", real_db_path().c_str());
+    if (!real_db_present() || !std::filesystem::exists(NPC_MOTION_PATH)) {
+        std::printf("[skip] no content.db or npc_motion.tsv at %s: the NPC casts' acceptance test is skipped\n", real_db_path().c_str());
         return 0;
     }
     NpcRunState st;

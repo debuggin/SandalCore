@@ -36,7 +36,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-using namespace aoc::worldd;
+using aoc::worldd::CharacterSaver, aoc::worldd::Clock, aoc::worldd::Connection, aoc::worldd::ConnectionConfig, aoc::worldd::InBunch, aoc::worldd::PlayerSession, aoc::worldd::PlayerWorld, aoc::worldd::PositionSink;
 namespace abilities = aoc::worldd::abilities;
 namespace actionbar = aoc::worldd::actionbar;
 namespace bs = aoc::worldd::bootstrap;
@@ -810,7 +810,8 @@ inline bool stats_match(const Harness &h, std::string *why = nullptr, bool unlai
     if (have != expected && why) *why = std::to_string(have) + " items on the client, " + std::to_string(expected) + " stats in the session";
     return have == expected;
 }
-inline repl::DesignDataId tree_id(int64_t guid) { return {guid, content::kTypeSkillTree, {}}; }
+inline repl::DesignDataId tree_id(int64_t guid) { return {guid, content::kTypeSkillTree}; }
+inline BunchWriter client_load_rpc() { return actor_rpc(class_named("AoCPlayerControllerBP_C"), "ServerRequestClientLoad", repl::RpcParams{}); }
 inline svc::Character record_with_scrolls() { return record_with(bard_items_with_scrolls()); }
 inline const tl::Catalog &catalog_of(const Harness &h) { return *h.fx.world->talents(); }
 inline int64_t tree_guid(const Harness &h, const char *name) {
@@ -845,7 +846,7 @@ struct Buy {
 inline repl::SkillBuild build_of(std::initializer_list<Buy> entries) {
     repl::SkillBuild b;
     for (const Buy &e : entries)
-        b.changes.push_back({{e.rank, content::kTypeSkillRank, {}}, {e.tree, content::kTypeSkillTree, repl::NameValue::plain("Prototype_Assassin_SkillTable")}, {content::kGuidAdventuring, content::kTypeLevelingTypeDef, {}}, e.purchase});
+        b.changes.push_back({{e.rank, content::kTypeSkillRank}, {e.tree, content::kTypeSkillTree, repl::NameValue::plain("Prototype_Assassin_SkillTable")}, {content::kGuidAdventuring, content::kTypeLevelingTypeDef}, e.purchase});
     return b;
 }
 inline BunchWriter purchase_rpc(const repl::SkillBuild &b) {

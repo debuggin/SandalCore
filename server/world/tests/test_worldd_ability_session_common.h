@@ -93,6 +93,10 @@ inline const schema::ClassSchema &class_named(const char *name) {
     return *c;
 }
 
+#ifndef NPC_MOTION_PATH
+#define NPC_MOTION_PATH "dist/content/npc_motion.tsv"
+#endif
+
 struct Fixture {
     fs::path dir;
     std::optional<content::ContentDb> content;
@@ -100,6 +104,10 @@ struct Fixture {
     std::unique_ptr<PlayerWorld> world;
 
     explicit Fixture(bool use_real = false) {
+        if (use_real && !fs::exists(NPC_MOTION_PATH)) {
+            std::printf("[skip] no npc_motion.tsv (%s): skipped\n", NPC_MOTION_PATH);
+            std::exit(0);
+        }
         dir = content_fixture::make_temp_dir("worldd_ability_session_");
         fs::path db = dir / "content.db";
         const char *real = std::getenv("AOC_CONTENT_DB");

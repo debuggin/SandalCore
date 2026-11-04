@@ -1,12 +1,4 @@
-<Project>
-  <PropertyGroup>
-    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)..\..\build\dotnet\obj\SandalLauncher.Tests\</BaseIntermediateOutputPath>
-    <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
-    <BaseOutputPath>$(MSBuildThisFileDirectory)..\..\build\dotnet\bin\SandalLauncher.Tests\</BaseOutputPath>
-  </PropertyGroup>
-
-  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
-
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <RollForward>Major</RollForward>
@@ -27,6 +19,4 @@
   <ItemGroup>
     <ProjectReference Include="..\..\launcher\SandalLauncher\SandalLauncher.csproj" />
   </ItemGroup>
-
-  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
 </Project>

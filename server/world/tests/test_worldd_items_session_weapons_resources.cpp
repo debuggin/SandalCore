@@ -5,9 +5,6 @@
 #include "test_worldd_items_session_common.h"
 using namespace aoc::worldd;
 static constexpr int64_t kInstrumentFiddle = 6064630871711875083ll;
-static BunchWriter client_load_rpc() {
-    return actor_rpc(class_named("AoCPlayerControllerBP_C"), "ServerRequestClientLoad", repl::RpcParams{});
-}
 static int64_t menacing_ability_of(const Harness &h, int64_t rank) {
     const auto ref = catalog_of(h).find(tree_guid(h, "Bard"), rank);
     return ref.ok() ? ref.rank->ability : 0;

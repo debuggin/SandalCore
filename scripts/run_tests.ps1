@@ -32,10 +32,12 @@ param(
     [switch] $Heavy,
     [int]    $Jobs = 0
 )
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($SaveBaseline -and $CompareTo) { throw "use -SaveBaseline or -CompareTo, not both" }
 $root  = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$dist  = Join-Path $root "dist\$Config"
+$dist     = Join-Path $root "dist\$Config"
+$testDist = Join-Path $root "dist\tests\$Config"
 # ~ CoA :: C Y B ~
 
 if (-not $NoBuild) {
@@ -43,7 +45,7 @@ if (-not $NoBuild) {
     # change would otherwise keep "passing" using its old binary. Test exes
     # link straight into dist\<Config> via CMAKE_RUNTIME_OUTPUT_DIRECTORY, so
     # MSBuild relinks the current ones below.
-    Remove-Item (Join-Path $dist 'test_*.exe') -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $testDist 'test_*.exe'), (Join-Path $testDist 'fuzz_*.exe'), (Join-Path $dist 'test_*.exe'), (Join-Path $dist 'fuzz_*.exe') -ErrorAction SilentlyContinue
     # build.ps1 sets the build folder up when there is none, builds every target the fast way and copies the vcpkg DLLs next to the programs;
     # it stops with an error when the build fails
     & (Join-Path $PSScriptRoot 'build.ps1') -Target ALL_BUILD -Config $Config -Jobs $Jobs
@@ -56,12 +58,14 @@ if (-not $NoBuild) {
 $ErrorActionPreference = 'Continue'
 Push-Location $root
 try {
-    $heavyTests = @('test_worldd_region_load')
+    $oldPath = $env:PATH
+    $env:PATH = "$dist;$oldPath"
+    $heavyTests = @('test_world_region_load', 'test_worldd_region_load')
     $skippers = New-Object System.Collections.Generic.List[string]
-    $lines = @(foreach ($exe in Get-ChildItem $dist -Filter 'test_*.exe' | Where-Object { $Heavy -or ($heavyTests -notcontains $_.BaseName) } | Sort-Object Name) {
+    $lines = @(foreach ($exe in Get-ChildItem $testDist -Filter 'test_*.exe' | Where-Object { $Heavy -or ($heavyTests -notcontains $_.BaseName) } | Sort-Object Name) {
         # test_worldd_node_pop has a half that is opt-in because it reads the baked ground (AOC_REAL_GROUND=1: the five city nodes' bowls on the real heightfield, 0.2 s): it runs whenever
         # dist\content\area_nav.bin is there (Nodes 1 review B, M7: the town floor's constants are tuned on exactly that data)
-        $realGround = $exe.BaseName -eq 'test_worldd_node_pop' -and (Test-Path -LiteralPath (Join-Path $root 'dist\content\area_nav.bin'))
+        $realGround = ($exe.BaseName -in @('test_world_node_pop', 'test_worldd_node_pop')) -and (Test-Path -LiteralPath (Join-Path $root 'dist\content\area_nav.bin'))
         if ($realGround) { $env:AOC_REAL_GROUND = '1' }
         $text = & $exe.FullName 2>&1 | Out-String
         $code = $LASTEXITCODE
@@ -70,9 +74,9 @@ try {
         $status = if ($code -eq 0) { 'PASS' } else { 'FAIL' }
         '{0,-36} {1} exit={2}' -f $exe.BaseName, $status, $code
     })
-} finally { Pop-Location; $ErrorActionPreference = 'Stop' }
+} finally { $env:PATH = $oldPath; Pop-Location; $ErrorActionPreference = 'Stop' }
 
-if ($lines.Count -eq 0) { throw "no test_*.exe in $dist" }
+if ($lines.Count -eq 0) { throw "no test_*.exe in $testDist" }
 
 $lines | ForEach-Object { Write-Host $_ }
 if (-not $Heavy) { Write-Host ("NOTE: not run (heavy, -Heavy): " + ($heavyTests -join ', ')) }

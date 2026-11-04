@@ -77,13 +77,28 @@ add_sandal_domain_test_exe(test_world_clock_and_data_free world/test_world_clock
 add_sandal_domain_test_exe(test_world_config world/test_world_config.cpp)
 target_sources(test_world_config PRIVATE "${PROJECT_SOURCE_DIR}/libs/aoccore/config/world_config.cpp")
 add_test(NAME world.config COMMAND test_world_config)
+set_tests_properties(world.config PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
 add_sandal_domain_test_exe(test_health_probes_drain world/test_health_probes_drain.cpp)
 add_test(NAME world.health_probes_drain COMMAND test_health_probes_drain)
+set_tests_properties(world.health_probes_drain PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
 add_sandal_domain_test_exe(test_canonical_json_logger world/test_canonical_json_logger.cpp)
 add_test(NAME world.canonical_json_logger COMMAND test_canonical_json_logger)
+set_tests_properties(world.canonical_json_logger PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
 add_sandal_domain_test_exe(test_os_pal_determinism world/test_os_pal_determinism.cpp)
 add_test(NAME world.os_pal_determinism COMMAND $<TARGET_FILE:test_os_pal_determinism> WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+set_tests_properties(world.os_pal_determinism PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
 add_test(NAME world.test_world_ability_content COMMAND $<TARGET_FILE:test_world_ability_content> WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+set_tests_properties(world.test_world_ability_content PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
 add_sandal_domain_test_exe(test_world_zoi_and_nodes world/test_world_zoi_and_nodes.cpp)
 add_sandal_domain_test_exe(test_nav_ground_snap nav/test_nav_ground_snap.cpp)
 add_sandal_domain_test_exe(test_nav_los_and_bvh nav/test_nav_los_and_bvh.cpp)
@@ -111,16 +126,25 @@ add_test(
     COMMAND $<TARGET_FILE:test_net_serialize_all_12>
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
 )
+set_tests_properties(protocol.test_net_serialize_all_12 PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
 add_sandal_domain_test_exe(test_content_hotfix_reload world/test_content_hotfix_reload.cpp)
 add_test(
     NAME content_hotfix_reload
     COMMAND $<TARGET_FILE:test_content_hotfix_reload>
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
 )
+set_tests_properties(content_hotfix_reload PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
 add_test(
     NAME world.content_hotfix_reload
     COMMAND $<TARGET_FILE:test_content_hotfix_reload>
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+set_tests_properties(world.content_hotfix_reload PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
 )
 add_sandal_domain_test_exe(test_three_ring_stress world/test_three_ring_stress.cpp)
 add_sandal_domain_test_exe(test_content_snapshot_rcu world/test_content_snapshot_rcu.cpp)
@@ -184,6 +208,29 @@ set(SANDAL_AOCNET_TEST_TARGETS
     test_repl_warehouse
 )
 
+set(SANDAL_ALL_CPP_TEST_TARGETS
+    ${SANDAL_AOCNET_TEST_TARGETS}
+    test_ics_token_file
+    test_world_stats
+    test_world_effects
+    test_world_ability_content
+    ${SANDAL_DOMAIN_TEST_TARGETS}
+    ${SANDAL_WORLD_TEST_TARGETS}
+)
+if(WIN32 AND TARGET test_launcher_saved_sign_in)
+    list(APPEND SANDAL_ALL_CPP_TEST_TARGETS test_launcher_saved_sign_in)
+endif()
+foreach(t IN LISTS SANDAL_ALL_CPP_TEST_TARGETS)
+    if(TARGET ${t})
+        set_target_properties(${t} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY_DEBUG          "${AOC_DIST_ROOT}/tests/Debug"
+            RUNTIME_OUTPUT_DIRECTORY_RELEASE        "${AOC_DIST_ROOT}/tests/Release"
+            RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${AOC_DIST_ROOT}/tests/RelWithDebInfo"
+            RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     "${AOC_DIST_ROOT}/tests/MinSizeRel"
+        )
+    endif()
+endforeach()
+
 add_custom_target(sandal_ctest_suite
     DEPENDS
         ${SANDAL_AOCNET_TEST_TARGETS}
@@ -191,6 +238,7 @@ add_custom_target(sandal_ctest_suite
         $<$<BOOL:${WIN32}>:test_launcher_saved_sign_in>
         test_world_stats
         test_world_effects
+        test_world_ability_content
         ${SANDAL_DOMAIN_TEST_TARGETS}
         ${SANDAL_WORLD_TEST_TARGETS}
 )
@@ -203,6 +251,9 @@ if(SANDAL_WORLD_TEST_TARGETS)
             COMMAND $<TARGET_FILE:${t}>
             WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
         )
+        set_tests_properties(world.${t} PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+        )
     endforeach()
 endif()
 
@@ -212,6 +263,9 @@ foreach(t IN LISTS SANDAL_AOCNET_TEST_TARGETS)
         COMMAND $<TARGET_FILE:${t}>
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     )
+    set_tests_properties(aocnet.${t} PROPERTIES
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+    )
 endforeach()
 
 add_test(
@@ -219,11 +273,17 @@ add_test(
     COMMAND $<TARGET_FILE:test_ics_token_file>
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
 )
+set_tests_properties(tools.test_ics_token_file PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
 if(WIN32)
     add_test(
         NAME tools.test_launcher_saved_sign_in
         COMMAND $<TARGET_FILE:test_launcher_saved_sign_in>
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+    set_tests_properties(tools.test_launcher_saved_sign_in PROPERTIES
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
     )
 endif()
 
@@ -232,10 +292,16 @@ add_test(
     COMMAND $<TARGET_FILE:test_world_stats>
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
 )
+set_tests_properties(world_stats.test_world_stats PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
 add_test(
     NAME world_stats.test_world_effects
     COMMAND $<TARGET_FILE:test_world_effects>
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+set_tests_properties(world_stats.test_world_effects PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
 )
 
 function(add_sandal_domain_case_test test_name target_name case_name)
@@ -243,6 +309,9 @@ function(add_sandal_domain_case_test test_name target_name case_name)
         NAME ${test_name}
         COMMAND $<TARGET_FILE:${target_name}> --data-free --case ${case_name}
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+    set_tests_properties(${test_name} PROPERTIES
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
     )
 endfunction()
 

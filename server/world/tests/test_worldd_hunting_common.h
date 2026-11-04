@@ -50,6 +50,9 @@ inline constexpr uint32_t kRandomizer = 0x6ee87ee4u;
 inline const aoc::worldd::Clock::time_point t0{std::chrono::seconds(5000)};
 
 inline const char *db_path() {
+  if (!std::filesystem::exists(NPC_MOTION_PATH)) {
+    return nullptr;
+  }
   const char *env = std::getenv("AOC_CONTENT_DB");
   if (env && *env) {
     return env;

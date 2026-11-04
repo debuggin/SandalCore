@@ -10,10 +10,6 @@ using namespace aoc::worldd::test_node_pop;
 
 namespace {
 
-static std::vector<spawns::NodeSpawn> select_real(const world::CityNodeInfo &info, int level,
-                                                  spawns::NodePopStats &st) {
-    return select(*g_env.nodes, *g_env.wire, info, level, st);
-}
 static const char *why_id(Why w) {
     struct Entry {
         Why w;
