@@ -6,16 +6,13 @@
 #include "protocol/schema/generated/UAoCAbilityComponent.h"
 #include "session/abilities.h"
 #include "session/ability_pipeline.h"
+#include "session/trade_statechart.h"
 #include "world/actor_registry.h"
 
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <map>
-#include <string>
 #include <string_view>
-#include <vector>
 
 namespace {
 
@@ -217,14 +214,152 @@ void verify_npc_cast_overlap_replaces_prior_element() {
     ASSERT_TRUE(arr->find(state.element) != nullptr);
 }
 
+void verify_stop_cast_epoch_and_replicator_bounds() {
+    ASSERT_TRUE(!combat::is_valid_stop_cast_epoch(0u, 0u));
+    ASSERT_TRUE(!combat::is_valid_stop_cast_epoch(1u, 0u));
+    ASSERT_TRUE(!combat::is_valid_stop_cast_epoch(1u, 2u));
+    ASSERT_TRUE(combat::is_valid_stop_cast_epoch(2u, 2u));
+
+    ASSERT_TRUE(combat::clamp_montage_play_rate(0.01f) == combat::kMinMontagePlayRate);
+    ASSERT_TRUE(combat::clamp_montage_play_rate(9.5f) == combat::kMaxMontagePlayRate);
+    ASSERT_TRUE(combat::clamp_montage_play_rate(1.5f) == 1.5f);
+
+    ASSERT_TRUE(combat::is_valid_ability_cue_bounds(77001, 3301u, 1.0f, 0u));
+    ASSERT_TRUE(!combat::is_valid_ability_cue_bounds(0, 3301u, 1.0f, 0u));
+    ASSERT_TRUE(!combat::is_valid_ability_cue_bounds(77001, 0u, 1.0f, 0u));
+    ASSERT_TRUE(!combat::is_valid_ability_cue_bounds(77001, 3301u, 0.05f, 0u));
+    ASSERT_TRUE(!combat::is_valid_ability_cue_bounds(77001, 3301u, 1.0f, combat::kMaxActiveAbilityCues));
+
+    ASSERT_TRUE(combat::is_valid_cooldown_window(10.0, 25.0, 0u));
+    ASSERT_TRUE(!combat::is_valid_cooldown_window(-1.0, 5.0, 0u));
+    ASSERT_TRUE(!combat::is_valid_cooldown_window(10.0, 9.5, 0u));
+    ASSERT_TRUE(!combat::is_valid_cooldown_window(0.0, 4000.0, 0u));
+    ASSERT_TRUE(!combat::is_valid_cooldown_window(1.0, 2.0, combat::kMaxSimultaneousCooldowns));
+
+    world::ActorRegistry reg;
+    constexpr uint64_t kNpcId = 6100u;
+    seed_npc_actor(reg, kNpcId);
+
+    combat::NpcCastState state{};
+    combat::NpcCast cast1{};
+    cast1.ability = 77001;
+    cast1.montage = 3301u;
+    repl::ExportChain chain{};
+
+    ASSERT_TRUE(combat::start_npc_cast(reg, kNpcId, state, cast1, chain));
+    const uint64_t epoch1 = state.active_cast_epoch;
+    ASSERT_TRUE(epoch1 == 1u);
+
+    combat::NpcCast cast2{};
+    cast2.ability = 77002;
+    cast2.montage = 3302u;
+    ASSERT_TRUE(combat::start_npc_cast(reg, kNpcId, state, cast2, chain));
+    const uint64_t epoch2 = state.active_cast_epoch;
+    ASSERT_TRUE(epoch2 == 2u);
+
+    ASSERT_TRUE(!combat::stop_npc_cast_for_epoch(reg, kNpcId, state, epoch1));
+    ASSERT_TRUE(!combat::NpcAbilityReplicator::build_stop_cast(reg, kNpcId, state, epoch1));
+    ASSERT_TRUE(state.playing);
+
+    repl::ElementState sample{};
+    sample.values[11] = repl::Value(emit::FIntrepidNetworkGUID::from_u64(3302u));
+    ASSERT_TRUE(!combat::NpcAbilityReplicator::build_stop_cast(state, epoch1, sample).has_value());
+    const auto stopped_elem = combat::NpcAbilityReplicator::build_stop_cast(state, epoch2, sample);
+    ASSERT_TRUE(stopped_elem.has_value());
+
+    ASSERT_TRUE(combat::NpcAbilityReplicator::build_stop_cast(reg, kNpcId, state, epoch2));
+    ASSERT_TRUE(!state.playing);
+}
+
+void verify_trade_statechart_harel_lifecycle() {
+    TradeStatechart trade{};
+    ASSERT_TRUE(trade.phase() == TradePhase::Idle);
+    ASSERT_TRUE(!trade.mutate_offer(true));
+    ASSERT_TRUE(!trade.lock_party(true));
+    ASSERT_TRUE(!trade.confirm_party(true));
+    ASSERT_TRUE(!trade.cancel_trade());
+
+    ASSERT_TRUE(trade.open_trade());
+    ASSERT_TRUE(trade.phase() == TradePhase::Open);
+    ASSERT_TRUE(!trade.open_trade());
+
+    ASSERT_TRUE(trade.lock_party(true));
+    ASSERT_TRUE(trade.is_party_locked(true));
+    ASSERT_TRUE(!trade.is_party_locked(false));
+    ASSERT_TRUE(trade.phase() == TradePhase::Open);
+    ASSERT_TRUE(trade.party_phase(true) == TradePhase::Locked);
+    ASSERT_TRUE(trade.party_phase(false) == TradePhase::Open);
+    ASSERT_TRUE(!trade.confirm_party(true));
+
+    ASSERT_TRUE(trade.lock_party(false));
+    ASSERT_TRUE(trade.both_locked());
+    ASSERT_TRUE(trade.phase() == TradePhase::Locked);
+
+    ASSERT_TRUE(trade.confirm_party(true));
+    ASSERT_TRUE(trade.is_party_confirmed(true));
+    ASSERT_TRUE(!trade.is_party_confirmed(false));
+    ASSERT_TRUE(trade.phase() == TradePhase::Confirmed);
+
+    ASSERT_TRUE(trade.confirm_party(false));
+    ASSERT_TRUE(trade.both_confirmed());
+    ASSERT_TRUE(trade.phase() == TradePhase::Completed);
+
+    ASSERT_TRUE(!trade.mutate_offer(true));
+    ASSERT_TRUE(!trade.lock_party(true));
+    ASSERT_TRUE(!trade.confirm_party(true));
+    ASSERT_TRUE(!trade.cancel_trade());
+}
+
+void verify_trade_statechart_mutation_auto_unlock_and_cancel() {
+    TradeStatechart trade{};
+    ASSERT_TRUE(trade.open_trade());
+    ASSERT_TRUE(trade.mutate_offer(true));
+    ASSERT_TRUE(trade.mutate_offer(false));
+    ASSERT_TRUE(trade.offer_revision() == 2u);
+
+    ASSERT_TRUE(trade.lock_party(true));
+    ASSERT_TRUE(trade.lock_party(false));
+    ASSERT_TRUE(trade.phase() == TradePhase::Locked);
+
+    ASSERT_TRUE(trade.mutate_offer(false));
+    ASSERT_TRUE(trade.phase() == TradePhase::Open);
+    ASSERT_TRUE(!trade.is_party_locked(true));
+    ASSERT_TRUE(!trade.is_party_locked(false));
+    ASSERT_TRUE(trade.offer_revision() == 3u);
+    ASSERT_TRUE(!trade.confirm_party(true));
+
+    ASSERT_TRUE(trade.lock_party(true));
+    ASSERT_TRUE(trade.lock_party(false));
+    ASSERT_TRUE(trade.confirm_party(true, 3u));
+    ASSERT_TRUE(trade.phase() == TradePhase::Confirmed);
+
+    ASSERT_TRUE(trade.mutate_offer(true));
+    ASSERT_TRUE(trade.phase() == TradePhase::Open);
+    ASSERT_TRUE(!trade.is_party_locked(true));
+    ASSERT_TRUE(!trade.is_party_locked(false));
+    ASSERT_TRUE(!trade.is_party_confirmed(true));
+    ASSERT_TRUE(!trade.is_party_confirmed(false));
+    ASSERT_TRUE(trade.offer_revision() == 4u);
+    ASSERT_TRUE(!trade.confirm_party(false, 3u));
+
+    ASSERT_TRUE(trade.cancel_trade());
+    ASSERT_TRUE(trade.phase() == TradePhase::Cancelled);
+    ASSERT_TRUE(!trade.mutate_offer(true));
+    ASSERT_TRUE(!trade.lock_party(true));
+    ASSERT_TRUE(!trade.cancel_trade());
+}
+
 void test_mob_stop_cast_target_death_and_cc_race() {
     verify_npc_replicator_start_and_stop_cast();
     verify_pipeline_death_and_mount_interrupt_race();
+    verify_trade_statechart_harel_lifecycle();
+    verify_trade_statechart_mutation_auto_unlock_and_cancel();
 }
 
 void test_mob_stop_cast_generation_token_immunity() {
     verify_generation_token_stale_stop_immunity();
     verify_npc_cast_overlap_replaces_prior_element();
+    verify_stop_cast_epoch_and_replicator_bounds();
 }
 
 }  // namespace

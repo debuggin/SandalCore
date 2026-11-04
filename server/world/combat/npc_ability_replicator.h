@@ -37,6 +37,7 @@ struct NpcCastState {
     int32_t counter = 0;        // the AnimationCounter the next write carries (it moves by one on every write)
     int64_t next_instance = 0;  // the ServerInstanceId the next cast carries (0 for the first)
     bool    playing = false;    // the element holds a montage (the end has not been written)
+    uint64_t active_cast_epoch = 0;
 };
 
 /// One cast.
@@ -139,6 +140,7 @@ inline bool start_npc_cast(world::ActorRegistry& registry, uint64_t actor_id, Np
         state.element = *id;
         ++state.counter;
         ++state.next_instance;
+        ++state.active_cast_epoch;
         state.playing = true;
         a.ability_exports.assign(1, montage_export);
         ok = true;
@@ -166,5 +168,81 @@ inline bool end_npc_cast(world::ActorRegistry& registry, uint64_t actor_id, NpcC
     state.playing = false;
     return ok;
 }
+
+inline constexpr uint32_t kMaxActiveAbilityCues = 32;
+inline constexpr uint32_t kMaxSimultaneousCooldowns = 64;
+inline constexpr float kMinMontagePlayRate = 0.1f;
+inline constexpr float kMaxMontagePlayRate = 4.0f;
+inline constexpr double kMaxCooldownDurationSeconds = 3600.0;
+
+[[nodiscard]] constexpr bool is_valid_stop_cast_epoch(uint64_t active_epoch, uint64_t cancel_epoch) noexcept {
+    return active_epoch != 0 && active_epoch == cancel_epoch;
+}
+
+[[nodiscard]] constexpr float clamp_montage_play_rate(float play_rate) noexcept {
+    if (!(play_rate >= kMinMontagePlayRate)) return kMinMontagePlayRate;
+    if (play_rate > kMaxMontagePlayRate) return kMaxMontagePlayRate;
+    return play_rate;
+}
+
+[[nodiscard]] constexpr bool is_valid_ability_cue_bounds(
+    int64_t ability_guid,
+    uint64_t montage_id,
+    float play_rate,
+    uint32_t active_cue_count = 0) noexcept {
+    return ability_guid > 0 &&
+           montage_id != 0 &&
+           play_rate >= kMinMontagePlayRate &&
+           play_rate <= kMaxMontagePlayRate &&
+           active_cue_count < kMaxActiveAbilityCues;
+}
+
+[[nodiscard]] constexpr bool is_valid_cooldown_window(
+    double start_sec,
+    double end_sec,
+    uint32_t active_cooldown_count = 0) noexcept {
+    const double duration = end_sec - start_sec;
+    return start_sec >= 0.0 &&
+           end_sec >= start_sec &&
+           duration <= kMaxCooldownDurationSeconds &&
+           active_cooldown_count < kMaxSimultaneousCooldowns;
+}
+
+inline bool stop_npc_cast_for_epoch(
+    world::ActorRegistry& registry,
+    uint64_t actor_id,
+    NpcCastState& state,
+    uint64_t cancel_epoch) {
+    if (!is_valid_stop_cast_epoch(state.active_cast_epoch, cancel_epoch)) return false;
+    return end_npc_cast(registry, actor_id, state);
+}
+
+struct NpcAbilityReplicator {
+    [[nodiscard]] static repl::ElementState build_stop_cast(
+        const repl::ElementState& live_values,
+        int32_t next_counter) {
+        repl::ElementState es = live_values;
+        es.values[11] = repl::Value(emit::FIntrepidNetworkGUID{});
+        es.values[15] = repl::Value::i64(next_counter);
+        return es;
+    }
+
+    [[nodiscard]] static std::optional<repl::ElementState> build_stop_cast(
+        const NpcCastState& state,
+        uint64_t cancel_epoch,
+        const repl::ElementState& live_values) {
+        if (state.element == 0 || !state.playing) return std::nullopt;
+        if (!is_valid_stop_cast_epoch(state.active_cast_epoch, cancel_epoch)) return std::nullopt;
+        return build_stop_cast(live_values, state.counter);
+    }
+
+    static bool build_stop_cast(
+        world::ActorRegistry& registry,
+        uint64_t actor_id,
+        NpcCastState& state,
+        uint64_t cancel_epoch) {
+        return stop_npc_cast_for_epoch(registry, actor_id, state, cancel_epoch);
+    }
+};
 
 }  // namespace aoc::worldd::combat
