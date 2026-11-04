@@ -34,9 +34,10 @@ import (
 )
 
 func main() {
+	config.HandleHealthcheck("8083", "AOC_CITYNODE_GRPC_BIND_ADDR", "AOC_CITYNODE_GRPC_ADDR", "50055", "50053")
 	seed := flag.String("seed", config.Load().CityNodeSeed,
 		"the node seed file, applied once at the first start; default $AOC_CITYNODE_SEED or config/seeds/citynode_seed.json")
-	flag.Parse()
+	config.BindContainerFlags("citynode")
 	if err := run(*seed); err != nil {
 		slog.Error("citynode stopped", "err", err)
 		os.Exit(1)
@@ -49,7 +50,7 @@ func run(seedPath string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg := config.Load()
-	token, err := svcauth.Load(cfg.ServiceTokenFile)
+	token, err := svcauth.LoadOrEnv(cfg.ServiceTokenFile)
 	if err != nil {
 		return err
 	}
@@ -65,7 +66,7 @@ func run(seedPath string) error {
 	}
 
 	if _, err := os.Stat(seedPath); err != nil && (seedPath == "config/seeds/citynode_seed.json" || seedPath == "src/config/seeds/citynode_seed.json") {
-		for _, alt := range []string{"src/config/seeds/citynode_seed.json", "../../config/seeds/citynode_seed.json", "config/seeds/citynode_seed.json"} {
+		for _, alt := range []string{"src/config/seeds/citynode_seed.json", "../../config/seeds/citynode_seed.json", "config/seeds/citynode_seed.json", "/app/config/seeds/citynode_seed.json"} {
 			if _, aerr := os.Stat(alt); aerr == nil {
 				seedPath = alt
 				break

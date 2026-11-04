@@ -54,7 +54,8 @@ public:
         std::chrono::milliseconds destructor_wait{2000};                 // the destructor's own flush
     };
 
-    explicit QuestWorker(svc::QuestApi& api, Config config = {});
+    explicit QuestWorker(svc::QuestApi& api);
+    QuestWorker(svc::QuestApi& api, Config config);
     ~QuestWorker();
     QuestWorker(const QuestWorker&) = delete;
     QuestWorker& operator=(const QuestWorker&) = delete;

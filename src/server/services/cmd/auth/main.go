@@ -27,6 +27,8 @@ import (
 )
 
 func main() {
+	config.HandleHealthcheck("8081", "AOC_AUTH_HTTP_BIND_ADDR", "AOC_AUTH_HTTP_ADDR", "AOC_AUTH_GRPC_BIND_ADDR", "AOC_AUTH_GRPC_ADDR", "50051")
+	config.BindContainerFlags("auth")
 	if err := run(); err != nil {
 		slog.Error("auth stopped", "err", err)
 		os.Exit(1)
@@ -39,7 +41,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg := config.Load()
-	token, err := svcauth.Load(cfg.ServiceTokenFile)
+	token, err := svcauth.LoadOrEnv(cfg.ServiceTokenFile)
 	if err != nil {
 		return err
 	}

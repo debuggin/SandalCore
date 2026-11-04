@@ -54,11 +54,12 @@ import (
 // (CoA) (C | Y | B)
 
 func main() {
+	config.HandleHealthcheck("8082", "AOC_CHARACTER_GRPC_BIND_ADDR", "AOC_CHAR_GRPC_ADDR", "AOC_CHARACTER_GRPC_ADDR", "50052")
 	contentDB := flag.String("content-db", config.Load().ContentDB,
 		"the content.db (contentc's output) that new characters are checked against; default $AOC_CONTENT_DB or dist/content/content.db")
 	noBackfill := flag.Bool("no-kit-backfill", false,
 		"do not give the starting kit to the characters that have no items when the service starts (plan B2)")
-	flag.Parse()
+	config.BindContainerFlags("character")
 	if err := run(*contentDB, !*noBackfill, config.Load().GMStarterSet); err != nil {
 		slog.Error("character stopped", "err", err)
 		os.Exit(1)
@@ -69,7 +70,7 @@ func run(contentDB string, backfill bool, starterSet bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg := config.Load()
-	token, err := svcauth.Load(cfg.ServiceTokenFile)
+	token, err := svcauth.LoadOrEnv(cfg.ServiceTokenFile)
 	if err != nil {
 		return err
 	}

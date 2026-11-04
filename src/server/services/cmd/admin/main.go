@@ -18,6 +18,7 @@ import (
 
 	"aocrop/services/internal/admincatalog"
 	"aocrop/services/internal/admingw"
+	"aocrop/services/internal/config"
 	"aocrop/services/internal/worldstream"
 )
 
@@ -27,6 +28,8 @@ const (
 )
 
 func main() {
+	config.HandleHealthcheck("8090", "AOC_ADMIN_HTTP_BIND_ADDR", "AOC_ADMIN_HTTP_ADDR", "AOC_ADMIN_ADDR")
+	config.BindContainerFlags("admin")
 	if err := run(context.Background()); err != nil {
 		slog.Error("admingw stopped", "err", err)
 		os.Exit(1)
@@ -85,8 +88,10 @@ func run(parent context.Context) error {
 }
 
 func resolveAddr() string {
-	if v := strings.TrimSpace(os.Getenv("AOC_ADMIN_ADDR")); v != "" {
-		return v
+	for _, k := range []string{"AOC_ADMIN_HTTP_BIND_ADDR", "AOC_ADMIN_HTTP_ADDR", "AOC_ADMIN_ADDR", "SANDAL_ADMIN_HTTP_BIND_ADDR", "SANDAL_ADMIN_ADDR"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
 	}
 	return defaultAdminAddr
 }

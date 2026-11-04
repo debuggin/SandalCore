@@ -12,7 +12,13 @@
 #  (vcpkg.json) gives unofficial::sqlite3::sqlite3.
 # ============================================================================
 
-find_package(unofficial-sqlite3 CONFIG REQUIRED)
+find_package(unofficial-sqlite3 CONFIG QUIET)
+if(NOT unofficial-sqlite3_FOUND)
+    find_package(SQLite3 REQUIRED)
+    if(NOT TARGET unofficial::sqlite3::sqlite3)
+        add_library(unofficial::sqlite3::sqlite3 ALIAS SQLite::SQLite3)
+    endif()
+endif()
 
 # ── gRPC stubs come from unified libs/aocproto (world_protos ALIAS aocproto) ──
 # ── stats & nav come from libs/aocstats (world_stats ALIAS aocstats) & libs/aocnav (world_nav ALIAS aocnav) ──
@@ -335,6 +341,7 @@ function(world_add_test name)
     set_target_properties(${name} PROPERTIES FOLDER "Tests/world")
 endfunction()
 
+if(AOC_BUILD_TESTS)
 foreach(t
     test_world_abilities
     test_world_ability_session
@@ -657,3 +664,4 @@ target_sources(test_worldd_talents PRIVATE tests/test_worldd_talents_retail.cpp)
 world_add_test(test_tooltip_render tests/test_worldd_tooltips.cpp)
 target_compile_definitions(test_tooltip_render PRIVATE
     ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
+endif()

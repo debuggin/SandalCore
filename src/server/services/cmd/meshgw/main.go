@@ -104,6 +104,8 @@ func (g *Gateway) RouteForwardPacket(
 }
 
 func main() {
+	config.HandleHealthcheck("8086", "AOC_MESHGW_HTTP_BIND_ADDR", "AOC_MESHGW_ADDR", "19082")
+	config.BindContainerFlags("meshgw")
 	if err := run(); err != nil {
 		slog.Error("meshgw stopped", "err", err)
 		os.Exit(1)
@@ -117,7 +119,7 @@ func run() error {
 }
 
 func resolveProbeAddr() string {
-	for _, k := range []string{"AOC_MESHGW_HTTP_BIND_ADDR", "SANDAL_MESHGW_HTTP_BIND_ADDR"} {
+	for _, k := range []string{"AOC_MESHGW_HTTP_BIND_ADDR", "SANDAL_MESHGW_HTTP_BIND_ADDR", "AOC_MESHGW_ADDR", "SANDAL_MESHGW_ADDR"} {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			return v
 		}

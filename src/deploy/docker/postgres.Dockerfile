@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # SPDX-License-Identifier: AGPL-3.0-only
 
-FROM postgres:17-alpine@sha256:4a90d26c0c849f2f98f46a53a5489a3420a181301980d3e722645a9e9195296c AS runtime
+FROM postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b AS runtime
 ARG GIT_REVISION="unknown"
 ARG BUILD_CREATED="1970-01-01T00:00:00Z"
 ARG PGPORT=5432
@@ -21,6 +21,8 @@ ENV PGPORT=${PGPORT} \
 
 COPY --chown=70:70 src/server/services/sql/migrations/*.sql /docker-entrypoint-initdb.d/
 COPY --chown=70:70 src/deploy/postgres/init/*.sql /docker-entrypoint-initdb.d/
+RUN printf 'CREATE TABLE IF NOT EXISTS schema_migrations (version INT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());\nINSERT INTO schema_migrations (version) SELECT generate_series(1, 23) ON CONFLICT (version) DO NOTHING;\n' > /docker-entrypoint-initdb.d/99-schema-migrations.sql && \
+    chown 70:70 /docker-entrypoint-initdb.d/99-schema-migrations.sql
 USER postgres
 USER 70:70
 EXPOSE 5432/tcp

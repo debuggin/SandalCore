@@ -47,6 +47,9 @@ $rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (
 if (-not (Get-Command Sync-SandalDistStage -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $rootPath 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
 }
+if (-not (Get-Command Ensure-SandalDockerDaemon -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $rootPath 'scripts\lib\Env.psm1') -Force -DisableNameChecking
+}
 
 $opts = Resolve-RunOptions `
     -BaseProfile $Profile `
@@ -98,6 +101,7 @@ if (-not $opts.DryRun) {
     if (-not (Test-Path -LiteralPath $serverCrt -PathType Leaf) -and (Test-Path -LiteralPath $certsScript -PathType Leaf)) {
         $null = & $certsScript -OutputDir (Join-Path $rootPath 'dist\certs') -RepoRoot $rootPath -Json
     }
+    $null = Ensure-SandalDockerDaemon
     $null = & (Join-Path $rootPath 'scripts\sandal\up.ps1') -Profile $opts.Profile -Detach -RepoRoot $rootPath -Json:$opts.Json
 }
 

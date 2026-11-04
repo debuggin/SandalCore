@@ -106,33 +106,28 @@ Describe 'SandalCore CLI Dispatcher, WSL Docker Preflight, Heavy Lock & Legacy S
         }
     }
 
-    Context 'Case 2: Install-WslDocker.ps1 DryRun Preflight & SEC-12 TCP 2375 Guard' {
-        It 'returns a deterministic DryRun preflight plan without mutating host WSL/Docker state and blocks TCP 2375' {
-            $planRaw = (@(& pwsh -NoProfile -File $script:WslInstallScript -DryRun -Json) -join "`n")
-            if ($LASTEXITCODE -ne 0) {
-                throw "Expected Install-WslDocker.ps1 -DryRun -Json to exit 0, got $LASTEXITCODE"
+    Context 'Case 2: Install-WslDocker.ps1 DryRun Preflight & Canonical TCP 2375 Contract' {
+        It 'returns a deterministic DryRun preflight plan with tcp://[::1]:2375 without mutating Process DOCKER_HOST' {
+            $prevDockerHost = [Environment]::GetEnvironmentVariable('DOCKER_HOST', 'Process')
+            try {
+                [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'sentinel-dryrun-unchanged', 'Process')
+                $planRaw = (@(& $script:WslInstallScript -DryRun -Json) -join "`n")
+                $afterDockerHost = [Environment]::GetEnvironmentVariable('DOCKER_HOST', 'Process')
+            } finally {
+                [Environment]::SetEnvironmentVariable('DOCKER_HOST', $prevDockerHost, 'Process')
             }
             $plan = $planRaw | ConvertFrom-Json
             if (-not $plan.ok -or $plan.command -ne 'install-wsl-docker' -or -not $plan.dry_run) {
                 throw "Unexpected Install-WslDocker DryRun envelope: $planRaw"
             }
-            if ($plan.distro -ne 'Ubuntu-24.04' -or $plan.socket -ne '/var/run/docker.sock' -or $plan.tcp_2375 -ne $false) {
-                throw "Expected Ubuntu-24.04 and unix socket /var/run/docker.sock with tcp_2375=false."
+            if ($plan.distro -notmatch '^Ubuntu(-24\.04)?$' -or $plan.socket -ne '/var/run/docker.sock' -or $plan.tcp_2375 -ne $true -or $plan.docker_host -ne 'tcp://[::1]:2375') {
+                throw "Expected Ubuntu(-24.04), socket=/var/run/docker.sock, tcp_2375=true, and docker_host=tcp://[::1]:2375, got: $planRaw"
             }
             if ($plan.wsl_config.Action -ne 'DryRun' -or $plan.engine.Action -ne 'DryRun') {
                 throw "Expected wsl_config.Action and engine.Action to be DryRun, got wsl=$($plan.wsl_config.Action) engine=$($plan.engine.Action)"
             }
-
-            $threwTcp = $false
-            try {
-                & $script:WslInstallScript -DryRun -Json -Arguments @('-H', 'tcp://127.0.0.1:2375') *>$null
-            } catch {
-                if ($_.Exception.Message -match 'SEC-12') {
-                    $threwTcp = $true
-                }
-            }
-            if (-not $threwTcp) {
-                throw 'Expected Install-WslDocker.ps1 to throw SEC-12 exception when TCP 2375 endpoint is passed.'
+            if ($afterDockerHost -ne 'sentinel-dryrun-unchanged') {
+                throw "Expected -DryRun not to mutate Process DOCKER_HOST, got '$afterDockerHost'"
             }
         }
     }

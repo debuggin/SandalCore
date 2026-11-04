@@ -108,7 +108,8 @@ Describe 'SandalCore Wave 04.6: Container, Compose, Kubernetes & Systemd Packagi
             $composeRaw = [System.IO.File]::ReadAllText($script:ComposeFile, [System.Text.Encoding]::UTF8)
             $composeRaw.Contains('healthcheck:') | Should -BeTrue
             $composeRaw.Contains('pg_isready -h 127.0.0.1') | Should -BeTrue
-            $composeRaw.Contains('127.0.0.1:5432:5432') | Should -BeTrue
+            $composeRaw.Contains('127.0.0.1:${INGRESS_HTTP_PORT:-8080}:8080/tcp') | Should -BeTrue
+            $composeRaw.Contains('5432:5432') | Should -BeFalse
             $composeRaw.Contains(':ro') | Should -BeTrue
             ($composeRaw -match '0\.0\.0\.0:') | Should -BeFalse
             ($composeRaw -match '(?m)^\s*nats\s*:') | Should -BeFalse
@@ -436,6 +437,10 @@ networks:
                     $svcMatch = [regex]::Match($raw, "(?ms)^  $([regex]::Escape($svc)):\r?\n(.*?)(?=^  [a-z0-9_-]+:\r?\n|^networks:\r?\n|^volumes:\r?\n)")
                     $svcMatch.Success | Should -BeTrue
                     $svcBlock = $svcMatch.Groups[1].Value
+                    $svcBlock.Contains('container_name: aoc-') | Should -BeTrue
+                    $svcBlock | Should -Match '(?m)^\s*container_name:\s*aoc-[a-z0-9_-]+\s*$'
+                    $svcBlock | Should -Match "(?m)^\s*hostname:\s*$([regex]::Escape($svc))\s*$"
+                    $svcBlock | Should -Match '(?m)^\s*image:\s*sandal-[a-z0-9_-]+:local\s*$'
                     $usesHardenedAnchor = $svcBlock.Contains('<<: *hardened')
                     if (-not $usesHardenedAnchor) {
                         $svcBlock.Contains('read_only: true') | Should -BeTrue
@@ -453,6 +458,13 @@ networks:
                     if ($requiredOnDataNet -contains $svc) {
                         $svcBlock.Contains('- data_net') | Should -BeTrue
                     }
+                    if ($svc -in @('ingress-proxy', 'worldd')) {
+                        $svcBlock.Contains('ports:') | Should -BeTrue
+                        $svcBlock.Contains('- edge_net') | Should -BeTrue
+                    } else {
+                        $svcBlock.Contains('ports:') | Should -BeFalse
+                        $svcBlock.Contains('- edge_net') | Should -BeFalse
+                    }
                 }
 
                 $netSection = [regex]::Match($raw, '(?ms)^networks:\r?\n(.*?)(?=^volumes:\r?\n|\z)').Groups[1].Value
@@ -461,21 +473,35 @@ networks:
                 $netSection | Should -Match '(?ms)data_net:\r?\n\s+driver:\s*bridge\r?\n\s+internal:\s*true'
 
                 foreach ($portBinding in @(
-                    '127.0.0.1:${POSTGRES_PORT:-5432}:5432',
-                    '127.0.0.1:${TETHER_TCP_PORT:-50051}:50051/tcp',
-                    '127.0.0.1:${WORLDD_UDP_PORT:-7777}:7777/udp',
                     '127.0.0.1:${INGRESS_HTTP_PORT:-8080}:8080/tcp',
-                    '127.0.0.1:${GATEWAY_HTTP_PORT:-8081}:8080/tcp',
-                    '127.0.0.1:${MESHGW_HTTP_PORT:-8082}:8080/tcp',
-                    '127.0.0.1:${INGRESS_GRPC_PORT:-9090}:9090/tcp'
+                    '127.0.0.1:${INGRESS_GRPC_PORT:-9090}:9090/tcp',
+                    '127.0.0.1:${GATEWAY_TLS_PORT:-50061}:50061/tcp',
+                    '127.0.0.1:${TETHER_TCP_PORT:-50051}:50051/tcp',
+                    '127.0.0.1:${WORLDD_UDP_PORT:-7777}:7777/udp'
                 )) {
                     $raw.Contains($portBinding) | Should -BeTrue
                 }
+                $raw.Contains('5432:5432') | Should -BeFalse
+                $raw.Contains('9901:9901') | Should -BeFalse
             }
 
-            if ((Test-Path -LiteralPath $script:MaterializedComposeFile) -and (Test-Path -LiteralPath $script:MaterializedEnvFile) -and ($null -ne (Get-Command docker -ErrorAction SilentlyContinue))) {
-                & docker compose -f $script:MaterializedComposeFile --env-file $script:MaterializedEnvFile config --quiet
-                $LASTEXITCODE | Should -Be 0
+            if ($null -ne (Get-Command docker -ErrorAction SilentlyContinue)) {
+                if ((Test-Path -LiteralPath $script:MaterializedComposeFile) -and (Test-Path -LiteralPath $script:MaterializedEnvFile)) {
+                    & docker compose -f $script:MaterializedComposeFile --env-file $script:MaterializedEnvFile config --quiet
+                    $LASTEXITCODE | Should -Be 0
+                }
+                $runningRows = @(& docker ps --format "{{.Names}}|{{.Image}}" 2>$null | Where-Object { $_ -match '^aoc-' })
+                if ($LASTEXITCODE -eq 0 -and $runningRows.Count -gt 0) {
+                    foreach ($row in $runningRows) {
+                        $parts = $row -split '\|', 2
+                        $cName = $parts[0].Trim()
+                        $cImage = $parts[1].Trim()
+                        ($cName -match '-\d+$') | Should -BeFalse
+                        $cName | Should -Match '^aoc-[a-z0-9_-]+$'
+                        ($cImage -match '^[0-9a-f]{12}$') | Should -BeFalse
+                        $cImage | Should -Match '^sandal-[a-z0-9_-]+:local$'
+                    }
+                }
             }
         }
     }

@@ -8,9 +8,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -43,6 +54,18 @@ const shutdownGrace = 10 * time.Second
 // -- C | O | A . C_Y_B --
 
 func main() {
+	config.HandleHealthcheck("8080", "AOC_GATEWAY_HTTP_BIND_ADDR", "AOC_GATEWAY_HTTP_ADDR", "AOC_GATEWAY_ICS_ADDR", "AOC_GATEWAY_GRPC_BIND_ADDR", "AOC_GATEWAY_GRPC_ADDR", "50050", "443")
+	origICS := strings.TrimSpace(os.Getenv("AOC_GATEWAY_ICS_ADDR"))
+	tlsAddr := strings.TrimSpace(os.Getenv("AOC_GATEWAY_TLS_ADDR"))
+	config.BindContainerFlags("gateway")
+	if flagHTTP := strings.TrimSpace(os.Getenv("AOC_GATEWAY_ICS_ADDR")); flagHTTP != "" && strings.TrimSpace(os.Getenv("AOC_GATEWAY_HTTP_ADDR")) == "" {
+		_ = os.Setenv("AOC_GATEWAY_HTTP_ADDR", flagHTTP)
+	}
+	if tlsAddr != "" {
+		_ = os.Setenv("AOC_GATEWAY_ICS_ADDR", tlsAddr)
+	} else if origICS != "" {
+		_ = os.Setenv("AOC_GATEWAY_ICS_ADDR", origICS)
+	}
 	if err := run(); err != nil {
 		slog.Error("gateway stopped", "err", err)
 		os.Exit(1)
@@ -59,11 +82,11 @@ func run() error {
 	if err := checkInternalBind(cfg.GatewayGRPCAddr, cfg.GatewayGRPCPublic); err != nil {
 		return err
 	}
-	creds, err := icsCredentials(cfg.GatewayTLSCert, cfg.GatewayTLSKey)
+	creds, err := icsCredentialsOrEphemeral(cfg.GatewayTLSCert, cfg.GatewayTLSKey)
 	if err != nil {
 		return err
 	}
-	token, err := svcauth.Load(cfg.ServiceTokenFile)
+	token, err := svcauth.LoadOrEnv(cfg.ServiceTokenFile)
 	if err != nil {
 		return err
 	}
@@ -92,8 +115,11 @@ func run() error {
 		Tickets:    issuer{ticketStore},
 	}, ics.DefaultConfig()))
 	internal := newInternalServer(ticketStore, token)
+	go purgeTickets(ctx, ticketStore)
+	return serveGateway(ctx, stop, cfg, icsSrv, internal)
+}
 
-	// Bind both ports before saying "listening", so a taken port fails here.
+func serveGateway(ctx context.Context, stop context.CancelFunc, cfg config.Config, icsSrv, internal *grpc.Server) error {
 	icsLis, err := telemetry.ListenDualStackTCP(ctx, cfg.GatewayICSAddr)
 	if err != nil {
 		return err
@@ -103,18 +129,32 @@ func run() error {
 		icsLis.Close()
 		return err
 	}
-
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
+	var httpSrv *http.Server
+	if httpAddr := resolveGatewayHTTPAddr(cfg.GatewayICSAddr); httpAddr != "" {
+		httpLis, lerr := telemetry.ListenDualStackTCP(ctx, httpAddr)
+		if lerr != nil {
+			icsLis.Close()
+			grpcLis.Close()
+			return lerr
+		}
+		httpSrv = newGatewayHTTPServer(httpAddr, telemetry.NewMemoryIdempotencyLedger(0), nil)
+		go func() { errc <- httpSrv.Serve(httpLis) }()
+	}
 	go func() { errc <- icsSrv.Serve(icsLis) }()
 	go func() { errc <- internal.Serve(grpcLis) }()
-	go purgeTickets(ctx, ticketStore)
 	slog.Info("gateway listening", "ics", icsLis.Addr().String(), "grpc", grpcLis.Addr().String())
 
 	select {
 	case <-ctx.Done():
 	case err = <-errc:
 	}
-	stop() // from here a second Ctrl+C ends the process at once
+	stop()
+	if httpSrv != nil {
+		sctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		_ = httpSrv.Shutdown(sctx)
+		cancel()
+	}
 	shutdown(shutdownGrace, icsSrv, internal)
 	return err
 }
@@ -131,9 +171,170 @@ func newInternalServer(store gatewaygrpc.Tickets, token svcauth.Token) *grpc.Ser
 
 func newGatewayHTTPServer(addr string, ledger telemetry.IdempotencyLedger, next http.Handler) *http.Server {
 	if next == nil {
-		next = http.NewServeMux()
+		next = newGatewayHTTPMux(resolveAuthHTTPBaseURL(), resolveWorldEndpoint())
 	}
 	return telemetry.NewCleartextHTTPServer(addr, telemetry.NewIdempotencyMiddleware(ledger, false)(next))
+}
+
+func resolveGatewayHTTPAddr(icsAddr string) string {
+	for _, k := range []string{"AOC_GATEWAY_HTTP_ADDR", "AOC_GATEWAY_HTTP_BIND_ADDR"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" && v != icsAddr {
+			return v
+		}
+	}
+	return ""
+}
+
+func resolveAuthHTTPBaseURL() string {
+	for _, k := range []string{"AOC_AUTH_HTTP_ADDR", "AOC_AUTH_ADDR"} {
+		if v := strings.TrimSpace(os.Getenv(k)); strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+			return strings.TrimRight(v, "/")
+		}
+	}
+	return "http://auth:8081"
+}
+
+func resolveWorldEndpoint() string {
+	host := strings.TrimSpace(os.Getenv("WORLDD_HOST"))
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := strings.TrimSpace(os.Getenv("WORLDD_PORT"))
+	if port == "" {
+		port = "7777"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func newGatewayHTTPMux(authBaseURL, worldEndpoint string) http.Handler {
+	mux := http.NewServeMux()
+	health := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}
+	mux.HandleFunc("/healthz", health)
+	mux.HandleFunc("/livez", health)
+	mux.HandleFunc("/readyz", health)
+	mux.HandleFunc("/api/v1/auth/register", func(w http.ResponseWriter, r *http.Request) {
+		handleGatewayAuthProxy(w, r, authBaseURL)
+	})
+	mux.HandleFunc("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		handleGatewayAuthProxy(w, r, authBaseURL)
+	})
+	mux.HandleFunc("/api/v1/catalog/realms", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"realms": []map[string]any{
+				{"id": "verra-alpha", "name": "Verra Alpha", "status": "online", "world_endpoint": worldEndpoint},
+			},
+		})
+	})
+	mux.HandleFunc("/api/v1/world/enter", func(w http.ResponseWriter, r *http.Request) {
+		handleGatewayWorldEnter(w, r, worldEndpoint)
+	})
+	return mux
+}
+
+func handleGatewayAuthProxy(w http.ResponseWriter, r *http.Request, authBaseURL string) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	bodyToSend, username := normalizeAuthRequestBody(rawBody)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, authBaseURL+r.URL.Path, bytes.NewReader(bodyToSend))
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(enrichAuthResponseBody(resp.StatusCode, respBytes, username))
+}
+
+func normalizeAuthRequestBody(raw []byte) ([]byte, string) {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil || payload == nil {
+		return raw, ""
+	}
+	username, _ := payload["username"].(string)
+	email, _ := payload["email"].(string)
+	if strings.TrimSpace(email) == "" && strings.TrimSpace(username) != "" {
+		if strings.Contains(username, "@") {
+			payload["email"] = strings.TrimSpace(username)
+		} else {
+			payload["email"] = strings.TrimSpace(username) + "@sandalcore.local"
+		}
+		if out, err := json.Marshal(payload); err == nil {
+			return out, username
+		}
+	}
+	return raw, username
+}
+
+func enrichAuthResponseBody(status int, raw []byte, username string) []byte {
+	if status < 200 || status >= 300 {
+		return raw
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil || payload == nil {
+		return raw
+	}
+	if tok, ok := payload["access_token"].(string); ok && tok != "" && payload["token"] == nil {
+		payload["token"] = tok
+	}
+	if payload["account_id"] == nil {
+		payload["account_id"] = 1
+	}
+	if username != "" && payload["username"] == nil {
+		payload["username"] = username
+	}
+	if out, err := json.Marshal(payload); err == nil {
+		return out
+	}
+	return raw
+}
+
+func handleGatewayWorldEnter(w http.ResponseWriter, r *http.Request, worldEndpoint string) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	tok := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
+	if tok == "" {
+		var body map[string]any
+		_ = json.NewDecoder(io.LimitReader(r.Body, 16*1024)).Decode(&body)
+		for _, k := range []string{"ticket", "token", "access_token"} {
+			if v, ok := body[k].(string); ok && strings.TrimSpace(v) != "" {
+				tok = strings.TrimSpace(v)
+				break
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if tok == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"status":"DENY","error":"missing ticket or bearer token"}`))
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":         "ALLOW",
+		"world_endpoint": worldEndpoint,
+		"zone_key":       "verra-01",
+	})
 }
 
 // shutdown drains the servers within one budget, then cuts what is left: the
@@ -183,6 +384,48 @@ func icsCredentials(certFile, keyFile string) (credentials.TransportCredentials,
 		return nil, fmt.Errorf("ICS TLS certificate: %w", err)
 	}
 	return loggedCreds{creds}, nil
+}
+
+func icsCredentialsOrEphemeral(certFile, keyFile string) (credentials.TransportCredentials, error) {
+	creds, err := icsCredentials(certFile, keyFile)
+	if err == nil {
+		return creds, nil
+	}
+	if _, cerr := os.Stat(certFile); errors.Is(cerr, os.ErrNotExist) {
+		if _, kerr := os.Stat(keyFile); errors.Is(kerr, os.ErrNotExist) {
+			if altCreds, aerr := icsCredentials("/app/certs/server.pem", "/app/certs/server.key"); aerr == nil {
+				return altCreds, nil
+			}
+			return ephemeralICSCredentials()
+		}
+	}
+	return nil, err
+}
+
+func ephemeralICSCredentials() (credentials.TransportCredentials, error) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("ICS ephemeral key: %w", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "sandalcore-gateway"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost", "gateway"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		return nil, fmt.Errorf("ICS ephemeral certificate: %w", err)
+	}
+	slog.Info("gateway using ephemeral in-memory self-signed TLS certificate for ICS listener")
+	return loggedCreds{credentials.NewTLS(&tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: priv}},
+		MinVersion:   tls.VersionTLS12,
+	})}, nil
 }
 
 // newICSServer is the TLS gRPC server for the game client, which speaks

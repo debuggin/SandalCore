@@ -246,5 +246,48 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
             $out.ok | Should -BeTrue
             $out.command | Should -Be 'test'
         }
+
+        It 'exports Ensure-SandalDockerDaemon from scripts/lib/Env.psm1 and defines Resolve-WslDockerDistro in scripts/lib/wsl-docker.ps1' {
+            $envPsm1Path = Join-Path $script:RepoRoot 'scripts\lib\Env.psm1'
+            $wslDockerPath = Join-Path $script:RepoRoot 'scripts\lib\wsl-docker.ps1'
+            $envModule = Import-Module $envPsm1Path -Force -DisableNameChecking -PassThru
+            if ($envModule.ExportedFunctions.Keys -notcontains 'Ensure-SandalDockerDaemon') {
+                throw 'Expected Ensure-SandalDockerDaemon to be exported by scripts/lib/Env.psm1'
+            }
+            $dryDaemon = Ensure-SandalDockerDaemon -DryRun
+            if (-not $dryDaemon.DryRun -or $dryDaemon.Started) {
+                throw "Expected Ensure-SandalDockerDaemon -DryRun to return DryRun=true and Started=false, got: $($dryDaemon | ConvertTo-Json -Compress)"
+            }
+
+            $wslContent = Get-Content -LiteralPath $wslDockerPath -Raw
+            if ($wslContent -notmatch 'function\s+Resolve-WslDockerDistro\b') {
+                throw 'Expected Resolve-WslDockerDistro function definition in scripts/lib/wsl-docker.ps1'
+            }
+            . $wslDockerPath
+            $resolvedFallback = Resolve-WslDockerDistro -Distro 'Ubuntu-24.04' -Runner { @{ ExitCode = 0; Output = @('docker-desktop', 'Ubuntu') } }
+            $resolvedExact = Resolve-WslDockerDistro -Distro 'Ubuntu-24.04' -Runner { @{ ExitCode = 0; Output = @('Ubuntu-24.04', 'Ubuntu') } }
+            $resolvedFallback | Should -Be 'Ubuntu'
+            $resolvedExact | Should -Be 'Ubuntu-24.04'
+
+            $prevDockerHost = if (Test-Path Env:\DOCKER_HOST) { $env:DOCKER_HOST } else { $null }
+            try {
+                $fastCalls = [System.Collections.Generic.List[string]]::new()
+                $fastDaemon = Ensure-SandalDockerDaemon -Distro 'Ubuntu-24.04' -CommandRunner {
+                    param($FilePath, $ArgumentList)
+                    $fastCalls.Add("$FilePath $($ArgumentList -join ' ')")
+                    return 0
+                }
+                $fastDaemon.Ready | Should -BeTrue
+                $fastDaemon.Started | Should -BeFalse
+                $fastCalls.Count | Should -Be 1
+                $fastCalls[0] | Should -Be 'docker info'
+            } finally {
+                if ($null -eq $prevDockerHost) {
+                    Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
+                } else {
+                    $env:DOCKER_HOST = $prevDockerHost
+                }
+            }
+        }
     }
 }

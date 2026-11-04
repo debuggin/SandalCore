@@ -27,6 +27,8 @@ import (
 )
 
 func main() {
+	config.HandleHealthcheck("8085", "AOC_MESH_GRPC_BIND_ADDR", "AOC_MESH_GRPC_ADDR", "50054", "50055")
+	config.BindContainerFlags("mesh")
 	if err := run(); err != nil {
 		slog.Error("mesh stopped", "err", err)
 		os.Exit(1)
@@ -42,7 +44,7 @@ func run() error {
 	if err := checkStaticWorld(cfg.MeshStaticWorld); err != nil {
 		return err
 	}
-	token, err := svcauth.Load(cfg.ServiceTokenFile)
+	token, err := svcauth.LoadOrEnv(cfg.ServiceTokenFile)
 	if err != nil {
 		return err
 	}

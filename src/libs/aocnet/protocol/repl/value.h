@@ -245,6 +245,12 @@ struct ElementState;
 
 struct ArrayValue {
     std::vector<ElementState> elements;
+    ArrayValue();
+    ~ArrayValue();
+    ArrayValue(const ArrayValue&);
+    ArrayValue(ArrayValue&&) noexcept;
+    ArrayValue& operator=(const ArrayValue&);
+    ArrayValue& operator=(ArrayValue&&) noexcept;
     bool operator==(const ArrayValue&) const;
 };
 

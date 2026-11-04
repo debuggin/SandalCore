@@ -26,6 +26,8 @@ import (
 )
 
 func main() {
+	config.HandleHealthcheck("8084", "AOC_QUEST_GRPC_BIND_ADDR", "AOC_QUESTS_GRPC_ADDR", "AOC_QUEST_GRPC_ADDR", "50058", "50054")
+	config.BindContainerFlags("quest")
 	if err := run(); err != nil {
 		slog.Error("quests stopped", "err", err)
 		os.Exit(1)
@@ -36,7 +38,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cfg := config.Load()
-	token, err := svcauth.Load(cfg.ServiceTokenFile)
+	token, err := svcauth.LoadOrEnv(cfg.ServiceTokenFile)
 	if err != nil {
 		return err
 	}

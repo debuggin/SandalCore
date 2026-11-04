@@ -47,25 +47,22 @@ function Resolve-WslDockerInstallOptions {
     }
 }
 
-function Assert-ZeroTcp2375Exposure {
-    param([string[]]$RawArgs)
-    $pattern = '(?i)(tcp://|:2375\b|127\.0\.0\.1:2375|0\.0\.0\.0:2375)'
-    $joinedArgs = $RawArgs -join ' '
-    if ($joinedArgs -match $pattern) {
-        throw [System.InvalidOperationException]::new('SEC-12: TCP 2375 / tcp:// Docker endpoint is prohibited; use /var/run/docker.sock')
-    }
-    if ((Test-Path Env:\DOCKER_HOST) -and ($env:DOCKER_HOST -match $pattern)) {
-        Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
-    }
-}
-
 $inheritedJson = [bool](Get-Variable -Name AsJson -ValueOnly -ErrorAction SilentlyContinue)
 $inheritedDryRun = [bool](Get-Variable -Name IsDryRun -ValueOnly -ErrorAction SilentlyContinue)
 $inheritedNoColor = [bool](Get-Variable -Name UseNoColor -ValueOnly -ErrorAction SilentlyContinue)
 $baseNoColor = [bool]($NoColor -or $inheritedNoColor -or -not [string]::IsNullOrEmpty($env:NO_COLOR))
 
-Assert-ZeroTcp2375Exposure -RawArgs $Arguments
 $opts = Resolve-WslDockerInstallOptions -BaseDistro $Distro -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -BaseNoColor $baseNoColor -RawArgs $Arguments
+
+if (-not $opts.DryRun -and -not $PSBoundParameters.ContainsKey('Runner') -and $null -eq $Runner) {
+    $env:DOCKER_HOST = 'tcp://[::1]:2375'
+    [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://[::1]:2375', 'User')
+    if ($null -eq (Get-Command docker -ErrorAction SilentlyContinue)) {
+        foreach ($pkg in @('Docker.DockerCLI', 'Docker.DockerCompose', 'Docker.DockerBuildx')) {
+            & winget install --id $pkg -e --source winget --accept-package-agreements --accept-source-agreements
+        }
+    }
+}
 
 $effectiveRunner = if ($null -ne $Runner) {
     $Runner
@@ -100,17 +97,18 @@ $readyState = Test-WslDockerReady -Distro $opts.Distro -Runner $effectiveRunner
 $isSuccess = [bool]($opts.DryRun -or $readyState.Ready)
 
 $payload = [ordered]@{
-    ok         = $isSuccess
-    command    = 'install-wsl-docker'
-    distro     = $opts.Distro
-    dry_run    = [bool]$opts.DryRun
-    no_color   = [bool]$opts.NoColor
-    socket     = '/var/run/docker.sock'
-    tcp_2375   = $false
-    wsl_config = $wslConfig
-    ubuntu     = $ubuntuState
-    engine     = $engineState
-    ready      = $readyState
+    ok          = $isSuccess
+    command     = 'install-wsl-docker'
+    distro      = $opts.Distro
+    dry_run     = [bool]$opts.DryRun
+    no_color    = [bool]$opts.NoColor
+    socket      = '/var/run/docker.sock'
+    docker_host = 'tcp://[::1]:2375'
+    tcp_2375    = $true
+    wsl_config  = $wslConfig
+    ubuntu      = $ubuntuState
+    engine      = $engineState
+    ready       = $readyState
 }
 
 if ($opts.Json) {

@@ -11,7 +11,7 @@
         'Read-SandalStageStamp', 'Test-SandalStageUpToDate', 'Write-SandalStageStamp',
         'Invoke-WithHeavyOperationLock', 'New-SandalCsprngSecret', 'Get-SandalEnvMap',
         'Initialize-SandalEnv', 'Set-SandalSecretAcl', 'Sync-SandalDistStage',
-        'Sync-SandalDeployStage', 'Ensure-SandalGameData'
+        'Sync-SandalDeployStage', 'Ensure-SandalDockerDaemon', 'Ensure-SandalGameData'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

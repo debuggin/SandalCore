@@ -93,6 +93,14 @@ $useJson = [bool]($Json -or $inheritedJson -or ($rawArgs -contains '-Json') -or 
 $useDryRun = [bool]($DryRun -or $inheritedDryRun -or ($rawArgs -contains '-DryRun') -or ($rawArgs -contains '--dry-run'))
 $useNoColor = [bool]($NoColor -or $inheritedNoColor -or ($rawArgs -contains '-NoColor') -or ($rawArgs -contains '--no-color') -or -not [string]::IsNullOrEmpty($env:NO_COLOR))
 
+$rootPath = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+if (-not (Get-Command Ensure-SandalDockerDaemon -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $rootPath 'scripts\lib\Env.psm1') -Force -DisableNameChecking
+}
+if (-not $useDryRun) {
+    $null = Ensure-SandalDockerDaemon
+}
+
 $toolchains = @(
     (Test-DoctorPwsh),
     (Test-DoctorBinary -Tier 2 -BinaryName 'cmake'),

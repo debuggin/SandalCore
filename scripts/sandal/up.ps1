@@ -80,6 +80,9 @@ $rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (
 if (-not (Get-Command Get-SandalStageOrder -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $rootPath 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
 }
+if (-not (Get-Command Ensure-SandalDockerDaemon -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $rootPath 'scripts\lib\Env.psm1') -Force -DisableNameChecking
+}
 
 $opts = Resolve-UpOptions -BaseProfile $Profile -BaseDetach ([bool]$Detach) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
 $deploySync = Sync-SandalDeployStage -RepoRoot $rootPath
@@ -90,6 +93,7 @@ $stageChecks = @(Get-UpStageReadiness -RootPath $rootPath)
 $allUpToDate = (@($stageChecks | Where-Object { -not $_.up_to_date }).Count -eq 0)
 
 if (-not $opts.DryRun) {
+    $null = Ensure-SandalDockerDaemon
     Push-Location $rootPath
     try {
         & docker @composeArgs

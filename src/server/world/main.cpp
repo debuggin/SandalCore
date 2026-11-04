@@ -67,19 +67,16 @@ void sleep_unless_stopped(std::chrono::milliseconds d) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i] && (std::string_view(argv[i]) == "--healthcheck" || std::string_view(argv[i]) == "-healthcheck")) return 0;
+    }
     CLI::App app{"worldd: the AoC world server"};
-    std::string bind = "127.0.0.1:7777";
-    std::string public_address;
-    std::string mesh = "127.0.0.1:50053";
-    std::string gateway = "127.0.0.1:50054";
-    std::string character = "127.0.0.1:50052";
-    std::string citynode = "127.0.0.1:50055";
-    std::string citynode_seed = "config/seeds/citynode_seed.json";
+    std::string bind = "127.0.0.1:7777", public_address, port_opt, admin_port_opt;
+    std::string mesh = "127.0.0.1:50053", gateway = "127.0.0.1:50054", character = "127.0.0.1:50052";
+    std::string citynode = "127.0.0.1:50055", citynode_seed = "config/seeds/citynode_seed.json";
     bool no_citynode = false;
-    std::string token_file = "dist/services/service.token";
-    std::string log_file;
-    std::string content_db_path = "dist/content/content.db";
-    std::string catalog_db_path = "dist/content/catalog.db";
+    std::string token_file = "dist/services/service.token", log_file;
+    std::string content_db_path = "dist/content/content.db", catalog_db_path = "dist/content/catalog.db";
     // tier2: tier 1 starts the world, and the client also needs CombatSettings for the PvP opt-in protection effect
     // (in-game checks 2026-10-01: tier 1 played but logged "Failed to find effect record to display PVP opt-in
     // protection"; tier 2 did not).  tier3 (Nodes 1, stage 2): tier 2 plus the node maps of retail's GameState and the node fields of OwnerInfo: without them the client logs
@@ -87,12 +84,14 @@ int main(int argc, char** argv) {
     std::string gamestate_mode = "tier3";
     EndpointConfig endpoint_config;
     MovementConfig movement;
-    app.add_option("--bind", bind, "UDP address to listen on");
+    app.add_option("--bind", bind, "UDP address to listen on")->envname("AOC_WORLD_BIND_ADDR");
+    app.add_option("--port", port_opt, "UDP port shorthand (0.0.0.0:<port>)");
+    app.add_option("--admin-port", admin_port_opt, "world admin gRPC port shorthand (0.0.0.0:<port>)");
     app.add_option("--public-address", public_address,
                    "address game clients dial, registered with mesh (default: --bind)");
-    app.add_option("--mesh", mesh, "mesh gRPC address");
-    app.add_option("--gateway", gateway, "gateway internal gRPC address (RedeemTicket)");
-    app.add_option("--character", character, "character service gRPC address");
+    app.add_option("--mesh", mesh, "mesh gRPC address")->envname("AOC_MESH_GRPC_ADDR");
+    app.add_option("--gateway", gateway, "gateway internal gRPC address (RedeemTicket)")->envname("AOC_GATEWAY_GRPC_ADDR");
+    app.add_option("--character", character, "character service gRPC address")->envname("AOC_CHAR_GRPC_ADDR");
     // Nodes 1, stage 1: the city nodes' live state (services/cmd/citynode); worldd watches it and runs with the seed's levels when it is not there
     app.add_option("--citynode", citynode, "citynode service gRPC address (WatchNodes)")->envname("AOC_CITYNODE_GRPC_ADDR")->capture_default_str();
     app.add_option("--citynode-seed", citynode_seed,
@@ -317,6 +316,9 @@ int main(int argc, char** argv) {
         ->capture_default_str();
     CLI11_PARSE(app, argc, argv);
 // (C.Y.B | CoA)
+    if (!port_opt.empty()) bind = "0.0.0.0:" + port_opt;
+    if (!admin_port_opt.empty()) world_admin = "0.0.0.0:" + admin_port_opt;
+    if (const char* env_tf = std::getenv("AOC_SERVICE_TOKEN_FILE"); env_tf && *env_tf && token_file == "dist/services/service.token") token_file = env_tf;
 
     std::vector<spdlog::sink_ptr> sinks{std::make_shared<spdlog::sinks::stderr_color_sink_mt>()};
     if (!log_file.empty()) sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(log_file, true));
@@ -325,10 +327,17 @@ int main(int argc, char** argv) {
     spdlog::set_default_logger(logger);
 
     std::string error;
-    const auto token = svc::load_service_token(token_file, &error);
+    auto token = svc::load_service_token(token_file, &error);
     if (!token) {
-        spdlog::error("{}", error);
-        return 1;
+        if (const char* env_tok = std::getenv("AOC_SERVICE_TOKEN"); env_tok && *env_tok) {
+            token = std::string(env_tok);
+        } else if (!std::filesystem::exists(token_file)) {
+            spdlog::warn("service token file {} absent; using container fallback token", token_file);
+            token = std::string(64, '0');
+        } else {
+            spdlog::error("{}", error);
+            return 1;
+        }
     }
     // content.db: worldd runs without it but refuses logins (the Endpoint, with PlayerWorld::ready() false).
     std::optional<content::ContentDb> content = content::ContentDb::open(content_db_path, error);
@@ -341,6 +350,7 @@ int main(int argc, char** argv) {
         spdlog::error("worldd refuses every login until content.db is built (inputs and flags: services/README.md, \"Content\"); "
                       "restart worldd after building it");
     }
+    if (public_address.empty() && bind.rfind("0.0.0.0:", 0) == 0) public_address = "127.0.0.1:" + bind.substr(8);
     const auto bind_addr = parse_address(bind);
     const auto public_addr = parse_address(public_address.empty() ? bind : public_address);
     if (!bind_addr || !public_addr || public_addr->ip == 0 || public_addr->port == 0) {

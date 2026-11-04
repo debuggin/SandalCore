@@ -8,7 +8,7 @@
 
 .DESCRIPTION
   Checks: winget, Visual Studio 2022 Build Tools (C++ workload), CMake, Git, vcpkg, Go, the .NET 8 SDK (mapc), Python 3.10 or newer (the
-  generators of scripts\extract_game_data.ps1) and Docker Desktop (PostgreSQL + NATS for the Go services).
+  generators of scripts\extract_game_data.ps1) and standalone Windows Docker CLI + WSL2 Docker Engine (PostgreSQL + NATS for the Go services).
   Missing items are installed with winget after you confirm each one (or all at once with -Yes).
   vcpkg is cloned to %USERPROFILE%\vcpkg and VCPKG_ROOT is set for your user.
   The C++ libraries themselves (grpc, protobuf, openssl, ...) are installed by vcpkg during the first build;
@@ -19,7 +19,7 @@
 .PARAMETER Yes
   Install everything missing without asking.
 .PARAMETER SkipDocker
-  Do not offer Docker Desktop (you run PostgreSQL and NATS some other way).
+  Do not offer standalone Windows Docker CLI + WSL2 Docker Engine (you run PostgreSQL and NATS some other way).
 #>
 [CmdletBinding()]
 param(
@@ -28,6 +28,7 @@ param(
     [switch]$SkipDocker = $true
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 
@@ -246,8 +247,16 @@ if (-not $items['Go'] -and (Confirm-Install "Go $goNeed or newer")) {
     [void](Install-Winget 'GoLang.Go' 'Go')
 }
 if (-not $SkipDocker -and -not $items['Docker'] -and
-    (Confirm-Install 'Docker Desktop (runs PostgreSQL and NATS for the Go services; may need WSL2 and a reboot)')) {
-    [void](Install-Winget 'Docker.DockerDesktop' 'Docker Desktop')
+    (Confirm-Install 'Standalone Windows Docker CLI + WSL2 Docker Engine (Docker.DockerCLI, Docker.DockerCompose, Docker.DockerBuildx + DOCKER_HOST=tcp://[::1]:2375)')) {
+    [void](Install-Winget 'Docker.DockerCLI' 'Docker CLI')
+    [void](Install-Winget 'Docker.DockerCompose' 'Docker Compose')
+    [void](Install-Winget 'Docker.DockerBuildx' 'Docker Buildx')
+    [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://[::1]:2375', 'User')
+    $env:DOCKER_HOST = 'tcp://[::1]:2375'
+    $wslDockerInstaller = Join-Path $PSScriptRoot 'sandal\Install-WslDocker.ps1'
+    if (Test-Path $wslDockerInstaller) {
+        & $wslDockerInstaller
+    }
 }
 if (-not $items['.NET 8 SDK'] -and (Confirm-Install '.NET 8 SDK (builds mapc, which reads your game files)')) {
     [void](Install-Winget 'Microsoft.DotNet.SDK.8' '.NET 8 SDK')

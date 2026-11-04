@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # SPDX-License-Identifier: AGPL-3.0-only
 
-FROM golang:1.24-alpine@sha256:f8d0e5861e26f2b403198c24eb87d76d01d0a81db48f36a7a939e1a8f5e0c2b4 AS builder
+FROM golang:1.27-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
 RUN apk add --no-cache git protobuf protobuf-dev protoc python3
 
 WORKDIR /workspace
@@ -10,7 +10,7 @@ COPY src/server/services/go.mod src/server/services/go.sum ./src/server/services
 
 WORKDIR /workspace/src/server/services
 RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download && go mod verify
+    go mod download
 
 WORKDIR /workspace
 COPY src/ ./src/
@@ -32,24 +32,117 @@ RUN --mount=type=cache,target=/go/pkg/mod \
                 /workspace/src/libs/aocproto/proto/internal/aoc/*/*/*.proto; \
         fi; \
     fi && \
-    if [ ! -f "/workspace/build/gen/go/citynodeconsts/constants_gen.go" ]; then \
-        mkdir -p /workspace/build/gen/go/citynodeconsts /workspace/build/gen/cpp/aoc && \
-        INI_SRC="/workspace/src/config/DefaultGame.ini"; \
-        if [ ! -f "${INI_SRC}" ]; then INI_SRC="/tmp/DefaultGame.ini"; : > "${INI_SRC}"; fi && \
+    if [ ! -f "/workspace/build/gen/world/world/node_constants.h" ] && [ ! -f "/workspace/build/gen/go/citynodeconsts/constants_gen.go" ]; then \
+        mkdir -p /workspace/build/gen/world/world /workspace/build/gen/go/aoc/nodeconstants /workspace/build/gen/go/citynodeconsts && \
         python3 /workspace/src/tools/schemagen/gen_node_constants.py \
-            --ini "${INI_SRC}" \
-            --out-cpp /workspace/build/gen/cpp/aoc/citynode_constants_gen.hpp \
-            --out-go /workspace/build/gen/go/citynodeconsts/constants_gen.go; \
+            --cpp-out /workspace/build/gen/world/world/node_constants.h \
+            --go-out /workspace/build/gen/go/aoc/nodeconstants/node_constants.go && \
+        cp /workspace/build/gen/go/aoc/nodeconstants/node_constants.go /workspace/build/gen/go/citynodeconsts/constants_gen.go; \
     fi
 
-ARG SERVICE_NAME=gateway
 WORKDIR /workspace/src/server/services
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux \
-    go build -trimpath -ldflags="-s -w" -o /out/service ./cmd/${SERVICE_NAME}
+    mkdir -p /out && \
+    for svc in auth character citynode quest mesh gateway meshgw admin; do \
+        if [ -d "./cmd/${svc}" ]; then \
+            CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o "/out/${svc}" "./cmd/${svc}"; \
+        fi; \
+    done
 
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:e8a404fc10b4fb422c6a6d615c0b9a9c242b9d8f3b2a1c4d5e6f7a8b9c0d1e2f AS runtime
+ARG SERVICE_NAME=gateway
+RUN if [ -f "/out/${SERVICE_NAME}" ]; then \
+        cp "/out/${SERVICE_NAME}" /out/service; \
+    else \
+        cp /out/gateway /out/service; \
+    fi
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS auth
+WORKDIR /app
+COPY --from=builder --chown=65532:65532 /out/auth /usr/local/bin/service
+COPY --from=builder --chown=65532:65532 /out/auth /app/auth
+COPY --from=builder --chown=65532:65532 /workspace/src/server/services/sql /app/sql
+USER 65532:65532
+EXPOSE 8081/tcp 50052/tcp
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/service", "-healthcheck"]
+ENTRYPOINT ["/usr/local/bin/service"]
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS character
+WORKDIR /app
+COPY --from=builder --chown=65532:65532 /out/character /usr/local/bin/service
+COPY --from=builder --chown=65532:65532 /out/character /app/character
+COPY --from=builder --chown=65532:65532 /workspace/src/server/services/sql /app/sql
+USER 65532:65532
+EXPOSE 8082/tcp 50053/tcp
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/service", "-healthcheck"]
+ENTRYPOINT ["/usr/local/bin/service"]
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS citynode
+WORKDIR /app
+COPY --from=builder --chown=65532:65532 /out/citynode /usr/local/bin/service
+COPY --from=builder --chown=65532:65532 /out/citynode /app/citynode
+COPY --from=builder --chown=65532:65532 /workspace/src/server/services/sql /app/sql
+COPY --from=builder --chown=65532:65532 /workspace/src/config/seeds/citynode_seed.json /app/config/seeds/citynode_seed.json
+USER 65532:65532
+EXPOSE 8083/tcp 50056/tcp
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/service", "-healthcheck"]
+ENTRYPOINT ["/usr/local/bin/service"]
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS quest
+WORKDIR /app
+COPY --from=builder --chown=65532:65532 /out/quest /usr/local/bin/service
+COPY --from=builder --chown=65532:65532 /out/quest /app/quest
+COPY --from=builder --chown=65532:65532 /workspace/src/server/services/sql /app/sql
+USER 65532:65532
+EXPOSE 8084/tcp 50057/tcp
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/service", "-healthcheck"]
+ENTRYPOINT ["/usr/local/bin/service"]
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS mesh
+WORKDIR /app
+COPY --from=builder --chown=65532:65532 /out/mesh /usr/local/bin/service
+COPY --from=builder --chown=65532:65532 /out/mesh /app/mesh
+COPY --from=builder --chown=65532:65532 /workspace/src/server/services/sql /app/sql
+USER 65532:65532
+EXPOSE 8085/tcp 50054/tcp
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/service", "-healthcheck"]
+ENTRYPOINT ["/usr/local/bin/service"]
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS gateway
+WORKDIR /app
+COPY --from=builder --chown=65532:65532 /out/gateway /usr/local/bin/service
+COPY --from=builder --chown=65532:65532 /out/gateway /app/gateway
+COPY --from=builder --chown=65532:65532 /workspace/src/server/services/sql /app/sql
+USER 65532:65532
+EXPOSE 8080/tcp 8081/tcp 9090/tcp 50050/tcp 50061/tcp
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/service", "-healthcheck"]
+ENTRYPOINT ["/usr/local/bin/service"]
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS meshgw
+WORKDIR /app
+COPY --from=builder --chown=65532:65532 /out/meshgw /usr/local/bin/service
+COPY --from=builder --chown=65532:65532 /out/meshgw /app/meshgw
+COPY --from=builder --chown=65532:65532 /workspace/src/server/services/sql /app/sql
+USER 65532:65532
+EXPOSE 8082/tcp 8086/tcp
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/service", "-healthcheck"]
+ENTRYPOINT ["/usr/local/bin/service"]
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS admin
 ARG GIT_REVISION="unknown"
 ARG BUILD_CREATED="1970-01-01T00:00:00Z"
 ARG SERVICE_NAME=gateway
@@ -73,6 +166,8 @@ ENV SERVICE_NAME=${SERVICE_NAME} \
 
 WORKDIR /app
 COPY --from=builder --chown=65532:65532 /out/service /usr/local/bin/service
+COPY --from=builder --chown=65532:65532 /workspace/src/server/services/sql /app/sql
+COPY --from=builder --chown=65532:65532 /workspace/src/config/seeds/citynode_seed.json /app/config/seeds/citynode_seed.json
 USER 65532:65532
 EXPOSE 8081/tcp 8082/tcp 50050/tcp 50052/tcp 50053/tcp 50054/tcp 50056/tcp 50057/tcp
 STOPSIGNAL SIGTERM

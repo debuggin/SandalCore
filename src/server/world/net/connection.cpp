@@ -234,6 +234,10 @@ bool Connection::has_window(uint32_t channel, size_t count) const {
     return unacked_reliable(channel) + count <= kMaxUnackedReliable;
 }
 
+Connection::OutPtr Connection::queue_bunch(conn::BunchHeader header, const uint8_t* payload, size_t bits) {
+    return queue_bunch(header, payload, bits, PartTag{});
+}
+
 Connection::OutPtr Connection::queue_bunch(conn::BunchHeader header, const uint8_t* payload, size_t bits, PartTag tag) {
     if (header.reliable) {
         int& last = out_reliable_.try_emplace(header.channel, cfg_.server_initial_seq % kChSeqSpace).first->second;

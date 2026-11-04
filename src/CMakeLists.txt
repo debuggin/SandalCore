@@ -43,10 +43,14 @@ message(STATUS "AshesOfCreation dist/ root: ${AOC_DIST_ROOT}")
 
 # ── Design-data runtime catalog (AOCDB01) ───────────────────────────────────
 option(AOC_DESIGN_DATA_RUNTIME_CATALOG "Load design-data tables at runtime via AOCDB01 catalog instead of requiring configure-time generated headers" ON)
+option(AOC_BUILD_TESTS "Build tests" ON)
 message(STATUS "AshesOfCreation design-data runtime catalog (AOCDB01): ${AOC_DESIGN_DATA_RUNTIME_CATALOG}")
 
 # ── Dependencies ────────────────────────────────────────────────────────────
-find_package(Protobuf CONFIG REQUIRED)
+find_package(Protobuf CONFIG QUIET)
+if(NOT Protobuf_FOUND)
+    find_package(Protobuf REQUIRED)
+endif()
 find_package(gRPC CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
@@ -99,7 +103,7 @@ target_link_libraries(tether
     PRIVATE
         spdlog::spdlog
         nlohmann_json::nlohmann_json
-        ws2_32
+        $<$<PLATFORM_ID:Windows>:ws2_32>
 )
 
 target_compile_features(tether PRIVATE cxx_std_20)
@@ -157,41 +161,43 @@ add_custom_target(LauncherBuild
 )
 set_target_properties(LauncherBuild PROPERTIES FOLDER "Tools")
 
-# test_ics_token_file: the launcher/tether login-token hand-off (plan A3)
-add_executable(test_ics_token_file
-    tests/cpp/protocol/test_ics_token_file.cpp
-    libs/aoccore/auth/ics_token_acl.cpp
-)
-target_include_directories(test_ics_token_file PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/libs/aoccore"
-)
-target_compile_features(test_ics_token_file PRIVATE cxx_std_20)
-if(MSVC)
-    target_compile_definitions(test_ics_token_file PRIVATE _CRT_SECURE_NO_WARNINGS)
-endif()
-set_target_properties(test_ics_token_file PROPERTIES FOLDER "Tools")
-
-# test_launcher_saved_sign_in: "Keep me signed in" for launcher.exe (clients/launcher/launcher_sign_in.h): the Windows Credential Manager
-# round trip under a test-only target name, how the auth server's answers are read, and the automatic sign-in at start
-# (fake clock, fake auth server)
-if(WIN32)
-    add_executable(test_launcher_saved_sign_in
-        tests/cpp/protocol/test_launcher_saved_sign_in.cpp
-    )
-    target_include_directories(test_launcher_saved_sign_in PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/clients/launcher"
-    )
-    target_link_libraries(test_launcher_saved_sign_in PRIVATE nlohmann_json::nlohmann_json)
-    target_compile_features(test_launcher_saved_sign_in PRIVATE cxx_std_20)
-    target_compile_definitions(test_launcher_saved_sign_in PRIVATE
-        _CRT_SECURE_NO_WARNINGS
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-    )
-    set_target_properties(test_launcher_saved_sign_in PROPERTIES FOLDER "Tools")
-endif()
-
 option(AOC_DATA_FREE "Enable --data-free synthetic fixtures for hermetic CTest runs" ON)
-enable_testing()
-add_subdirectory(tests)
+if(AOC_BUILD_TESTS)
+    # test_ics_token_file: the launcher/tether login-token hand-off (plan A3)
+    add_executable(test_ics_token_file
+        tests/cpp/protocol/test_ics_token_file.cpp
+        libs/aoccore/auth/ics_token_acl.cpp
+    )
+    target_include_directories(test_ics_token_file PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/aoccore"
+    )
+    target_compile_features(test_ics_token_file PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_definitions(test_ics_token_file PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+    set_target_properties(test_ics_token_file PROPERTIES FOLDER "Tools")
+
+    # test_launcher_saved_sign_in: "Keep me signed in" for launcher.exe (clients/launcher/launcher_sign_in.h): the Windows Credential Manager
+    # round trip under a test-only target name, how the auth server's answers are read, and the automatic sign-in at start
+    # (fake clock, fake auth server)
+    if(WIN32)
+        add_executable(test_launcher_saved_sign_in
+            tests/cpp/protocol/test_launcher_saved_sign_in.cpp
+        )
+        target_include_directories(test_launcher_saved_sign_in PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/clients/launcher"
+        )
+        target_link_libraries(test_launcher_saved_sign_in PRIVATE nlohmann_json::nlohmann_json)
+        target_compile_features(test_launcher_saved_sign_in PRIVATE cxx_std_20)
+        target_compile_definitions(test_launcher_saved_sign_in PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+        )
+        set_target_properties(test_launcher_saved_sign_in PROPERTIES FOLDER "Tools")
+    endif()
+
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 

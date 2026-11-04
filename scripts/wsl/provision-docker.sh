@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# WHY: Enforces systemd boot and root-owned Unix socket Docker Engine inside WSL2 without TCP 2375 exposure (SEC-12, INFRA-02).
+# WHY: Enforces systemd boot, root-owned Unix socket, and localhost-mirrored TCP 2375 Docker Engine inside WSL2 for Windows standalone Docker CLI (OPS-04).
+
+DOCKER_OVERRIDE_CHANGED=0
 
 ensure_wsl_systemd() {
   local wsl_conf="${WSL_CONF_PATH:-/etc/wsl.conf}"
@@ -23,16 +25,17 @@ ensure_wsl_systemd() {
   printf '\n[boot]\nsystemd=true\n' >>"${wsl_conf}"
 }
 
-purge_legacy_tcp_2375() {
+ensure_docker_tcp_2375_override() {
   local override_conf="${DOCKER_OVERRIDE_PATH:-/etc/systemd/system/docker.service.d/override.conf}"
-  if [[ ! -f "${override_conf}" ]]; then
-    return 0
+  local daemon_json="${DOCKER_DAEMON_JSON_PATH:-/etc/docker/daemon.json}"
+  if [[ -f "${daemon_json}" ]] && grep -Fq '"hosts"' "${daemon_json}"; then
+    sed -i -E '/"hosts"[[:space:]]*:/d' "${daemon_json}"
+    DOCKER_OVERRIDE_CHANGED=1
   fi
-  if grep -Eq '(-H[[:space:]]+tcp://127\.0\.0\.1:2375|tcp://[^[:space:]]*:2375)' "${override_conf}"; then
-    sed -i 's/ -H tcp:\/\/[^ ]*//g; s/-H tcp:\/\/[^ ]*//g' "${override_conf}"
-    if command -v systemctl >/dev/null 2>&1 && systemctl is-system-running >/dev/null 2>&1; then
-      systemctl daemon-reload
-    fi
+  mkdir -p "$(dirname "${override_conf}")"
+  if [[ ! -f "${override_conf}" ]] || ! grep -Fq 'ExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375' "${override_conf}"; then
+    printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375\n' >"${override_conf}"
+    DOCKER_OVERRIDE_CHANGED=1
   fi
 }
 
@@ -62,21 +65,26 @@ install_docker_engine() {
 
 ensure_docker_socket_service() {
   local docker_sock="${DOCKER_SOCK_PATH:-/var/run/docker.sock}"
-  systemctl enable docker.service
-  systemctl start docker.service
+  systemctl daemon-reload
+  systemctl enable docker.service containerd.service || true
+  if [[ "${DOCKER_OVERRIDE_CHANGED:-0}" -eq 1 ]]; then
+    systemctl restart docker.service
+  elif ! systemctl is-active --quiet docker.service; then
+    systemctl start docker.service
+  fi
   if [[ ! -S "${docker_sock}" ]]; then
     echo "ERROR: Docker Unix socket ${docker_sock} not found" >&2
     return 1
   fi
-  if command -v ss >/dev/null 2>&1 && ss -tlnp | grep -Fq ':2375'; then
-    echo "ERROR: Forbidden TCP 2375 listener detected" >&2
+  if command -v ss >/dev/null 2>&1 && ! ss -tlnp | grep -Fq ':2375'; then
+    echo "ERROR: Expected TCP 2375 listener not detected" >&2
     return 1
   fi
 }
 
 main() {
   ensure_wsl_systemd
-  purge_legacy_tcp_2375
+  ensure_docker_tcp_2375_override
   install_docker_engine
   ensure_docker_socket_service
 }

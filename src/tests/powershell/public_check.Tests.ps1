@@ -271,4 +271,34 @@ Describe 'Test-SandalRootDirectoryHierarchy' {
             if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
         }
     }
+
+    It 'verifies .editorconfig resides strictly at Tier 1 src/.editorconfig and rejects a stray root .editorconfig' {
+        $rootEditorConfig = Join-Path $script:RepoRoot '.editorconfig'
+        $srcEditorConfig = Join-Path $script:RepoRoot 'src\.editorconfig'
+        if (Test-Path -LiteralPath $rootEditorConfig) {
+            throw "Expected .editorconfig to NOT exist at repository root: $rootEditorConfig"
+        }
+        if (-not (Test-Path -LiteralPath $srcEditorConfig -PathType Leaf)) {
+            throw "Expected Tier 1 .editorconfig to exist at: $srcEditorConfig"
+        }
+
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-hierarchy-editorcfg-' + [guid]::NewGuid().ToString('N'))
+        try {
+            $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'src') -Force
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'src\.editorconfig') -Value 'root = true' -Encoding utf8
+            $cleanFindings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot
+            if (@($cleanFindings).Count -ne 0) {
+                throw "Expected 0 findings when .editorconfig resides in src/.editorconfig, got: $($cleanFindings -join '; ')"
+            }
+
+            Set-Content -LiteralPath (Join-Path $tmpRoot '.editorconfig') -Value 'root = true' -Encoding utf8
+            $strayFindings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot
+            $joined = $strayFindings -join "`n"
+            if ($joined -notmatch 'RootFileAllowlist: unexpected root file: \.editorconfig') {
+                throw "Expected Test-SandalRootDirectoryHierarchy to reject stray root .editorconfig, got: $joined"
+            }
+        } finally {
+            if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
 }

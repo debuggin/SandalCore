@@ -14,6 +14,8 @@
 
 namespace aoc { namespace worldd {
 
+CharacterSaver::CharacterSaver(svc::CharacterApi& api) : CharacterSaver(api, Config{}) {}
+
 CharacterSaver::CharacterSaver(svc::CharacterApi& api, Config config) : api_(api), config_(config), thread_([this] { run(); }) {}
 
 CharacterSaver::~CharacterSaver() {

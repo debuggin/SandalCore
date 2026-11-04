@@ -21,6 +21,8 @@ x-hardened: &hardened
 
 services:
   postgres:
+    container_name: aoc-postgres
+    hostname: postgres
     build:
       context: ..
       dockerfile: src/deploy/docker/postgres.Dockerfile
@@ -47,12 +49,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME}
       POSTGRES_DB: ${POSTGRES_DB:-aoc}
       PGPORT: ${POSTGRES_PORT:-5432}
-    ports:
-      # Default local loopback bind: 127.0.0.1:5432:5432
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     networks:
       - data_net
     healthcheck:
@@ -64,19 +62,26 @@ services:
 
   auth:
     <<: *hardened
+    container_name: aoc-auth
+    hostname: auth
     build:
       context: ..
       dockerfile: src/deploy/docker/go.Dockerfile
+      target: auth
       args:
         SERVICE_NAME: auth
         SERVICE_GRPC_PORT: ${AUTH_GRPC_PORT:-50052}
     image: sandal-auth:local
-    command: ["-addr=:${AUTH_GRPC_PORT:-50052}"]
+    command: ["-http=:${AUTH_HTTP_PORT:-8081}", "-grpc=:${AUTH_GRPC_PORT:-50052}"]
     environment:
       AOC_ENV: ${AOC_ENV:-production}
+      AOC_ALLOW_INSECURE_DB: "1"
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
-      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-CHANGE_ME}
+      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
+      AOC_AUTH_HTTP_ADDR: ":${AUTH_HTTP_PORT:-8081}"
+      AOC_AUTH_HTTP_BIND_ADDR: ":${AUTH_HTTP_PORT:-8081}"
+      AOC_AUTH_GRPC_ADDR: ":${AUTH_GRPC_PORT:-50052}"
       AOC_AUTH_GRPC_BIND_ADDR: ":${AUTH_GRPC_PORT:-50052}"
     depends_on:
       postgres:
@@ -93,9 +98,12 @@ services:
 
   character:
     <<: *hardened
+    container_name: aoc-character
+    hostname: character
     build:
       context: ..
       dockerfile: src/deploy/docker/go.Dockerfile
+      target: character
       args:
         SERVICE_NAME: character
         SERVICE_GRPC_PORT: ${CHARACTER_GRPC_PORT:-50053}
@@ -103,10 +111,15 @@ services:
     command: ["-addr=:${CHARACTER_GRPC_PORT:-50053}"]
     environment:
       AOC_ENV: ${AOC_ENV:-production}
+      AOC_ALLOW_INSECURE_DB: "1"
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
-      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-CHANGE_ME}
+      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
+      AOC_CHAR_GRPC_ADDR: ":${CHARACTER_GRPC_PORT:-50053}"
+      AOC_CHARACTER_GRPC_ADDR: ":${CHARACTER_GRPC_PORT:-50053}"
       AOC_CHARACTER_GRPC_BIND_ADDR: ":${CHARACTER_GRPC_PORT:-50053}"
+    volumes:
+      - dist_content:/app/dist/content:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -122,9 +135,12 @@ services:
 
   citynode:
     <<: *hardened
+    container_name: aoc-citynode
+    hostname: citynode
     build:
       context: ..
       dockerfile: src/deploy/docker/go.Dockerfile
+      target: citynode
       args:
         SERVICE_NAME: citynode
         SERVICE_GRPC_PORT: ${CITYNODE_GRPC_PORT:-50056}
@@ -132,13 +148,13 @@ services:
     command: ["-addr=:${CITYNODE_GRPC_PORT:-50056}", "-seed=/app/config/seeds/citynode_seed.json"]
     environment:
       AOC_ENV: ${AOC_ENV:-production}
+      AOC_ALLOW_INSECURE_DB: "1"
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
-      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-CHANGE_ME}
+      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
+      AOC_CITYNODE_GRPC_ADDR: ":${CITYNODE_GRPC_PORT:-50056}"
       AOC_CITYNODE_GRPC_BIND_ADDR: ":${CITYNODE_GRPC_PORT:-50056}"
       AOC_CITYNODE_SEED: /app/config/seeds/citynode_seed.json
-    volumes:
-      - ../dist/config:/app/config:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -154,9 +170,12 @@ services:
 
   quest:
     <<: *hardened
+    container_name: aoc-quest
+    hostname: quest
     build:
       context: ..
       dockerfile: src/deploy/docker/go.Dockerfile
+      target: quest
       args:
         SERVICE_NAME: quest
         SERVICE_GRPC_PORT: ${QUEST_GRPC_PORT:-50057}
@@ -164,9 +183,12 @@ services:
     command: ["-addr=:${QUEST_GRPC_PORT:-50057}"]
     environment:
       AOC_ENV: ${AOC_ENV:-production}
+      AOC_ALLOW_INSECURE_DB: "1"
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
-      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-CHANGE_ME}
+      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
+      AOC_QUESTS_GRPC_ADDR: ":${QUEST_GRPC_PORT:-50057}"
+      AOC_QUEST_GRPC_ADDR: ":${QUEST_GRPC_PORT:-50057}"
       AOC_QUEST_GRPC_BIND_ADDR: ":${QUEST_GRPC_PORT:-50057}"
     depends_on:
       postgres:
@@ -183,9 +205,12 @@ services:
 
   mesh:
     <<: *hardened
+    container_name: aoc-mesh
+    hostname: mesh
     build:
       context: ..
       dockerfile: src/deploy/docker/go.Dockerfile
+      target: mesh
       args:
         SERVICE_NAME: mesh
         SERVICE_GRPC_PORT: ${MESH_GRPC_PORT:-50054}
@@ -193,10 +218,18 @@ services:
     command: ["-addr=:${MESH_GRPC_PORT:-50054}"]
     environment:
       AOC_ENV: ${AOC_ENV:-production}
-      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-CHANGE_ME}
+      AOC_ALLOW_INSECURE_DB: "1"
+      DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+      AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
+      AOC_MESH_GRPC_ADDR: ":${MESH_GRPC_PORT:-50054}"
       AOC_MESH_GRPC_BIND_ADDR: ":${MESH_GRPC_PORT:-50054}"
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - service_net
+      - data_net
     healthcheck:
       test: ["CMD", "/usr/local/bin/service", "-healthcheck"]
       interval: 5s
@@ -206,9 +239,12 @@ services:
 
   gateway:
     <<: *hardened
+    container_name: aoc-gateway
+    hostname: gateway
     build:
       context: ..
       dockerfile: src/deploy/docker/go.Dockerfile
+      target: gateway
       args:
         SERVICE_NAME: gateway
         SERVICE_HTTP_PORT: ${GATEWAY_HTTP_PORT:-8081}
@@ -225,24 +261,42 @@ services:
       - "-char=${CHAR_GRPC_ADDR:-character:50053}"
       - "-citynode=${CITYNODE_GRPC_ADDR:-citynode:50056}"
       - "-quest=${QUEST_GRPC_ADDR:-quest:50057}"
+      - "-mesh=${MESH_GRPC_ADDR:-mesh:50054}"
       - "-worldd-host=${WORLDD_PUBLIC_HOST:-127.0.0.1}"
       - "-worldd-port=${WORLDD_UDP_PORT:-7777}"
       - "-content-db=/app/dist/content/content.db"
     environment:
       AOC_ENV: ${AOC_ENV:-production}
+      AOC_ALLOW_INSECURE_DB: "1"
       AOC_GATEWAY_GRPC_PUBLIC: "1"
-      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-CHANGE_ME}
+      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
+      AOC_GATEWAY_HTTP_ADDR: ":${GATEWAY_HTTP_PORT:-8081}"
+      AOC_GATEWAY_HTTP_BIND_ADDR: ":${GATEWAY_HTTP_PORT:-8081}"
+      AOC_GATEWAY_ICS_ADDR: ":50061"
+      AOC_GATEWAY_GRPC_ADDR: ":${GATEWAY_GRPC_PORT:-50050}"
+      AOC_GATEWAY_GRPC_BIND_ADDR: ":${GATEWAY_GRPC_PORT:-50050}"
+      AOC_GATEWAY_TLS_ADDR: ":50061"
+      AOC_AUTH_HTTP_ADDR: "http://auth:8081"
+      AOC_AUTH_ADDR: http://auth:8081
+      AOC_AUTH_GRPC_ADDR: ${AUTH_GRPC_ADDR:-auth:50052}
       AUTH_GRPC_ADDR: ${AUTH_GRPC_ADDR:-auth:50052}
+      AOC_CHAR_GRPC_ADDR: ${CHAR_GRPC_ADDR:-character:50053}
+      AOC_CHARACTER_GRPC_ADDR: ${CHAR_GRPC_ADDR:-character:50053}
       CHAR_GRPC_ADDR: ${CHAR_GRPC_ADDR:-character:50053}
+      AOC_CITYNODE_GRPC_ADDR: ${CITYNODE_GRPC_ADDR:-citynode:50056}
       CITYNODE_GRPC_ADDR: ${CITYNODE_GRPC_ADDR:-citynode:50056}
+      AOC_QUESTS_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
+      AOC_QUEST_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
       QUEST_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
+      AOC_MESH_GRPC_ADDR: ${MESH_GRPC_ADDR:-mesh:50054}
+      MESH_GRPC_ADDR: ${MESH_GRPC_ADDR:-mesh:50054}
       WORLDD_HOST: ${WORLDD_PUBLIC_HOST:-127.0.0.1}
       WORLDD_PORT: ${WORLDD_UDP_PORT:-7777}
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
     volumes:
-      - ../dist/content:/app/dist/content:ro
-      - ../dist/certs:/app/certs:ro
+      - dist_content:/app/dist/content:ro
+      - dist_certs:/app/certs:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -253,6 +307,8 @@ services:
       citynode:
         condition: service_healthy
       quest:
+        condition: service_healthy
+      mesh:
         condition: service_healthy
     networks:
       - service_net
@@ -266,9 +322,12 @@ services:
 
   meshgw:
     <<: *hardened
+    container_name: aoc-meshgw
+    hostname: meshgw
     build:
       context: ..
       dockerfile: src/deploy/docker/go.Dockerfile
+      target: meshgw
       args:
         SERVICE_NAME: meshgw
         SERVICE_HTTP_PORT: ${MESHGW_HTTP_PORT:-8082}
@@ -281,11 +340,22 @@ services:
       - "-worldd-admin=${WORLDD_ADMIN_GRPC_ADDR:-worldd:50061}"
     environment:
       AOC_ENV: ${AOC_ENV:-production}
-      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-CHANGE_ME}
+      AOC_ALLOW_INSECURE_DB: "1"
+      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
+      AOC_MESHGW_ADDR: ":${MESHGW_HTTP_PORT:-8082}"
+      AOC_MESHGW_HTTP_BIND_ADDR: ":${MESHGW_HTTP_PORT:-8082}"
+      AOC_MESH_GRPC_ADDR: ${MESH_GRPC_ADDR:-mesh:50054}
       MESH_GRPC_ADDR: ${MESH_GRPC_ADDR:-mesh:50054}
+      AOC_CITYNODE_GRPC_ADDR: ${CITYNODE_GRPC_ADDR:-citynode:50056}
       CITYNODE_GRPC_ADDR: ${CITYNODE_GRPC_ADDR:-citynode:50056}
+      AOC_QUESTS_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
+      AOC_QUEST_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
       QUEST_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
+      AOC_WORLD_ADMIN_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-worldd:50061}
+      AOC_WORLDD_ADMIN_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-worldd:50061}
       WORLDD_ADMIN_GRPC_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-worldd:50061}
+      AOC_WORLD_STREAM_ADDR: ${WORLDD_STREAM_GRPC_ADDR:-worldd:50062}
+      AOC_WORLDD_STREAM_ADDR: ${WORLDD_STREAM_GRPC_ADDR:-worldd:50062}
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
     depends_on:
@@ -311,6 +381,8 @@ services:
 
   web-admin:
     <<: *hardened
+    container_name: aoc-web-admin
+    hostname: web-admin
     build:
       context: ..
       dockerfile: src/deploy/docker/web.Dockerfile
@@ -327,7 +399,7 @@ services:
     networks:
       - service_net
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8088/"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/healthz"]
       interval: 5s
       timeout: 3s
       start_period: 5s
@@ -335,9 +407,12 @@ services:
 
   tether_server:
     <<: *hardened
+    container_name: aoc-tether
+    hostname: tether_server
     build:
       context: ..
       dockerfile: src/deploy/docker/cpp.Dockerfile
+      target: tether_server
       args:
         TARGET_BINARY: tether
         TETHER_TCP_PORT: ${TETHER_TCP_PORT:-50051}
@@ -345,29 +420,26 @@ services:
     image: sandal-tether:local
     cpus: 2.0
     mem_limit: 1g
-    entrypoint: ["/usr/local/bin/tether_server"]
+    entrypoint: ["/app/tether_server"]
     command:
       - "--port=${TETHER_TCP_PORT:-50051}"
       - "--admin-port=${TETHER_ADMIN_PORT:-50055}"
     environment:
       TETHER_TCP_PORT: ${TETHER_TCP_PORT:-50051}
       TETHER_ADMIN_PORT: ${TETHER_ADMIN_PORT:-50055}
-      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-CHANGE_ME}
-    ports:
-      - "127.0.0.1:${TETHER_TCP_PORT:-50051}:50051/tcp"
+      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
     volumes:
-      - ../dist/content:/app/content:ro
-      - ../dist/certs:/app/certs:ro
+      - dist_content:/app/content:ro
+      - dist_certs:/app/certs:ro
     depends_on:
       gateway:
         condition: service_healthy
       worldd:
         condition: service_healthy
     networks:
-      - edge_net
       - service_net
     healthcheck:
-      test: ["CMD", "/usr/local/bin/tether_server", "--healthcheck", "http://127.0.0.1:50055/livez"]
+      test: ["CMD", "/app/tether_server", "--healthcheck", "http://127.0.0.1:50055/livez"]
       interval: 5s
       timeout: 3s
       start_period: 5s
@@ -375,9 +447,12 @@ services:
 
   worldd:
     <<: *hardened
+    container_name: aoc-worldd
+    hostname: worldd
     build:
       context: ..
       dockerfile: src/deploy/docker/cpp.Dockerfile
+      target: worldd
       args:
         TARGET_BINARY: world
         WORLDD_UDP_PORT: ${WORLDD_UDP_PORT:-7777}
@@ -385,33 +460,44 @@ services:
     image: sandal-worldd:local
     cpus: 4.0
     mem_limit: 4g
-    entrypoint: ["/usr/local/bin/worldd"]
+    entrypoint: ["/app/worldd"]
     command:
       - "--mesh=mesh:50054"
       - "--gateway=gateway:50050"
+      - "--character=character:50053"
+      - "--citynode=citynode:50056"
       - "--port=${WORLDD_UDP_PORT:-7777}"
       - "--admin-port=${WORLDD_ADMIN_PORT:-50061}"
     environment:
       WORLDD_UDP_PORT: ${WORLDD_UDP_PORT:-7777}
       WORLDD_ADMIN_PORT: ${WORLDD_ADMIN_PORT:-50061}
       AOC_WORLD_UDP_PORT: ${WORLDD_UDP_PORT:-7777}
-      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-CHANGE_ME}
+      AOC_WORLD_ADMIN_ADDR: ":${WORLDD_ADMIN_PORT:-50061}"
+      AOC_CITYNODE_GRPC_ADDR: citynode:50056
+      AOC_QUESTS_GRPC_ADDR: quest:50057
+      AOC_CONTENT_DB: /app/content/content.db
+      AOC_AREA_RADIUS_M: "${AOC_AREA_RADIUS_M:-0}"
+      AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
     ports:
       - "127.0.0.1:${WORLDD_UDP_PORT:-7777}:7777/udp"
     volumes:
-      - ../dist/content:/app/content:ro
-      - ../dist/nav:/app/nav:ro
-      - ../dist/config:/app/config:ro
+      - dist_content:/app/content:ro
+      - dist_nav:/app/nav:ro
+      - dist_config:/app/config:ro
     depends_on:
       mesh:
         condition: service_healthy
       gateway:
         condition: service_healthy
+      character:
+        condition: service_healthy
+      citynode:
+        condition: service_healthy
     networks:
       - edge_net
       - service_net
     healthcheck:
-      test: ["CMD", "/usr/local/bin/worldd", "--healthcheck", "http://127.0.0.1:50061/livez"]
+      test: ["CMD", "/app/worldd", "--healthcheck", "http://127.0.0.1:50061/livez"]
       interval: 5s
       timeout: 3s
       start_period: 5s
@@ -419,6 +505,8 @@ services:
 
   ingress-proxy:
     <<: *hardened
+    container_name: aoc-ingress-proxy
+    hostname: ingress-proxy
     build:
       context: ..
       dockerfile: src/deploy/docker/envoy.Dockerfile
@@ -437,11 +525,9 @@ services:
       ENVOY_ADMIN_PORT: ${ENVOY_ADMIN_PORT:-9901}
     ports:
       - "127.0.0.1:${INGRESS_HTTP_PORT:-8080}:8080/tcp"
-      - "127.0.0.1:${GATEWAY_HTTP_PORT:-8081}:8080/tcp"
-      - "127.0.0.1:${MESHGW_HTTP_PORT:-8082}:8080/tcp"
       - "127.0.0.1:${INGRESS_GRPC_PORT:-9090}:9090/tcp"
-    volumes:
-      - ./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - "127.0.0.1:${GATEWAY_TLS_PORT:-50061}:50061/tcp"
+      - "127.0.0.1:${TETHER_TCP_PORT:-50051}:50051/tcp"
     depends_on:
       gateway:
         condition: service_healthy
@@ -459,13 +545,15 @@ services:
         condition: service_healthy
       mesh:
         condition: service_healthy
+      tether_server:
+        condition: service_healthy
       worldd:
         condition: service_healthy
     networks:
       - edge_net
       - service_net
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9901/ready"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9901/ready"]
       interval: 5s
       timeout: 3s
       start_period: 5s
@@ -483,3 +571,27 @@ networks:
 
 volumes:
   pgdata:
+  dist_content:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${AOC_DIST_CONTENT_DIR:-./content}
+  dist_certs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${AOC_DIST_CERTS_DIR:-./certs}
+  dist_nav:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${AOC_DIST_NAV_DIR:-./nav}
+  dist_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${AOC_DIST_CONFIG_DIR:-./config}

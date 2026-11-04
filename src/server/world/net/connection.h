@@ -424,7 +424,8 @@ private:
     bool has_window(uint32_t channel, size_t count) const;
     /// Numbers a reliable bunch and queues it: header, then `bits` bits of
     /// `payload` (byte-aligned data, or null when bits is 0).
-    OutPtr queue_bunch(protocol::conn::BunchHeader header, const uint8_t* payload, size_t bits, PartTag tag = {});
+    OutPtr queue_bunch(protocol::conn::BunchHeader header, const uint8_t* payload, size_t bits);
+    OutPtr queue_bunch(protocol::conn::BunchHeader header, const uint8_t* payload, size_t bits, PartTag tag);
     void accept(Queued&& q, std::vector<InBunch>& out);
     void complete(InBunch&& b, std::vector<InBunch>& out);
     protocol::emit::BunchWriter start_packet() const;

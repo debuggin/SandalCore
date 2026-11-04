@@ -92,7 +92,8 @@ public:
         std::chrono::milliseconds destructor_wait{2000};                   // the destructor's own flush
     };
 
-    explicit CharacterSaver(svc::CharacterApi& api, Config config = {});
+    explicit CharacterSaver(svc::CharacterApi& api);
+    CharacterSaver(svc::CharacterApi& api, Config config);
     ~CharacterSaver() override;
     CharacterSaver(const CharacterSaver&) = delete;
     CharacterSaver& operator=(const CharacterSaver&) = delete;

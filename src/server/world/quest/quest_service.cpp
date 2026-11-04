@@ -128,6 +128,8 @@ svc::CallStatus GrpcQuestApi::take_commands(const std::string& character_id, std
 
 // ---- the worker ------------------------------------------------------------------------------------------------------------------------------------------------------
 
+QuestWorker::QuestWorker(svc::QuestApi& api) : QuestWorker(api, Config{}) {}
+
 QuestWorker::QuestWorker(svc::QuestApi& api, Config config) : api_(api), config_(config), thread_([this] { run(); }) {}
 
 QuestWorker::~QuestWorker() {

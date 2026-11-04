@@ -162,9 +162,11 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
         }
 
         It 'reuses running Linux Docker Engine without re-provisioning' {
+            $recorded = [System.Collections.Generic.List[string]]::new()
             $runner = {
                 param([string[]]$WslArgs)
                 $joined = $WslArgs -join ' '
+                $recorded.Add($joined)
                 if ($joined -match 'docker info') {
                     return [pscustomobject]@{ ExitCode = 0; Output = '27.3.1' }
                 }
@@ -172,22 +174,62 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
                     return [pscustomobject]@{ ExitCode = 0; Output = '2.29.7' }
                 }
                 return [pscustomobject]@{ ExitCode = 0; Output = '' }
-            }
+            }.GetNewClosure()
             $res = Ensure-LinuxDockerEngine -Distro 'Ubuntu-24.04' -Runner $runner
             $res.Ready | Should -Be $true
             $res.Action | Should -Be 'Reused'
             $res.Provisioned | Should -Be $false
+            ($recorded -join "`n") | Should -Not -Match ([regex]::Escape("sed -i '/2375/d'"))
+        }
+
+        It 'writes override.conf with -H fd:// -H tcp://0.0.0.0:2375 when Docker is installed in WSL2 but not yet running and never runs sed -i /2375/d' {
+            $recorded = [System.Collections.Generic.List[string]]::new()
+            $state = @{ Started = $false }
+            $runner = {
+                param([string[]]$WslArgs)
+                $joined = $WslArgs -join ' '
+                $recorded.Add($joined)
+                if ($joined -match '^-l -q$') {
+                    return [pscustomobject]@{ ExitCode = 0; Output = "Ubuntu-24.04`n" }
+                }
+                if ($joined -match 'override\.conf|service docker|systemctl') {
+                    $state.Started = $true
+                    return [pscustomobject]@{ ExitCode = 0; Output = '' }
+                }
+                if ($joined -match 'docker info') {
+                    if ($state.Started) {
+                        return [pscustomobject]@{ ExitCode = 0; Output = '27.3.1' }
+                    }
+                    return [pscustomobject]@{ ExitCode = 1; Output = '' }
+                }
+                if ($joined -match 'docker compose version') {
+                    return [pscustomobject]@{ ExitCode = 0; Output = '2.29.7' }
+                }
+                return [pscustomobject]@{ ExitCode = 0; Output = '' }
+            }.GetNewClosure()
+            $res = Ensure-LinuxDockerEngine -Distro 'Ubuntu-24.04' -Runner $runner
+            $res.Ready | Should -Be $true
+            $res.Provisioned | Should -Be $false
+            $allCmds = $recorded -join "`n"
+            $allCmds | Should -Match '/etc/systemd/system/docker\.service\.d/override\.conf'
+            $allCmds | Should -Match ([regex]::Escape('ExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375'))
+            $allCmds | Should -Not -Match ([regex]::Escape("sed -i '/2375/d'"))
         }
     }
 
-    Context 'Invoke-WslDocker Unix socket enforcement and TCP 2375 rejection (SEC-12)' {
-        It 'throws when -Arguments contains prohibited TCP 2375 endpoint' {
+    Context 'Invoke-WslDocker and Install-WslDocker.ps1 canonical TCP 2375 contract (INFRA-02)' {
+        It 'succeeds when DOCKER_HOST is tcp://[::1]:2375 and preserves DOCKER_HOST unchanged' {
             $prevHost = if (Test-Path Env:\DOCKER_HOST) { $env:DOCKER_HOST } else { $null }
             try {
-                Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
-                $runner = { param([string[]]$WslArgs) return [pscustomobject]@{ ExitCode = 0; Output = 'ok' } }
-                { Invoke-WslDocker -Arguments @('-H', 'tcp://127.0.0.1:2375', 'ps') -Runner $runner } | Should -Throw
-                { Invoke-WslDocker -Arguments @('-H', 'tcp://0.0.0.0:2375', 'info') -Runner $runner } | Should -Throw
+                $env:DOCKER_HOST = 'tcp://[::1]:2375'
+                $runner = {
+                    param([string[]]$WslArgs)
+                    return [pscustomobject]@{ ExitCode = 0; Output = 'sandal-postgres' }
+                }
+                $res = Invoke-WslDocker -Arguments @('ps', '--format', '{{.Names}}') -Runner $runner
+                $res.ExitCode | Should -Be 0
+                $res.Output | Should -Be 'sandal-postgres'
+                $env:DOCKER_HOST | Should -Be 'tcp://[::1]:2375'
             } finally {
                 if ($null -eq $prevHost) {
                     Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
@@ -197,12 +239,21 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
             }
         }
 
-        It 'throws when DOCKER_HOST environment variable points to TCP 2375' {
+        It 'reports tcp_2375=true and docker_host=tcp://[::1]:2375 from Install-WslDocker.ps1 -DryRun -Json' {
             $prevHost = if (Test-Path Env:\DOCKER_HOST) { $env:DOCKER_HOST } else { $null }
             try {
-                $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
-                $runner = { param([string[]]$WslArgs) return [pscustomobject]@{ ExitCode = 0; Output = 'ok' } }
-                { Invoke-WslDocker -Arguments @('ps') -Runner $runner } | Should -Throw
+                $env:DOCKER_HOST = 'tcp://[::1]:2375'
+                $installScript = (Resolve-Path (Join-Path $PSScriptRoot '../../../scripts/sandal/Install-WslDocker.ps1')).Path
+                $runner = {
+                    param([string[]]$WslArgs)
+                    return [pscustomobject]@{ ExitCode = 0; Output = "Ubuntu-24.04`n" }
+                }
+                $rawJson = (@(& $installScript -DryRun -Json -Runner $runner) -join "`n")
+                $payload = $rawJson | ConvertFrom-Json
+                $payload.ok | Should -Be $true
+                $payload.tcp_2375 | Should -Be $true
+                $payload.docker_host | Should -Be 'tcp://[::1]:2375'
+                $env:DOCKER_HOST | Should -Be 'tcp://[::1]:2375'
             } finally {
                 if ($null -eq $prevHost) {
                     Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue

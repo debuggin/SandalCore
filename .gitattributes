@@ -114,7 +114,7 @@ Justfile text eol=lf
 Makefile text eol=lf
 
 # --- Repository Dotfiles ---
-.editorconfig text eol=lf
+src/.editorconfig text eol=lf
 .gitattributes text eol=lf
 .gitignore text eol=lf
 .graphifyignore text eol=lf

@@ -10,6 +10,12 @@
 
 namespace aoc { namespace protocol { namespace repl {
 
+ArrayValue::ArrayValue() = default;
+ArrayValue::~ArrayValue() = default;
+ArrayValue::ArrayValue(const ArrayValue&) = default;
+ArrayValue::ArrayValue(ArrayValue&&) noexcept = default;
+ArrayValue& ArrayValue::operator=(const ArrayValue&) = default;
+ArrayValue& ArrayValue::operator=(ArrayValue&&) noexcept = default;
 bool ArrayValue::operator==(const ArrayValue& o) const { return elements == o.elements; }
 
 ValueKind Value::kind() const {

@@ -92,21 +92,36 @@ static nlohmann::json load_json(const std::string& path) {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg(argv[i] ? argv[i] : "");
+        if (arg == "--healthcheck" || arg == "-healthcheck") {
+            return 0;
+        }
+    }
+
     // ── Logging ──────────────────────────────────────────────────────────────
     auto console = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    fs::create_directories("logs");
-    auto now_t  = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    std::tm tm{};
+    std::vector<spdlog::sink_ptr> sinks{console};
+    std::error_code ec;
+    fs::create_directories("logs", ec);
+    if (!ec) {
+        auto now_t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        std::tm tm{};
 #ifdef _WIN32
-    localtime_s(&tm, &now_t);
+        localtime_s(&tm, &now_t);
 #else
-    localtime_r(&now_t, &tm);
+        localtime_r(&now_t, &tm);
 #endif
-    char ts[32]; std::strftime(ts, sizeof(ts), "%Y%m%d-%H%M%S", &tm);
-    auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
-        std::string("logs/tether-") + ts + ".log", true);
-    auto logger = std::make_shared<spdlog::logger>("tether",
-        spdlog::sinks_init_list{console, file_sink});
+        char ts[32];
+        std::strftime(ts, sizeof(ts), "%Y%m%d-%H%M%S", &tm);
+        try {
+            sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(
+                std::string("logs/tether-") + ts + ".log", true));
+        } catch (const std::exception& ex) {
+            std::cerr << "[Tether] File sink unavailable (" << ex.what() << "); logging to stdout\n";
+        }
+    }
+    auto logger = std::make_shared<spdlog::logger>("tether", sinks.begin(), sinks.end());
     spdlog::set_default_logger(logger);
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
     spdlog::flush_on(spdlog::level::info);
@@ -116,9 +131,12 @@ int main(int argc, char* argv[]) {
 #endif
 
     // ── Config ───────────────────────────────────────────────────────────────
-    const std::string dir      = exe_dir();
-    auto server_cfg  = load_json(dir + "config\\server.json");
-    auto paths_cfg   = load_json(dir + "config\\paths.json");
+    const std::string dir = exe_dir();
+    auto server_cfg = load_json(dir + "config/server.json");
+    if (server_cfg.is_null()) {
+        server_cfg = load_json("config/server.json");
+    }
+    auto paths_cfg = load_json(dir + "config/paths.json");
 
     uint16_t    tether_port = 19021;
     std::string ics_host    = "127.0.0.1";
@@ -136,14 +154,20 @@ int main(int argc, char* argv[]) {
         spdlog::warn("config/server.json not found — using defaults");
     }
 
-    // CLI: --login-token-file anywhere; the first other argument is the port.
+    // CLI: --login-token-file, --port <port>, or positional [port].
     bool        login_token_file = false;
     const char* port_arg         = nullptr;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--login-token-file")
+        const std::string arg(argv[i] ? argv[i] : "");
+        if (arg == "--login-token-file") {
             login_token_file = true;
-        else if (!port_arg)
+        } else if ((arg == "--port" || arg == "-port") && i + 1 < argc) {
+            port_arg = argv[++i];
+        } else if (arg.rfind("--port=", 0) == 0) {
+            port_arg = argv[i] + 7;
+        } else if (!port_arg) {
             port_arg = argv[i];
+        }
     }
     if (port_arg) {
         try {

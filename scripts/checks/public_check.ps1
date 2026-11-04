@@ -137,7 +137,7 @@ function Test-SandalRootDirectoryHierarchy {
     )
     $findings = [System.Collections.Generic.List[string]]::new()
     $allowedRootDirs = @('src', 'build', 'dist', 'deploy', 'docs', 'scripts', '.github')
-    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'GEMINI.md', '.gitignore', '.gitattributes', '.editorconfig', '.graphifyignore', 'sandal.ps1')
+    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'GEMINI.md', '.gitignore', '.gitattributes', '.graphifyignore', 'sandal.ps1')
     $stealthDirs = @('.git', '.agents', '.claude', '_workspace', '.beads', 'graphify-out')
     foreach ($bat in @(Get-ChildItem -LiteralPath $RepoRoot -Filter '*.bat' -File -Force -ErrorAction SilentlyContinue)) {
         $findings.Add("NoRootBatFiles: forbidden root .bat file: $($bat.Name)")
