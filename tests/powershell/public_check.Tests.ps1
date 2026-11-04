@@ -135,3 +135,94 @@ Describe 'SandalCore Public Hygiene Check, Heavy Lock & Nav Stamp Decoupling' {
         }
     }
 }
+
+Describe 'Test-SandalRootDirectoryHierarchy' {
+    $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $script:PublicCheckScript = Join-Path $script:RepoRoot 'scripts\checks\public_check.ps1'
+    . $script:PublicCheckScript
+
+    BeforeAll {
+        $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+        $script:PublicCheckScript = Join-Path $script:RepoRoot 'scripts\checks\public_check.ps1'
+        . $script:PublicCheckScript
+    }
+
+    It 'returns 0 findings on the live repository' {
+        $findings = Test-SandalRootDirectoryHierarchy -RepoRoot $script:RepoRoot
+        if (@($findings).Count -ne 0) {
+            throw "Expected 0 root hierarchy findings on live repository, got $(@($findings).Count): $($findings -join '; ')"
+        }
+    }
+
+    It 'catches stray root .bat files and orphaned root cache/lock artifacts' {
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-hierarchy-bat-' + [guid]::NewGuid().ToString('N'))
+        try {
+            $null = New-Item -ItemType Directory -Path $tmpRoot -Force
+            $cleanFindings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot
+            if (@($cleanFindings).Count -ne 0) {
+                throw "Expected 0 findings on empty temp root, got $(@($cleanFindings).Count)"
+            }
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'stray_root.bat') -Value '@echo off' -Encoding utf8
+            $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot '.pytest_cache') -Force
+            Set-Content -LiteralPath (Join-Path $tmpRoot '.beads.gate.lock') -Value '' -Encoding utf8
+            $findings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot
+            $joined = $findings -join "`n"
+            foreach ($expectedPattern in @(
+                'NoRootBatFiles:.*stray_root\.bat',
+                'NoRootCacheOrGateLocks:.*\.pytest_cache',
+                'NoRootCacheOrGateLocks:.*\.beads\.gate\.lock'
+            )) {
+                if ($joined -notmatch $expectedPattern) {
+                    throw "Expected findings to match '$expectedPattern', got: $joined"
+                }
+            }
+        } finally {
+            if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It 'catches resurrected root micro-folders (api, layouts, certs, data, fixtures, logs)' {
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-hierarchy-micro-' + [guid]::NewGuid().ToString('N'))
+        try {
+            $null = New-Item -ItemType Directory -Path $tmpRoot -Force
+            foreach ($micro in @('api', 'layouts', 'certs', 'data', 'fixtures', 'logs')) {
+                $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot $micro) -Force
+            }
+            $findings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot
+            $joined = $findings -join "`n"
+            foreach ($micro in @('api', 'layouts', 'certs', 'data', 'fixtures', 'logs')) {
+                if ($joined -notmatch "NoRetiredRootMicroFolders:.*$micro") {
+                    throw "Expected findings to match micro-folder '$micro', got: $joined"
+                }
+            }
+        } finally {
+            if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It 'catches in-tree tools/launcher bin/obj and test_/fuzz_ binaries in dist/Release' {
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-hierarchy-bin-' + [guid]::NewGuid().ToString('N'))
+        try {
+            $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'tools\foo\bin') -Force
+            $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'launcher\bar\obj') -Force
+            $distRel = Join-Path $tmpRoot 'dist\Release'
+            $null = New-Item -ItemType Directory -Path $distRel -Force
+            Set-Content -LiteralPath (Join-Path $distRel 'test_foo.exe') -Value 'MZ' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $distRel 'fuzz_bar.exe') -Value 'MZ' -Encoding utf8
+            $findings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot
+            $joined = $findings -join "`n"
+            foreach ($expectedPattern in @(
+                'NoInTreeDotnetBinObj:.*tools/foo/bin',
+                'NoInTreeDotnetBinObj:.*launcher/bar/obj',
+                'NoTestBinariesInDistRelease:.*test_foo\.exe',
+                'NoTestBinariesInDistRelease:.*fuzz_bar\.exe'
+            )) {
+                if ($joined -notmatch $expectedPattern) {
+                    throw "Expected findings to match '$expectedPattern', got: $joined"
+                }
+            }
+        } finally {
+            if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}

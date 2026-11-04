@@ -16,7 +16,9 @@
 artifacts/
 bld/
 build/
+/build/
 dist/
+/dist/
 MinSizeRel/
 out/
 RelWithDebInfo/
@@ -475,6 +477,7 @@ Thumbs.db:encryptable
 # --- Server logs, captures & runtime state ---
 [Ll]og/
 [Ll]ogs/
+*.gate.lock*
 *.jsonl
 *.log
 *.log.*
@@ -503,10 +506,18 @@ ics_auth_token.txt
 *.pem
 .key
 .pem
+/config/certs/*.bak-*
+/config/certs/*.crt
+/config/certs/*.key
+/config/certs/*.p12
+/config/certs/*.pfx
+/config/certs/*.srl
 certs/*.bak-*
 certs/*.crt
 certs/*.srl
 # WHY: Preserve tracked CA bundle and certificate documentation
+!/config/certs/amazon_ca_bundle.pem
+!/config/certs/README.md
 !certs/amazon_ca_bundle.pem
 !certs/README.md
 
@@ -516,6 +527,8 @@ certs/*.srl
 # --- Local game-install extraction outputs ---
 /fixtures/region/riverlands_rects.json
 /fixtures/region/riverlands_zoi_rects.json
+/tests/fixtures/region/riverlands_rects.json
+/tests/fixtures/region/riverlands_zoi_rects.json
 /server/worldd/spawns/garden_defs.h
 /server/worldd/spawns/region_data.h
 /server/worldd/stats/testdata/corpus.txt

@@ -130,8 +130,45 @@ function Test-SandalRetiredLegacyScripts {
     }
 }
 
+function Test-SandalRootDirectoryHierarchy {
+    param(
+        [Parameter(Mandatory)][Alias('RootPath', 'Root')][string]$RepoRoot,
+        [AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations = $null
+    )
+    $findings = [System.Collections.Generic.List[string]]::new()
+    foreach ($bat in @(Get-ChildItem -LiteralPath $RepoRoot -Filter '*.bat' -File -Force -ErrorAction SilentlyContinue)) {
+        $findings.Add("NoRootBatFiles: forbidden root .bat file: $($bat.Name)")
+    }
+    if (Test-Path -LiteralPath (Join-Path $RepoRoot '.pytest_cache')) { $findings.Add('NoRootCacheOrGateLocks: forbidden root cache or lock artifact: .pytest_cache') }
+    $gateLock = Join-Path $RepoRoot '.beads.gate.lock'
+    if (Test-Path -LiteralPath $gateLock) {
+        if (Test-Path -LiteralPath (Join-Path $RepoRoot '.beads') -PathType Container) { Remove-Item -LiteralPath $gateLock -Force -ErrorAction SilentlyContinue }
+        else { $findings.Add('NoRootCacheOrGateLocks: forbidden root cache or lock artifact: .beads.gate.lock') }
+    }
+    foreach ($rootSub in @('tools', 'launcher')) {
+        $parentDir = Join-Path $RepoRoot $rootSub
+        if (-not (Test-Path -LiteralPath $parentDir -PathType Container)) { continue }
+        foreach ($projDir in @(Get-ChildItem -LiteralPath $parentDir -Directory -Force)) {
+            if (Test-Path -LiteralPath (Join-Path $projDir.FullName 'bin') -PathType Container) { $findings.Add("NoInTreeDotnetBinObj: forbidden in-tree bin directory: $rootSub/$($projDir.Name)/bin") }
+            if (Test-Path -LiteralPath (Join-Path $projDir.FullName 'obj') -PathType Container) { $findings.Add("NoInTreeDotnetBinObj: forbidden in-tree obj directory: $rootSub/$($projDir.Name)/obj") }
+        }
+    }
+    $distRelease = Join-Path $RepoRoot 'dist\Release'
+    if (Test-Path -LiteralPath $distRelease -PathType Container) {
+        foreach ($exe in @(Get-ChildItem -LiteralPath $distRelease -File -Force | Where-Object { $_.Name -match '^(?:test_|fuzz_).*\.exe$' })) {
+            $findings.Add("NoTestBinariesInDistRelease: forbidden test/fuzz binary in dist/Release: $($exe.Name)")
+        }
+    }
+    foreach ($folder in @('api', 'layouts', 'certs', 'data', 'fixtures', 'logs')) {
+        if (Test-Path -LiteralPath (Join-Path $RepoRoot $folder) -PathType Container) { $findings.Add("NoRetiredRootMicroFolders: forbidden retired root micro-folder: $folder") }
+    }
+    if ($null -ne $Violations) { foreach ($item in $findings) { $Violations.Add($item) } }
+    return , $findings.ToArray()
+}
+
 function Invoke-SandalPublicCheck {
     [CmdletBinding()]
+    [Alias('Invoke-SandalPublicChecks')]
     param(
         [Alias('RepoRoot', 'RootPath')]
         [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -142,6 +179,7 @@ function Invoke-SandalPublicCheck {
     Test-SandalContentLeaks -RootPath $Root -Violations $violations
     Test-SandalEnvSchemaTemplates -RootPath $Root -Violations $violations
     Test-SandalRetiredLegacyScripts -Root $Root -Violations $violations
+    $null = Test-SandalRootDirectoryHierarchy -RepoRoot $Root -Violations $violations
 
     if ($violations.Count -gt 0) {
         foreach ($violation in $violations) {

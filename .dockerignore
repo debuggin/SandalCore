@@ -78,9 +78,11 @@ dump_*.bin
 certs/*.key
 certs/*.pem
 certs/*.crt
+config/certs/*.key
 config/*.local.json
 config/local.json
 
-# Documentation & local scripts excluded from container build context
+# Documentation, test fixtures & local scripts excluded from container build context
 docs/
+tests/fixtures/
 *.md
