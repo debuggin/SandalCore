@@ -16,7 +16,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'dist', 'content', 'content.db')
-OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, 'server', 'worldd', 'tests', 'gear_fixture.h')
+OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, 'build', 'gen', 'world', 'tests', 'gear_fixture.h')
 con = sqlite3.connect('file:%s?mode=ro' % DB.replace('\\', '/'), uri=True)
 
 
@@ -68,7 +68,8 @@ if sets:
 classes = {name: (guid, arche) for guid, name, arche in con.execute('select guid, name, archetype_id from class')}
 enum = {'Ranger': 1, 'Bard': 2, 'Cleric': 3, 'Fighter': 4, 'Rogue': 5, 'Summoner': 6, 'Tank': 7, 'Mage': 8}
 
-with open(OUT, 'w', newline='\n') as f:
+os.makedirs(os.path.dirname(OUT), exist_ok=True); f = open(OUT, 'w', newline='\n')
+with f:
     f.write('''// ============================================================================
 //  server/worldd/tests/gear_fixture.h
 //

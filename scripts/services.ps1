@@ -34,6 +34,7 @@
 param(
     [Parameter(Mandatory)] [ValidateSet('up', 'test', 'build', 'run', 'stop', 'login', 'down')] [string] $Action
 )
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $compose = Join-Path $root 'deploy\docker-compose.yml'
@@ -41,7 +42,41 @@ $svc = Join-Path $root 'services'
 $out = Join-Path $root 'dist\services'
 $logs = Join-Path $out 'logs'
 
+function Ensure-GoProtoGen {
+    $genDir = Join-Path $root 'build\gen\go'
+    New-Item -ItemType Directory -Force -Path $genDir | Out-Null
+    $savedPath = $env:Path
+    $miseShims = (Join-Path $env:LOCALAPPDATA 'mise\shims')
+    $goBin = Join-Path (& go env GOPATH) 'bin'
+    $env:Path = "$miseShims;$goBin;$env:USERPROFILE\go\bin;$env:Path"
+    Push-Location $svc
+    try {
+        & buf generate ../libs/aocproto/proto/internal
+        if ($LASTEXITCODE -ne 0) { throw 'buf generate ../libs/aocproto/proto/internal failed' }
+        if (Test-Path '../libs/aocproto/proto/ics_xclient.proto') {
+            & buf generate ../libs/aocproto/proto/ics_xclient.proto
+            if ($LASTEXITCODE -ne 0) { throw 'buf generate ../libs/aocproto/proto/ics_xclient.proto failed' }
+        }
+    } finally {
+        Pop-Location
+        $env:Path = $savedPath
+    }
+    $goModPath = Join-Path $genDir 'go.mod'
+    $goModContent = "module aocrop/services/gen`n`ngo 1.24.0`n`nrequire (`n`tgoogle.golang.org/grpc v1.79.3`n`tgoogle.golang.org/protobuf v1.36.11`n)`n"
+    [System.IO.File]::WriteAllText($goModPath, $goModContent, [System.Text.UTF8Encoding]::new($false))
+    $nodeConsts = Join-Path $genDir 'citynodeconsts\constants_gen.go'
+    if (-not (Test-Path -LiteralPath $nodeConsts)) {
+        $env:PYTHONPYCACHEPREFIX = Join-Path $root 'build\pycache'
+        $ini = Join-Path $root 'dist\content\client_config\DefaultAoCRecordConstants.ini'
+        if (Test-Path -LiteralPath $ini) {
+            & python (Join-Path $root 'tools\schemagen\gen_node_constants.py') --ini $ini
+            if ($LASTEXITCODE -ne 0) { throw "gen_node_constants.py failed (exit $LASTEXITCODE)" }
+        }
+    }
+}
+
 function Build {
+    Ensure-GoProtoGen
     New-Item -ItemType Directory -Force $out | Out-Null
     Push-Location $svc
     try {
@@ -112,7 +147,6 @@ try {
             $savedPath = $env:Path
             $savedTestDb = $env:AOC_TEST_DATABASE_URL
             $savedContentDb = $env:AOC_CONTENT_DB
-            $tmp = Join-Path $env:TEMP "aoc-gen-$PID"
             $env:AOC_TEST_DATABASE_URL = 'postgres://aoc:aoc@127.0.0.1:5432/aoc_test?sslmode=disable'
             # The tests of the creation rules read the real content.db when there is one (they skip without).
             if (Test-Path $contentDb) { $env:AOC_CONTENT_DB = $contentDb }
@@ -121,21 +155,13 @@ try {
             try {
                 & buf lint ../libs/aocproto/proto/internal
                 if ($LASTEXITCODE -ne 0) { throw 'buf lint failed' }
-                # Generate into a temp dir and compare, so the tree is never touched
-                # and a checkout with CRLF line endings does not look stale.
-                & buf generate -o $tmp
-                if ($LASTEXITCODE -ne 0) { throw 'buf generate failed' }
-                & git -c core.autocrlf=false diff --no-index --quiet --ignore-cr-at-eol -- gen (Join-Path $tmp 'gen')
-                $rc = $LASTEXITCODE
-                Remove-Item $tmp -Recurse -Force
-                if ($rc -ne 0) { throw 'services/gen is stale: run buf generate in services/, review and commit' }
+                Ensure-GoProtoGen
                 & go vet ./...
                 if ($LASTEXITCODE -ne 0) { throw 'go vet failed' }
                 & go test -count=1 ./...   # -count=1: DB-backed results are never cached
                 if ($LASTEXITCODE -ne 0) { throw 'go test failed' }
             } finally {
                 Pop-Location
-                if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
                 $env:Path = $savedPath
                 $env:AOC_TEST_DATABASE_URL = $savedTestDb
                 $env:AOC_CONTENT_DB = $savedContentDb

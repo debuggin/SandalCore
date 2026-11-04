@@ -40,6 +40,7 @@ param(
     [int]      $Jobs = 0
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # -- Resolve paths from script location ----------------------------------
@@ -77,6 +78,47 @@ if ($Clean -and (Test-Path $buildDir)) {
     Write-Host "Removing $buildDir ..."
     Remove-Item -Recurse -Force $buildDir
 }
+
+# -- Go Protobuf Codegen (build/gen/go) -----------------------------------
+function Ensure-GoProtoGen {
+    $svcDir = Join-Path $repoRoot 'services'
+    $genDir = Join-Path $repoRoot 'build\gen\go'
+    if (-not (Test-Path $svcDir)) { return }
+    New-Item -ItemType Directory -Force -Path $genDir | Out-Null
+    $savedPath = $env:Path
+    $miseShims = (Join-Path $env:LOCALAPPDATA 'mise\shims')
+    $env:Path = "$miseShims;$env:USERPROFILE\go\bin;$env:Path"
+    $bufCmd = Get-Command buf -ErrorAction SilentlyContinue
+    if ($bufCmd) {
+        Push-Location $svcDir
+        try {
+            & buf generate ../libs/aocproto/proto/internal
+            if ($LASTEXITCODE -ne 0) { throw "buf generate ../libs/aocproto/proto/internal failed." }
+            if (Test-Path '../libs/aocproto/proto/ics_xclient.proto') {
+                & buf generate ../libs/aocproto/proto/ics_xclient.proto
+                if ($LASTEXITCODE -ne 0) { throw "buf generate ../libs/aocproto/proto/ics_xclient.proto failed." }
+            }
+        } finally {
+            Pop-Location
+            $env:Path = $savedPath
+        }
+    } else {
+        $env:Path = $savedPath
+    }
+    $goModPath = Join-Path $genDir 'go.mod'
+    $goModContent = "module aocrop/services/gen`n`ngo 1.24.0`n`nrequire (`n`tgoogle.golang.org/grpc v1.79.3`n`tgoogle.golang.org/protobuf v1.36.11`n)`n"
+    [System.IO.File]::WriteAllText($goModPath, $goModContent, [System.Text.UTF8Encoding]::new($false))
+    $nodeConsts = Join-Path $genDir 'citynodeconsts\constants_gen.go'
+    if (-not (Test-Path -LiteralPath $nodeConsts)) {
+        $env:PYTHONPYCACHEPREFIX = Join-Path $repoRoot 'build\pycache'
+        $ini = Join-Path $repoRoot 'dist\content\client_config\DefaultAoCRecordConstants.ini'
+        if (Test-Path -LiteralPath $ini) {
+            & python (Join-Path $repoRoot 'tools\schemagen\gen_node_constants.py') --ini $ini
+            if ($LASTEXITCODE -ne 0) { throw "gen_node_constants.py failed (exit $LASTEXITCODE)" }
+        }
+    }
+}
+Ensure-GoProtoGen
 # == C | O | A | Cyb ==
 
 # -- Locate vcpkg --------------------------------------------------------

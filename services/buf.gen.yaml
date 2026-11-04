@@ -7,14 +7,14 @@ inputs:
   - proto_file: ../libs/aocproto/proto/ics_xclient.proto
 plugins:
   - local: protoc-gen-go
-    out: gen
+    out: ../build/gen/go
     include_imports: true
     opt:
       - module=aocrop/services/gen
       - Mics_common.proto=aocrop/services/gen/ics/common;icscommon
       - Mics_xclient.proto=aocrop/services/gen/ics/xclient;icsxclient
   - local: protoc-gen-go-grpc
-    out: gen
+    out: ../build/gen/go
     include_imports: true
     opt:
       - module=aocrop/services/gen

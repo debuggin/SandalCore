@@ -54,7 +54,7 @@ function New-StampTestFixture {
         'config/seeds/citynode_seed.json'          = '{"nodes":{}}'
         'libs/aocnav/nav.cpp'                      = 'int nav = 1;'
         'tools/navbuild/main.cpp'                  = 'int main() { return 0; }'
-        'third_party/recastnavigation/recast.cpp'  = 'int rc = 1;'
+        'build/third_party/recastnavigation/recast.cpp' = 'int rc = 1;'
         'vcpkg.json'                               = '{"name":"sandal"}'
     }
     foreach ($entry in $files.GetEnumerator()) {

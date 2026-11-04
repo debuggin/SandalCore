@@ -54,7 +54,7 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
                 'config/seeds/citynode_seed.json'          = '{"nodes":{"lionhold":{"level":3}}}'
                 'libs/aocnav/nav.cpp'                      = 'int nav = 1;'
                 'tools/navbuild/main.cpp'                  = 'int main() { return 0; }'
-                'third_party/recastnavigation/recast.cpp'  = 'int rc = 1;'
+                'build/third_party/recastnavigation/recast.cpp' = 'int rc = 1;'
                 'vcpkg.json'                               = '{"name":"sandal"}'
             }
             foreach ($entry in $files.GetEnumerator()) {
@@ -103,6 +103,17 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
                     ($depIdx -lt $stageIdx) | Should -BeTrue
                 }
             }
+            ($graph['navbuild'].Inputs -contains 'build/third_party/recastnavigation') | Should -BeTrue
+            ($graph['navbuild'].Inputs -contains 'third_party/recastnavigation') | Should -BeFalse
+        }
+
+        It 'Verifies fetch_cue4parse and schemagen generators target build/third_party and build/gen' {
+            $cueScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'tools/mapc/fetch_cue4parse.ps1') -Raw
+            $cueScript | Should -Match 'build[\\/]third_party[\\/]CUE4Parse'
+            $gardenPy = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'tools/schemagen/gen_gm_garden.py') -Raw
+            $gardenPy | Should -Match "'build',\s*'gen',\s*'world',\s*'spawns',\s*'garden_defs\.h'"
+            $nodePy = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'tools/schemagen/gen_node_constants.py') -Raw
+            $nodePy | Should -Match "'build',\s*'gen',\s*'go',\s*'citynodeconsts',\s*'constants_gen\.go'"
         }
 
         It 'Propagates upstream hash invalidation to all transitive downstream stages while preserving independent branches' {

@@ -27,7 +27,7 @@
 #include <vector>
 
 #ifndef STATS_CORPUS_PATH
-#define STATS_CORPUS_PATH "server/worldd/stats/testdata/corpus.txt"
+#define STATS_CORPUS_PATH "build/gen/fixtures/corpus.txt"
 #endif
 
 namespace stats_fixture {

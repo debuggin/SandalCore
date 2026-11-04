@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
+// GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+
+package citynode
+
+import "aocrop/services/gen/citynodeconsts"
+
+// Re-export generated city node constants from build/gen/go/citynodeconsts/constants_gen.go.
+var ExpToLevel = citynodeconsts.ExpToLevel
+var ReputationToLevel = citynodeconsts.ReputationToLevel
+
+const MaxNodeLevel = citynodeconsts.MaxNodeLevel
+const MinimumOperationalNodeLevel = citynodeconsts.MinimumOperationalNodeLevel
+const NodeCitizenshipPlayerLevelRequirement = citynodeconsts.NodeCitizenshipPlayerLevelRequirement
+const NodePassiveIncomeSeconds = citynodeconsts.NodePassiveIncomeSeconds
+const MaxNumberNodeNotifications = citynodeconsts.MaxNumberNodeNotifications
+var MayoralCommissionHandRefreshSeconds = citynodeconsts.MayoralCommissionHandRefreshSeconds
+const VassalshipSystemEnabled = citynodeconsts.VassalshipSystemEnabled
+const VassalshipProtectionEnabled = citynodeconsts.VassalshipProtectionEnabled
+const VassalshipDefinitionGuid = citynodeconsts.VassalshipDefinitionGuid
+const BuyOrderConstantsGuid = citynodeconsts.BuyOrderConstantsGuid
+const ElectionConstantsGuid = citynodeconsts.ElectionConstantsGuid
+const WarConstantsGuid = citynodeconsts.WarConstantsGuid
+const CitizenshipRewardGuid = citynodeconsts.CitizenshipRewardGuid
+const NodeCurrencyGuid = citynodeconsts.NodeCurrencyGuid
+const NodeAlignmentGuid = citynodeconsts.NodeAlignmentGuid
+const NodeWarDeclaringAlignmentGuid = citynodeconsts.NodeWarDeclaringAlignmentGuid
+const NodeWarTargetAlignmentGuid = citynodeconsts.NodeWarTargetAlignmentGuid
+const NodeSiegeDeclaringAlignmentGuid = citynodeconsts.NodeSiegeDeclaringAlignmentGuid
+const NodeSiegeTargetAlignmentGuid = citynodeconsts.NodeSiegeTargetAlignmentGuid
+const NodeLevelUpCountdownToastGuid = citynodeconsts.NodeLevelUpCountdownToastGuid
+const NodeCitizenshipGainToastGuid = citynodeconsts.NodeCitizenshipGainToastGuid
+const ServiceBuildingDefaultRepairSeconds = citynodeconsts.ServiceBuildingDefaultRepairSeconds
+const ServiceBuildingDefaultDemolitionSeconds = citynodeconsts.ServiceBuildingDefaultDemolitionSeconds
+const ServiceBuildingDemolitionVotingEnabled = citynodeconsts.ServiceBuildingDemolitionVotingEnabled
+const ServiceBuildingMaintenanceFrequencyWeeks = citynodeconsts.ServiceBuildingMaintenanceFrequencyWeeks
+const ServiceBuildingMaintenanceDayOfWeek = citynodeconsts.ServiceBuildingMaintenanceDayOfWeek
+const ZoiPlayerCountRefreshSeconds = citynodeconsts.ZoiPlayerCountRefreshSeconds
+const MayorMessageCooldownSeconds = citynodeconsts.MayorMessageCooldownSeconds
+const MaxMayorMessageLength = citynodeconsts.MaxMayorMessageLength
+const StaticHouseUpgradeSeconds = citynodeconsts.StaticHouseUpgradeSeconds
+const SiegeJoinRequestCooldownSeconds = citynodeconsts.SiegeJoinRequestCooldownSeconds
+const SiegeInactiveTag = citynodeconsts.SiegeInactiveTag
+const SiegePrepTag = citynodeconsts.SiegePrepTag
+const SiegeActiveTag = citynodeconsts.SiegeActiveTag
+const SiegePillageTag = citynodeconsts.SiegePillageTag

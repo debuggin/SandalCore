@@ -33,8 +33,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
-GO_OUT = os.path.join(ROOT, 'services', 'internal', 'citynode', 'constants_gen.go')
-CPP_OUT = os.path.join(ROOT, 'server', 'worldd', 'world', 'node_constants.h')
+GO_OUT = os.path.join(ROOT, 'build', 'gen', 'go', 'citynodeconsts', 'constants_gen.go')
+CPP_OUT = os.path.join(ROOT, 'build', 'gen', 'world', 'world', 'node_constants.h')
 INI_NAME = 'DefaultAoCRecordConstants.ini'
 
 LEVELS = ['Wilderness', 'Crossroads', 'Encampment', 'Village', 'Town', 'City', 'Metropolis']
@@ -176,7 +176,7 @@ def render_go(consts):
            '// The city node constants the design database lacks (Nodes 1, stage 1).  Regenerate with',
            '// `python tools/capture/gen_node_constants.py`; scripts/generators.ps1 checks that this file is what the ini gives.',
            '',
-           'package citynode',
+           'package citynodeconsts',
            '']
     for name, kind, value, comment in consts:
         out.append('// %s.' % comment if not comment.endswith('.') else '// %s' % comment)

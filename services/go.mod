@@ -3,6 +3,7 @@ module aocrop/services
 go 1.27.0
 
 require (
+	aocrop/services/gen v0.0.0
 	github.com/jackc/pgx/v5 v5.11.0
 	golang.org/x/crypto v0.57.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800
@@ -28,3 +29,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
+
+replace aocrop/services/gen => ../build/gen/go

@@ -15,7 +15,7 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
-    <CUE4Src>$(MSBuildThisFileDirectory)..\..\third_party\CUE4Parse\CUE4Parse\</CUE4Src>
+    <CUE4Src>$(MSBuildThisFileDirectory)..\..\build\third_party\CUE4Parse\CUE4Parse\</CUE4Src>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="**\*.cs" Exclude="obj\**;bin\**" />

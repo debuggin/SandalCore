@@ -37,7 +37,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
-HEADER = os.path.join(ROOT, 'server', 'worldd', 'spawns', 'garden_defs.h')
+HEADER = os.path.join(ROOT, 'build', 'gen', 'world', 'spawns', 'garden_defs.h')
 DEFAULT_DB = os.path.join(ROOT, 'dist', 'content', 'content.db')
 
 PROFESSIONS = ['Mining', 'Lumberjacking', 'Herbalism']
@@ -206,7 +206,8 @@ def main():
         print('garden_defs.h: unchanged')
         return
     crlf = old is not None and '\r\n' in old
-    with open(HEADER, 'w', newline='') as f:
+    os.makedirs(os.path.dirname(HEADER), exist_ok=True); f = open(HEADER, 'w', newline='')
+    with f:
         f.write(text.replace('\n', '\r\n') if crlf else text)
     print('garden_defs.h: updated')
 

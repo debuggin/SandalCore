@@ -21,6 +21,13 @@ public sealed class Region
     /// <summary>Where the file is when no --region is given: next to the project's sources (mapc is run from the repository root), else beside the program.</summary>
     public static string DefaultPath()
     {
+        var gen = Path.Combine("build", "gen", "nav", FileName);
+        if (File.Exists(gen)) return gen;
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d != null; d = d.Parent)
+        {
+            var g = Path.Combine(d.FullName, "build", "gen", "nav", FileName);
+            if (File.Exists(g)) return g;
+        }
         var a = Path.Combine("tools", "mapc", FileName);
         if (File.Exists(a)) return a;
         var b = Path.Combine(AppContext.BaseDirectory, FileName);
@@ -30,7 +37,7 @@ public sealed class Region
             var c = Path.Combine(d.FullName, "tools", "mapc", FileName);
             if (File.Exists(c)) return c;
         }
-        return a;
+        return gen;
     }
 
     public static Region Load(string path)

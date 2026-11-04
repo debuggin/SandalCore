@@ -1,14 +1,27 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+get_filename_component(SANDAL_WORLD_GEN_DIR "${CMAKE_BINARY_DIR}/../gen/world" ABSOLUTE)
+if(NOT EXISTS "${SANDAL_WORLD_GEN_DIR}" AND EXISTS "${CMAKE_SOURCE_DIR}/../build/gen/world")
+    get_filename_component(SANDAL_WORLD_GEN_DIR "${CMAKE_SOURCE_DIR}/../build/gen/world" ABSOLUTE)
+elseif(NOT EXISTS "${SANDAL_WORLD_GEN_DIR}" AND EXISTS "${CMAKE_SOURCE_DIR}/build/gen/world")
+    get_filename_component(SANDAL_WORLD_GEN_DIR "${CMAKE_SOURCE_DIR}/build/gen/world" ABSOLUTE)
+endif()
+
 function(add_sandal_domain_test_exe target_name source_relpath)
     add_executable(${target_name} "${CMAKE_CURRENT_SOURCE_DIR}/${source_relpath}")
     target_include_directories(${target_name} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/world"
+        "${SANDAL_WORLD_GEN_DIR}"
+        "${SANDAL_WORLD_GEN_DIR}/tests"
         "${PROJECT_SOURCE_DIR}"
         "${PROJECT_SOURCE_DIR}/server/world"
         "${PROJECT_SOURCE_DIR}/libs/aocnet"
         "${PROJECT_SOURCE_DIR}/libs/aocnav/include"
         "${PROJECT_SOURCE_DIR}/libs/aocstats/include"
+    )
+    target_compile_definitions(${target_name} PRIVATE
+        STATS_CORPUS_PATH="${CMAKE_BINARY_DIR}/../gen/fixtures/corpus.txt"
+        TALENT_FIXTURE_PATH="${SANDAL_WORLD_GEN_DIR}/tests/talent_fixture.sql"
     )
     target_link_libraries(${target_name} PRIVATE
         world_core
@@ -38,6 +51,8 @@ endfunction()
 set(SANDAL_DOMAIN_TEST_TARGETS
     test_world_clock_and_data_free
     test_world_zoi_and_nodes
+    test_region_classifier
+    test_zoi_classifier
     test_nav_ground_snap
     test_nav_los_and_bvh
     test_combat_core_formulas
@@ -100,6 +115,24 @@ set_tests_properties(world.test_world_ability_content PROPERTIES
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
 )
 add_sandal_domain_test_exe(test_world_zoi_and_nodes world/test_world_zoi_and_nodes.cpp)
+add_sandal_domain_test_exe(test_region_classifier world/test_region_classifier.cpp)
+add_test(
+    NAME world.test_region_classifier
+    COMMAND $<TARGET_FILE:test_region_classifier>
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+set_tests_properties(world.test_region_classifier PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
+add_sandal_domain_test_exe(test_zoi_classifier world/test_zoi_classifier.cpp)
+add_test(
+    NAME world.test_zoi_classifier
+    COMMAND $<TARGET_FILE:test_zoi_classifier>
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+)
+set_tests_properties(world.test_zoi_classifier PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${AOC_DIST_ROOT}/$<CONFIG>"
+)
 add_sandal_domain_test_exe(test_nav_ground_snap nav/test_nav_ground_snap.cpp)
 add_sandal_domain_test_exe(test_nav_los_and_bvh nav/test_nav_los_and_bvh.cpp)
 add_sandal_domain_test_exe(test_combat_core_formulas combat/test_combat_core_formulas.cpp)
@@ -319,6 +352,12 @@ add_sandal_domain_case_test(world.manual_clock_tick_barriers test_world_clock_an
 add_sandal_domain_case_test(world.data_free_standin_tooltip_lookup test_world_clock_and_data_free data_free_standin_tooltip_lookup)
 add_sandal_domain_case_test(world.zoi_spatial_cell_partition test_world_zoi_and_nodes zoi_spatial_cell_partition)
 add_sandal_domain_case_test(world.city_node_stage_progression test_world_zoi_and_nodes city_node_stage_progression)
+add_sandal_domain_case_test(world.json_fixture_matches_generated_region_data test_region_classifier json_fixture_matches_generated_region_data)
+add_sandal_domain_case_test(world.half_open_rect_boundaries_and_index_lookup test_region_classifier half_open_rect_boundaries_and_index_lookup)
+add_sandal_domain_case_test(world.area_config_riverlands_and_non_finite_guards test_region_classifier area_config_riverlands_and_non_finite_guards)
+add_sandal_domain_case_test(world.json_zoi_fixture_matches_generated_region_data test_zoi_classifier json_zoi_fixture_matches_generated_region_data)
+add_sandal_domain_case_test(world.zoi_surface_table_agrees_with_zoi_rects_fixture test_zoi_classifier zoi_surface_table_agrees_with_zoi_rects_fixture)
+add_sandal_domain_case_test(world.zoi_surface_boundary_and_adversarial_inputs test_zoi_classifier zoi_surface_boundary_and_adversarial_inputs)
 add_sandal_domain_case_test(nav.heightfield_ground_snap_no_z test_nav_ground_snap heightfield_ground_snap_no_z)
 add_sandal_domain_case_test(nav.water_floor_clamp_corridor test_nav_ground_snap water_floor_clamp_corridor)
 add_sandal_domain_case_test(nav.bvh_chunk_bounds_query test_nav_los_and_bvh bvh_chunk_bounds_query)

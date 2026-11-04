@@ -41,7 +41,7 @@
 // ~ Cyb - C | O | A ~
 
 #ifndef TALENT_FIXTURE_PATH
-#define TALENT_FIXTURE_PATH "server/worldd/tests/talent_fixture.sql"
+#define TALENT_FIXTURE_PATH "build/gen/world/tests/talent_fixture.sql"
 #endif
 
 namespace content_fixture {

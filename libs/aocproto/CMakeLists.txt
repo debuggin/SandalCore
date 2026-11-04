@@ -6,8 +6,9 @@
 # ============================================================================
 
 set(AOC_PROTO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/proto/internal")
-set(AOC_PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-file(MAKE_DIRECTORY "${AOC_PROTO_GEN_DIR}")
+get_filename_component(PROTO_GEN_DIR "${CMAKE_BINARY_DIR}/../gen/cpp/aocproto" ABSOLUTE)
+set(AOC_PROTO_GEN_DIR "${PROTO_GEN_DIR}")
+file(MAKE_DIRECTORY "${PROTO_GEN_DIR}")
 
 set(AOC_PROTOS
     aoc/auth/v1/auth.proto

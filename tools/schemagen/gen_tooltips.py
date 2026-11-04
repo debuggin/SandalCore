@@ -39,7 +39,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
 DEFAULT_DB = os.path.join(ROOT, 'dist', 'content', 'content.db')
-HEADER = os.path.join(ROOT, 'server', 'worldd', 'tests', 'tooltip_key.h')
+HEADER = os.path.join(ROOT, 'build', 'gen', 'world', 'tests', 'tooltip_key.h')
 
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
@@ -352,6 +352,7 @@ def write_if_changed(path, text, check):
     if check:
         print('%s: DIFFERS from the regenerated text (%d bytes on disk, %d regenerated)' % (rel, len(old), len(new)))
         return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'wb') as f:
         f.write(new)
     print('%s: updated (%d bytes)' % (rel, len(new)))

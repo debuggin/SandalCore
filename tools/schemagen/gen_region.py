@@ -30,10 +30,10 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
-RECTS_JSON = os.path.join(ROOT, 'tests', 'fixtures', 'region', 'riverlands_rects.json')
-ZOI_JSON = os.path.join(ROOT, 'tests', 'fixtures', 'region', 'riverlands_zoi_rects.json')
-HEADER = os.path.join(ROOT, 'server', 'world', 'spawns', 'region_data.h')
-MAPC_FILE = os.path.join(ROOT, 'tools', 'mapc', 'region_rects.tsv')
+RECTS_JSON = os.path.join(ROOT, 'build', 'gen', 'fixtures', 'region', 'riverlands_rects.json')
+ZOI_JSON = os.path.join(ROOT, 'build', 'gen', 'fixtures', 'region', 'riverlands_zoi_rects.json')
+HEADER = os.path.join(ROOT, 'build', 'gen', 'world', 'spawns', 'region_data.h')
+MAPC_FILE = os.path.join(ROOT, 'build', 'gen', 'nav', 'region_rects.tsv')
 
 CELL = 512
 
@@ -169,6 +169,7 @@ def write_if_changed(path, text, check):
         print('%s: unchanged' % name)
         return True
     crlf = old is not None and '\r\n' in old
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', newline='') as f:
         f.write(text.replace('\n', '\r\n') if crlf else text)
     print('%s: updated' % name)

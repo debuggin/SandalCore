@@ -39,7 +39,7 @@ static int g_pass = 0, g_fail = 0;
 } while (0)
 
 #ifndef STATS_CORPUS_PATH
-#define STATS_CORPUS_PATH "server/worldd/stats/testdata/corpus.txt"
+#define STATS_CORPUS_PATH "build/gen/fixtures/corpus.txt"
 #endif
 
 namespace {

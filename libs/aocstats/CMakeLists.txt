@@ -20,11 +20,11 @@ add_executable(test_world_stats
 )
 target_link_libraries(test_world_stats PRIVATE aocstats)
 target_compile_definitions(test_world_stats PRIVATE
-    STATS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/testdata/corpus.txt"
+    STATS_CORPUS_PATH="${CMAKE_BINARY_DIR}/../gen/fixtures/corpus.txt"
 )
 
 add_executable(test_world_effects tests/test_worldd_effects.cpp)
 target_link_libraries(test_world_effects PRIVATE aocstats)
 target_compile_definitions(test_world_effects PRIVATE
-    STATS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/testdata/corpus.txt"
+    STATS_CORPUS_PATH="${CMAKE_BINARY_DIR}/../gen/fixtures/corpus.txt"
 )

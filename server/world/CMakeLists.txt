@@ -213,7 +213,7 @@ add_library(world_core STATIC
     spawns/generic_npc.cpp
     spawns/gm_garden.cpp
     spawns/gm_garden.h
-    spawns/garden_defs.h
+    ${CMAKE_BINARY_DIR}/../gen/world/spawns/garden_defs.h
     spawns/generic_npc.h
     spawns/mount_donors.h
     spawns/mount_spawn.cpp
@@ -226,7 +226,7 @@ add_library(world_core STATIC
     spawns/node_populations.h
     spawns/population.cpp
     spawns/population.h
-    spawns/region_data.h
+    ${CMAKE_BINARY_DIR}/../gen/world/spawns/region_data.h
     spawns/region_index.cpp
     spawns/region_index.h
     spawns/spawn_filter.cpp
@@ -263,7 +263,7 @@ add_library(world_core STATIC
     world/roads.h
     world/zoi_surface.cpp
     world/zoi_surface.h
-    world/zoi_surface_table.h
+    ${CMAKE_BINARY_DIR}/../gen/world/world/zoi_surface_table.h
     npc/ai/npc_ai.cpp
     npc/ai/npc_ai.h
     npc/ai/threat.cpp
@@ -278,7 +278,7 @@ add_library(world_core STATIC
     npc/npc_world.h
     npc/npc_world_orders.cpp
 )
-target_include_directories(world_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(world_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/../gen/world")
 target_link_libraries(world_core PUBLIC
     aocnet
     aocproto
@@ -327,11 +327,11 @@ function(world_add_test name)
     target_link_libraries(${name} PRIVATE world_core)
     set_property(GLOBAL APPEND PROPERTY SANDAL_WORLD_TEST_TARGETS ${name})
     # capture_packets.h lives with the libaocnet tests.
-    target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/libs/aocnet/tests)
+    target_include_directories(${name} PRIVATE ${PROJECT_SOURCE_DIR}/libs/aocnet/tests "${CMAKE_BINARY_DIR}/../gen/world" "${CMAKE_BINARY_DIR}/../gen/world/tests")
     # the shared stat corpus (plan B3): the tests that build a content.db fixture take the stat program from it
     target_compile_definitions(${name} PRIVATE
-        STATS_CORPUS_PATH="${PROJECT_SOURCE_DIR}/libs/aocstats/testdata/corpus.txt"
-        TALENT_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/talent_fixture.sql")
+        STATS_CORPUS_PATH="${CMAKE_BINARY_DIR}/../gen/fixtures/corpus.txt"
+        TALENT_FIXTURE_PATH="${CMAKE_BINARY_DIR}/../gen/world/tests/talent_fixture.sql")
     set_target_properties(${name} PROPERTIES FOLDER "Tests/world")
 endfunction()
 
@@ -651,3 +651,9 @@ foreach(t
         ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db"
         NPC_MOTION_PATH="${PROJECT_SOURCE_DIR}/dist/content/npc_motion.tsv")
 endforeach()
+
+world_add_test(test_worldd_talents tests/test_worldd_talents.cpp)
+target_sources(test_worldd_talents PRIVATE tests/test_worldd_talents_retail.cpp)
+world_add_test(test_tooltip_render tests/test_worldd_tooltips.cpp)
+target_compile_definitions(test_tooltip_render PRIVATE
+    ABILITY_CONTENT_DB_PATH="${PROJECT_SOURCE_DIR}/dist/content/content.db")

@@ -71,6 +71,7 @@ $ErrorActionPreference = 'Stop'
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })     # powershell -File hands over "a,b" as one string
 $Skip = @($Skip | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $repoRoot  = Split-Path $PSScriptRoot -Parent
+$env:PYTHONPYCACHEPREFIX = Join-Path $repoRoot 'build\pycache'
 $distDir   = Join-Path $repoRoot 'dist'
 $outDir    = Join-Path $distDir 'content'
 $stampDir  = Join-Path $outDir '.extract'
@@ -395,7 +396,7 @@ function Get-CodeNpcAbilities { Get-CodeHash @('tools\npcabilities') }
 function Get-CodeItemNames { Get-CodeHash @('tools\itemnames') }
 # WHY: CMakeLists.txt is intentionally excluded from Get-CodeGens, Get-CodeNav, and Get-CodeLayouts so CMake topology edits never invalidate game data stamps.
 function Get-CodeGens     { Get-CodeHash @('tools\schemagen\gen_zoi_surface.py', 'tools\schemagen\gen_region_rects.py', 'tools\schemagen\gen_region.py', 'tools\schemagen\gen_node_constants.py', 'tools\schemagen\gen_gm_garden.py', 'tools\schemagen\gen_tooltips.py', 'tools\schemagen\gen_gear_fixture.py', 'tools\schemagen\gen_talent_fixture.py') }
-function Get-CodeNav      { Get-CodeHash @('libs\aocnav', 'tools\navbuild', 'third_party\recastnavigation', 'vcpkg.json') <# server\worldd\nav #> }
+function Get-CodeNav      { Get-CodeHash @('libs\aocnav', 'tools\navbuild', 'build\third_party\recastnavigation', 'vcpkg.json') <# server\worldd\nav #> }
 # The level each node starts at in the server's seed file (deploy\citynode_seed.json): the towns' buildings are listed at those levels (tools\schemagen\gen_town_layouts.py), so a change of a
 # level there changes the list and the navigation mesh.  Only "nodes" counts: the workshops and the comment do not change what the map holds.
 function Get-SeedLevels {
@@ -455,7 +456,7 @@ function Test-Current($s) {
 $steps = @(
     @{ Name = 'tools'; Title = 'Build mapc (.NET) and contentc (Go)'; Always = $true; Outputs = @(); Run = {
         $fetch = Join-Path $repoRoot 'tools\mapc\fetch_cue4parse.ps1'
-        if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'third_party\CUE4Parse\CUE4Parse\CUE4Parse.csproj'))) {
+        if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'build\third_party\CUE4Parse\CUE4Parse\CUE4Parse.csproj'))) {
             if ($env:SANDAL_CUE4PARSE_DIR) { Say "Copying CUE4Parse from $($env:SANDAL_CUE4PARSE_DIR) ..." } else { Say 'Fetching CUE4Parse (the pinned commit; needs git and the network) ...' }
             Invoke-Checked 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $fetch) 'fetch_cue4parse'
         }
@@ -497,14 +498,14 @@ $steps = @(
                 '--artisan-curves', (Join-Path $outDir 'artisan_curves.tsv'), '--item-names', (Join-Path $outDir 'item_names.tsv'), '--out', (Join-Path $outDir 'content.db')) 'contentc'
         } finally { $env:GOMEMLIMIT = $savedLimit }
     } },
-    @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'tests\fixtures\region\riverlands_rects.json', 'tests\fixtures\region\riverlands_zoi_rects.json', 'server\world\spawns\region_data.h', 'tools\mapc\region_rects.tsv'); Run = {
+    @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'build\gen\fixtures\region\riverlands_rects.json', 'build\gen\fixtures\region\riverlands_zoi_rects.json', 'build\gen\world\spawns\region_data.h', 'build\gen\nav\region_rects.tsv'); Run = {
         Assert-Files @('dist\content\content.db', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'export-zoi', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_zoi'
         $gen = Join-Path $repoRoot 'tools\schemagen'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_region_rects.py'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', (Join-Path $outDir 'content.db'))) 'gen_region_rects'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_region.py'))) 'gen_region'
     } },
-    @{ Name = 'headers'; Title = "Generate worldd's tables and the citynode constants"; Outputs = @('server\world\world\zoi_surface_table.h', 'server\world\world\node_constants.h', 'services\internal\citynode\constants_gen.go', 'server\world\spawns\garden_defs.h'); Run = {
+    @{ Name = 'headers'; Title = "Generate worldd's tables and the citynode constants"; Outputs = @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\world\node_constants.h', 'build\gen\go\citynodeconsts\constants_gen.go', 'build\gen\world\spawns\garden_defs.h'); Run = {
         Assert-Files @('dist\content\content.db', 'dist\content\zoi_chunks', 'dist\content\client_config\DefaultAoCRecordConstants.ini') 'run the earlier steps first'
         $gen = Join-Path $repoRoot 'tools\schemagen'
         $db = Join-Path $outDir 'content.db'
@@ -512,21 +513,21 @@ $steps = @(
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_node_constants.py'), '--ini', (Join-Path $outDir 'client_config\DefaultAoCRecordConstants.ini'))) 'gen_node_constants'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_gm_garden.py'), '--content-db', $db)) 'gen_gm_garden'
     } },
-    @{ Name = 'fixtures'; Title = 'Generate the test fixtures'; Outputs = @('libs\aocstats\testdata\corpus.txt', 'server\world\tests\talent_fixture.sql', 'server\world\tests\gear_fixture.h', 'server\world\tests\tooltip_key.h'); Run = {
+    @{ Name = 'fixtures'; Title = 'Generate the test fixtures'; Outputs = @('build\gen\fixtures\corpus.txt', 'build\gen\world\tests\talent_fixture.sql', 'build\gen\world\tests\gear_fixture.h', 'build\gen\world\tests\tooltip_key.h'); Run = {
         Assert-Files @('dist\content\content.db', 'dist\tools\statprog.exe') 'run the earlier steps first'
         $db = Join-Path $outDir 'content.db'
-        New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'libs\aocstats\testdata') | Out-Null
-        Invoke-Checked $statprog @('corpus', '--db', $db, '--out', (Join-Path $repoRoot 'libs\aocstats\testdata\corpus.txt')) 'statprog_corpus'
+        New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'build\gen\fixtures') | Out-Null
+        Invoke-Checked $statprog @('corpus', '--db', $db, '--out', (Join-Path $repoRoot 'build\gen\fixtures\corpus.txt')) 'statprog_corpus'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_talent_fixture.py'), $db)) 'gen_talent_fixture'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_gear_fixture.py'), $db)) 'gen_gear_fixture'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_tooltips.py'), '--db', $db)) 'gen_tooltips'
     } },
     @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++; the first build also builds the C++ libraries with vcpkg)'; Outputs = @('dist\Release\aoc_navbuild.exe'); Run = {
-        Assert-Files @('server\world\world\zoi_surface_table.h', 'server\world\spawns\region_data.h', 'server\world\spawns\garden_defs.h') 'run the earlier steps first'
+        Assert-Files @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\spawns\region_data.h', 'build\gen\world\spawns\garden_defs.h') 'run the earlier steps first'
         Invoke-Checked 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $repoRoot 'scripts\build.ps1'), '-Target', 'aoc_navbuild', '-Jobs', "$Jobs") 'build_navbuild'
     } },
     @{ Name = 'roads'; Title = 'Read the road splines of the Riverlands (mapc) and resolve them (contentc)'; Outputs = @('dist\content\roads_raw.tsv', 'dist\content\roads.tsv', 'dist\content\roads_levels.tsv'); Run = {
-        Assert-Files @('dist\content\content.db', 'tools\mapc\region_rects.tsv', 'dist\tools\contentc.exe', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the earlier steps first'
+        Assert-Files @('dist\content\content.db', 'build\gen\nav\region_rects.tsv', 'dist\tools\contentc.exe', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'roads', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_roads'
         $db = Join-Path $outDir 'content.db'
         $raw = Join-Path $outDir 'roads_raw.tsv'
@@ -559,7 +560,7 @@ $steps = @(
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\npcabilities\looks.py'), '--content-db', (Join-Path $outDir 'content.db'), '--out-dir', $outDir)) 'npcabilities_names'
     } },
     @{ Name = 'navmesh'; Title = 'Read the map and build the navigation mesh, the NPC motion table and the foliage (mapc; the longest step)'; Outputs = @('dist\content\npc_motion.tsv', 'dist\content\region_foliage.tsv', 'dist\content\area_geom.bin', 'dist\content\area_nav.bin'); Run = {
-        Assert-Files @('tools\mapc\region_rects.tsv', 'dist\Release\aoc_navbuild.exe', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll', 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'
+        Assert-Files @('build\gen\nav\region_rects.tsv', 'dist\Release\aoc_navbuild.exe', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll', 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'
         $savedHeap = $env:DOTNET_GCHeapHardLimit
         if (-not $env:DOTNET_GCHeapHardLimit) { $env:DOTNET_GCHeapHardLimit = '0x100000000' }     # the NPC Blueprint pass peaks at 7.7 GB without this limit and at 4.0 GB with it, in the same time; the map read's child programs set their own
         try {

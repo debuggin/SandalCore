@@ -18,7 +18,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'dist', 'content', 'content.db')
-OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, 'server', 'worldd', 'tests', 'talent_fixture.sql')
+OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, 'build', 'gen', 'world', 'tests', 'talent_fixture.sql')
 con = sqlite3.connect('file:%s?mode=ro' % DB.replace('\\', '/'), uri=True)
 
 
@@ -77,6 +77,7 @@ for t in TABLES:
     for r in con.execute(QUERIES[t]):
         lines.append('%s INTO %s (%s) VALUES (%s);' % (verb, t, ', '.join(cols), ', '.join(lit(x) for x in r)))
 text = '\n'.join(lines) + '\n'
-with open(OUT, 'w', newline='\n', encoding='utf-8') as f:
+os.makedirs(os.path.dirname(OUT), exist_ok=True); f = open(OUT, 'w', newline='\n', encoding='utf-8')
+with f:
     f.write(text)
 print('%s: %d trees, %d skills, %d ranks, %d lines, %d bytes' % (OUT, len(trees), len(skills), len(ranks), len(lines), len(text)))

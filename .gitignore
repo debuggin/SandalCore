@@ -97,7 +97,8 @@ install_manifest.txt
 Makefile
 
 # --- vcpkg & third-party dependencies ---
-/third_party/CUE4Parse/
+/build/third_party/
+/build/gen/
 vcpkg_installed/
 vcpkg-manifest-install.log
 
@@ -524,18 +525,8 @@ certs/*.srl
 # =============================================================================
 # 11. EXTRACTED GAME DATA & GENERATED SOURCES (EXTRACT_GAME_DATA.BAT)
 # =============================================================================
-# --- Local game-install extraction outputs ---
-/fixtures/region/riverlands_rects.json
-/fixtures/region/riverlands_zoi_rects.json
-/tests/fixtures/region/riverlands_rects.json
-/tests/fixtures/region/riverlands_zoi_rects.json
-/server/worldd/spawns/garden_defs.h
-/server/worldd/spawns/region_data.h
-/server/worldd/stats/testdata/corpus.txt
-/server/worldd/tests/gear_fixture.h
-/server/worldd/tests/talent_fixture.sql
-/server/worldd/tests/tooltip_key.h
-/server/worldd/world/node_constants.h
-/server/worldd/world/zoi_surface_table.h
-/services/internal/citynode/constants_gen.go
-/tools/mapc/region_rects.tsv
+# --- Local game-install extraction outputs (relocated to /build/gen/, /build/venv/, /build/pycache/) ---
+/build/gen/
+/build/venv/
+/build/pycache/
+/build/pytest_cache/

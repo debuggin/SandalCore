@@ -12,8 +12,18 @@ import (
 	"testing"
 )
 
-// The corpus file is shared with the C++ test: libs/aocstats/testdata/corpus.txt.
-var corpusPath = filepath.Join("..", "..", "..", "libs", "aocstats", "testdata", "corpus.txt")
+// The corpus file is shared with the C++ test: build/gen/fixtures/corpus.txt.
+var corpusPath = func() string {
+	p := filepath.Join("..", "..", "..", "build", "gen", "fixtures", "corpus.txt")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	alt := filepath.Join("..", "..", "..", "..", "..", "build", "gen", "fixtures", "corpus.txt")
+	if _, err := os.Stat(alt); err == nil {
+		return alt
+	}
+	return p
+}()
 
 // TestCorpusReplay runs the committed corpus through the Go engine, as the C++ test runs it through
 // its own: it needs no content.db.

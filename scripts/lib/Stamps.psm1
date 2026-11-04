@@ -18,7 +18,7 @@ function Get-SandalStageGraph {
         'region'      = @{ Upstream = @('database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') + $schema }
         'headers'     = @{ Upstream = @('config', 'region'); Inputs = $schema }
         'fixtures'    = @{ Upstream = @('database'); Inputs = @('tools/schemagen/gen_talent_fixture.py', 'tools/schemagen/gen_gear_fixture.py', 'tools/schemagen/gen_tooltips.py', 'services/internal/statprog') }
-        'navbuild'    = @{ Upstream = @('headers'); Inputs = @('libs/aocnav', 'tools/navbuild', 'third_party/recastnavigation', 'vcpkg.json') }
+        'navbuild'    = @{ Upstream = @('headers'); Inputs = @('libs/aocnav', 'tools/navbuild', 'build/third_party/recastnavigation', 'vcpkg.json') }
         'roads'       = @{ Upstream = @('region'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc', 'services/cmd/contentc', 'services/internal/content') }
         'townfloors'  = @{ Upstream = @(); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
         'townlayouts' = @{ Upstream = @('database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc', 'tools/schemagen/gen_town_layouts.py', 'config/seeds/citynode_seed.json') }
@@ -34,7 +34,7 @@ function Get-SandalStageOrder {
 
 function Test-StageInputFileIncluded {
     param([System.IO.FileInfo]$File)
-    if ($File.FullName -match '[\\/](bin|obj|build|__pycache__|\.git)[\\/]') { return $false }
+    if ($File.FullName -match '[\\/](bin|obj|__pycache__|\.git)[\\/]') { return $false }
     return ($File.Name -notlike '*_test.go' -and $File.Name -notlike '*.md' -and $File.Name -notlike '*.pyc' -and $File.Name -notin @('CMakeLists.txt', 'region_rects.tsv'))
 }
 

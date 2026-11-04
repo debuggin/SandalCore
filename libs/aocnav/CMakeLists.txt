@@ -2,7 +2,28 @@
 # Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
-set(RECAST_DIR "${PROJECT_SOURCE_DIR}/third_party/recastnavigation")
+get_filename_component(_SANDAL_BUILD_ROOT "${CMAKE_BINARY_DIR}/.." ABSOLUTE)
+if(EXISTS "${_SANDAL_BUILD_ROOT}/third_party/recastnavigation/Recast/CMakeLists.txt")
+    set(RECAST_DIR "${_SANDAL_BUILD_ROOT}/third_party/recastnavigation")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/../build/third_party/recastnavigation/Recast/CMakeLists.txt")
+    get_filename_component(RECAST_DIR "${CMAKE_SOURCE_DIR}/../build/third_party/recastnavigation" ABSOLUTE)
+else()
+    set(RECAST_DIR "${CMAKE_SOURCE_DIR}/build/third_party/recastnavigation")
+endif()
+
+if(NOT EXISTS "${RECAST_DIR}/Recast/CMakeLists.txt")
+    set(_FETCH_RECAST_SCRIPT "${CMAKE_SOURCE_DIR}/scripts/lib/fetch_recastnavigation.ps1")
+    if(NOT EXISTS "${_FETCH_RECAST_SCRIPT}" AND EXISTS "${CMAKE_SOURCE_DIR}/../scripts/lib/fetch_recastnavigation.ps1")
+        get_filename_component(_FETCH_RECAST_SCRIPT "${CMAKE_SOURCE_DIR}/../scripts/lib/fetch_recastnavigation.ps1" ABSOLUTE)
+    endif()
+    execute_process(
+        COMMAND pwsh -NoProfile -File "${_FETCH_RECAST_SCRIPT}" -DestDir "${RECAST_DIR}"
+        RESULT_VARIABLE _rc
+    )
+    if(NOT _rc EQUAL 0)
+        message(FATAL_ERROR "Failed to fetch recastnavigation into ${RECAST_DIR} (exit ${_rc})")
+    endif()
+endif()
 
 add_library(recast_detour STATIC
     "${RECAST_DIR}/Recast/Source/Recast.cpp"

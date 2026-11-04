@@ -72,8 +72,8 @@ class Region:
     """The footprint and the ZOI of a point, from the JSON the generators read (rows of 8,192 cm for the lookups)."""
 
     def __init__(self, root=ROOT):
-        r = json.load(open(os.path.join(root, 'tests', 'fixtures', 'region', 'riverlands_rects.json')))
-        z = json.load(open(os.path.join(root, 'tests', 'fixtures', 'region', 'riverlands_zoi_rects.json')))
+        r = json.load(open(os.path.join(root, 'build', 'gen', 'fixtures', 'region', 'riverlands_rects.json')))
+        z = json.load(open(os.path.join(root, 'build', 'gen', 'fixtures', 'region', 'riverlands_zoi_rects.json')))
         self.rects = [tuple(int(v) for v in q) for q in r['rects_xy_cm']]
         self.zois = [(int(q['guid']), q['name'], [tuple(int(v) for v in a) for a in q['rects_xy_cm']]) for q in z['zois']]
         self.rows = {}

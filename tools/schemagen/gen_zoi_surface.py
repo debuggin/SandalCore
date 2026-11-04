@@ -40,7 +40,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
-OUT = os.path.join(ROOT, 'server', 'world', 'world', 'zoi_surface_table.h')
+OUT = os.path.join(ROOT, 'build', 'gen', 'world', 'world', 'zoi_surface_table.h')
 DEFAULT_CHUNKS = os.environ.get('AOC_ZOI_CHUNKS', '')
 CELLS = 64
 CHUNK_CM = 32768

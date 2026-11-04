@@ -3,10 +3,10 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
 #ifndef TALENT_FIXTURE_PATH
-#define TALENT_FIXTURE_PATH "server/world/tests/talent_fixture.sql"
+#define TALENT_FIXTURE_PATH "build/gen/world/tests/talent_fixture.sql"
 #endif
 #ifndef STATS_CORPUS_PATH
-#define STATS_CORPUS_PATH "libs/aocstats/testdata/corpus.txt"
+#define STATS_CORPUS_PATH "build/gen/fixtures/corpus.txt"
 #endif
 
 #include "session/player_world.h"
