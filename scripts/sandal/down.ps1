@@ -34,9 +34,9 @@ function Resolve-DownOptions {
 }
 
 function Build-ComposeDownArguments {
-    param([string]$ComposeFile, [bool]$IncludeVolumes)
+    param([string]$ComposeFile, [string]$EnvFile, [bool]$IncludeVolumes)
     $cmdArgs = [System.Collections.Generic.List[string]]::new()
-    $cmdArgs.AddRange([string[]]@('compose', '-f', $ComposeFile, 'down', '--remove-orphans'))
+    $cmdArgs.AddRange([string[]]@('compose', '-f', $ComposeFile, '--env-file', $EnvFile, 'down', '--remove-orphans'))
     # WHY: Protect persistent PostgreSQL/Redis volumes unless -Volumes is explicitly requested.
     if ($IncludeVolumes) {
         $cmdArgs.Add('-v')
@@ -55,10 +55,14 @@ if (-not (Get-Command Get-SandalStageOrder -ErrorAction SilentlyContinue)) {
 }
 
 $opts = Resolve-DownOptions -BaseVolumes ([bool]$Volumes) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
-$composeRel = 'src/deploy/compose.yml'
-$composeArgs = Build-ComposeDownArguments -ComposeFile $composeRel -IncludeVolumes $opts.Volumes
+$composeFile = Join-Path $rootPath 'deploy\compose.yml'
+$envFile = Join-Path $rootPath 'deploy\.env'
+$composeArgs = Build-ComposeDownArguments -ComposeFile $composeFile -EnvFile $envFile -IncludeVolumes $opts.Volumes
 
 if (-not $opts.DryRun) {
+    if (-not (Test-Path -LiteralPath $composeFile -PathType Leaf)) {
+        $null = Sync-SandalDeployStage -RepoRoot $rootPath
+    }
     Push-Location $rootPath
     try {
         & docker @composeArgs
@@ -73,11 +77,13 @@ if (-not $opts.DryRun) {
 $payload = [ordered]@{
     ok                = $true
     command           = 'down'
+    status            = if ($opts.DryRun) { 'dry-run' } else { 'ready' }
     volumes           = [bool]$opts.Volumes
     volumes_protected = (-not [bool]$opts.Volumes)
     dry_run           = [bool]$opts.DryRun
     no_color          = $useNoColor
-    compose_file      = $composeRel
+    env_path          = $envFile
+    compose_file      = $composeFile
     docker_args       = $composeArgs
 }
 

@@ -36,10 +36,10 @@ param(
     [string]   $ContentDb = $env:AOC_CONTENT_DB,
     [string]   $ClientConfig = $env:AOC_CLIENT_CONFIG,
     [string]   $ZoiChunks = $env:AOC_ZOI_CHUNKS,
-    [int]      $Jobs      = 1,
     [string[]] $Only,
     [switch]   $Strict
 )
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 if (-not $ContentDb) { $ContentDb = Join-Path $root 'dist\content\content.db' }

@@ -1,6 +1,7 @@
 #Requires -Version 7.2
 [CmdletBinding()]
 param(
+    [Alias('CertsDir')]
     [string]$OutputDir = '',
     [switch]$Force,
     [switch]$DryRun,
@@ -29,7 +30,7 @@ function Resolve-CertsOptions {
     for ($i = 0; $i -lt $RawArgs.Count; $i++) {
         $arg = $RawArgs[$i]
         switch -Regex ($arg) {
-            '^(-OutputDir|--output-dir|-o)$' {
+            '^(-OutputDir|--output-dir|-o|-CertsDir|--certs-dir)$' {
                 if (($i + 1) -lt $RawArgs.Count) { $i++; $out = $RawArgs[$i] }
             }
             '^(-Force|--force|-f)$'   { $frc = $true }

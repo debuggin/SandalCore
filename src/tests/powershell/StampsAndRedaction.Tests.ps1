@@ -37,35 +37,25 @@ Import-Module $script:ManifestPath -Force -DisableNameChecking
 
 function New-StampTestFixture {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-stamp-red-' + [guid]::NewGuid().ToString('N'))
-    $baseFiles = @{
-        'config/layouts/aoc.usmap'                 = 'usmap-v1'
-        'tools/mapc/Program.cs'                    = 'class Mapc {}'
-        'services/cmd/contentc/main.go'            = 'package main'
-        'services/go.mod'                          = 'module sandal/services'
-        'tools/schemagen/gen_zoi_surface.py'       = 'print("zoi")'
-        'tools/schemagen/gen_region_rects.py'      = 'print("rects")'
-        'tools/schemagen/gen_region.py'            = 'print("region")'
-        'tools/schemagen/gen_node_constants.py'    = 'print("nodes")'
-        'tools/schemagen/gen_gm_garden.py'         = 'print("garden")'
-        'tools/schemagen/gen_tooltips.py'          = 'print("tooltips")'
-        'tools/schemagen/gen_gear_fixture.py'      = 'print("gear")'
-        'tools/schemagen/gen_talent_fixture.py'    = 'print("talent")'
-        'tools/schemagen/gen_town_layouts.py'      = 'print("layouts")'
-        'config/seeds/citynode_seed.json'          = '{"nodes":{}}'
-        'libs/aocnav/nav.cpp'                      = 'int nav = 1;'
-        'tools/navbuild/main.cpp'                  = 'int main() { return 0; }'
+    $files = @{
+        'src/config/layouts/aoc.usmap'                  = 'usmap-v1'
+        'src/tools/mapc/Program.cs'                     = 'class Mapc {}'
+        'src/server/services/cmd/contentc/main.go'      = 'package main'
+        'src/server/services/go.mod'                    = 'module sandal/services'
+        'src/tools/schemagen/gen_zoi_surface.py'        = 'print("zoi")'
+        'src/tools/schemagen/gen_region_rects.py'       = 'print("rects")'
+        'src/tools/schemagen/gen_region.py'             = 'print("region")'
+        'src/tools/schemagen/gen_node_constants.py'     = 'print("nodes")'
+        'src/tools/schemagen/gen_gm_garden.py'          = 'print("garden")'
+        'src/tools/schemagen/gen_tooltips.py'           = 'print("tooltips")'
+        'src/tools/schemagen/gen_gear_fixture.py'       = 'print("gear")'
+        'src/tools/schemagen/gen_talent_fixture.py'     = 'print("talent")'
+        'src/tools/schemagen/gen_town_layouts.py'       = 'print("layouts")'
+        'src/config/seeds/citynode_seed.json'           = '{"nodes":{}}'
+        'src/libs/aocnav/nav.cpp'                       = 'int nav = 1;'
+        'src/tools/navbuild/main.cpp'                   = 'int main() { return 0; }'
         'build/third_party/recastnavigation/recast.cpp' = 'int rc = 1;'
-        'vcpkg.json'                               = '{"name":"sandal"}'
-    }
-    $files = @{}
-    foreach ($entry in $baseFiles.GetEnumerator()) {
-        $files[$entry.Key] = $entry.Value
-        if ($entry.Key -notlike 'build/*') {
-            $files["src/$($entry.Key)"] = $entry.Value
-        }
-        if ($entry.Key -like 'services/*') {
-            $files["src/server/$($entry.Key)"] = $entry.Value
-        }
+        'src/vcpkg.json'                                = '{"name":"sandal"}'
     }
     foreach ($entry in $files.GetEnumerator()) {
         $full = Join-Path $root ($entry.Key -replace '/', [System.IO.Path]::DirectorySeparatorChar)
@@ -118,10 +108,8 @@ Describe 'SandalCore SHA-256 Stamp DAG, Secret Redaction & Polyglot Stage Gate V
                     throw 'Expected command salt mutation to produce a distinct SHA-256 stamp.'
                 }
 
-                foreach ($relGo in @('services\cmd\contentc\main.go', 'src\services\cmd\contentc\main.go', 'src\server\services\cmd\contentc\main.go')) {
-                    $goFile = Join-Path $tmpRepo $relGo
-                    [System.IO.File]::WriteAllText($goFile, 'package main // mutated', [System.Text.UTF8Encoding]::new($false))
-                }
+                $goFile = Join-Path $tmpRepo 'src\server\services\cmd\contentc\main.go'
+                [System.IO.File]::WriteAllText($goFile, 'package main // mutated', [System.Text.UTF8Encoding]::new($false))
                 if (Test-SandalStageUpToDate -Stage 'database' -RepoRoot $tmpRepo) {
                     throw 'Expected tracked file mutation to flip Test-SandalStageUpToDate to $false (cache miss).'
                 }
@@ -161,7 +149,7 @@ Describe 'SandalCore SHA-256 Stamp DAG, Secret Redaction & Polyglot Stage Gate V
 
             $tmpDir = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-leak-' + [guid]::NewGuid().ToString('N'))
             try {
-                $cfgRel = if ((Get-Command Test-SandalContentLeaks).Definition -match 'src[\\/]config') { 'src\config' } else { 'config' }
+                $cfgRel = 'src\config'
                 $cfgDir = Join-Path $tmpDir $cfgRel
                 $null = New-Item -ItemType Directory -Path $cfgDir -Force
                 $sampleFile = Join-Path $cfgDir 'sample.txt'
@@ -172,12 +160,16 @@ Describe 'SandalCore SHA-256 Stamp DAG, Secret Redaction & Polyglot Stage Gate V
                     throw "Expected 2 content leak violations (PEM + PE32+ literal), got $($leaks.Count)"
                 }
 
-                $envPath = Join-Path $tmpDir '.env'
+                $null = New-Item -ItemType Directory -Path (Join-Path $tmpDir 'deploy') -Force
+                $envPath = Join-Path $tmpDir 'deploy\.env'
                 [System.IO.File]::WriteAllLines($envPath, @('AOC_ENV=dev', 'POSTGRES_PASSWORD=CHANGE_ME_NOW'), [System.Text.UTF8Encoding]::new($false))
                 $null = Initialize-SandalEnv -EnvPath $envPath -SecretKeys @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN')
                 $envMap = Get-SandalEnvMap -EnvPath $envPath
                 if ($envMap['POSTGRES_PASSWORD'] -notmatch '^[0-9a-f]{64}$' -or $envMap['AOC_SERVICE_TOKEN'] -notmatch '^[0-9a-f]{64}$') {
                     throw 'Expected Initialize-SandalEnv to replace CHANGE_ME and missing keys with 64-hex CSPRNG secrets.'
+                }
+                if (Test-Path -LiteralPath (Join-Path $tmpDir '.env')) {
+                    throw 'Expected Initialize-SandalEnv on deploy/.env to leave 0 .env file in repo root.'
                 }
             } finally {
                 if (Test-Path -LiteralPath $tmpDir) {

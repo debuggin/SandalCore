@@ -170,6 +170,8 @@ function Resolve-GameRoot([string]$candidate) {
     $c = $candidate.Trim().Trim('"').TrimEnd('\', '/')
     if ($c -match '(?i)\.exe$') {            # Game\AOC\Binaries\Win64\x.exe -> Game
         $c = Split-Path (Split-Path (Split-Path (Split-Path $c -Parent) -Parent) -Parent) -Parent
+    } elseif ($c -match '(?i)[\\/]AOC[\\/]Content[\\/]Paks$') {
+        $c = Split-Path (Split-Path (Split-Path $c -Parent) -Parent) -Parent
     }
     foreach ($try in @($c, (Join-Path $c 'Game'))) {
         if ($try -and (Test-Path -LiteralPath (Join-Path $try $PaksRel)) -and (Test-Path -LiteralPath (Join-Path $try $DbcRel))) { return [IO.Path]::GetFullPath($try).TrimEnd('') }
@@ -195,6 +197,8 @@ function Find-GameRoot {
     $candidates = New-Object System.Collections.Generic.List[object]
     function Add-Candidate([string]$path, [string]$via) { $candidates.Add([pscustomobject]@{ Path = $path; Via = $via }) }
     if ($env:GAME_ROOT) { Add-Candidate $env:GAME_ROOT 'GAME_ROOT' }
+    if ($env:AOC_PAKS_DIR) { Add-Candidate $env:AOC_PAKS_DIR 'AOC_PAKS_DIR' }
+    if ($env:AOC_CLIENT_PATH) { Add-Candidate $env:AOC_CLIENT_PATH 'AOC_CLIENT_PATH' }
     foreach ($cfg in @((Join-Path $repoRoot 'src\config\paths.json'), (Join-Path $repoRoot 'dist\Release\config\paths.json'))) {
         if (Test-Path -LiteralPath $cfg) {
             try { $exe = (Get-Content -LiteralPath $cfg -Raw | ConvertFrom-Json).game_executable; if ($exe) { Add-Candidate ([string]$exe) 'game_executable in paths.json' } } catch { }

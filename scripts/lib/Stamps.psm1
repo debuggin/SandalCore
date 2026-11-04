@@ -41,7 +41,6 @@ function Test-StageInputFileIncluded {
 function Add-StageInputHashes {
     param([string]$RepoRoot, [string]$RelPath, [System.Collections.Generic.List[string]]$Records)
     $target = Join-Path $RepoRoot ($RelPath -replace '/', [System.IO.Path]::DirectorySeparatorChar)
-    if (-not (Test-Path -LiteralPath $target) -and $RelPath.StartsWith('src/')) { $fallback = Join-Path $RepoRoot (($RelPath -replace '^src/(?:server/)?', '') -replace '/', [System.IO.Path]::DirectorySeparatorChar); if (Test-Path -LiteralPath $fallback) { $target = $fallback } }
     if (Test-Path -LiteralPath $target -PathType Leaf) {
         $Records.Add("FILE:${RelPath}=$((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant())")
         return
@@ -142,5 +141,6 @@ Export-ModuleMember -Function @(
     'Get-SandalStageGraph', 'Get-SandalStageOrder', 'Compute-SandalStageHash',
     'Read-SandalStageStamp', 'Write-SandalStageStamp', 'Test-SandalStageUpToDate',
     'Invoke-WithHeavyOperationLock', 'New-SandalCsprngSecret', 'Get-SandalEnvMap',
-    'Set-SandalSecretAcl', 'Initialize-SandalEnv'
+    'Set-SandalSecretAcl', 'Initialize-SandalEnv', 'Sync-SandalDistStage',
+    'Sync-SandalDeployStage', 'Ensure-SandalGameData'
 )

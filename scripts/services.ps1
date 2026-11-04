@@ -37,7 +37,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$compose = Join-Path $root 'src\deploy\docker-compose.yml'
+Import-Module (Join-Path $root 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
+$compose = Join-Path $root 'deploy\compose.yml'
+$envFile = Join-Path $root 'deploy\.env'
 $svc = Join-Path $root 'src\server\services'
 $out = Join-Path $root 'dist\services'
 $logs = Join-Path $out 'logs'
@@ -131,17 +133,24 @@ try {
     $env:COMPOSE_CONVERT_WINDOWS_PATHS = '1'
     switch ($Action) {
         'up' {
-            & docker compose -f $compose up -d --wait
+            $null = Sync-SandalDeployStage -RepoRoot $root
+            if (-not (Test-Path -LiteralPath $contentDb)) {
+                & (Join-Path $root 'scripts\extract_game_data.ps1')
+            }
+            & docker compose -f $compose --env-file $envFile up -d --wait
             if ($LASTEXITCODE -ne 0) { throw 'docker compose up failed (is Docker running?)' }
             # The init script creates aoc_test only on a fresh volume; make sure it exists.
-            $exists = & docker compose -f $compose exec -T postgres psql -U aoc -d aoc -tAc "SELECT 1 FROM pg_database WHERE datname = 'aoc_test'"
+            $exists = & docker compose -f $compose --env-file $envFile exec -T postgres psql -U aoc -d aoc -tAc "SELECT 1 FROM pg_database WHERE datname = 'aoc_test'"
             if ("$exists".Trim() -ne '1') {
-                & docker compose -f $compose exec -T postgres psql -U aoc -d aoc -c 'CREATE DATABASE aoc_test'
+                & docker compose -f $compose --env-file $envFile exec -T postgres psql -U aoc -d aoc -c 'CREATE DATABASE aoc_test'
                 if ($LASTEXITCODE -ne 0) { throw 'could not create the aoc_test database' }
             }
         }
         'down' {
-            & docker compose -f $compose down
+            if (-not (Test-Path -LiteralPath $compose)) {
+                $null = Sync-SandalDeployStage -RepoRoot $root
+            }
+            & docker compose -f $compose --env-file $envFile down
             if ($LASTEXITCODE -ne 0) { throw 'docker compose down failed' }
         }
         'test' {
@@ -203,8 +212,16 @@ try {
                 throw "$worldd is missing: build it with scripts\build.ps1 -Target worldd"
             }
             if (-not (Test-Path $contentDb)) {
+                & (Join-Path $root 'scripts\extract_game_data.ps1')
+            }
+            if (-not (Test-Path $contentDb)) {
                 $who = 'the character service will refuse to create characters and worldd every login'
                 Write-Host "warning: $contentDb does not exist: $who. Build it: cd src\server\services; go run ./cmd/contentc (src\server\services\README.md, 'Content')" -ForegroundColor Yellow
+            }
+            $serverCrt = Join-Path $root 'dist\certs\server.crt'
+            $localhostCrt = Join-Path $root 'dist\Release\certs\localhost.crt'
+            if (-not (Test-Path -LiteralPath $serverCrt) -and -not (Test-Path -LiteralPath $localhostCrt)) {
+                $null = & (Join-Path $root 'scripts\sandal\certs.ps1') -OutputDir (Join-Path $root 'dist\certs') -RepoRoot $root -Json
             }
 
             # Check running processes first to prevent compiling locked binaries
@@ -223,11 +240,6 @@ try {
             $env:AOC_MESH_STATIC_WORLD = ''
 
             New-Item -ItemType Directory -Force $logs | Out-Null
-
-            # Configured once for silent background execution
-            $startup = New-CimInstance -ClassName Win32_ProcessStartup -Property @{
-                ShowWindow = 0
-            } -ClientOnly
 
             try {
                 foreach ($name in $names) {

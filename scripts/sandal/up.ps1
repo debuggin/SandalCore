@@ -58,9 +58,9 @@ function Get-UpStageReadiness {
 }
 
 function Build-ComposeUpArguments {
-    param([string]$ComposeFile, [string]$ProfileName, [bool]$IsDetach)
+    param([string]$ComposeFile, [string]$EnvFile, [string]$ProfileName, [bool]$IsDetach)
     $cmdArgs = [System.Collections.Generic.List[string]]::new()
-    $cmdArgs.AddRange([string[]]@('compose', '-f', $ComposeFile))
+    $cmdArgs.AddRange([string[]]@('compose', '-f', $ComposeFile, '--env-file', $EnvFile))
     if ($ProfileName -ne 'default') {
         $cmdArgs.AddRange([string[]]@('--profile', $ProfileName))
     }
@@ -82,16 +82,14 @@ if (-not (Get-Command Get-SandalStageOrder -ErrorAction SilentlyContinue)) {
 }
 
 $opts = Resolve-UpOptions -BaseProfile $Profile -BaseDetach ([bool]$Detach) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
-$envPath = Join-Path $rootPath '.env'
-$templatePath = Join-Path $rootPath 'src\config\sandal.env.example'
-$composeRel = 'src/deploy/compose.yml'
-$composeArgs = Build-ComposeUpArguments -ComposeFile $composeRel -ProfileName $opts.Profile -IsDetach $opts.Detach
+$deploySync = Sync-SandalDeployStage -RepoRoot $rootPath
+$composeFile = Join-Path $rootPath 'deploy\compose.yml'
+$envFile = Join-Path $rootPath 'deploy\.env'
+$composeArgs = Build-ComposeUpArguments -ComposeFile $composeFile -EnvFile $envFile -ProfileName $opts.Profile -IsDetach $opts.Detach
 $stageChecks = @(Get-UpStageReadiness -RootPath $rootPath)
 $allUpToDate = (@($stageChecks | Where-Object { -not $_.up_to_date }).Count -eq 0)
 
-$envResult = $null
 if (-not $opts.DryRun) {
-    $envResult = Initialize-SandalEnv -EnvPath $envPath -TemplatePath $templatePath
     Push-Location $rootPath
     try {
         & docker @composeArgs
@@ -106,13 +104,14 @@ if (-not $opts.DryRun) {
 $payload = [ordered]@{
     ok                = $true
     command           = 'up'
+    status            = if ($opts.DryRun) { 'dry-run' } else { 'ready' }
     profile           = $opts.Profile
     detach            = [bool]$opts.Detach
     dry_run           = [bool]$opts.DryRun
     no_color          = $useNoColor
-    env_path          = $envPath
-    env_initialized   = ($null -ne $envResult)
-    compose_file      = $composeRel
+    env_path          = $envFile
+    env_initialized   = ($null -ne $deploySync)
+    compose_file      = $composeFile
     docker_args       = $composeArgs
     stages_up_to_date = $allUpToDate
     stages            = $stageChecks

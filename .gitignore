@@ -19,6 +19,8 @@ build/
 /build/
 dist/
 /dist/
+deploy/
+/deploy/
 MinSizeRel/
 out/
 RelWithDebInfo/
@@ -498,8 +500,8 @@ emulator.db*
 *.token
 .env
 .env.*
-config/*.local.json
-config/local.json
+/src/config/*.local.json
+/src/config/local.json
 src/config/*.local.json
 src/config/local.json
 ics_auth_token.txt
@@ -509,28 +511,26 @@ ics_auth_token.txt
 *.pem
 .key
 .pem
-/config/certs/*.bak-*
-/config/certs/*.crt
-/config/certs/*.key
-/config/certs/*.p12
-/config/certs/*.pfx
-/config/certs/*.srl
 /src/config/certs/*.bak-*
 /src/config/certs/*.crt
 /src/config/certs/*.key
 /src/config/certs/*.p12
 /src/config/certs/*.pfx
 /src/config/certs/*.srl
-certs/*.bak-*
-certs/*.crt
-certs/*.srl
+/dist/certs/*.bak-*
+/dist/certs/*.crt
+/dist/certs/*.key
+/dist/certs/*.p12
+/dist/certs/*.pfx
+/dist/certs/*.srl
+dist/certs/*.bak-*
+dist/certs/*.crt
+dist/certs/*.srl
 # WHY: Preserve tracked CA bundle and certificate documentation
-!/config/certs/amazon_ca_bundle.pem
-!/config/certs/README.md
 !/src/config/certs/amazon_ca_bundle.pem
 !/src/config/certs/README.md
-!certs/amazon_ca_bundle.pem
-!certs/README.md
+!/dist/certs/amazon_ca_bundle.pem
+!/dist/certs/README.md
 
 # =============================================================================
 # 11. EXTRACTED GAME DATA & GENERATED SOURCES (EXTRACT_GAME_DATA.BAT)

@@ -12,7 +12,6 @@ function Test-SandalTestsDirectoryBounds {
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations
     )
     $testsDir = Join-Path $RootPath 'src\tests'
-    if (-not (Test-Path -LiteralPath $testsDir)) { $testsDir = Join-Path $RootPath 'tests' }
     if (-not (Test-Path -LiteralPath $testsDir)) {
         return
     }
@@ -49,7 +48,7 @@ function Test-SandalGitTrackedAssets {
         if ($norm -match '\.(pak|utoc|ucas|pdb|dmp|pcapng)$') {
             $Violations.Add("Forbidden binary asset tracked in git: $norm")
         }
-        if ($norm -match '^(?:certs|config/certs|src/config/certs|dist/certs)/.*\.key$' -or $norm -in @('config/sandal.env', 'src/config/sandal.env')) {
+        if ($norm -match '^(?:src/config/certs|dist/certs)/.*\.key$' -or $norm -in @('src/config/sandal.env', 'deploy/.env')) {
             $Violations.Add("Forbidden secret or environment file tracked in git: $norm")
         }
     }
@@ -65,8 +64,6 @@ function Test-SandalContentLeaks {
     $scanDirs = @(
         (Join-Path $RootPath 'src\config'),
         (Join-Path $RootPath 'src\tests'),
-        (Join-Path $RootPath 'config'),
-        (Join-Path $RootPath 'tests'),
         (Join-Path $RootPath 'scripts\checks')
     )
     foreach ($dir in $scanDirs) {
@@ -92,7 +89,6 @@ function Test-SandalEnvSchemaTemplates {
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations
     )
     $configDir = Join-Path $RootPath 'src\config'
-    if (-not (Test-Path -LiteralPath $configDir)) { $configDir = Join-Path $RootPath 'config' }
     $examplePath = Join-Path $configDir 'sandal.env.example'
     $profilesDir = Join-Path $configDir 'profiles'
     if (-not (Test-Path -LiteralPath $examplePath)) {
@@ -140,8 +136,9 @@ function Test-SandalRootDirectoryHierarchy {
         [AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations = $null
     )
     $findings = [System.Collections.Generic.List[string]]::new()
-    $allowedRootDirs = @('src', 'build', 'dist', 'deploy', 'docs', 'scripts', '.github', '.git', '.agents', '.claude', '_workspace', '.beads', 'graphify-out')
-    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'AGENTS.md', 'GEMINI.md', 'sandal.ps1', '.gitignore', '.gitattributes', '.editorconfig', '.graphifyignore', '.env')
+    $allowedRootDirs = @('src', 'build', 'dist', 'deploy', 'docs', 'scripts', '.github')
+    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'GEMINI.md', '.gitignore', '.gitattributes', '.editorconfig', '.graphifyignore', 'sandal.ps1')
+    $stealthDirs = @('.git', '.agents', '.claude', '_workspace', '.beads', 'graphify-out')
     foreach ($bat in @(Get-ChildItem -LiteralPath $RepoRoot -Filter '*.bat' -File -Force -ErrorAction SilentlyContinue)) {
         $findings.Add("NoRootBatFiles: forbidden root .bat file: $($bat.Name)")
     }
@@ -151,7 +148,7 @@ function Test-SandalRootDirectoryHierarchy {
         if (Test-Path -LiteralPath (Join-Path $RepoRoot '.beads') -PathType Container) { Remove-Item -LiteralPath $gateLock -Force -ErrorAction SilentlyContinue }
         else { $findings.Add('NoRootCacheOrGateLocks: forbidden root cache or lock artifact: .beads.gate.lock') }
     }
-    foreach ($rootSub in @('src/tools', 'src/clients', 'tools', 'launcher')) {
+    foreach ($rootSub in @('src/tools', 'src/clients')) {
         $parentDir = Join-Path $RepoRoot ($rootSub -replace '/', [System.IO.Path]::DirectorySeparatorChar)
         if (-not (Test-Path -LiteralPath $parentDir -PathType Container)) { continue }
         foreach ($projDir in @(Get-ChildItem -LiteralPath $parentDir -Directory -Force | Where-Object { $_.Name -ine 'control-app' })) {
@@ -171,7 +168,7 @@ function Test-SandalRootDirectoryHierarchy {
     }
     if (Test-Path -LiteralPath (Join-Path $RepoRoot 'src') -PathType Container) {
         foreach ($dir in @(Get-ChildItem -LiteralPath $RepoRoot -Directory -Force -ErrorAction SilentlyContinue)) {
-            if ($dir.Name -notin $allowedRootDirs -and $dir.Name -notin $retiredMicroFolders -and $dir.Name -ne '.pytest_cache') {
+            if ($dir.Name -notin $allowedRootDirs -and $dir.Name -notin $stealthDirs -and $dir.Name -notin $retiredMicroFolders -and $dir.Name -ne '.pytest_cache') {
                 $findings.Add("RootDirectoryAllowlist: unexpected root directory: $($dir.Name)")
             }
         }

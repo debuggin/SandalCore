@@ -44,7 +44,7 @@ function Initialize-SandalEnv {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$EnvPath,
-        [string]$TemplatePath = '',
+        [Alias('ExamplePath')][string]$TemplatePath = '',
         [string[]]$SecretKeys = @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY'),
         [switch]$Force
     )
@@ -85,9 +85,119 @@ function Initialize-SandalEnv {
     return [pscustomobject]@{ EnvPath = $EnvPath; GeneratedKeys = $generated.ToArray(); Acl = $aclInfo }
 }
 
+function Copy-SandalConfigStage {
+    param([string]$SourceDir, [string]$DestDir)
+    if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) { return }
+    $null = New-Item -ItemType Directory -Path $DestDir -Force
+    foreach ($item in @(Get-ChildItem -LiteralPath $SourceDir -Recurse -File)) {
+        if ($item.Name -like '*.local.json' -or $item.Name -eq 'local.json') { continue }
+        $rel = [System.IO.Path]::GetRelativePath($SourceDir, $item.FullName)
+        $target = Join-Path $DestDir $rel
+        $parent = Split-Path -Parent $target
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
+        Copy-Item -LiteralPath $item.FullName -Destination $target -Force
+    }
+}
+
+function Copy-SandalSqlFiles {
+    param([string]$SourceDir, [string]$DestDir)
+    $null = New-Item -ItemType Directory -Path $DestDir -Force
+    if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) { return }
+    foreach ($sql in @(Get-ChildItem -LiteralPath $SourceDir -Filter '*.sql' -File)) {
+        Copy-Item -LiteralPath $sql.FullName -Destination (Join-Path $DestDir $sql.Name) -Force
+    }
+}
+
+function Sync-SandalDistStage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [string]$Config = 'Release'
+    )
+    $distDir = Join-Path $RepoRoot 'dist'
+    foreach ($sub in @('config', 'certs', 'logs', 'content', 'nav', 'sql\migrations', 'sql\seed', "$Config\config", "$Config\sql\migrations")) {
+        $null = New-Item -ItemType Directory -Path (Join-Path $distDir $sub) -Force
+    }
+    $srcConfig = Join-Path $RepoRoot 'src\config'
+    Copy-SandalConfigStage -SourceDir $srcConfig -DestDir (Join-Path $distDir 'config')
+    Copy-SandalConfigStage -SourceDir $srcConfig -DestDir (Join-Path $distDir "$Config\config")
+
+    $srcMigrations = Join-Path $RepoRoot 'src\server\services\sql\migrations'
+    Copy-SandalSqlFiles -SourceDir $srcMigrations -DestDir (Join-Path $distDir 'sql\migrations')
+    Copy-SandalSqlFiles -SourceDir $srcMigrations -DestDir (Join-Path $distDir "$Config\sql\migrations")
+    Copy-SandalSqlFiles -SourceDir (Join-Path $RepoRoot 'src\config\hotfixes') -DestDir (Join-Path $distDir 'sql\seed')
+    Copy-SandalSqlFiles -SourceDir (Join-Path $RepoRoot 'src\deploy\postgres\init') -DestDir (Join-Path $distDir 'sql\seed')
+
+    $caBundle = Join-Path $RepoRoot 'src\config\certs\amazon_ca_bundle.pem'
+    if (Test-Path -LiteralPath $caBundle -PathType Leaf) {
+        Copy-Item -LiteralPath $caBundle -Destination (Join-Path $distDir 'certs\amazon_ca_bundle.pem') -Force
+    }
+    return [pscustomobject]@{ DistDir = $distDir; Config = $Config }
+}
+
+function Sync-SandalDeployStage {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    $srcDeploy = Join-Path $RepoRoot 'src\deploy'
+    $destDeploy = Join-Path $RepoRoot 'deploy'
+    $null = New-Item -ItemType Directory -Path $destDeploy -Force
+    if (Test-Path -LiteralPath $srcDeploy -PathType Container) {
+        foreach ($item in @(Get-ChildItem -LiteralPath $srcDeploy -Recurse -File -Force)) {
+            $rel = [System.IO.Path]::GetRelativePath($srcDeploy, $item.FullName)
+            $target = Join-Path $destDeploy $rel
+            $parent = Split-Path -Parent $target
+            if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
+            Copy-Item -LiteralPath $item.FullName -Destination $target -Force
+        }
+    }
+    $envPath = Join-Path $destDeploy '.env'
+    $examplePath = Join-Path $RepoRoot 'src\config\sandal.env.example'
+    $envInfo = Initialize-SandalEnv -EnvPath $envPath -ExamplePath $examplePath
+    return [pscustomobject]@{ DeployDir = $destDeploy; EnvPath = $envPath; Env = $envInfo }
+}
+
+function Ensure-SandalGameData {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [string]$GameRoot = '',
+        [switch]$CheckOnly
+    )
+    $contentDb = Join-Path $RepoRoot 'dist\content\content.db'
+    if ((Test-Path -LiteralPath $contentDb -PathType Leaf) -and ((Get-Item -LiteralPath $contentDb).Length -gt 0)) {
+        return [pscustomobject]@{ Ready = $true; Extracted = $false; ContentDb = $contentDb }
+    }
+    $extractScript = Join-Path $RepoRoot 'scripts\extract_game_data.ps1'
+    if (-not (Test-Path -LiteralPath $extractScript -PathType Leaf)) {
+        return [pscustomobject]@{ Ready = $false; Extracted = $false; ContentDb = $contentDb }
+    }
+    $extractArgs = @()
+    if (-not [string]::IsNullOrWhiteSpace($GameRoot)) { $extractArgs += @('-GameRoot', $GameRoot) }
+    $clientAvailable = $false
+    if ($CheckOnly) {
+        try {
+            $null = & $extractScript -CheckOnly @extractArgs *>$null
+            $clientAvailable = ($LASTEXITCODE -eq 0)
+        } catch {
+            $clientAvailable = $false
+        }
+    }
+    if ($clientAvailable -or (-not $CheckOnly)) {
+        & $extractScript @extractArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "Game data extraction failed (exit code $LASTEXITCODE)."
+        }
+    }
+    $ready = (Test-Path -LiteralPath $contentDb -PathType Leaf) -and ((Get-Item -LiteralPath $contentDb).Length -gt 0)
+    return [pscustomobject]@{ Ready = $ready; Extracted = $ready; ContentDb = $contentDb }
+}
+
 Export-ModuleMember -Function @(
     'New-SandalCsprngSecret',
     'Get-SandalEnvMap',
     'Set-SandalSecretAcl',
-    'Initialize-SandalEnv'
+    'Initialize-SandalEnv',
+    'Sync-SandalDistStage',
+    'Sync-SandalDeployStage',
+    'Ensure-SandalGameData'
 )

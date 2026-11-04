@@ -228,4 +228,47 @@ Describe 'Test-SandalRootDirectoryHierarchy' {
             if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
         }
     }
+
+    It 'accepts deploy as a valid 4-Tier root directory and rejects root .env, CMakeLists.txt, and .beads.gate.lock (category = root-layout)' {
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-hierarchy-4tier-' + [guid]::NewGuid().ToString('N'))
+        try {
+            foreach ($tierDir in @('src', 'build', 'dist', 'deploy', 'docs', 'scripts', '.github')) {
+                $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot $tierDir) -Force
+            }
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'README.md') -Value '# SandalCore' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'sandal.ps1') -Value '# CLI' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'deploy\.env') -Value 'AOC_ENV=dev' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'deploy\compose.yml') -Value 'name: sandalcore' -Encoding utf8
+
+            $validViolations = [System.Collections.Generic.List[string]]::new()
+            $validFindings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot -Violations $validViolations
+            if (@($validFindings).Count -ne 0 -or $validViolations.Count -ne 0) {
+                throw "Expected 0 findings when 4-Tier root directories including deploy are present, got: $($validFindings -join '; ')"
+            }
+
+            Set-Content -LiteralPath (Join-Path $tmpRoot '.env') -Value 'POSTGRES_PASSWORD=leaked' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'CMakeLists.txt') -Value 'cmake_minimum_required(VERSION 3.28)' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $tmpRoot '.beads.gate.lock') -Value 'locked' -Encoding utf8
+            $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'stray_root_folder') -Force
+
+            $negViolations = [System.Collections.Generic.List[string]]::new()
+            $negFindings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot -Violations $negViolations
+            $joined = $negFindings -join "`n"
+            if ($joined -match 'RootDirectoryAllowlist:.*deploy') {
+                throw "Expected deploy to be accepted as a valid 4-Tier root directory, got: $joined"
+            }
+            foreach ($expectedPattern in @(
+                'RootFileAllowlist: unexpected root file: \.env',
+                'RootFileAllowlist: unexpected root file: CMakeLists\.txt',
+                'NoRootCacheOrGateLocks: forbidden root cache or lock artifact: \.beads\.gate\.lock',
+                'RootDirectoryAllowlist: unexpected root directory: stray_root_folder'
+            )) {
+                if ($joined -notmatch $expectedPattern) {
+                    throw "Expected root-layout finding matching '$expectedPattern', got: $joined"
+                }
+            }
+        } finally {
+            if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
 }

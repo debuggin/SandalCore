@@ -4,7 +4,6 @@ param(
     [switch]$DryRun,
     [switch]$Json,
     [switch]$NoColor,
-    [string]$RepoRoot = '',
     [string[]]$Arguments = @(),
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$RemainingArgs = @()
@@ -93,11 +92,6 @@ $rawArgs = @($Arguments) + @($RemainingArgs)
 $useJson = [bool]($Json -or $inheritedJson -or ($rawArgs -contains '-Json') -or ($rawArgs -contains '--json'))
 $useDryRun = [bool]($DryRun -or $inheritedDryRun -or ($rawArgs -contains '-DryRun') -or ($rawArgs -contains '--dry-run'))
 $useNoColor = [bool]($NoColor -or $inheritedNoColor -or ($rawArgs -contains '-NoColor') -or ($rawArgs -contains '--no-color') -or -not [string]::IsNullOrEmpty($env:NO_COLOR))
-
-$rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
-if (-not (Get-Command Get-SandalStageOrder -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $rootPath 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
-}
 
 $toolchains = @(
     (Test-DoctorPwsh),

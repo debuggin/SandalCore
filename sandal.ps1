@@ -13,7 +13,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:ValidCommands = @('up', 'down', 'extract', 'doctor', 'build', 'test', 'certs', 'status', 'help')
+$script:ValidCommands = @('doctor', 'status', 'up', 'down', 'extract', 'certs', 'build', 'deploy', 'test', 'run', 'install-wsl-docker', 'help')
 $script:UseNoColor = [bool]($NoColor -or -not [string]::IsNullOrEmpty($env:NO_COLOR))
 
 function Write-SandalUsage {
@@ -22,13 +22,13 @@ function Write-SandalUsage {
         Write-Output (@{
             ok       = $true
             command  = 'help'
-            usage    = 'pwsh ./sandal.ps1 <up|down|extract|doctor|build|test|certs|status|help> [-Json] [-NoColor] [-DryRun]'
+            usage    = 'pwsh ./sandal.ps1 <doctor|status|up|down|extract|certs|build|deploy|test|run|install-wsl-docker|help> [-Json] [-NoColor] [-DryRun]'
             commands = $script:ValidCommands
         } | ConvertTo-Json -Depth 4)
         return
     }
     Write-Output 'Usage: pwsh ./sandal.ps1 <command> [-Json] [-NoColor] [-DryRun]'
-    Write-Output 'Commands: up, down, extract, doctor, build, test, certs, status, help'
+    Write-Output 'Commands: doctor, status, up, down, extract, certs, build, deploy, test, run, install-wsl-docker, help'
 }
 
 function Invoke-SandalStatus {
@@ -63,19 +63,19 @@ function Invoke-SandalSubcommand {
         Invoke-SandalStatus -RepoRoot $RepoRoot -AsJson:$AsJson
         return
     }
-    $targetScript = Join-Path $RepoRoot "scripts/sandal/${Subcommand}.ps1"
-    if (Test-Path -LiteralPath $targetScript -PathType Leaf) {
-        $global:LASTEXITCODE = 0
-        & $targetScript -DryRun:$IsDryRun -Json:$AsJson -NoColor:$script:UseNoColor -Arguments $SubcommandArgs
-        $code = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
-        exit $code
+    $scriptFile = if ($Subcommand -eq 'install-wsl-docker') { 'Install-WslDocker.ps1' } else { "${Subcommand}.ps1" }
+    $targetScript = Join-Path $RepoRoot "scripts/sandal/${scriptFile}"
+    if (-not (Test-Path -LiteralPath $targetScript -PathType Leaf)) {
+        throw "Subcommand script not found: $targetScript"
     }
-    $payload = @{ ok = $true; command = $Subcommand; dry_run = [bool]$IsDryRun; no_color = $script:UseNoColor }
-    if ($AsJson) {
-        Write-Output ($payload | ConvertTo-Json -Depth 4)
+    $global:LASTEXITCODE = 0
+    if ($Subcommand -eq 'install-wsl-docker') {
+        & $targetScript -DryRun:$IsDryRun -Json:$AsJson -NoColor:$script:UseNoColor @SubcommandArgs
     } else {
-        Write-Output "SandalCore '$Subcommand' ready (dry_run=$([bool]$IsDryRun))."
+        & $targetScript -DryRun:$IsDryRun -Json:$AsJson -NoColor:$script:UseNoColor -Arguments $SubcommandArgs
     }
+    $code = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+    exit $code
 }
 
 $normCmd = if ($Help -or $Command -in @('--help', '-h', '/?')) { 'help' } else { $Command.ToLowerInvariant() }

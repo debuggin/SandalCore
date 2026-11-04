@@ -252,6 +252,9 @@ if ($dllSource -and (Test-Path $dllSource)) {
     Write-Host "Runtime DLLs: $copied copied, $kept already up to date ($dllSource)"
 }
 
+Import-Module (Join-Path $repoRoot 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
+$null = Sync-SandalDistStage -RepoRoot $repoRoot -Config $Config
+
 # -- Run tests if requested ----------------------------------------------
 # Delegate to run_tests.ps1: it builds every CMake target (including the
 # aocnet library and every src/libs/aocnet/tests + src/tools test executable,

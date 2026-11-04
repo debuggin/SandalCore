@@ -94,14 +94,29 @@ function Get-ExtractStagePlan {
 }
 
 function Invoke-ExtractStagePipeline {
-    param([string]$RootPath, [string]$TargetOutDir, [object[]]$StagePlan, [bool]$IsDataFree)
+    param([string]$RootPath, [string]$TargetOutDir, [object[]]$StagePlan, [pscustomobject]$Options)
     if (-not (Test-Path -LiteralPath $TargetOutDir)) {
         $null = New-Item -ItemType Directory -Path $TargetOutDir -Force
     }
-    if ($IsDataFree) {
+    if ($Options.DataFree) {
         $standinPath = Join-Path $TargetOutDir 'verify-standin.json'
         $standinJson = (@{ mode = 'verify-standin'; data_free = $true } | ConvertTo-Json -Compress)
         [System.IO.File]::WriteAllText($standinPath, $standinJson, [System.Text.UTF8Encoding]::new($false))
+    } else {
+        $extractScript = Join-Path $RootPath 'scripts\extract_game_data.ps1'
+        if (Test-Path -LiteralPath $extractScript -PathType Leaf) {
+            $extArgs = @()
+            if (-not [string]::IsNullOrWhiteSpace($Options.PakDir)) {
+                $extArgs += @('-GameRoot', $Options.PakDir)
+            }
+            if ($Options.Force) {
+                $extArgs += '-Force'
+            }
+            & $extractScript @extArgs
+            if ($LASTEXITCODE -ne 0) {
+                throw "extract_game_data.ps1 failed with exit code $LASTEXITCODE."
+            }
+        }
     }
     $results = [System.Collections.Generic.List[object]]::new()
     foreach ($item in $StagePlan) {
@@ -154,7 +169,7 @@ if (-not $opts.DryRun) {
         $null = New-Item -ItemType Directory -Path $stampDir -Force
     }
     $executedStages = @(Invoke-WithHeavyOperationLock -Operation 'sandal-extract' -LockFilePath $lockFile -ScriptBlock {
-        Invoke-ExtractStagePipeline -RootPath $rootPath -TargetOutDir $targetOutDir -StagePlan $stagePlan -IsDataFree $opts.DataFree
+        Invoke-ExtractStagePipeline -RootPath $rootPath -TargetOutDir $targetOutDir -StagePlan $stagePlan -Options $opts
     })
 }
 

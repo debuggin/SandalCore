@@ -26,13 +26,19 @@ function Invoke-SandalLogRedaction {
 }
 
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+$script:SandalCli = Join-Path $script:RepoRoot 'sandal.ps1'
+$script:ManifestPath = Join-Path $script:RepoRoot 'scripts\lib\SandalCore.psd1'
 $script:PublicCheckScript = Join-Path $script:RepoRoot 'scripts\checks\public_check.ps1'
+Import-Module $script:ManifestPath -Force -DisableNameChecking
 . $script:PublicCheckScript
 
 Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redaction' {
     BeforeAll {
         $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+        $script:SandalCli = Join-Path $script:RepoRoot 'sandal.ps1'
+        $script:ManifestPath = Join-Path $script:RepoRoot 'scripts\lib\SandalCore.psd1'
         $script:PublicCheckScript = Join-Path $script:RepoRoot 'scripts\checks\public_check.ps1'
+        Import-Module $script:ManifestPath -Force -DisableNameChecking
         . $script:PublicCheckScript
     }
 
@@ -45,8 +51,8 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
 
             $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-check-' + [guid]::NewGuid().ToString('N'))
             try {
-                $testsRel = if ((Get-Command Test-SandalTestsDirectoryBounds).Definition -match 'src[\\/]tests') { 'src\tests' } else { 'tests' }
-                $cfgRel = if ((Get-Command Test-SandalEnvSchemaTemplates).Definition -match 'src[\\/]config') { 'src\config' } else { 'config' }
+                $testsRel = 'src\tests'
+                $cfgRel = 'src\config'
                 $testsDir = Join-Path $tmpRoot $testsRel
                 $cfgBase = Join-Path $tmpRoot $cfgRel
                 $cfgDir = Join-Path $cfgBase 'profiles'
@@ -144,6 +150,68 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
             foreach ($secret in @('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9', 'zenith-cliff-secret-token-999', 'master_key_value_12345', 'redis_secret_pw', $pem)) {
                 if ($scrubbed.Contains($secret)) {
                     throw "Secret '$secret' was not redacted from output: $scrubbed"
+                }
+            }
+        }
+    }
+
+    Context '4-Tier Dist/Deploy Stage Materialization & Turnkey CLI DryRun Chain' {
+        It 'stages dist/ and deploy/ hermetically via Sync-SandalDistStage and Sync-SandalDeployStage without creating a root .env' {
+            $tmpRepo = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-stage-' + [guid]::NewGuid().ToString('N'))
+            try {
+                foreach ($dir in @('src\config\hotfixes', 'src\server\services\sql\migrations', 'src\deploy\postgres\init')) {
+                    $null = New-Item -ItemType Directory -Path (Join-Path $tmpRepo $dir) -Force
+                }
+                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\realm.json'), '{"realm_name":"Verra"}')
+                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\override.local.json'), '{"debug":true}')
+                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\server\services\sql\migrations\001_schema.sql'), 'SELECT 1;')
+                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\hotfixes\002_seed.sql'), 'SELECT 2;')
+                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\deploy\compose.yml'), 'name: sandalcore')
+                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\sandal.env.example'), "AOC_ENV=dev`nPOSTGRES_PASSWORD=CHANGE_ME")
+
+                $null = Sync-SandalDistStage -RepoRoot $tmpRepo -Config 'Release'
+                $deployStage = Sync-SandalDeployStage -RepoRoot $tmpRepo
+
+                if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo 'dist\config\realm.json') -PathType Leaf)) {
+                    throw 'Expected src/config/realm.json to be staged to dist/config/realm.json'
+                }
+                if (Test-Path -LiteralPath (Join-Path $tmpRepo 'dist\config\override.local.json')) {
+                    throw 'Expected *.local.json to be excluded from dist/config/'
+                }
+                if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo 'dist\sql\migrations\001_schema.sql') -PathType Leaf)) {
+                    throw 'Expected migrations/*.sql to be staged to dist/sql/migrations/'
+                }
+                if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo 'dist\sql\seed\002_seed.sql') -PathType Leaf)) {
+                    throw 'Expected hotfixes/*.sql to be staged to dist/sql/seed/'
+                }
+                if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo 'deploy\compose.yml') -PathType Leaf)) {
+                    throw 'Expected src/deploy/compose.yml to be materialized to deploy/compose.yml'
+                }
+                if (Test-Path -LiteralPath (Join-Path $tmpRepo '.env')) {
+                    throw 'Expected 0 .env file in repo root'
+                }
+                $envMap = Get-SandalEnvMap -EnvPath $deployStage.EnvPath
+                foreach ($key in @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY')) {
+                    if ($envMap[$key] -notmatch '^[0-9a-f]{64}$') {
+                        throw "Expected 64-hex CSPRNG secret for $key in deploy/.env, got '$($envMap[$key])'"
+                    }
+                }
+            } finally {
+                if (Test-Path -LiteralPath $tmpRepo) {
+                    Remove-Item -LiteralPath $tmpRepo -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        It 'verifies sandal.ps1 build, deploy, test, run, up, and down -DryRun -Json exit 0 and emit valid JSON payloads' {
+            foreach ($verb in @('build', 'deploy', 'test', 'run', 'up', 'down')) {
+                $out = (@(& pwsh -NoProfile -File $script:SandalCli $verb -DryRun -Json) -join "`n")
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Expected sandal.ps1 $verb -DryRun -Json to exit 0, got $LASTEXITCODE"
+                }
+                $payload = $out | ConvertFrom-Json
+                if (-not $payload.ok -or $payload.command -ne $verb -or -not $payload.dry_run) {
+                    throw "Invalid JSON payload for sandal.ps1 $verb -DryRun -Json: $out"
                 }
             }
         }
