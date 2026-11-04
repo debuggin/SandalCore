@@ -37,8 +37,8 @@ import gen_zoi_surface as Z  # noqa: E402  (the chunk decoder)
 # Cyb x C.O.A
 
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
-RECTS_JSON = os.path.join(ROOT, 'fixtures', 'region', 'riverlands_rects.json')
-ZOI_JSON = os.path.join(ROOT, 'fixtures', 'region', 'riverlands_zoi_rects.json')
+RECTS_JSON = os.path.join(ROOT, 'tests', 'fixtures', 'region', 'riverlands_rects.json')
+ZOI_JSON = os.path.join(ROOT, 'tests', 'fixtures', 'region', 'riverlands_zoi_rects.json')
 DEFAULT_CHUNKS = os.environ.get('AOC_ZOI_CHUNKS') or os.path.join(ROOT, 'dist', 'content', 'zoi_chunks')
 DEFAULT_DB = os.environ.get('AOC_CONTENT_DB') or os.path.join(ROOT, 'dist', 'content', 'content.db')
 

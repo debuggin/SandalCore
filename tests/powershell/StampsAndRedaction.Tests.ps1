@@ -38,7 +38,7 @@ Import-Module $script:ManifestPath -Force -DisableNameChecking
 function New-StampTestFixture {
     $root = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-stamp-red-' + [guid]::NewGuid().ToString('N'))
     $files = @{
-        'layouts/aoc.usmap'                        = 'usmap-v1'
+        'config/layouts/aoc.usmap'                 = 'usmap-v1'
         'tools/mapc/Program.cs'                    = 'class Mapc {}'
         'services/cmd/contentc/main.go'            = 'package main'
         'services/go.mod'                          = 'module sandal/services'

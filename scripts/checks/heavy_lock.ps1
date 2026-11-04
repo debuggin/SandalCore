@@ -95,7 +95,7 @@ function Invoke-WithHeavyLock {
         [string]$MutexName = 'Global\SandalCore_HeavyOperation_Lock'
     )
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-    $lockFile = Join-Path $repoRoot 'data\.stamps\heavy_lock.json'
+    $lockFile = Join-Path $repoRoot 'dist\.stamps\heavy_lock.json'
     $mutex = try {
         [System.Threading.Mutex]::new($false, $MutexName)
     } catch [System.UnauthorizedAccessException] {

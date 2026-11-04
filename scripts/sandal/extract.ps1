@@ -148,7 +148,7 @@ $stagePlan = @(Get-ExtractStagePlan -RootPath $rootPath -ForceRun $opts.Force)
 
 $executedStages = @()
 if (-not $opts.DryRun) {
-    $lockFile = Join-Path $rootPath 'data\.stamps\extract.lock.json'
+    $lockFile = Join-Path $rootPath 'dist\.stamps\extract.lock.json'
     $stampDir = Split-Path -Parent $lockFile
     if (-not (Test-Path -LiteralPath $stampDir)) {
         $null = New-Item -ItemType Directory -Path $stampDir -Force

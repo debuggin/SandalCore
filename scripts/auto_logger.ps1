@@ -6,6 +6,7 @@ param(
     [int]$IntervalMs = 1000
 )
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = "SilentlyContinue"
 
 # Single-instance check
@@ -22,7 +23,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptDir
 $DistDir = Join-Path $RepoRoot "dist\Release"
 $DistLogsDir = Join-Path $DistDir "logs"
-$PrivateLogsRoot = if ($env:AOC_MIRROR_LOGS_ROOT) { $env:AOC_MIRROR_LOGS_ROOT } else { Join-Path $RepoRoot "logs\mirror" }   # a second copy of every run
+$PrivateLogsRoot = if ($env:AOC_MIRROR_LOGS_ROOT) { $env:AOC_MIRROR_LOGS_ROOT } else { Join-Path $RepoRoot "dist\logs\mirror" }   # a second copy of every run
 $ClientLogPath = Join-Path $env:LOCALAPPDATA "AOC\Saved\Logs\AOC.log"
 $CefLogPath = Join-Path $env:LOCALAPPDATA "AOC\Saved\Logs\cef3.log"
 $GoLogsDir = Join-Path $RepoRoot "dist\services\logs"
@@ -128,7 +129,7 @@ while ($true) {
             Write-Host "[AutoLogger] Tracking run: $currentRunId" -ForegroundColor Green
 
             $targetDirs = @(
-                (Join-Path $RepoRoot "logs\$currentRunId"),
+                (Join-Path $RepoRoot "dist\logs\$currentRunId"),
                 (Join-Path $PrivateLogsRoot $currentRunId),
                 (Join-Path $DistLogsDir $currentRunId)
             )
@@ -137,7 +138,7 @@ while ($true) {
             }
         }
 
-        $repoDest = Join-Path $RepoRoot "logs\$currentRunId"
+        $repoDest = Join-Path $RepoRoot "dist\logs\$currentRunId"
         $privateDest = Join-Path $PrivateLogsRoot $currentRunId
         $distDest = Join-Path $DistLogsDir $currentRunId
         $allDests = @($repoDest, $privateDest, $distDest)

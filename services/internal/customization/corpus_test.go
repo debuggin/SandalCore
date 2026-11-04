@@ -4,7 +4,7 @@
 
 package customization
 
-// The corpus shared with worldd: fixtures/customization_cases.json. Each case is a character's race, gender, class
+// The corpus shared with worldd: tests/fixtures/customization_cases.json. Each case is a character's race, gender, class
 // and customization JSON with what the service says of it (accepted) and what worldd's customization_from_json
 // builds from the text that is stored (worldd). The same file is read by worldd's test_worldd_character_setup, so
 // the rule that matters, "a character the service accepts joins", is held on both sides: here Check (with Normalize)
@@ -64,7 +64,7 @@ func (c corpusCase) sent() string {
 
 func loadCorpus(t *testing.T) []corpusCase {
 	t.Helper()
-	raw, err := os.ReadFile("../../../fixtures/customization_cases.json")
+	raw, err := os.ReadFile("../../../tests/fixtures/customization_cases.json")
 	if err != nil {
 		t.Fatal(err)
 	}

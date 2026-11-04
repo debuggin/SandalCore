@@ -85,7 +85,7 @@ func TestGatewayAndMeshDefaults(t *testing.T) {
 	if c.GatewayICSAddr != "127.0.0.1:443" || c.GatewayGRPCAddr != "127.0.0.1:50050" {
 		t.Errorf("gateway addresses = %q %q", c.GatewayICSAddr, c.GatewayGRPCAddr)
 	}
-	if c.GatewayTLSCert != "certs/server.pem" || c.GatewayTLSKey != "certs/server.key" {
+	if c.GatewayTLSCert != "dist/certs/server.pem" || c.GatewayTLSKey != "dist/certs/server.key" {
 		t.Errorf("gateway TLS = %q %q", c.GatewayTLSCert, c.GatewayTLSKey)
 	}
 	if c.TicketTTL != 2*time.Minute {

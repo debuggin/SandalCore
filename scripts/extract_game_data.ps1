@@ -29,7 +29,7 @@
     dist\content\client_config\, zoi_chunks\   the game's Config files and its zone-of-influence grid (read by the generators below)
     the sources the build includes             world\zoi_surface_table.h, node_constants.h, constants_gen.go, region_data.h, garden_defs.h,
                                                region_rects.tsv, the Riverlands' rectangles, and the test fixtures (listed in .gitignore)
-    dist\content\aoc.usmap                     a copy of layouts\aoc.usmap, where the tools look for it
+    dist\content\aoc.usmap                     a copy of config\layouts\aoc.usmap, where the tools look for it
 
   It needs: the game (Steam, or GAME_ROOT / -GameRoot), the .NET 8 SDK (mapc), Go (contentc), Python 3.10+ (the generators), and Visual Studio 2022 Build Tools
   with CMake and vcpkg (aoc_navbuild, built by scripts\build.ps1). The first run fetches CUE4Parse (tools\mapc\fetch_cue4parse.ps1) and restores mapc's NuGet
@@ -75,7 +75,7 @@ $distDir   = Join-Path $repoRoot 'dist'
 $outDir    = Join-Path $distDir 'content'
 $stampDir  = Join-Path $outDir '.extract'
 $toolsDir  = Join-Path $distDir 'tools'
-$usmapSrc  = Join-Path $repoRoot 'layouts\aoc.usmap'
+$usmapSrc  = Join-Path $repoRoot 'config\layouts\aoc.usmap'
 $mapcDll         = Join-Path $repoRoot 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll'
 $npcAbilitiesDll = Join-Path $repoRoot 'build\dotnet\bin\npcabilities\Release\net8.0\npcabilities.dll'
 $itemNamesDll    = Join-Path $repoRoot 'build\dotnet\bin\itemnames\Release\net8.0\itemnames.dll'
@@ -378,7 +378,7 @@ $missing = @()
 if (-not $python) { $missing += 'Python 3.10 or newer (python on PATH)' }
 if (-not $dotnet) { $missing += 'the .NET 8 SDK (dotnet)' }
 if (-not $go)     { $missing += 'Go (go on PATH)' }
-if (-not (Test-Path -LiteralPath $usmapSrc)) { $missing += 'layouts\aoc.usmap (part of the repository)' }
+if (-not (Test-Path -LiteralPath $usmapSrc)) { $missing += 'config\layouts\aoc.usmap (part of the repository)' }
 if ($missing.Count -gt 0) {
     Fail ('Missing: ' + ($missing -join '; ') + '.') @(
         'Run scripts\install_dependencies.ps1 to install what is missing, open a new window (so the new PATH applies), then run this again.',
@@ -497,7 +497,7 @@ $steps = @(
                 '--artisan-curves', (Join-Path $outDir 'artisan_curves.tsv'), '--item-names', (Join-Path $outDir 'item_names.tsv'), '--out', (Join-Path $outDir 'content.db')) 'contentc'
         } finally { $env:GOMEMLIMIT = $savedLimit }
     } },
-    @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'fixtures\region\riverlands_rects.json', 'fixtures\region\riverlands_zoi_rects.json', 'server\world\spawns\region_data.h', 'tools\mapc\region_rects.tsv'); Run = {
+    @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'tests\fixtures\region\riverlands_rects.json', 'tests\fixtures\region\riverlands_zoi_rects.json', 'server\world\spawns\region_data.h', 'tools\mapc\region_rects.tsv'); Run = {
         Assert-Files @('dist\content\content.db', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'export-zoi', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_zoi'
         $gen = Join-Path $repoRoot 'tools\schemagen'

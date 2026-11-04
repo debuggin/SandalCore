@@ -12,17 +12,17 @@ function Get-SandalStageGraph {
         'tools/schemagen/gen_gear_fixture.py', 'tools/schemagen/gen_talent_fixture.py'
     )
     return [ordered]@{
-        'config'      = @{ Upstream = @(); Inputs = @('layouts/aoc.usmap', 'tools/mapc') }
-        'curves'      = @{ Upstream = @(); Inputs = @('layouts/aoc.usmap', 'tools/mapc') }
-        'database'    = @{ Upstream = @('config', 'curves'); Inputs = @('layouts/aoc.usmap', 'services/cmd/contentc', 'services/internal/content', 'services/internal/designdb', 'services/internal/usmap', 'services/internal/aocexpr', 'services/internal/chardef', 'services/internal/statprog', 'services/go.mod', 'services/go.sum') }
-        'region'      = @{ Upstream = @('database'); Inputs = @('layouts/aoc.usmap', 'tools/mapc') + $schema }
+        'config'      = @{ Upstream = @(); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
+        'curves'      = @{ Upstream = @(); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
+        'database'    = @{ Upstream = @('config', 'curves'); Inputs = @('config/layouts/aoc.usmap', 'services/cmd/contentc', 'services/internal/content', 'services/internal/designdb', 'services/internal/usmap', 'services/internal/aocexpr', 'services/internal/chardef', 'services/internal/statprog', 'services/go.mod', 'services/go.sum') }
+        'region'      = @{ Upstream = @('database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') + $schema }
         'headers'     = @{ Upstream = @('config', 'region'); Inputs = $schema }
         'fixtures'    = @{ Upstream = @('database'); Inputs = @('tools/schemagen/gen_talent_fixture.py', 'tools/schemagen/gen_gear_fixture.py', 'tools/schemagen/gen_tooltips.py', 'services/internal/statprog') }
         'navbuild'    = @{ Upstream = @('headers'); Inputs = @('libs/aocnav', 'tools/navbuild', 'third_party/recastnavigation', 'vcpkg.json') }
-        'roads'       = @{ Upstream = @('region'); Inputs = @('layouts/aoc.usmap', 'tools/mapc', 'services/cmd/contentc', 'services/internal/content') }
-        'townfloors'  = @{ Upstream = @(); Inputs = @('layouts/aoc.usmap', 'tools/mapc') }
-        'townlayouts' = @{ Upstream = @('database'); Inputs = @('layouts/aoc.usmap', 'tools/mapc', 'tools/schemagen/gen_town_layouts.py', 'deploy/citynode_seed.json') }
-        'navmesh'     = @{ Upstream = @('region', 'navbuild', 'townfloors', 'townlayouts', 'database'); Inputs = @('layouts/aoc.usmap', 'tools/mapc') }
+        'roads'       = @{ Upstream = @('region'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc', 'services/cmd/contentc', 'services/internal/content') }
+        'townfloors'  = @{ Upstream = @(); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
+        'townlayouts' = @{ Upstream = @('database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc', 'tools/schemagen/gen_town_layouts.py', 'deploy/citynode_seed.json') }
+        'navmesh'     = @{ Upstream = @('region', 'navbuild', 'townfloors', 'townlayouts', 'database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
     }
 }
 
@@ -77,7 +77,7 @@ function Compute-SandalStageHash {
 function Read-SandalStageStamp {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Stage, [Parameter(Mandatory)][string]$RepoRoot)
-    $jsonPath = Join-Path $RepoRoot "data/.stamps/${Stage}.json"
+    $jsonPath = Join-Path $RepoRoot "dist/.stamps/${Stage}.json"
     if (-not (Test-Path -LiteralPath $jsonPath -PathType Leaf)) { return $null }
     return ([System.IO.File]::ReadAllText($jsonPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json)
 }
@@ -86,7 +86,7 @@ function Write-SandalStageStamp {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Stage, [Parameter(Mandatory)][string]$RepoRoot, [string]$InputHash = '')
     if ([string]::IsNullOrWhiteSpace($InputHash)) { $InputHash = Compute-SandalStageHash -Stage $Stage -RepoRoot $RepoRoot }
-    $stampDir = Join-Path $RepoRoot 'data/.stamps'
+    $stampDir = Join-Path $RepoRoot 'dist/.stamps'
     if (-not (Test-Path -LiteralPath $stampDir)) { $null = New-Item -ItemType Directory -Path $stampDir -Force }
     $stamp = [pscustomobject]@{ stage = $Stage; input_hash = $InputHash; updated_at = [DateTime]::UtcNow.ToString('o') }
     [System.IO.File]::WriteAllText((Join-Path $stampDir "${Stage}.json"), ($stamp | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))

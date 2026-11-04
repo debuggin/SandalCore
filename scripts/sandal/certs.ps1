@@ -169,7 +169,7 @@ if (-not (Get-Command Set-SandalSecretAcl -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $rootPath 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
 }
 
-$defaultCertsDir = Join-Path $rootPath 'certs'
+$defaultCertsDir = Join-Path $rootPath 'dist\certs'
 $opts = Resolve-CertsOptions -BaseOutDir $OutputDir -BaseForce ([bool]$Force) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
 $targetDir = if ($opts.OutputDir) { [System.IO.Path]::GetFullPath($opts.OutputDir) } else { $defaultCertsDir }
 

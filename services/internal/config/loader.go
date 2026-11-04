@@ -76,8 +76,8 @@ func LoadWithEnvFile(path string) (Config, error) {
 		GatewayICSAddr:    str("AOC_GATEWAY_ICS_ADDR", "127.0.0.1:443"),
 		GatewayGRPCAddr:   str("AOC_GATEWAY_GRPC_ADDR", "127.0.0.1:50050"),
 		GatewayGRPCPublic: str("AOC_GATEWAY_GRPC_PUBLIC", "") == "1",
-		GatewayTLSCert:    str("AOC_GATEWAY_TLS_CERT", "certs/server.pem"),
-		GatewayTLSKey:     str("AOC_GATEWAY_TLS_KEY", "certs/server.key"),
+		GatewayTLSCert:    str("AOC_GATEWAY_TLS_CERT", "dist/certs/server.pem"),
+		GatewayTLSKey:     str("AOC_GATEWAY_TLS_KEY", "dist/certs/server.key"),
 		TicketTTL:         duration("AOC_TICKET_TTL", 2*time.Minute),
 	}, err
 }

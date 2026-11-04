@@ -48,7 +48,7 @@ function Protect-SandalPrivateKey {
 function New-SandalLocalCaCerts {
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$CertsDir = 'certs',
+        [string]$CertsDir = 'dist/certs',
         [string]$AdvertiseIp = '127.0.0.1',
         [string]$CustomDomain = '',
         [int]$ValidityDays = 365,
@@ -113,7 +113,7 @@ function Test-SandalCustomCertBundle {
 function Ensure-SandalCerts {
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$CertsDir = 'certs',
+        [string]$CertsDir = 'dist/certs',
         [ValidateSet('local-ca', 'acme', 'custom')][string]$Mode = 'local-ca',
         [string]$AdvertiseIp = '127.0.0.1',
         [string]$CustomDomain = '',

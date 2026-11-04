@@ -107,7 +107,7 @@ Describe 'SandalCore CLI Dispatcher, WSL Docker Preflight, Heavy Lock & Legacy S
     Context 'Case 3: heavy_lock.ps1 Mutex Acquisition, Inner Return Value & Contention Timeout' {
         It 'acquires mutex, returns inner scriptblock result, and throws deterministically when contended' {
             $mutexName = 'Global\SandalCore_TestLock_' + [guid]::NewGuid().ToString('N')
-            $lockFile = Join-Path $script:RepoRoot 'data\.stamps\heavy_lock.json'
+            $lockFile = Join-Path $script:RepoRoot 'dist\.stamps\heavy_lock.json'
             $result = Invoke-WithHeavyLock -Operation 'test-heavy-lock' -MutexName $mutexName -NoWait -Action {
                 if (-not (Test-Path -LiteralPath $lockFile)) {
                     throw 'Expected heavy_lock.json to exist while lock is held.'

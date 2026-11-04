@@ -74,10 +74,10 @@ Describe 'SandalCore Public Hygiene Check, Heavy Lock & Nav Stamp Decoupling' {
     }
 
     Context 'heavy_lock.ps1 Named Mutex & Lockfile Lifecycle' {
-        It 'executes a scriptblock under Global\SandalCore_HeavyOperation_Lock and writes/cleans data/.stamps/heavy_lock.json' {
-            $dataDir = Join-Path $script:RepoRoot 'data'
-            $lockFile = Join-Path $script:RepoRoot 'data\.stamps\heavy_lock.json'
+        It 'executes a scriptblock under Global\SandalCore_HeavyOperation_Lock and writes/cleans dist/.stamps/heavy_lock.json' {
+            $lockFile = Join-Path $script:RepoRoot 'dist\.stamps\heavy_lock.json'
             $stampDir = Split-Path -Parent $lockFile
+            $stampDirExisted = Test-Path -LiteralPath $stampDir
             try {
                 if (-not (Test-Path -LiteralPath $stampDir)) {
                     $null = New-Item -ItemType Directory -Path $stampDir -Force
@@ -93,7 +93,7 @@ Describe 'SandalCore Public Hygiene Check, Heavy Lock & Nav Stamp Decoupling' {
                 $state = @{ ObservedLock = $null }
                 & $script:HeavyLockScript -Operation 'unit-test-op' -Action {
                     if (-not (Test-Path -LiteralPath $lockFile)) {
-                        throw 'Expected data/.stamps/heavy_lock.json to exist while Action is running.'
+                        throw 'Expected dist/.stamps/heavy_lock.json to exist while Action is running.'
                     }
                     $state.ObservedLock = Get-Content -LiteralPath $lockFile -Raw | ConvertFrom-Json
                 }
@@ -108,14 +108,11 @@ Describe 'SandalCore Public Hygiene Check, Heavy Lock & Nav Stamp Decoupling' {
                     throw "Expected lockfile operation 'unit-test-op', got '$($state.ObservedLock.operation)'"
                 }
                 if (Test-Path -LiteralPath $lockFile) {
-                    throw 'Expected data/.stamps/heavy_lock.json to be cleaned up after heavy_lock.ps1 completes.'
+                    throw 'Expected dist/.stamps/heavy_lock.json to be cleaned up after heavy_lock.ps1 completes.'
                 }
             } finally {
-                if ((Test-Path -LiteralPath $stampDir) -and @(Get-ChildItem -LiteralPath $stampDir -Force).Count -eq 0) {
+                if ((-not $stampDirExisted) -and (Test-Path -LiteralPath $stampDir) -and @(Get-ChildItem -LiteralPath $stampDir -Force).Count -eq 0) {
                     Remove-Item -LiteralPath $stampDir -Force -ErrorAction SilentlyContinue
-                }
-                if ((Test-Path -LiteralPath $dataDir) -and @(Get-ChildItem -LiteralPath $dataDir -Force).Count -eq 0) {
-                    Remove-Item -LiteralPath $dataDir -Force -ErrorAction SilentlyContinue
                 }
             }
         }

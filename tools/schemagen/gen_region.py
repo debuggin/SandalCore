@@ -30,8 +30,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
-RECTS_JSON = os.path.join(ROOT, 'fixtures', 'region', 'riverlands_rects.json')
-ZOI_JSON = os.path.join(ROOT, 'fixtures', 'region', 'riverlands_zoi_rects.json')
+RECTS_JSON = os.path.join(ROOT, 'tests', 'fixtures', 'region', 'riverlands_rects.json')
+ZOI_JSON = os.path.join(ROOT, 'tests', 'fixtures', 'region', 'riverlands_zoi_rects.json')
 HEADER = os.path.join(ROOT, 'server', 'world', 'spawns', 'region_data.h')
 MAPC_FILE = os.path.join(ROOT, 'tools', 'mapc', 'region_rects.tsv')
 

@@ -127,8 +127,8 @@ func TestRealGatherTables(t *testing.T) {
 		t.Errorf("Tree_Oak_Large_2 = %+v", d)
 	}
 
-	// The 439 placed nodes (fixtures/region/node_picks.json): their 58 defs are all there, with the tiers the research counted.
-	raw, err := os.ReadFile(repoFile("fixtures", "region", "node_picks.json"))
+	// The 439 placed nodes (tests/fixtures/region/node_picks.json): their 58 defs are all there, with the tiers the research counted.
+	raw, err := os.ReadFile(repoFile("tests", "fixtures", "region", "node_picks.json"))
 	if err != nil {
 		t.Skipf("no node picks: %v", err)
 	}

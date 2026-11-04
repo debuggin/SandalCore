@@ -20,6 +20,9 @@ function Test-SandalTestsDirectoryBounds {
         if ($file.Extension -ieq '.inc') {
             $Violations.Add("Forbidden .inc file in tests/: $($file.FullName)")
         }
+        if ($file.FullName -match '[\\/]fixtures[\\/]') {
+            continue
+        }
         $lineCount = @(Get-Content -LiteralPath $file.FullName).Count
         if ($lineCount -gt 800) {
             $Violations.Add("File in tests/ exceeds 800 lines ($lineCount): $($file.FullName)")
@@ -45,7 +48,7 @@ function Test-SandalGitTrackedAssets {
         if ($norm -match '\.(pak|utoc|ucas|pdb|dmp|pcapng)$') {
             $Violations.Add("Forbidden binary asset tracked in git: $norm")
         }
-        if ($norm -match '^certs/.*\.key$' -or $norm -ieq 'config/sandal.env') {
+        if ($norm -match '^(?:certs|config/certs|dist/certs)/.*\.key$' -or $norm -ieq 'config/sandal.env') {
             $Violations.Add("Forbidden secret or environment file tracked in git: $norm")
         }
     }

@@ -13,23 +13,24 @@
 #      LogAoC_NodeSpawning                     the replicator's node instantiation (stage 3)
 #
 #  Usage:
-#      .\scripts\audit_node_log.ps1                      # the newest logs\run_*\game_client.txt under the repository
+#      .\scripts\audit_node_log.ps1                      # the newest dist\logs\run_*\game_client.txt under the repository
 #      .\scripts\audit_node_log.ps1 -Log C:\path\game_client.txt
 #  Exit code 0 when there is no "Record not found: CityNodeRecord" and no NodeAudio error, 1 otherwise (2: no log).
 # ============================================================================
 [CmdletBinding()]
 param([string] $Log)
 
+Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 
 if (-not $Log) {
-    $newest = Get-ChildItem -Path (Join-Path $repoRoot 'logs') -Recurse -Filter 'game_client.txt' -ErrorAction SilentlyContinue |
+    $newest = Get-ChildItem -Path (Join-Path $repoRoot 'dist\logs') -Recurse -Filter 'game_client.txt' -ErrorAction SilentlyContinue |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($newest) { $Log = $newest.FullName }
 }
 if (-not $Log -or -not (Test-Path $Log)) {
-    Write-Output 'no client log found (pass -Log, or run the game once so logs\run_*\game_client.txt exists)'
+    Write-Output 'no client log found (pass -Log, or run the game once so dist\logs\run_*\game_client.txt exists)'
     exit 2
 }
 

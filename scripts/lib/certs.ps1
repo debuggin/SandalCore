@@ -113,7 +113,7 @@ function New-SandalCertValidationResult {
 function Confirm-SandalCerts {
     [CmdletBinding()]
     param(
-        [string]$CertsDir = 'certs',
+        [string]$CertsDir = 'dist/certs',
         [string]$AdvertiseIp = '127.0.0.1',
         [string]$CustomDomain = '',
         [scriptblock]$OpenSslRunner = $null,

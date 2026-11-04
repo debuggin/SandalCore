@@ -544,8 +544,8 @@ static void test_customization_errors() {
 
 static std::optional<std::string> read_corpus() {
   const fs::path candidates[] = {
-      fs::path("fixtures") / "customization_cases.json",
-      fs::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "fixtures" /
+      fs::path("tests") / "fixtures" / "customization_cases.json",
+      fs::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "tests" / "fixtures" /
           "customization_cases.json",
   };
   for (const fs::path &p : candidates) {
@@ -627,10 +627,10 @@ static void check_corpus_case(const nlohmann::ordered_json &c, CorpusStats &st) 
 }
 
 static void test_customization_corpus() {
-  std::printf("the customization corpus shared with the character service (fixtures/customization_cases.json)\n");
+  std::printf("the customization corpus shared with the character service (tests/fixtures/customization_cases.json)\n");
   const auto text = read_corpus();
   if (!text) {
-    std::printf("  [FAIL] fixtures/customization_cases.json is not there (looked in the working directory and by the source's place)\n");
+    std::printf("  [FAIL] tests/fixtures/customization_cases.json is not there (looked in the working directory and by the source's place)\n");
     g_fail++;
     return;
   }

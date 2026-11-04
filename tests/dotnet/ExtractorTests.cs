@@ -18,7 +18,7 @@ public sealed class ExtractorTests
         string validKey = "0x" + new string('a', 64);
         string[] cli =
         [
-            "extract-vmap", "--pak-dir", "./paks", "--usmap", "./layouts/aoc.usmap",
+            "extract-vmap", "--pak-dir", "./paks", "--usmap", "./config/layouts/aoc.usmap",
             "--aes-key", validKey, "--out-sqlite", "./out/content.db",
             "--out-nav", "./out/nav", "--max-zoom", "3", "--self-test"
         ];
@@ -26,7 +26,7 @@ public sealed class ExtractorTests
         Assert.True(selfTest);
         Assert.Equal("extract-vmap", opts.Command);
         Assert.Equal("./paks", opts.PakDir);
-        Assert.Equal("./layouts/aoc.usmap", opts.UsmapPath);
+        Assert.Equal("./config/layouts/aoc.usmap", opts.UsmapPath);
         Assert.Equal(validKey, opts.AesKeyHex);
         Assert.Equal("./out/content.db", opts.OutSqlitePath);
         Assert.Equal("./out/nav", opts.OutNavDir);
