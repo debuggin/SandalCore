@@ -106,7 +106,7 @@ function Get-GoVersion {
 }
 
 function Get-GoRequired {
-    $mod = Join-Path $repoRoot 'services\go.mod'
+    $mod = Join-Path $repoRoot 'src\server\services\go.mod'
     if (Test-Path $mod) {
         $line = Select-String -Path $mod -Pattern '^go\s+(\S+)' | Select-Object -First 1
         if ($line) { return $line.Matches[0].Groups[1].Value }
@@ -203,7 +203,7 @@ if ($CheckOnly) {
     Write-Host 'Everything required is installed.'; exit 0
 }
 if (-not $missing.Count) {
-    Write-Host 'Everything is installed. Next: scripts\build_all.ps1, then scripts\launch_worldd.bat.' -ForegroundColor Green
+    Write-Host 'Everything is installed. Next: scripts\build.ps1 -Target all, then scripts\launch_all.bat.' -ForegroundColor Green
     exit 0
 }
 
@@ -258,6 +258,6 @@ if (-not $items['Python 3.10+'] -and (Confirm-Install 'Python 3.12 (runs the gen
 
 Write-Host ''
 Write-Host 'Done. Open a NEW terminal (so PATH changes apply) and run this script with -CheckOnly to confirm.' -ForegroundColor Green
-Write-Host 'Then: scripts\build_all.ps1 (it builds the game data from your own Ashes of Creation install, then the programs; the first build downloads and compiles the C++ libraries and can take a long time),'
-Write-Host 'then: scripts\launch_worldd.bat'
+Write-Host 'Then: scripts\build.ps1 -Target all (it builds the game data from your own Ashes of Creation install, then the programs; the first build downloads and compiles the C++ libraries and can take a long time),'
+Write-Host 'then: scripts\launch_all.bat'
 exit 0

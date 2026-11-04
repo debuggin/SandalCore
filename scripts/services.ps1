@@ -7,10 +7,10 @@
     scripts\services.ps1 build   build auth, character, citynode, nodectl, quests, questctl, worldctl, charimport, mesh, gateway into dist\services
     scripts\services.ps1 run     build, then start auth, character, citynode, quests, mesh, gateway and worldd hidden; each logs
                                  to dist\services\logs\<name>.log (the previous run's: <name>.prev.log).  citynode
-                                 (Nodes 1) serves the city nodes on :50055 and applies config\seeds\citynode_seed.json once, at its
-                                 first start; dist\services\nodectl.exe is its command line (services\README.md, "City nodes").
+                                 (Nodes 1) serves the city nodes on :50055 and applies src\config\seeds\citynode_seed.json once, at its
+                                 first start; dist\services\nodectl.exe is its command line (src\server\services\README.md, "City nodes").
                                  worldctl.exe (the GM travel tools: players, places, tp, speed) talks to worldd's admin API on
-                                 :50056 (services\README.md, "GM travel tools")
+                                 :50056 (src\server\services\README.md, "GM travel tools")
                                  worldd (dist\Release\worldd.exe, scripts\build.ps1 -Target worldd) registers with mesh;
                                  there is no static world.  worldd gets
                                  --content-db dist\content\content.db (or $env:AOC_CONTENT_DB): the file
@@ -21,9 +21,9 @@
                                  the service starts but refuses to create characters, saying why
     scripts\services.ps1 stop    stop those processes, worldd included (drops the gateway's live
                                  client sessions); needs neither Go nor Docker
-    scripts\services.ps1 login   sign in with config\dev_login.local.json and save the token for tether_server
+    scripts\services.ps1 login   sign in with src\config\dev_login.local.json and save the token for tether_server
     scripts\services.ps1 down    stop the containers (data volume kept)
-  contentc, the content.db builder (plan C1), is not built or started here: see services\README.md.
+  contentc, the content.db builder (plan C1), is not built or started here: see src\server\services\README.md.
   run creates dist\services\service.token once: the internal services' shared secret, readable
   by this user only.
 #>
@@ -37,8 +37,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$compose = Join-Path $root 'deploy\docker-compose.yml'
-$svc = Join-Path $root 'services'
+$compose = Join-Path $root 'src\deploy\docker-compose.yml'
+$svc = Join-Path $root 'src\server\services'
 $out = Join-Path $root 'dist\services'
 $logs = Join-Path $out 'logs'
 
@@ -51,11 +51,11 @@ function Ensure-GoProtoGen {
     $env:Path = "$miseShims;$goBin;$env:USERPROFILE\go\bin;$env:Path"
     Push-Location $svc
     try {
-        & buf generate ../libs/aocproto/proto/internal
-        if ($LASTEXITCODE -ne 0) { throw 'buf generate ../libs/aocproto/proto/internal failed' }
-        if (Test-Path '../libs/aocproto/proto/ics_xclient.proto') {
-            & buf generate ../libs/aocproto/proto/ics_xclient.proto
-            if ($LASTEXITCODE -ne 0) { throw 'buf generate ../libs/aocproto/proto/ics_xclient.proto failed' }
+        & buf generate ../../libs/aocproto/proto/internal
+        if ($LASTEXITCODE -ne 0) { throw 'buf generate ../../libs/aocproto/proto/internal failed' }
+        if (Test-Path '../../libs/aocproto/proto/ics_xclient.proto') {
+            & buf generate ../../libs/aocproto/proto/ics_xclient.proto
+            if ($LASTEXITCODE -ne 0) { throw 'buf generate ../../libs/aocproto/proto/ics_xclient.proto failed' }
         }
     } finally {
         Pop-Location
@@ -69,7 +69,7 @@ function Ensure-GoProtoGen {
         $env:PYTHONPYCACHEPREFIX = Join-Path $root 'build\pycache'
         $ini = Join-Path $root 'dist\content\client_config\DefaultAoCRecordConstants.ini'
         if (Test-Path -LiteralPath $ini) {
-            & python (Join-Path $root 'tools\schemagen\gen_node_constants.py') --ini $ini
+            & python (Join-Path $root 'src\tools\schemagen\gen_node_constants.py') --ini $ini
             if ($LASTEXITCODE -ne 0) { throw "gen_node_constants.py failed (exit $LASTEXITCODE)" }
         }
     }
@@ -81,7 +81,8 @@ function Build {
     Push-Location $svc
     try {
         foreach ($name in 'auth', 'character', 'citynode', 'nodectl', 'quests', 'questctl', 'worldctl', 'charimport', 'mesh', 'gateway') {
-            & go build -o (Join-Path $out "$name.exe") "./cmd/$name"
+            $pkg = if ($name -eq 'quests') { './cmd/quest' } else { "./cmd/$name" }
+            & go build -o (Join-Path $out "$name.exe") $pkg
             if ($LASTEXITCODE -ne 0) { throw "go build $name failed" }
         }
     } finally { Pop-Location }
@@ -92,7 +93,7 @@ function Build {
 $worldd = Join-Path $root 'dist\Release\worldd.exe'
 $tokenFile = Join-Path $out 'service.token'
 # content.db, the file worldd values characters from and the character service checks new characters against
-# (plan C1's contentc, services\README.md "Content").
+# (plan C1's contentc, src\server\services\README.md "Content").
 $contentDb = if ($env:AOC_CONTENT_DB) { $env:AOC_CONTENT_DB } else { Join-Path $root 'dist\content\content.db' }
 
 # The auth, character, citynode, quests, mesh, gateway and worldd processes running from this
@@ -109,7 +110,7 @@ function Set-OwnerOnly($path) {
     if ($LASTEXITCODE -ne 0) { throw "could not restrict $path to ${env:USERNAME}" }
 }
 
-# The internal services' shared secret (services/internal/svcauth): 32 random
+# The internal services' shared secret (src/server/services/internal/svcauth): 32 random
 # bytes as 64 lowercase hex digits, created once.
 function New-ServiceToken {
     if (Test-Path $tokenFile) { return }
@@ -153,7 +154,7 @@ try {
             $env:Path = (Join-Path (& go env GOPATH) 'bin') + ';' + $env:Path   # buf and its plugins
             Push-Location $svc
             try {
-                & buf lint ../libs/aocproto/proto/internal
+                & buf lint ../../libs/aocproto/proto/internal
                 if ($LASTEXITCODE -ne 0) { throw 'buf lint failed' }
                 Ensure-GoProtoGen
                 & go vet ./...
@@ -170,7 +171,7 @@ try {
         'login' {
             # Signs in as launcher.exe does and saves the token where
             # tether_server reads it, for launches that skip the launcher window.
-            $creds = Join-Path $root 'config\dev_login.local.json'
+            $creds = Join-Path $root 'src\config\dev_login.local.json'
             if (-not (Test-Path $creds)) {
                 throw "missing ${creds}: create it as {""username"": ""..."", ""password"": ""...""} for an account registered through the launcher"
             }
@@ -203,7 +204,7 @@ try {
             }
             if (-not (Test-Path $contentDb)) {
                 $who = 'the character service will refuse to create characters and worldd every login'
-                Write-Host "warning: $contentDb does not exist: $who. Build it: cd services; go run ./cmd/contentc (services\README.md, 'Content')" -ForegroundColor Yellow
+                Write-Host "warning: $contentDb does not exist: $who. Build it: cd src\server\services; go run ./cmd/contentc (src\server\services\README.md, 'Content')" -ForegroundColor Yellow
             }
 
             # Check running processes first to prevent compiling locked binaries
@@ -284,7 +285,7 @@ try {
                 }
             }
 
-            Write-Host ('running: ' + (Format-Process @(Get-ServiceProcess)) + ". Logs: $logs\<name>.log. Addresses: services\README.md. Stop: scripts\services.ps1 stop")
+            Write-Host ('running: ' + (Format-Process @(Get-ServiceProcess)) + ". Logs: $logs\<name>.log. Addresses: src\server\services\README.md. Stop: scripts\services.ps1 stop")
         }
         'stop' {
             $procs = @(Get-ServiceProcess)

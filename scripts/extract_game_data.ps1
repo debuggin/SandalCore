@@ -14,34 +14,34 @@
     dist\content\artisan_curves.tsv,           profession curves, mount speeds and riders        (mapc, from the game's containers)
       mount_speeds.tsv, mount_riders.tsv
     dist\content\npc_motion.tsv, region_foliage.tsv, roads_raw.tsv, roads.tsv, roads_levels.tsv
-    dist\content\item_names.tsv                the words the items are named with (the Glint kinds, some quest items)   (tools\itemnames, from the game's containers)
+    dist\content\item_names.tsv                the words the items are named with (the Glint kinds, some quest items)   (src\tools\itemnames, from the game's containers)
     dist\content\npc_abilities.tsv,          what the creatures that attack with their own animation do: their Blueprints' ability tasks with the conditions they are
       npc_montages.tsv, npc_targeting.tsv      used under, the animation montages' lengths, hit notifies and root motion, and where each ability's hit lands
-                                               (tools\npcabilities, from the game's containers and content.db)
+                                               (src\tools\npcabilities, from the game's containers and content.db)
     dist\content\npc_looks.tsv,              how the people (humanoid NPCs) look and are called: each Blueprint's own look (the game's containers), the appearance records
-      npc_appearances.tsv, npc_names.tsv       with their outfits and the display names of the population data (tools\npcabilities, content.db)
-    dist\content\npc_trees.tsv                 what each Blueprint's state tree has tasks for (wander, patrol): an NPC whose tree has neither stands at its post (tools\npcabilities)
+      npc_appearances.tsv, npc_names.tsv       with their outfits and the display names of the population data (src\tools\npcabilities, content.db)
+    dist\content\npc_trees.tsv                 what each Blueprint's state tree has tasks for (wander, patrol): an NPC whose tree has neither stands at its post (src\tools\npcabilities)
     dist\content\town_platforms.bin           the floor of the five towns (two city platform maps)  (mapc, from the game's containers)
-    dist\content\town_layout_items.tsv,        the buildings, walls and terraces of the five towns' layouts at the level each town starts at (deploy\citynode_seed.json):
+    dist\content\town_layout_items.tsv,        the buildings, walls and terraces of the five towns' layouts at the level each town starts at (src\config\seeds\citynode_seed.json):
                                                what stands where (a python list from content.db),
       town_layouts.bin                         then their collision geometry (mapc, from the game's containers)
     dist\content\area_geom.bin, area_nav.bin   the navigation mesh (combat needs it)             (mapc and aoc_navbuild)
     dist\content\client_config\, zoi_chunks\   the game's Config files and its zone-of-influence grid (read by the generators below)
     the sources the build includes             world\zoi_surface_table.h, node_constants.h, constants_gen.go, region_data.h, garden_defs.h,
                                                region_rects.tsv, the Riverlands' rectangles, and the test fixtures (listed in .gitignore)
-    dist\content\aoc.usmap                     a copy of config\layouts\aoc.usmap, where the tools look for it
+    dist\content\aoc.usmap                     a copy of src\config\layouts\aoc.usmap, where the tools look for it
 
   It needs: the game (Steam, or GAME_ROOT / -GameRoot), the .NET 8 SDK (mapc), Go (contentc), Python 3.10+ (the generators), and Visual Studio 2022 Build Tools
-  with CMake and vcpkg (aoc_navbuild, built by scripts\build.ps1). The first run fetches CUE4Parse (tools\mapc\fetch_cue4parse.ps1) and restores mapc's NuGet
+  with CMake and vcpkg (aoc_navbuild, built by scripts\build.ps1). The first run fetches CUE4Parse (src\tools\mapc\fetch_cue4parse.ps1) and restores mapc's NuGet
   packages, so it needs the network once. A full run takes about 10 minutes on a fast PC (the longest step is the map read for the navigation mesh) and up to
   4 GB of memory for any one program; the first build of the C++ libraries (vcpkg) comes on top and can take a long time.
 
-  Every step is skipped when what it reads is unchanged since the last run (a stamp per step in dist\content\.extract), so scripts\build_all.ps1 and the launchers can call
+  Every step is skipped when what it reads is unchanged since the last run (a stamp per step in dist\content\.extract), so scripts\build.ps1 and the launchers can call
   this every time. The supported client build is the one of 2026-01-29 (AOCClient-Win64-Shipping.exe 235,606,624 bytes, CacheDB.dbc 144,085,052 bytes); with another
   build the script warns and goes on.
 
 .PARAMETER GameRoot
-  The game's "Game" folder (the one that holds AOCClient.exe and AOC\). Default: GAME_ROOT, config\paths.json, Steam's libraries, the usual folders.
+  The game's "Game" folder (the one that holds AOCClient.exe and AOC\). Default: GAME_ROOT, src\config\paths.json, Steam's libraries, the usual folders.
 .PARAMETER Only
   Run only these steps: tools, config, curves, names, database, region, headers, fixtures, navbuild, roads, townfloors, townlayouts, npcabilities, navmesh.
 .PARAMETER Skip
@@ -76,7 +76,7 @@ $distDir   = Join-Path $repoRoot 'dist'
 $outDir    = Join-Path $distDir 'content'
 $stampDir  = Join-Path $outDir '.extract'
 $toolsDir  = Join-Path $distDir 'tools'
-$usmapSrc  = Join-Path $repoRoot 'config\layouts\aoc.usmap'
+$usmapSrc  = Join-Path $repoRoot 'src\config\layouts\aoc.usmap'
 $mapcDll         = Join-Path $repoRoot 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll'
 $npcAbilitiesDll = Join-Path $repoRoot 'build\dotnet\bin\npcabilities\Release\net8.0\npcabilities.dll'
 $itemNamesDll    = Join-Path $repoRoot 'build\dotnet\bin\itemnames\Release\net8.0\itemnames.dll'
@@ -148,10 +148,13 @@ function Get-CodeHash([string[]]$paths) {
         $files = if ((Get-Item -LiteralPath $full).PSIsContainer) {
             Get-ChildItem -LiteralPath $full -Recurse -File | Where-Object { $_.FullName -notmatch '\\(bin|obj|__pycache__)\\' -and $_.Name -notmatch '_test\.go$|\.md$|\.pyc$|^region_rects\.tsv$' }
         } else { Get-Item -LiteralPath $full }
-        $sub = New-Object System.Collections.Generic.List[string]; foreach ($f in $files) {
+        $sub = New-Object System.Collections.Generic.List[string]
+        foreach ($f in $files) {
             $rel = $f.FullName.Substring($repoRoot.Length).TrimStart('\')
-            $sub.Add("$rel $(Get-FileSha $f.FullName)"); }; $sub.Sort([System.StringComparer]::OrdinalIgnoreCase); $lines.AddRange($sub); if ($false) {
+            $sub.Add("$rel $(Get-FileSha $f.FullName)")
         }
+        $sub.Sort([System.StringComparer]::OrdinalIgnoreCase)
+        $lines.AddRange($sub)
     }
     $h = Get-TextHash ($lines -join "`n")
     $codeHashCache[$key] = $h
@@ -192,7 +195,7 @@ function Find-GameRoot {
     $candidates = New-Object System.Collections.Generic.List[object]
     function Add-Candidate([string]$path, [string]$via) { $candidates.Add([pscustomobject]@{ Path = $path; Via = $via }) }
     if ($env:GAME_ROOT) { Add-Candidate $env:GAME_ROOT 'GAME_ROOT' }
-    foreach ($cfg in @((Join-Path $repoRoot 'config\paths.json'), (Join-Path $repoRoot 'dist\Release\config\paths.json'))) {
+    foreach ($cfg in @((Join-Path $repoRoot 'src\config\paths.json'), (Join-Path $repoRoot 'dist\Release\config\paths.json'))) {
         if (Test-Path -LiteralPath $cfg) {
             try { $exe = (Get-Content -LiteralPath $cfg -Raw | ConvertFrom-Json).game_executable; if ($exe) { Add-Candidate ([string]$exe) 'game_executable in paths.json' } } catch { }
         }
@@ -340,10 +343,10 @@ $found = Find-GameRoot
 if (-not $found) {
     Fail 'The Ashes of Creation client was not found on this PC.' @(
         'Sandal Core builds its game data from your own installed copy of the game (the game files are only read).',
-        'It looked at: -GameRoot, the GAME_ROOT variable, game_executable in config\paths.json, the Steam libraries (libraryfolders.vdf) and the usual folders on every fixed drive.',
+        'It looked at: -GameRoot, the GAME_ROOT variable, game_executable in src\config\paths.json, the Steam libraries (libraryfolders.vdf) and the usual folders on every fixed drive.',
         'Install the game (Steam), or tell the script where it is and run this again:',
         '    scripts\extract_game_data.ps1 -GameRoot "D:\...\steamapps\common\Ashes of Creation\Game"',
-        '-GameRoot counts for that run only. To keep it for scripts\build_all.ps1 and the launchers, set GAME_ROOT once and open a new window:',
+        '-GameRoot counts for that run only. To keep it for scripts\build.ps1 and the launchers, set GAME_ROOT once and open a new window:',
         '    setx GAME_ROOT "D:\...\steamapps\common\Ashes of Creation\Game"',
         '(the folder that holds AOCClient.exe and the AOC folder).',
         'More: README.md, "Build and run", "If something goes wrong".')
@@ -379,7 +382,7 @@ $missing = @()
 if (-not $python) { $missing += 'Python 3.10 or newer (python on PATH)' }
 if (-not $dotnet) { $missing += 'the .NET 8 SDK (dotnet)' }
 if (-not $go)     { $missing += 'Go (go on PATH)' }
-if (-not (Test-Path -LiteralPath $usmapSrc)) { $missing += 'config\layouts\aoc.usmap (part of the repository)' }
+if (-not (Test-Path -LiteralPath $usmapSrc)) { $missing += 'src\config\layouts\aoc.usmap (part of the repository)' }
 if ($missing.Count -gt 0) {
     Fail ('Missing: ' + ($missing -join '; ') + '.') @(
         'Run scripts\install_dependencies.ps1 to install what is missing, open a new window (so the new PATH applies), then run this again.',
@@ -390,17 +393,17 @@ Say ("Tools       : Python {0}, .NET SDK, Go; {1} jobs for C++, {2} threads for 
 # ---------------------------------------------------------------------------------------------------------------------
 # The steps
 # ---------------------------------------------------------------------------------------------------------------------
-function Get-CodeMapc     { Get-CodeHash @('tools\mapc') }
-function Get-CodeContentc { Get-CodeHash @('services\cmd\contentc', 'services\internal\content', 'services\internal\designdb', 'services\internal\usmap', 'services\internal\aocexpr', 'services\internal\chardef', 'services\internal\statprog', 'services\go.mod', 'services\go.sum') }
-function Get-CodeNpcAbilities { Get-CodeHash @('tools\npcabilities') }
-function Get-CodeItemNames { Get-CodeHash @('tools\itemnames') }
+function Get-CodeMapc     { Get-CodeHash @('src\tools\mapc') }
+function Get-CodeContentc { Get-CodeHash @('src\server\services\cmd\contentc', 'src\server\services\internal\content', 'src\server\services\internal\designdb', 'src\server\services\internal\usmap', 'src\server\services\internal\aocexpr', 'src\server\services\internal\chardef', 'src\server\services\internal\statprog', 'src\server\services\go.mod', 'src\server\services\go.sum') }
+function Get-CodeNpcAbilities { Get-CodeHash @('src\tools\npcabilities') }
+function Get-CodeItemNames { Get-CodeHash @('src\tools\itemnames') }
 # WHY: CMakeLists.txt is intentionally excluded from Get-CodeGens, Get-CodeNav, and Get-CodeLayouts so CMake topology edits never invalidate game data stamps.
-function Get-CodeGens     { Get-CodeHash @('tools\schemagen\gen_zoi_surface.py', 'tools\schemagen\gen_region_rects.py', 'tools\schemagen\gen_region.py', 'tools\schemagen\gen_node_constants.py', 'tools\schemagen\gen_gm_garden.py', 'tools\schemagen\gen_tooltips.py', 'tools\schemagen\gen_gear_fixture.py', 'tools\schemagen\gen_talent_fixture.py') }
-function Get-CodeNav      { Get-CodeHash @('libs\aocnav', 'tools\navbuild', 'build\third_party\recastnavigation', 'vcpkg.json') <# server\worldd\nav #> }
-# The level each node starts at in the server's seed file (deploy\citynode_seed.json): the towns' buildings are listed at those levels (tools\schemagen\gen_town_layouts.py), so a change of a
+function Get-CodeGens     { Get-CodeHash @('src\tools\schemagen\gen_zoi_surface.py', 'src\tools\schemagen\gen_region_rects.py', 'src\tools\schemagen\gen_region.py', 'src\tools\schemagen\gen_node_constants.py', 'src\tools\schemagen\gen_gm_garden.py', 'src\tools\schemagen\gen_tooltips.py', 'src\tools\schemagen\gen_gear_fixture.py', 'src\tools\schemagen\gen_talent_fixture.py') }
+function Get-CodeNav      { Get-CodeHash @('src\libs\aocnav', 'src\tools\navbuild', 'build\third_party\recastnavigation', 'src\vcpkg.json') }
+# The level each node starts at in the server's seed file (src\config\seeds\citynode_seed.json): the towns' buildings are listed at those levels (src\tools\schemagen\gen_town_layouts.py), so a change of a
 # level there changes the list and the navigation mesh.  Only "nodes" counts: the workshops and the comment do not change what the map holds.
 function Get-SeedLevels {
-    $path = Join-Path $repoRoot 'config\seeds\citynode_seed.json'; if (-not (Test-Path -LiteralPath $path)) { $path = Join-Path $repoRoot 'src\config\seeds\citynode_seed.json' }
+    $path = Join-Path $repoRoot 'src\config\seeds\citynode_seed.json'
     if (-not (Test-Path -LiteralPath $path)) { return 'no seed file' }
     try { $seed = [IO.File]::ReadAllText($path) | ConvertFrom-Json } catch { return 'seed file unreadable' }
     $pairs = New-Object System.Collections.Generic.List[string]
@@ -408,7 +411,7 @@ function Get-SeedLevels {
     $pairs.Sort([System.StringComparer]::OrdinalIgnoreCase)
     return ($pairs -join ';')
 }
-function Get-CodeLayouts  { (Get-CodeHash @('tools\schemagen\gen_town_layouts.py')) + ' ' + (Get-SeedLevels) }
+function Get-CodeLayouts  { (Get-CodeHash @('src\tools\schemagen\gen_town_layouts.py')) + ' ' + (Get-SeedLevels) }
 $ids = @{}
 
 # A step's id says what its output is a function of: the player's game files, the code that makes it and the ids of the steps it reads.
@@ -455,20 +458,20 @@ function Test-Current($s) {
 
 $steps = @(
     @{ Name = 'tools'; Title = 'Build mapc (.NET) and contentc (Go)'; Always = $true; Outputs = @(); Run = {
-        $fetch = Join-Path $repoRoot 'tools\mapc\fetch_cue4parse.ps1'
+        $fetch = Join-Path $repoRoot 'src\tools\mapc\fetch_cue4parse.ps1'
         if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'build\third_party\CUE4Parse\CUE4Parse\CUE4Parse.csproj'))) {
             if ($env:SANDAL_CUE4PARSE_DIR) { Say "Copying CUE4Parse from $($env:SANDAL_CUE4PARSE_DIR) ..." } else { Say 'Fetching CUE4Parse (the pinned commit; needs git and the network) ...' }
             Invoke-Checked 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $fetch) 'fetch_cue4parse'
         }
         $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'; $env:DOTNET_NOLOGO = '1'
-        Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'tools\mapc'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build'
+        Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\mapc'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build'
         Assert-Files @('build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'the mapc build did not produce it'
-        Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'tools\npcabilities'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build_npcabilities'
+        Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\npcabilities'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build_npcabilities'
         Assert-Files @('build\dotnet\bin\npcabilities\Release\net8.0\npcabilities.dll') 'the npcabilities build did not produce it'
-        Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'tools\itemnames'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build_itemnames'
+        Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\itemnames'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build_itemnames'
         Assert-Files @('build\dotnet\bin\itemnames\Release\net8.0\itemnames.dll') 'the itemnames build did not produce it'
         New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
-        $svc = Join-Path $repoRoot 'services'
+        $svc = Join-Path $repoRoot 'src\server\services'
         Invoke-Checked $go @('build', '-trimpath', '-buildvcs=false', '-o', $contentc, './cmd/contentc') 'go_build_contentc' $svc
         Invoke-Checked $go @('build', '-trimpath', '-buildvcs=false', '-o', $statprog, './internal/statprog/cmd/statprog') 'go_build_statprog' $svc
     } },
@@ -501,13 +504,13 @@ $steps = @(
     @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'build\gen\fixtures\region\riverlands_rects.json', 'build\gen\fixtures\region\riverlands_zoi_rects.json', 'build\gen\world\spawns\region_data.h', 'build\gen\nav\region_rects.tsv'); Run = {
         Assert-Files @('dist\content\content.db', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'export-zoi', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_zoi'
-        $gen = Join-Path $repoRoot 'tools\schemagen'
+        $gen = Join-Path $repoRoot 'src\tools\schemagen'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_region_rects.py'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', (Join-Path $outDir 'content.db'))) 'gen_region_rects'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_region.py'))) 'gen_region'
     } },
     @{ Name = 'headers'; Title = "Generate worldd's tables and the citynode constants"; Outputs = @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\world\node_constants.h', 'build\gen\go\citynodeconsts\constants_gen.go', 'build\gen\world\spawns\garden_defs.h'); Run = {
         Assert-Files @('dist\content\content.db', 'dist\content\zoi_chunks', 'dist\content\client_config\DefaultAoCRecordConstants.ini') 'run the earlier steps first'
-        $gen = Join-Path $repoRoot 'tools\schemagen'
+        $gen = Join-Path $repoRoot 'src\tools\schemagen'
         $db = Join-Path $outDir 'content.db'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_zoi_surface.py'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', $db)) 'gen_zoi_surface'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_node_constants.py'), '--ini', (Join-Path $outDir 'client_config\DefaultAoCRecordConstants.ini'))) 'gen_node_constants'
@@ -518,9 +521,9 @@ $steps = @(
         $db = Join-Path $outDir 'content.db'
         New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'build\gen\fixtures') | Out-Null
         Invoke-Checked $statprog @('corpus', '--db', $db, '--out', (Join-Path $repoRoot 'build\gen\fixtures\corpus.txt')) 'statprog_corpus'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_talent_fixture.py'), $db)) 'gen_talent_fixture'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_gear_fixture.py'), $db)) 'gen_gear_fixture'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_tooltips.py'), '--db', $db)) 'gen_tooltips'
+        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\schemagen\gen_talent_fixture.py'), $db)) 'gen_talent_fixture'
+        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\schemagen\gen_gear_fixture.py'), $db)) 'gen_gear_fixture'
+        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\schemagen\gen_tooltips.py'), '--db', $db)) 'gen_tooltips'
     } },
     @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++; the first build also builds the C++ libraries with vcpkg)'; Outputs = @('dist\Release\aoc_navbuild.exe'); Run = {
         Assert-Files @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\spawns\region_data.h', 'build\gen\world\spawns\garden_defs.h') 'run the earlier steps first'
@@ -540,10 +543,10 @@ $steps = @(
     } },
     @{ Name = 'townlayouts'; Title = 'Read the buildings, walls and terraces of the five towns (a list from content.db, then the meshes it names from the game, mapc; a few seconds)'; Outputs = @('dist\content\town_layout_items.tsv', 'dist\content\town_layouts.bin'); Run = {
         Assert-Files @('dist\content\content.db', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the tools and database steps first'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\schemagen\gen_town_layouts.py'), '--content-db', (Join-Path $outDir 'content.db'), '--out', (Join-Path $outDir 'town_layout_items.tsv'))) 'gen_town_layouts'
+        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\schemagen\gen_town_layouts.py'), '--content-db', (Join-Path $outDir 'content.db'), '--out', (Join-Path $outDir 'town_layout_items.tsv'))) 'gen_town_layouts'
         Invoke-Checked $dotnet @($mapcDll, 'town-layouts', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir, '--min-free-gb', '8') 'mapc_town_layouts'
     } },
-    @{ Name = 'npcabilities'; Title = 'Read the creature Blueprints and animation montages that give the creatures their attacks, what every creature notices and how far it follows, and the humanoid Blueprints and records that dress and name the people (tools/npcabilities; about two minutes)'; Outputs = @('dist\content\npc_abilities.tsv', 'dist\content\npc_montages.tsv', 'dist\content\npc_targeting.tsv', 'dist\content\npc_senses.tsv', 'dist\content\npc_aggro_curves.tsv', 'dist\content\npc_looks.tsv', 'dist\content\npc_appearances.tsv', 'dist\content\npc_names.tsv', 'dist\content\npc_trees.tsv'); Run = {
+    @{ Name = 'npcabilities'; Title = 'Read the creature Blueprints and animation montages that give the creatures their attacks, what every creature notices and how far it follows, and the humanoid Blueprints and records that dress and name the people (src/tools/npcabilities; about two minutes)'; Outputs = @('dist\content\npc_abilities.tsv', 'dist\content\npc_montages.tsv', 'dist\content\npc_targeting.tsv', 'dist\content\npc_senses.tsv', 'dist\content\npc_aggro_curves.tsv', 'dist\content\npc_looks.tsv', 'dist\content\npc_appearances.tsv', 'dist\content\npc_names.tsv', 'dist\content\npc_trees.tsv'); Run = {
         Assert-Files @('build\dotnet\bin\npcabilities\Release\net8.0\npcabilities.dll', 'dist\content\content.db') 'run the tools and database steps first'
         $npcArgs = @($npcAbilitiesDll, 'read', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir)
         foreach ($f in $NpcFolders) { $npcArgs += @('--dir', $f) }
@@ -552,12 +555,12 @@ $steps = @(
         $savedHeap = $env:DOTNET_GCHeapHardLimit
         if (-not $env:DOTNET_GCHeapHardLimit) { $env:DOTNET_GCHeapHardLimit = '0x100000000' }     # reading every creature Blueprint peaks at 7.7 GB without this limit
         try { Invoke-Checked $dotnet $npcArgs 'npcabilities_read' } finally { $env:DOTNET_GCHeapHardLimit = $savedHeap }
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\npcabilities\targeting.py'), '--content-db', (Join-Path $outDir 'content.db'),
+        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\npcabilities\targeting.py'), '--content-db', (Join-Path $outDir 'content.db'),
             '--abilities', (Join-Path $outDir 'npc_abilities.tsv'), '--out', (Join-Path $outDir 'npc_targeting.tsv'))) 'npcabilities_targeting'
         $savedHeap = $env:DOTNET_GCHeapHardLimit
         if (-not $env:DOTNET_GCHeapHardLimit) { $env:DOTNET_GCHeapHardLimit = '0x100000000' }     # reading the people's looks peaks at 7.6 GB without this limit and at 4.0 GB with it, with the same tables
         try { Invoke-Checked $dotnet @($npcAbilitiesDll, 'looks', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'npcabilities_looks' } finally { $env:DOTNET_GCHeapHardLimit = $savedHeap }
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'tools\npcabilities\looks.py'), '--content-db', (Join-Path $outDir 'content.db'), '--out-dir', $outDir)) 'npcabilities_names'
+        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\npcabilities\looks.py'), '--content-db', (Join-Path $outDir 'content.db'), '--out-dir', $outDir)) 'npcabilities_names'
     } },
     @{ Name = 'navmesh'; Title = 'Read the map and build the navigation mesh, the NPC motion table and the foliage (mapc; the longest step)'; Outputs = @('dist\content\npc_motion.tsv', 'dist\content\region_foliage.tsv', 'dist\content\area_geom.bin', 'dist\content\area_nav.bin'); Run = {
         Assert-Files @('build\gen\nav\region_rects.tsv', 'dist\Release\aoc_navbuild.exe', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll', 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'

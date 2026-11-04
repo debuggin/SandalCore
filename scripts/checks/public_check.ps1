@@ -11,21 +11,22 @@ function Test-SandalTestsDirectoryBounds {
         [Parameter(Mandatory)][string]$RootPath,
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations
     )
-    $testsDir = Join-Path $RootPath 'tests'
+    $testsDir = Join-Path $RootPath 'src\tests'
+    if (-not (Test-Path -LiteralPath $testsDir)) { $testsDir = Join-Path $RootPath 'tests' }
     if (-not (Test-Path -LiteralPath $testsDir)) {
         return
     }
     $files = @(Get-ChildItem -LiteralPath $testsDir -Recurse -File)
     foreach ($file in $files) {
         if ($file.Extension -ieq '.inc') {
-            $Violations.Add("Forbidden .inc file in tests/: $($file.FullName)")
+            $Violations.Add("Forbidden .inc file in src/tests/: $($file.FullName)")
         }
         if ($file.FullName -match '[\\/]fixtures[\\/]') {
             continue
         }
         $lineCount = @(Get-Content -LiteralPath $file.FullName).Count
         if ($lineCount -gt 800) {
-            $Violations.Add("File in tests/ exceeds 800 lines ($lineCount): $($file.FullName)")
+            $Violations.Add("File in src/tests/ exceeds 800 lines ($lineCount): $($file.FullName)")
         }
     }
 }
@@ -48,7 +49,7 @@ function Test-SandalGitTrackedAssets {
         if ($norm -match '\.(pak|utoc|ucas|pdb|dmp|pcapng)$') {
             $Violations.Add("Forbidden binary asset tracked in git: $norm")
         }
-        if ($norm -match '^(?:certs|config/certs|dist/certs)/.*\.key$' -or $norm -ieq 'config/sandal.env') {
+        if ($norm -match '^(?:certs|config/certs|src/config/certs|dist/certs)/.*\.key$' -or $norm -in @('config/sandal.env', 'src/config/sandal.env')) {
             $Violations.Add("Forbidden secret or environment file tracked in git: $norm")
         }
     }
@@ -62,6 +63,8 @@ function Test-SandalContentLeaks {
     $pemRegex = 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
     $peBaseRegex = '0x140[0-9A-Fa-f]{6}'
     $scanDirs = @(
+        (Join-Path $RootPath 'src\config'),
+        (Join-Path $RootPath 'src\tests'),
         (Join-Path $RootPath 'config'),
         (Join-Path $RootPath 'tests'),
         (Join-Path $RootPath 'scripts\checks')
@@ -70,7 +73,7 @@ function Test-SandalContentLeaks {
         if (-not (Test-Path -LiteralPath $dir)) {
             continue
         }
-        $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File)
+        $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File | Where-Object { $_.FullName -notmatch '[\\/](?:control-app|notes)[\\/]' })
         foreach ($file in $files) {
             $text = [System.IO.File]::ReadAllText($file.FullName)
             if ($text -cmatch $pemRegex) {
@@ -88,7 +91,8 @@ function Test-SandalEnvSchemaTemplates {
         [Parameter(Mandatory)][string]$RootPath,
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations
     )
-    $configDir = Join-Path $RootPath 'config'
+    $configDir = Join-Path $RootPath 'src\config'
+    if (-not (Test-Path -LiteralPath $configDir)) { $configDir = Join-Path $RootPath 'config' }
     $examplePath = Join-Path $configDir 'sandal.env.example'
     $profilesDir = Join-Path $configDir 'profiles'
     if (-not (Test-Path -LiteralPath $examplePath)) {
@@ -136,6 +140,8 @@ function Test-SandalRootDirectoryHierarchy {
         [AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations = $null
     )
     $findings = [System.Collections.Generic.List[string]]::new()
+    $allowedRootDirs = @('src', 'build', 'dist', 'deploy', 'docs', 'scripts', '.github', '.git', '.agents', '.claude', '_workspace', '.beads', 'graphify-out')
+    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'AGENTS.md', 'GEMINI.md', 'sandal.ps1', '.gitignore', '.gitattributes', '.editorconfig', '.graphifyignore', '.env')
     foreach ($bat in @(Get-ChildItem -LiteralPath $RepoRoot -Filter '*.bat' -File -Force -ErrorAction SilentlyContinue)) {
         $findings.Add("NoRootBatFiles: forbidden root .bat file: $($bat.Name)")
     }
@@ -145,10 +151,10 @@ function Test-SandalRootDirectoryHierarchy {
         if (Test-Path -LiteralPath (Join-Path $RepoRoot '.beads') -PathType Container) { Remove-Item -LiteralPath $gateLock -Force -ErrorAction SilentlyContinue }
         else { $findings.Add('NoRootCacheOrGateLocks: forbidden root cache or lock artifact: .beads.gate.lock') }
     }
-    foreach ($rootSub in @('tools', 'launcher')) {
-        $parentDir = Join-Path $RepoRoot $rootSub
+    foreach ($rootSub in @('src/tools', 'src/clients', 'tools', 'launcher')) {
+        $parentDir = Join-Path $RepoRoot ($rootSub -replace '/', [System.IO.Path]::DirectorySeparatorChar)
         if (-not (Test-Path -LiteralPath $parentDir -PathType Container)) { continue }
-        foreach ($projDir in @(Get-ChildItem -LiteralPath $parentDir -Directory -Force)) {
+        foreach ($projDir in @(Get-ChildItem -LiteralPath $parentDir -Directory -Force | Where-Object { $_.Name -ine 'control-app' })) {
             if (Test-Path -LiteralPath (Join-Path $projDir.FullName 'bin') -PathType Container) { $findings.Add("NoInTreeDotnetBinObj: forbidden in-tree bin directory: $rootSub/$($projDir.Name)/bin") }
             if (Test-Path -LiteralPath (Join-Path $projDir.FullName 'obj') -PathType Container) { $findings.Add("NoInTreeDotnetBinObj: forbidden in-tree obj directory: $rootSub/$($projDir.Name)/obj") }
         }
@@ -159,8 +165,21 @@ function Test-SandalRootDirectoryHierarchy {
             $findings.Add("NoTestBinariesInDistRelease: forbidden test/fuzz binary in dist/Release: $($exe.Name)")
         }
     }
-    foreach ($folder in @('api', 'layouts', 'certs', 'data', 'fixtures', 'logs')) {
+    $retiredMicroFolders = @('api', 'layouts', 'certs', 'data', 'fixtures', 'logs')
+    foreach ($folder in $retiredMicroFolders) {
         if (Test-Path -LiteralPath (Join-Path $RepoRoot $folder) -PathType Container) { $findings.Add("NoRetiredRootMicroFolders: forbidden retired root micro-folder: $folder") }
+    }
+    if (Test-Path -LiteralPath (Join-Path $RepoRoot 'src') -PathType Container) {
+        foreach ($dir in @(Get-ChildItem -LiteralPath $RepoRoot -Directory -Force -ErrorAction SilentlyContinue)) {
+            if ($dir.Name -notin $allowedRootDirs -and $dir.Name -notin $retiredMicroFolders -and $dir.Name -ne '.pytest_cache') {
+                $findings.Add("RootDirectoryAllowlist: unexpected root directory: $($dir.Name)")
+            }
+        }
+        foreach ($file in @(Get-ChildItem -LiteralPath $RepoRoot -File -Force -ErrorAction SilentlyContinue)) {
+            if ($file.Name -notin $allowedRootFiles -and $file.Extension -ine '.bat' -and $file.Name -ne '.beads.gate.lock') {
+                $findings.Add("RootFileAllowlist: unexpected root file: $($file.Name)")
+            }
+        }
     }
     if ($null -ne $Violations) { foreach ($item in $findings) { $Violations.Add($item) } }
     return , $findings.ToArray()

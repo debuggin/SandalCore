@@ -3,7 +3,7 @@
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
 # ============================================================================
-#  generators.ps1 - run every generated-file check of tools/schemagen (plan E1 review I2)
+#  generators.ps1 - run every generated-file check of src/tools/schemagen (plan E1 review I2)
 #
 #  Usage (PowerShell, from anywhere):
 #      .\scripts\generators.ps1                       # every gen_*.py --check whose inputs are at hand; exit 1 on a change or a failure
@@ -17,11 +17,11 @@
 #      -Scan        AOC_ACTORS_SCAN    the research's per-capture actor scan folder (gen_npc_appearance)
 #      -Cc          AOC_RESEARCH_CC    the research's decoded captures, flat/<id>.jsonl (gen_equip)
 #      -ContentDb   AOC_CONTENT_DB     dist\content\content.db (gen_tooltips, gen_gm_garden, gen_pop_golden, gen_node_pop_golden, gen_zoi_surface, gen_equip)
-#      -ClientConfig AOC_CLIENT_CONFIG the game's AOC\Config directory (gen_node_constants: DefaultAoCRecordConstants.ini); default dist\content\client_config (extract_game_data.bat)
-#      -ZoiChunks   AOC_ZOI_CHUNKS     the ZOI chunk folder (gen_zoi_surface, gen_region_rects); default dist\content\zoi_chunks (extract_game_data.bat)
+#      -ClientConfig AOC_CLIENT_CONFIG the game's AOC\Config directory (gen_node_constants: DefaultAoCRecordConstants.ini); default dist\content\client_config (scripts\extract_game_data.ps1)
+#      -ZoiChunks   AOC_ZOI_CHUNKS     the ZOI chunk folder (gen_zoi_surface, gen_region_rects); default dist\content\zoi_chunks (scripts\extract_game_data.ps1)
 #  gen_region.py (G1 stage 1) reads fixtures\region\*.json only;
 #  gen_gm_garden.py and gen_pop_golden.py (G1 stage 1, Part B) read content.db (the second also npc_motion.tsv and spawns\area_spawns.h); gen_node_pop_golden.py (Nodes 1, stage 3b) the same
-#  for the towns' people (tests\node_pop_golden.h).
+#  for the towns' people (src\server\world\tests\node_pop_golden.h).
 #  `contentc roads --check` (mounts review B I4) is the one generator that is not Python: dist\content\roads.tsv must be what contentc resolves from content.db and
 #  roads_raw.tsv (cheap: no map; `mapc roads --check`, a map read, is not run here).  It needs go on PATH.  `contentc roads --levels --check` (Nodes 1, stage 3b) does the same for
 #  dist\content\roads_levels.tsv, every road at all seven node levels with its owner zone.
@@ -59,7 +59,7 @@ $gens = @(
     @{ name = 'gen_npc_kits';        args = @('--picks', $Picks, '--check');                                 needs = @('Picks') },
     @{ name = 'gen_npc_appearance';  args = @('--scan', $Scan, '--check');                                   needs = @('Scan') },
     @{ name = 'gen_tooltips';        args = @('--db', $ContentDb, '--check');                                needs = @('ContentDb') },
-    @{ name = 'gen_equip';           args = @((Join-Path $root 'server\worldd\tests\capture_equip.h'), $ContentDb, '--cc', $Cc, '--check'); needs = @('Cc', 'ContentDb') },
+    @{ name = 'gen_equip';           args = @((Join-Path $root 'src\server\world\tests\capture_equip.h'), $ContentDb, '--cc', $Cc, '--check'); needs = @('Cc', 'ContentDb') },
     # Nodes 1, stage 1: the city node constants from the ini, and the world's ZOI surface table from the chunk grid (both inputs are outside the repository)
     @{ name = 'gen_node_constants';  args = @('--ini', $(if ($ClientConfig) { Join-Path $ClientConfig 'DefaultAoCRecordConstants.ini' } else { '' }), '--check'); needs = @('ClientConfig') },
     @{ name = 'gen_zoi_surface';     args = @('--chunks', $ZoiChunks, '--content-db', $ContentDb, '--check');  needs = @('ZoiChunks', 'ContentDb') },
@@ -88,10 +88,10 @@ try {
         $t0 = Get-Date
         if ($g.go) {
             Write-Host ("== $($g.name) (go " + ($g.go -join ' ') + ")")
-            Push-Location (Join-Path $root 'services')
+            Push-Location (Join-Path $root 'src\server\services')
             try { & $goExe @($g.go) 2>&1 | ForEach-Object { "$_" } | Write-Host; $code = $LASTEXITCODE } finally { Pop-Location }
         } else {
-            $script = Join-Path $root ("tools\schemagen\" + $(if ($g.script) { $g.script } else { $g.name }) + ".py")
+            $script = Join-Path $root ("src\tools\schemagen\" + $(if ($g.script) { $g.script } else { $g.name }) + ".py")
             Write-Host ("== $($g.name) " + ($g.args -join ' '))
             & $python $script @($g.args) 2>&1 | ForEach-Object { "$_" } | Write-Host
             $code = $LASTEXITCODE

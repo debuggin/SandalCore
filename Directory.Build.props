@@ -1,7 +1,0 @@
-<Project>
-  <PropertyGroup>
-    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)build\dotnet\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
-    <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
-    <BaseOutputPath>$(MSBuildThisFileDirectory)build\dotnet\bin\$(MSBuildProjectName)\</BaseOutputPath>
-  </PropertyGroup>
-</Project>

@@ -11,7 +11,7 @@
 
 **Current milestones:** `9- City Nodes and Civilization`, `11- Quests and Narrative` and `13- Economy and Player Trading` (all in progress)
 
-Milestones 1-8 and 10 (login, world bootstrap, stats, talents, combat and abilities, navigation, mounts, and gathering and professions) are complete and validated against retail captures and test suites in `server/worldd/tests`. Since then the server gained NPC conversations and the first part of quests, merchants and currency, crafting at the towns' stations, item rarities, weapon combo finishers, magic weapon scaling, creatures that notice and chase by their own settings, storage, NPC looks and names, and the Embersprings.
+Milestones 1-8 and 10 (login, world bootstrap, stats, talents, combat and abilities, navigation, mounts, and gathering and professions) are complete and validated against retail captures and test suites in `src/server/world/tests`. Since then the server gained NPC conversations and the first part of quests, merchants and currency, crafting at the towns' stations, item rarities, weapon combo finishers, magic weapon scaling, creatures that notice and chase by their own settings, storage, NPC looks and names, and the Embersprings.
 
 ---
 

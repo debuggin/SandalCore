@@ -500,6 +500,8 @@ emulator.db*
 .env.*
 config/*.local.json
 config/local.json
+src/config/*.local.json
+src/config/local.json
 ics_auth_token.txt
 
 # --- TLS private keys & generated certificates ---
@@ -513,12 +515,20 @@ ics_auth_token.txt
 /config/certs/*.p12
 /config/certs/*.pfx
 /config/certs/*.srl
+/src/config/certs/*.bak-*
+/src/config/certs/*.crt
+/src/config/certs/*.key
+/src/config/certs/*.p12
+/src/config/certs/*.pfx
+/src/config/certs/*.srl
 certs/*.bak-*
 certs/*.crt
 certs/*.srl
 # WHY: Preserve tracked CA bundle and certificate documentation
 !/config/certs/amazon_ca_bundle.pem
 !/config/certs/README.md
+!/src/config/certs/amazon_ca_bundle.pem
+!/src/config/certs/README.md
 !certs/amazon_ca_bundle.pem
 !certs/README.md
 
@@ -530,3 +540,8 @@ certs/*.srl
 /build/venv/
 /build/pycache/
 /build/pytest_cache/
+
+# --- Local untracked workspace applications & research notes ---
+/src/tools/control-app/
+/docs/notes/
+

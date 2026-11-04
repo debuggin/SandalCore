@@ -83,8 +83,8 @@ if (-not (Get-Command Get-SandalStageOrder -ErrorAction SilentlyContinue)) {
 
 $opts = Resolve-UpOptions -BaseProfile $Profile -BaseDetach ([bool]$Detach) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
 $envPath = Join-Path $rootPath '.env'
-$templatePath = Join-Path $rootPath 'config\sandal.env.example'
-$composeRel = 'deploy/compose.yml'
+$templatePath = Join-Path $rootPath 'src\config\sandal.env.example'
+$composeRel = 'src/deploy/compose.yml'
 $composeArgs = Build-ComposeUpArguments -ComposeFile $composeRel -ProfileName $opts.Profile -IsDetach $opts.Detach
 $stageChecks = @(Get-UpStageReadiness -RootPath $rootPath)
 $allUpToDate = (@($stageChecks | Where-Object { -not $_.up_to_date }).Count -eq 0)

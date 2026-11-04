@@ -81,7 +81,7 @@ if ($Clean -and (Test-Path $buildDir)) {
 
 # -- Go Protobuf Codegen (build/gen/go) -----------------------------------
 function Ensure-GoProtoGen {
-    $svcDir = Join-Path $repoRoot 'services'
+    $svcDir = Join-Path $repoRoot 'src\server\services'
     $genDir = Join-Path $repoRoot 'build\gen\go'
     if (-not (Test-Path $svcDir)) { return }
     New-Item -ItemType Directory -Force -Path $genDir | Out-Null
@@ -92,11 +92,11 @@ function Ensure-GoProtoGen {
     if ($bufCmd) {
         Push-Location $svcDir
         try {
-            & buf generate ../libs/aocproto/proto/internal
-            if ($LASTEXITCODE -ne 0) { throw "buf generate ../libs/aocproto/proto/internal failed." }
-            if (Test-Path '../libs/aocproto/proto/ics_xclient.proto') {
-                & buf generate ../libs/aocproto/proto/ics_xclient.proto
-                if ($LASTEXITCODE -ne 0) { throw "buf generate ../libs/aocproto/proto/ics_xclient.proto failed." }
+            & buf generate ../../libs/aocproto/proto/internal
+            if ($LASTEXITCODE -ne 0) { throw "buf generate ../../libs/aocproto/proto/internal failed." }
+            if (Test-Path '../../libs/aocproto/proto/ics_xclient.proto') {
+                & buf generate ../../libs/aocproto/proto/ics_xclient.proto
+                if ($LASTEXITCODE -ne 0) { throw "buf generate ../../libs/aocproto/proto/ics_xclient.proto failed." }
             }
         } finally {
             Pop-Location
@@ -113,7 +113,7 @@ function Ensure-GoProtoGen {
         $env:PYTHONPYCACHEPREFIX = Join-Path $repoRoot 'build\pycache'
         $ini = Join-Path $repoRoot 'dist\content\client_config\DefaultAoCRecordConstants.ini'
         if (Test-Path -LiteralPath $ini) {
-            & python (Join-Path $repoRoot 'tools\schemagen\gen_node_constants.py') --ini $ini
+            & python (Join-Path $repoRoot 'src\tools\schemagen\gen_node_constants.py') --ini $ini
             if ($LASTEXITCODE -ne 0) { throw "gen_node_constants.py failed (exit $LASTEXITCODE)" }
         }
     }
@@ -155,12 +155,13 @@ if ($vcpkgRoot) {
 
 # -- Configure (CMake) if needed -----------------------------------------
 # A build folder copied along with the repo still points at the old folder; start it fresh.
+$srcDir    = Join-Path $repoRoot 'src'
 $cacheFile = Join-Path $buildDir 'CMakeCache.txt'
 if (Test-Path $cacheFile) {
     $homeLine = Select-String -Path $cacheFile -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$' | Select-Object -First 1
     if ($homeLine) {
         $cachedRoot  = [IO.Path]::GetFullPath($homeLine.Matches[0].Groups[1].Value.Trim()).TrimEnd('\')
-        $currentRoot = [IO.Path]::GetFullPath($repoRoot).TrimEnd('\')
+        $currentRoot = [IO.Path]::GetFullPath($srcDir).TrimEnd('\')
         if ($cachedRoot -ne $currentRoot) {
             Write-Warning "Build folder was set up for '$cachedRoot'; reconfiguring for '$currentRoot'."
             Remove-Item $cacheFile -Force
@@ -175,9 +176,10 @@ if ($needConfigure) {
     Push-Location $buildDir
     try {
         $cmakeArgs = @(
+            '-S', $srcDir,
+            '-B', $buildDir,
             '-G', 'Visual Studio 17 2022',
-            '-A', 'x64',
-            $repoRoot
+            '-A', 'x64'
         )
         if ($vcpkgRoot) {
             $cmakeArgs += "-DCMAKE_TOOLCHAIN_FILE=$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
@@ -252,7 +254,7 @@ if ($dllSource -and (Test-Path $dllSource)) {
 
 # -- Run tests if requested ----------------------------------------------
 # Delegate to run_tests.ps1: it builds every CMake target (including the
-# aocnet library and every libs/aocnet/tests + src/tools test executable,
+# aocnet library and every src/libs/aocnet/tests + src/tools test executable,
 # not just the target(s) built above) and then runs every dist\<Config>\
 # test_*.exe.  Called without -NoBuild so it does its own full build.
 if ($Test) {

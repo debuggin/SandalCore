@@ -2,11 +2,11 @@
 
 > **Diátaxis Quadrant**: Technical Reference
 
-This directory indexes the clean-room bit-stream wire specifications for Unreal Engine 5.6 replication and RPC codecs implemented in `libs/aocnet/protocol/`. Every specification enforces the Chinese-Wall Specification Firewall (`CS-13`, `SEC-06`, `SEC-08`): documents MUST record normalized module-relative RVAs, bit-level field layouts, subtraction-safe bounds predicates, and synthetic hex test vectors, and MUST NOT contain proprietary source code, raw PE32+ virtual addresses, or decompiler auto-symbols.
+This directory indexes the clean-room bit-stream wire specifications for Unreal Engine 5.6 replication and RPC codecs implemented in `src/libs/aocnet/protocol/`. Every specification enforces the Chinese-Wall Specification Firewall (`CS-13`, `SEC-06`, `SEC-08`): documents MUST record normalized module-relative RVAs, bit-level field layouts, subtraction-safe bounds predicates, and synthetic hex test vectors, and MUST NOT contain proprietary source code, raw PE32+ virtual addresses, or decompiler auto-symbols.
 
 ## 1. Clean-Room 3-Way Wire Protocol Verification Pipeline
 
-The reverse-engineering workbench (`tools/re-workbench/`) reconciles three independent sources before a codec enters `libs/aocnet/`:
+The reverse-engineering workbench (`src/tools/re-workbench/`) reconciles three independent sources before a codec enters `src/libs/aocnet/`:
 
 1. **Static Schema (`S` — Rizin CFG + USMAP)**: Extracts `UScriptStruct::ICppStructOps` trait flags (`WithNetSerializer`, `WithNetSharedSerialization`) and property handles pinned by `(ExecSHA256, PdbGUID, EngineNetVer, GameNetVer)` in `re_workbench/static_rizin_usmap.py` and `re_workbench/manifest_verifier.py`.
 2. **Runtime Instrumentation (`R` — Frida `CModule` Ring Hook)**: Captures pre- and post-call `FArchive` bit-cursor positions (`BitTraceSlot`, `< 150 ns` hot-path budget) via a 65,536-slot lock-free SPSC ring buffer in `cmodule/ring_hook.c` and `re_workbench/frida_session.py`.
@@ -28,13 +28,13 @@ The reverse-engineering workbench (`tools/re-workbench/`) reconciles three indep
 | `P0-10` | `FMapMarkerOverrideWrapper` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Dynamic event and caravan map marker override |
 | `P0-11` | `FPlayerCommodityCounts` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Glint, scrip, and regional commodity counters |
 | `P0-12` | `FCharacterMoveResponsePackedBits` | `AAutonomousPlayerCharacter.h` / `move_packed.cpp` | Server-to-client movement correction bit-stream |
-| `Guard` | `PropType::Unknown` (`TOptional` / `TSet`) | `libs/aocnet/protocol/repl/rep_block.h` | Optional presence-bit and sparse-set command guard |
+| `Guard` | `PropType::Unknown` (`TOptional` / `TSet`) | `src/libs/aocnet/protocol/repl/rep_block.h` | Optional presence-bit and sparse-set command guard |
 
 ## 3. Reproducible CLI Verification
 
 Run the hermetic workbench and clean-room firewall verification suite from the repository root:
 
 ```bash
-uv run --project tools/re-workbench pytest
+uv run --project src/tools/re-workbench pytest
 pwsh -NoProfile -File scripts/checks/public_check.ps1
 ```

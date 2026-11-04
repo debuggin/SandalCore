@@ -22,9 +22,9 @@ To keep the repository clean, legal, and safe for everyone, all contributors mus
 
 Before submitting changes, ensure your modifications compile cleanly and pass all test suites.
 
-Run `scripts\extract_game_data.ps1` once first (`scripts\build_all.ps1` does): the build and the tests need the game data it makes from your own Ashes of Creation install. Everything it writes is git-ignored (`dist/` and the files listed in `.gitignore`); never commit any of it.
+Run `scripts\extract_game_data.ps1` once first (`scripts\build.ps1 -Target all` does): the build and the tests need the game data it makes from your own Ashes of Creation install. Everything it writes is git-ignored (`dist/` and the files listed in `.gitignore`); never commit any of it.
 
-- **Go Services** (in `services/`):
+- **Go Services** (in `src/server/services/`):
   ```bash
   go vet ./...
   go test ./...

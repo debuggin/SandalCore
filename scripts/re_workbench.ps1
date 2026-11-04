@@ -18,7 +18,7 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 $env:PYTHONPYCACHEPREFIX = Join-Path $repoRoot 'build\pycache'
 $venvDir = Join-Path $repoRoot 'build\venv\re-workbench'
 $pytestCacheDir = Join-Path $repoRoot 'build\pytest_cache'
-$workbenchDir = Join-Path $repoRoot 'tools\re-workbench'
+$workbenchDir = Join-Path $repoRoot 'src\tools\re-workbench'
 $env:UV_PROJECT_ENVIRONMENT = $venvDir
 
 function Ensure-ReWorkbenchVenv {

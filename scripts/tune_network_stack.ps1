@@ -133,7 +133,7 @@ function Get-ExcludedPortRanges {
 }
 function Get-SandalCorePortExclusions([int]$EphemeralStart = 10000) {
     $baseRanges = @(@{ StartPort = 50000; NumberOfPorts = 60; Protocols = @('tcp', 'udp') }, @{ StartPort = 19021; NumberOfPorts = 1; Protocols = @('tcp', 'udp') })
-    foreach ($rel in @('config\server.json', 'dist\Release\config\server.json')) {
+    foreach ($rel in @('src\config\server.json', 'dist\Release\config\server.json')) {
         $cfgPath = Join-Path $script:RepoRoot $rel
         if (-not (Test-Path -LiteralPath $cfgPath -PathType Leaf)) { continue }
         try {

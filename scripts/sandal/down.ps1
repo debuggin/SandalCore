@@ -55,7 +55,7 @@ if (-not (Get-Command Get-SandalStageOrder -ErrorAction SilentlyContinue)) {
 }
 
 $opts = Resolve-DownOptions -BaseVolumes ([bool]$Volumes) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
-$composeRel = 'deploy/compose.yml'
+$composeRel = 'src/deploy/compose.yml'
 $composeArgs = Build-ComposeDownArguments -ComposeFile $composeRel -IncludeVolumes $opts.Volumes
 
 if (-not $opts.DryRun) {

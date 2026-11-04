@@ -6,23 +6,23 @@ function Get-SandalStageGraph {
     [CmdletBinding()]
     param()
     $schema = @(
-        'tools/schemagen/gen_zoi_surface.py', 'tools/schemagen/gen_region_rects.py',
-        'tools/schemagen/gen_region.py', 'tools/schemagen/gen_node_constants.py',
-        'tools/schemagen/gen_gm_garden.py', 'tools/schemagen/gen_tooltips.py',
-        'tools/schemagen/gen_gear_fixture.py', 'tools/schemagen/gen_talent_fixture.py'
+        'src/tools/schemagen/gen_zoi_surface.py', 'src/tools/schemagen/gen_region_rects.py',
+        'src/tools/schemagen/gen_region.py', 'src/tools/schemagen/gen_node_constants.py',
+        'src/tools/schemagen/gen_gm_garden.py', 'src/tools/schemagen/gen_tooltips.py',
+        'src/tools/schemagen/gen_gear_fixture.py', 'src/tools/schemagen/gen_talent_fixture.py'
     )
     return [ordered]@{
-        'config'      = @{ Upstream = @(); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
-        'curves'      = @{ Upstream = @(); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
-        'database'    = @{ Upstream = @('config', 'curves'); Inputs = @('config/layouts/aoc.usmap', 'services/cmd/contentc', 'services/internal/content', 'services/internal/designdb', 'services/internal/usmap', 'services/internal/aocexpr', 'services/internal/chardef', 'services/internal/statprog', 'services/go.mod', 'services/go.sum') }
-        'region'      = @{ Upstream = @('database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') + $schema }
+        'config'      = @{ Upstream = @(); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc') }
+        'curves'      = @{ Upstream = @(); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc') }
+        'database'    = @{ Upstream = @('config', 'curves'); Inputs = @('src/config/layouts/aoc.usmap', 'src/server/services/cmd/contentc', 'src/server/services/internal/content', 'src/server/services/internal/designdb', 'src/server/services/internal/usmap', 'src/server/services/internal/aocexpr', 'src/server/services/internal/chardef', 'src/server/services/internal/statprog', 'src/server/services/go.mod', 'src/server/services/go.sum') }
+        'region'      = @{ Upstream = @('database'); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc') + $schema }
         'headers'     = @{ Upstream = @('config', 'region'); Inputs = $schema }
-        'fixtures'    = @{ Upstream = @('database'); Inputs = @('tools/schemagen/gen_talent_fixture.py', 'tools/schemagen/gen_gear_fixture.py', 'tools/schemagen/gen_tooltips.py', 'services/internal/statprog') }
-        'navbuild'    = @{ Upstream = @('headers'); Inputs = @('libs/aocnav', 'tools/navbuild', 'build/third_party/recastnavigation', 'vcpkg.json') }
-        'roads'       = @{ Upstream = @('region'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc', 'services/cmd/contentc', 'services/internal/content') }
-        'townfloors'  = @{ Upstream = @(); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
-        'townlayouts' = @{ Upstream = @('database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc', 'tools/schemagen/gen_town_layouts.py', 'config/seeds/citynode_seed.json') }
-        'navmesh'     = @{ Upstream = @('region', 'navbuild', 'townfloors', 'townlayouts', 'database'); Inputs = @('config/layouts/aoc.usmap', 'tools/mapc') }
+        'fixtures'    = @{ Upstream = @('database'); Inputs = @('src/tools/schemagen/gen_talent_fixture.py', 'src/tools/schemagen/gen_gear_fixture.py', 'src/tools/schemagen/gen_tooltips.py', 'src/server/services/internal/statprog') }
+        'navbuild'    = @{ Upstream = @('headers'); Inputs = @('src/libs/aocnav', 'src/tools/navbuild', 'build/third_party/recastnavigation', 'src/vcpkg.json') }
+        'roads'       = @{ Upstream = @('region'); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc', 'src/server/services/cmd/contentc', 'src/server/services/internal/content') }
+        'townfloors'  = @{ Upstream = @(); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc') }
+        'townlayouts' = @{ Upstream = @('database'); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc', 'src/tools/schemagen/gen_town_layouts.py', 'src/config/seeds/citynode_seed.json') }
+        'navmesh'     = @{ Upstream = @('region', 'navbuild', 'townfloors', 'townlayouts', 'database'); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc') }
     }
 }
 
@@ -41,6 +41,7 @@ function Test-StageInputFileIncluded {
 function Add-StageInputHashes {
     param([string]$RepoRoot, [string]$RelPath, [System.Collections.Generic.List[string]]$Records)
     $target = Join-Path $RepoRoot ($RelPath -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+    if (-not (Test-Path -LiteralPath $target) -and $RelPath.StartsWith('src/')) { $fallback = Join-Path $RepoRoot (($RelPath -replace '^src/(?:server/)?', '') -replace '/', [System.IO.Path]::DirectorySeparatorChar); if (Test-Path -LiteralPath $fallback) { $target = $fallback } }
     if (Test-Path -LiteralPath $target -PathType Leaf) {
         $Records.Add("FILE:${RelPath}=$((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant())")
         return

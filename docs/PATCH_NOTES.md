@@ -21,7 +21,7 @@
 - Logging in inside a town takes about 30 seconds instead of about two minutes: the server sends a town's buildings and
   streets during the login, before the character appears, so the client finds its floor.
 - Launcher: the game path is saved only next to the launcher and only when it changes (it used to be written to three
-  places, including the repository's own `config\paths.json`); Auto-Detect searches fixed drives only; sign-in requests
+  places, including the repository's own `src\config\paths.json`); Auto-Detect searches fixed drives only; sign-in requests
   time out.
 - Launcher sign-in is stricter: the saved sign-in goes only to `127.0.0.1`, `localhost` or `::1`, written exactly
   like that; the host and port are read once per sign-in and used for every retry; a reply is limited to 64 KB, a

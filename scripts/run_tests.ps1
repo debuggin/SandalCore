@@ -15,7 +15,7 @@
 #
 #  The heavy tests (test_worldd_region_load: 1 GB of ground, about a minute, wall-clock checks) are NOT in the default gate: on a PC that is also building or
 #  playing a timing check can flip, and the PC hard-resets under load.  -Heavy runs them (G1 review B I1); the plan's last task and the lead do, alone, under the
-#  heavy-job lock.  fixtures/test-baseline.txt does not list them.
+#  heavy-job lock.  src/tests/fixtures/test-baseline.txt does not list them.
 #
 #  A test that skipped part or all of its checks (no content.db, no ground file: it prints a "[skip]" line or ends a line with ": skipped", and exits 0) is reported in a NOTE after
 #  the summary; the compared lines stay "PASS exit=0" (review B I1).
