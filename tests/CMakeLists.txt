@@ -68,6 +68,9 @@ set(SANDAL_DOMAIN_TEST_TARGETS
     test_v1_udp_jitter_loss
     test_v2_pg17_wal_stall
     test_v3_mutated_bitstreams
+    test_v4_live_rcu_load
+    test_v5_sigkill_handover
+    test_v6_dst_buggify
 )
 
 add_sandal_domain_test_exe(test_world_clock_and_data_free world/test_world_clock_and_data_free.cpp)
@@ -127,6 +130,9 @@ add_sandal_domain_test_exe(test_transport_matrix_36 mesh/test_transport_matrix_3
 add_sandal_domain_test_exe(test_v1_udp_jitter_loss chaos/test_v1_udp_jitter_loss.cpp)
 add_sandal_domain_test_exe(test_v2_pg17_wal_stall chaos/test_v2_pg17_wal_stall.cpp)
 add_sandal_domain_test_exe(test_v3_mutated_bitstreams chaos/test_v3_mutated_bitstreams.cpp)
+add_sandal_domain_test_exe(test_v4_live_rcu_load chaos/test_v4_live_rcu_load.cpp)
+add_sandal_domain_test_exe(test_v5_sigkill_handover chaos/test_v5_sigkill_handover.cpp)
+add_sandal_domain_test_exe(test_v6_dst_buggify chaos/test_v6_dst_buggify.cpp)
 
 get_property(SANDAL_WORLD_TEST_TARGETS GLOBAL PROPERTY SANDAL_WORLD_TEST_TARGETS)
 
@@ -284,6 +290,9 @@ add_sandal_domain_case_test(mesh.transport_matrix_36 test_transport_matrix_36 tr
 add_sandal_domain_case_test(chaos.v1_udp_jitter_loss test_v1_udp_jitter_loss v1_udp_jitter_loss)
 add_sandal_domain_case_test(chaos.v2_pg17_wal_stall test_v2_pg17_wal_stall v2_pg17_wal_stall)
 add_sandal_domain_case_test(chaos.v3_mutated_bitstreams test_v3_mutated_bitstreams v3_mutated_bitstreams)
+add_sandal_domain_case_test(chaos.v4_live_rcu_load test_v4_live_rcu_load v4_live_rcu_load)
+add_sandal_domain_case_test(chaos.v5_sigkill_handover test_v5_sigkill_handover v5_sigkill_handover)
+add_sandal_domain_case_test(chaos.v6_dst_buggify test_v6_dst_buggify v6_dst_buggify)
 
 find_program(SANDAL_PWSH_EXECUTABLE NAMES pwsh powershell REQUIRED)
 add_test(
