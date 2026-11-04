@@ -266,6 +266,8 @@ public:
     bool    gm_commands() const { return gm_commands_; }
     void    set_reactions_enabled(bool on) { reactions_enabled_ = on; }
     bool    reactions_enabled() const { return reactions_enabled_; }
+    void    set_dice_seed(uint64_t seed) { dice_seed_ = seed; }
+    uint64_t dice_seed() const { return dice_seed_; }
     void    set_gm_port(GmPort* port) { gm_port_ = port; }
     GmPort* gm_port() const { return gm_port_; }
     world::Places places() const;
@@ -313,6 +315,8 @@ public:
 
     void                     set_view_config(const ActorView::Config& config) { view_config_ = config; }
     const ActorView::Config& view_config() const { return view_config_; }
+    void                     set_move_ack_gap(std::chrono::milliseconds gap) { move_ack_gap_ = std::chrono::duration_cast<Clock::duration>(gap); }
+    Clock::duration          move_ack_gap() const { return move_ack_gap_; }
 
     struct WindowCost {
         double max_interest_ms = 0, max_pump_ms = 0, max_ground_ms = 0;
@@ -413,6 +417,7 @@ private:
     bool                                       gm_garden_ = false;
     std::optional<spawns::GardenReport>        garden_report_;
     ActorView::Config                          view_config_;
+    Clock::duration                            move_ack_gap_{};
     std::unique_ptr<nav::AreaNav>              nav_;
     npc::MotionTable                           motion_;
     bool                                       motion_loaded_ = false;
@@ -470,6 +475,7 @@ private:
     bool                                       reactions_enabled_ = true;
     GmPort*                                    gm_port_ = nullptr;
     uint64_t                                   respawns_made_ = 0;
+    uint64_t                                   dice_seed_ = 0;
     mutable std::map<int64_t, int>             quality_cache_;
     mutable std::map<int64_t, items::ItemRarityFacts> rarity_cache_;
     mutable std::map<int64_t, std::string>     name_cache_;

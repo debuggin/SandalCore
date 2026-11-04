@@ -3,6 +3,7 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #include "combat/combat_world.h"
 
+#include "combat/combat_world_npc.h"
 #include "combat/npc_ability_replicator.h"
 #include "combat/npc_kits.h"
 #include "combat/npc_replicator.h"
@@ -78,76 +79,6 @@ void sort_and_cap_targets(std::vector<GatheredTarget>& out, size_t max) {
 
 }  // namespace
 
-class CombatWorld::Npc final : public Fighter {
-public:
-    Npc(CombatWorld& w, uint64_t actor, npc::MotionStats bp_in, std::string leaf_in, int level_in)
-        : world(w), actor_id(actor), bp(std::move(bp_in)), leaf(std::move(leaf_in)), lvl(level_in) {}
-
-    uint64_t id() const override { return actor_id; }
-    bool     is_player() const override { return false; }
-    int      level() const override { return lvl; }
-    Vec3     position() const override {
-        const world::WorldActor* a = world.registry_.find(actor_id);
-        return a ? Vec3{a->x, a->y, a->z} : Vec3{};
-    }
-    double radius_cm() const override { return bp.radius; }
-    bool   alive() const override { return !dead; }
-    const std::vector<int64_t>& alignments() const override { return aligns; }
-    stats::CharacterStats&      stats() override { return *cs; }
-
-    double health() const {
-        const stats::StatValue* v = cs ? cs->find(content::kGuidHealth) : nullptr;
-        return v ? v->value : 0.0;
-    }
-    double max_health() const {
-        const stats::StatValue* v = cs ? cs->find(content::kGuidMaxHealth) : nullptr;
-        return v ? v->value : 0.0;
-    }
-
-    CombatWorld&                           world;
-    uint64_t                               actor_id;
-    npc::MotionStats                       bp;
-    std::string                            leaf;
-    int                                    lvl;
-    std::vector<int64_t>                   aligns;
-    std::unique_ptr<stats::CharacterStats> cs;
-    npc::ai::NpcAi                         ai;
-    bool                                   hostile = false;
-    bool                                   dead = false;
-    bool                                   flags_in_combat = false;
-    uint64_t                               flags_target = 0;
-    bool                                   returning = false;
-    const npc_kits::Kit*                   kit = nullptr;
-    CombatWorld::Attack                    next;
-    double                                 next_attack_at = 0;
-    std::string                            archetype;
-    const std::vector<CreatureAbility>*    anim = nullptr;
-    NpcCastState                           cast;
-    std::map<std::string, double>          cooldown_until;
-    double                                 hold_until = 0;
-    double                                 stand_off_cm = -1;
-    double                                 shot_reach_cm = -1;
-    double                                 fight_began = 0;
-    std::map<std::string, double>          fight_rolls;
-    uint64_t                               killer = 0;
-    std::set<uint64_t>                     attackers;
-    struct Shield {
-        double amount = 0;
-        double until = 0;
-    };
-    std::vector<Shield>                    shields;
-
-    double absorb(double loss, double now) {
-        shields.erase(std::remove_if(shields.begin(), shields.end(), [&](const Shield& s) { return s.amount <= 0 || (s.until > 0 && s.until <= now); }), shields.end());
-        for (Shield& s : shields) {
-            const double take = std::min(s.amount, loss);
-            s.amount -= take;
-            loss -= take;
-        }
-        return loss;
-    }
-};
-
 CombatWorld::CombatWorld(world::ActorRegistry& registry, npc::NpcWorld* npcs, const nav::AreaNav* nav, const CombatData& data, const abilities::Catalog& catalog,
                          const NpcStatBook& book, const npc::MotionTable& motion, CombatWorldConfig config)
     : registry_(registry), npcs_world_(npcs), nav_(nav), data_(data), catalog_(catalog), book_(book), motion_(motion), cfg_(std::move(config)),
@@ -163,7 +94,10 @@ void CombatWorld::add_player(PlayerPort* port) {
 
 void CombatWorld::remove_player(PlayerPort* port) {
     players_.erase(std::remove(players_.begin(), players_.end(), port), players_.end());
-    if (port) player_combat_until_.erase(port->actor_id());
+    if (port) {
+        player_combat_until_.erase(port->actor_id());
+        drop_effects_of(port->actor_id());
+    }
 }
 
 PlayerPort* CombatWorld::player(uint64_t actor_id) {
@@ -193,6 +127,13 @@ CombatWorld::Npc* CombatWorld::make_combatant(const world::WorldActor& a) {
     if (!n->cs) {
         spdlog::warn("[combat] {} ({}): its stats do not run: {}", a.id, leaf, err);
         return nullptr;
+    }
+    {
+        std::set<int64_t> held;
+        for (const int64_t stat : {data_.ids().status_burning, data_.ids().status_burning_dur}) {
+            if (stat != 0) held.insert(stat);
+        }
+        n->cs->set_resources(std::move(held));
     }
     n->aligns.assign(bp.alignments.begin(), bp.alignments.end());
     n->hostile = data_.relation(n->aligns, CombatData::player_alignments()) == Relation::Hostile;
@@ -393,10 +334,12 @@ void CombatWorld::stop_cast(Npc& n) {
 }
 
 void CombatWorld::forget(uint64_t actor_id) {
+    if (is_pet(actor_id)) pet_cleanup(actor_id);
     if (const auto it = npcs_.find(actor_id); it != npcs_.end()) stop_cast(*it->second);
     flights_.erase(std::remove_if(flights_.begin(), flights_.end(), [&](const Flight& f) { return f.npc == actor_id; }), flights_.end());
     npcs_.erase(actor_id);
     stats_filled_.erase(actor_id);
+    effect_holders_.erase(actor_id);
 }
 
 bool CombatWorld::fill_stats(const world::WorldActor& a) {

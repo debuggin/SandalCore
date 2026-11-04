@@ -22,6 +22,50 @@ Kind kind_of(const std::string& k) {
 
 const std::vector<int64_t> kNone;
 
+Tree build_tree(content::SkillTreeRow& row) {
+    Tree t;
+    t.guid = row.guid;
+    t.name = std::move(row.name);
+    t.kind = kind_of(row.kind);
+    t.leveling_type = row.leveling_type_guid;
+    t.class_guid = row.class_guid;
+    t.weapon_line = row.weapon_line_guid;
+    for (content::SkillNodeRow& n : row.nodes) {
+        Node node;
+        node.guid = n.node;
+        node.ord = n.ord;
+        node.name = std::move(n.name);
+        node.skill = n.skill;
+        node.skill_name = std::move(n.skill_name);
+        node.level_requirement = n.level_requirement;
+        node.point_requirement = n.point_requirement;
+        node.auto_granted = n.auto_granted;
+        node.auto_hotbar = n.auto_hotbar;
+        node.all_required = n.all_required;
+        node.opt = n.opt;
+        node.slot = n.slot;
+        node.requires_skills = std::move(n.requires_skills);
+        node.requires_nodes = std::move(n.requires_nodes);
+        node.exclusive_skills = std::move(n.exclusive_skills);
+        for (content::SkillRankRow& r : n.ranks) {
+            Rank rank;
+            rank.guid = r.guid;
+            rank.ord = r.ord;
+            rank.name = std::move(r.name);
+            rank.ability = r.ability;
+            rank.effect = r.effect;
+            rank.effect_infinite = r.effect_infinite;
+            rank.effect_duration = r.effect_duration;
+            rank.costs = std::move(r.costs);
+            for (const content::RankStatMod& m : r.mods) rank.mods.push_back({m.stat_guid, m.value});
+            node.ranks.push_back(std::move(rank));
+        }
+        std::stable_sort(node.ranks.begin(), node.ranks.end(), [](const Rank& a, const Rank& b) { return a.ord < b.ord; });
+        t.nodes.push_back(std::move(node));
+    }
+    return t;
+}
+
 }  // namespace
 
 // ============================================================================================================================
@@ -40,49 +84,7 @@ std::optional<Catalog> Catalog::from(content::TalentData data, std::string& erro
         }
         c.points_[static_cast<size_t>(i)] = it->second;
     }
-    for (content::SkillTreeRow& row : data.trees) {
-        Tree t;
-        t.guid = row.guid;
-        t.name = std::move(row.name);
-        t.kind = kind_of(row.kind);
-        t.leveling_type = row.leveling_type_guid;
-        t.class_guid = row.class_guid;
-        t.weapon_line = row.weapon_line_guid;
-        for (content::SkillNodeRow& n : row.nodes) {
-            Node node;
-            node.guid = n.node;
-            node.ord = n.ord;
-            node.name = std::move(n.name);
-            node.skill = n.skill;
-            node.skill_name = std::move(n.skill_name);
-            node.level_requirement = n.level_requirement;
-            node.point_requirement = n.point_requirement;
-            node.auto_granted = n.auto_granted;
-            node.auto_hotbar = n.auto_hotbar;
-            node.all_required = n.all_required;
-            node.opt = n.opt;
-            node.slot = n.slot;
-            node.requires_skills = std::move(n.requires_skills);
-            node.requires_nodes = std::move(n.requires_nodes);
-            node.exclusive_skills = std::move(n.exclusive_skills);
-            for (content::SkillRankRow& r : n.ranks) {
-                Rank rank;
-                rank.guid = r.guid;
-                rank.ord = r.ord;
-                rank.name = std::move(r.name);
-                rank.ability = r.ability;
-                rank.effect = r.effect;
-                rank.effect_infinite = r.effect_infinite;
-                rank.effect_duration = r.effect_duration;
-                rank.costs = std::move(r.costs);
-                for (const content::RankStatMod& m : r.mods) rank.mods.push_back({m.stat_guid, m.value});
-                node.ranks.push_back(std::move(rank));
-            }
-            std::stable_sort(node.ranks.begin(), node.ranks.end(), [](const Rank& a, const Rank& b) { return a.ord < b.ord; });
-            t.nodes.push_back(std::move(node));
-        }
-        c.trees_.push_back(std::move(t));
-    }
+    for (content::SkillTreeRow& row : data.trees) c.trees_.push_back(build_tree(row));
     for (size_t i = 0; i < c.trees_.size(); ++i) {
         const Tree& t = c.trees_[i];
         c.by_guid_[t.guid] = i;
@@ -301,13 +303,19 @@ std::vector<stats::ActiveEffect> Book::passives(int64_t wielded_line) const {
     return out;
 }
 
-std::vector<stats::SkillRank> Book::held_ranks() const {
+std::vector<stats::SkillRank> Book::held_ranks(int64_t wielded_line) const {
     std::vector<stats::SkillRank> out;
     for (const Tree* t : listed_trees()) {
+        // the tree of the weapon in hand answers to the marker GetCurrentWeaponSkilltree gives (the weapon talents' triggers ask about it)
+        const bool in_hand = wielded_line != 0 && t->kind == Kind::Weapon && t->weapon_line == wielded_line;
         for (const RankRef& r : listed(*t)) {
             // a formula names a held skill (GetSkillPurchased(tree, skill): most of them) or one rank of it (a talent's upgrade): both are held
             out.push_back({{stats::kRefTypeSkillTree, t->guid}, {stats::kRefTypeSkill, r.node->skill}});
             out.push_back({{stats::kRefTypeSkillTree, t->guid}, {stats::kRefTypeSkillRank, r.rank->guid}});
+            if (in_hand) {
+                out.push_back({stats::kWeaponTreeRef, {stats::kRefTypeSkill, r.node->skill}});
+                out.push_back({stats::kWeaponTreeRef, {stats::kRefTypeSkillRank, r.rank->guid}});
+            }
         }
     }
     return out;
@@ -476,6 +484,14 @@ Plan Book::plan(const protocol::repl::SkillBuild& build) const {
     // tree's nodes in the tree's order, and the Bard's instrument songs come before the Instrument they need), so a rank whose gate is not met yet
     // waits for the others, and the request is refused only when some rank is still not met once nothing more can be bought. (Every gate but the
     // exclusions only gets easier with more bought, and the points' total does not depend on the order.) The tree's list gets them in request order.
+    if (const std::string why = settle_plan(p, refunds, buys, work); !why.empty()) return refuse(why);
+    p.after = std::move(work);
+    p.ok = true;
+    return p;
+}
+
+std::string Book::settle_plan(Plan& p, const std::vector<Change>& refunds, const std::vector<Change>& buys,
+                              std::map<int64_t, std::vector<int64_t>>& work) const {
     {
         std::map<int64_t, std::vector<int64_t>> trial = work;
         std::vector<const Change*> waiting;
@@ -496,39 +512,36 @@ Plan Book::plan(const protocol::repl::SkillBuild& build) const {
                     ++it;
                 }
             }
-            if (!progress) return refuse(first_refusal);
+            if (!progress) return first_refusal;
         }
     }
     for (const Change& c : buys) {
         work[c.ref.tree->guid].push_back(c.ref.rank->guid);
         p.changes.push_back(c);
     }
+    if (refunds.empty()) return {};
     // after refunds, no rank that stays may lose its prerequisite or sit beside a rank it excludes
-    if (!refunds.empty()) {
-        for (const int64_t t : p.trees) {
-            const Tree& tree = *catalog_->tree(t);
-            const std::vector<int64_t>& list = work[t];
-            const std::set<int64_t> owned = owned_skills(tree, list);
-            for (const int64_t r : list) {
-                const RankRef ref = catalog_->find(t, r);
-                if (!ref.ok()) continue;
-                if (!requirements_met(tree, *ref.node, owned)) return refuse("the refunds would leave " + ref.rank->name + " without its prerequisite");
-                if (ref.rank->ord > 0) {   // a later rank of a skill needs the one before it
-                    const Rank* before = nullptr;
-                    for (const Rank& other : ref.node->ranks) {
-                        if (other.ord == ref.rank->ord - 1) before = &other;
-                    }
-                    const bool granted = before && ref.node->auto_granted && before->ord == 0;
-                    if (!before || (!granted && std::find(list.begin(), list.end(), before->guid) == list.end())) {
-                        return refuse("the refunds would leave " + ref.rank->name + " without its earlier rank");
-                    }
+    for (const int64_t t : p.trees) {
+        const Tree& tree = *catalog_->tree(t);
+        const std::vector<int64_t>& list = work[t];
+        const std::set<int64_t> owned = owned_skills(tree, list);
+        for (const int64_t r : list) {
+            const RankRef ref = catalog_->find(t, r);
+            if (!ref.ok()) continue;
+            if (!requirements_met(tree, *ref.node, owned)) return "the refunds would leave " + ref.rank->name + " without its prerequisite";
+            if (ref.rank->ord > 0) {   // a later rank of a skill needs the one before it
+                const Rank* before = nullptr;
+                for (const Rank& other : ref.node->ranks) {
+                    if (other.ord == ref.rank->ord - 1) before = &other;
+                }
+                const bool granted = before && ref.node->auto_granted && before->ord == 0;
+                if (!before || (!granted && std::find(list.begin(), list.end(), before->guid) == list.end())) {
+                    return "the refunds would leave " + ref.rank->name + " without its earlier rank";
                 }
             }
         }
     }
-    p.after = std::move(work);
-    p.ok = true;
-    return p;
+    return {};
 }
 
 void Book::apply(const Plan& plan) {

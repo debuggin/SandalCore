@@ -2,20 +2,15 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #include "session/player_world.h"
+#include "net/tick_profile.h"
 
 #include "spawns/npc_looks.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <filesystem>
-#include <map>
-#include <set>
-#include <string>
-#include <utility>
-#include <vector>
 
 namespace aoc { namespace worldd {
 
@@ -292,7 +287,7 @@ bool PlayerWorld::load_npc_abilities(const std::string& abilities_path, const st
     combat::NpcAbilityData data;
     if (!data.load(abilities_path, montages_path, targeting_path, error)) return false;
     npc_abilities_ = std::move(data);
-    spdlog::info("[combat] creature attack animations: {} Blueprints, {} montages", npc_abilities_.kinds(), npc_abilities_.montages());
+    spdlog::info("[combat] mob attack animations: {} Blueprints, {} montages", npc_abilities_.kinds(), npc_abilities_.montages());
     for (const std::string& line : npc_abilities_.coverage_lines()) spdlog::info("[combat]   {}", line);
     return true;
 }
@@ -305,7 +300,7 @@ bool PlayerWorld::load_npc_senses(const std::string& senses_path, const std::str
     npc::SensesTable table;
     if (!table.load(senses_path, curves_path, error)) return false;
     npc_senses_ = std::move(table);
-    spdlog::info("[combat] creature senses: {} Blueprints (what each notices, how far it follows)", npc_senses_.size());
+    spdlog::info("[combat] mob senses: {} Blueprints (what each notices, how far it follows)", npc_senses_.size());
     return true;
 }
 
@@ -451,26 +446,40 @@ void PlayerWorld::tick_town_people_and_roads(double now_seconds) {
 
 void PlayerWorld::tick_world(double now_seconds) {
     world_clock_ = now_seconds;
+    if (view_config_.phases) view_config_.phases->begin_tick();
     tick_props(now_seconds);
+    TickProfile& profile = tick_profile();
     if (nav_ && nav_->windowed() && npcs_ && now_seconds - last_window_drive_ >= kWindowPeriodSeconds) {
         last_window_drive_ = now_seconds;
+        const auto w = std::chrono::steady_clock::now();
         drive_window(now_seconds);
+        if (profile.on) profile.window_us += tick_profile_us_since(w);
     }
     const auto ms = [](std::chrono::steady_clock::time_point a) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count(); };
     auto t = std::chrono::steady_clock::now();
     // Town people and roads follow node levels after the ground window and before the NPC step so newly spawned NPCs enter the current tick cleanly.
     tick_town_people_and_roads(now_seconds);
-    window_cost_.max_people_ms = std::max(window_cost_.max_people_ms, ms(t));
+    const double people_ms = ms(t);
+    window_cost_.max_people_ms = std::max(window_cost_.max_people_ms, people_ms);
     t = std::chrono::steady_clock::now();
     if (npcs_) npcs_->tick(now_seconds);
     check_towns(now_seconds);
-    window_cost_.max_npcs_ms = std::max(window_cost_.max_npcs_ms, ms(t));
+    const double npcs_ms = ms(t);
+    window_cost_.max_npcs_ms = std::max(window_cost_.max_npcs_ms, npcs_ms);
     t = std::chrono::steady_clock::now();
     if (combat_) combat_->tick(now_seconds);
-    window_cost_.max_combat_ms = std::max(window_cost_.max_combat_ms, ms(t));
+    const double combat_ms = ms(t);
+    window_cost_.max_combat_ms = std::max(window_cost_.max_combat_ms, combat_ms);
     t = std::chrono::steady_clock::now();
     if (aftermath_) aftermath_->tick(now_seconds);
-    window_cost_.max_aftermath_ms = std::max(window_cost_.max_aftermath_ms, ms(t));
+    const double aftermath_ms = ms(t);
+    window_cost_.max_aftermath_ms = std::max(window_cost_.max_aftermath_ms, aftermath_ms);
+    if (profile.on) {
+        profile.people_us += people_ms * 1000.0;
+        profile.npcs_us += npcs_ms * 1000.0;
+        profile.combat_us += combat_ms * 1000.0;
+        profile.aftermath_us += aftermath_ms * 1000.0;
+    }
     if (scenery_) scenery_->tick();   // a town whose level changed gets a new full payload (every connection that holds its replicator is sent the update)
 }
 
@@ -585,7 +594,7 @@ void PlayerWorld::init_reward_book() {
         } else if (!variation_error.empty()) {
             spdlog::warn("[loot] no item variations: {} (the kills' items keep their record's quality)", variation_error);
         }
-        spdlog::info("[loot] {} reward tables of the {} the area's creatures and the quests name ({} of them only the quests'), the experience decay {}, {} item variation formulas for the quality of the drops", n,
+        spdlog::info("[loot] {} reward tables of the {} the area's mobs and the quests name ({} of them only the quests'), the experience decay {}, {} item variation formulas for the quality of the drops", n,
                      roots.size(), quest_tables, decay != 0 ? "of the Adventuring leveling type" : "(none)", formulas);
     }
 }

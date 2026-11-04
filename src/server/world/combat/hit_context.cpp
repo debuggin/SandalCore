@@ -46,6 +46,59 @@ bool parse_pair(const std::string& s, int& a, int& b) {
     return true;
 }
 
+bool eval_actor_host_fn(const HitContext& ctx, int fn, const std::string& name, double& out) {
+    switch (fn) {
+        case stats::kHostDistanceBetween: {
+            int a = 0, b = 0;
+            out = (parse_pair(name, a, b) && a != b) ? ctx.distance_cm : 0.0;
+            return true;
+        }
+        case stats::kHostIsClient:
+            out = 0;
+            return true;
+        case stats::kHostSameActor: {
+            int a = 0, b = 0;
+            if (!parse_pair(name, a, b)) {
+                out = 0;
+                return true;
+            }
+            const auto pair = [&](int x, int y) { return (a == x && b == y) || (a == y && b == x); };
+            if (a == b || ctx.target == nullptr) out = 1.0;
+            else if (pair(stats::kRoleActiveHarm, stats::kRoleTarget)) out = ctx.active_is_target ? 1.0 : 0.0;
+            else if (pair(stats::kRoleClosestInHit, stats::kRoleTarget)) out = ctx.target_is_closest ? 1.0 : 0.0;
+            else out = 0.0;
+            return true;
+        }
+        case stats::kHostHitContains: {
+            const int role = std::atoi(name.c_str());
+            if (role == stats::kRoleActiveHarm) out = ctx.active_in_hit ? 1.0 : 0.0;
+            else out = (role == stats::kRoleTarget || role == stats::kRoleClosestInHit) && ctx.target ? 1.0 : 0.0;
+            return true;
+        }
+        case stats::kHostHitSourceType:
+            out = static_cast<double>(ctx.source_type);
+            return true;
+        case stats::kHostIsEnemy:
+        case stats::kHostIsNeutral: {
+            int a = 0, b = 0;
+            if (!parse_pair(name, a, b) || a == b || !ctx.target) {
+                out = 0;
+                return true;
+            }
+            // the caster and the target (either way round): the relation of the hit; any other pair is the caster's own side
+            const bool pair = (a == stats::kRoleCaster && b == stats::kRoleTarget) || (a == stats::kRoleTarget && b == stats::kRoleCaster);
+            if (!pair) {
+                out = 0;
+                return true;
+            }
+            out = (fn == stats::kHostIsEnemy ? ctx.enemy : ctx.neutral) ? 1.0 : 0.0;
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
 }  // namespace
 
 bool HitContext::host_fn(int fn, const std::string& name, const double* /*args*/, int /*n*/, double& out) const {
@@ -65,56 +118,30 @@ bool HitContext::host_fn(int fn, const std::string& name, const double* /*args*/
         out = profile->calculate(fn, *instigator, tgt, seen);
         return true;
     }
-    switch (fn) {
-        case stats::kHostDistanceBetween: {
-            int a = 0, b = 0;
-            out = (parse_pair(name, a, b) && a != b) ? distance_cm : 0.0;
-            return true;
-        }
-        case stats::kHostIsClient:
-            out = 0;
-            return true;
-        case stats::kHostSameActor: {
-            int a = 0, b = 0;
-            if (!parse_pair(name, a, b)) {
-                out = 0;
-                return true;
-            }
-            const auto pair = [&](int x, int y) { return (a == x && b == y) || (a == y && b == x); };
-            if (a == b || target == nullptr) out = 1.0;
-            else if (pair(stats::kRoleActiveHarm, stats::kRoleTarget)) out = active_is_target ? 1.0 : 0.0;
-            else if (pair(stats::kRoleClosestInHit, stats::kRoleTarget)) out = target_is_closest ? 1.0 : 0.0;
-            else out = 0.0;
-            return true;
-        }
-        case stats::kHostHitContains: {
-            const int role = std::atoi(name.c_str());
-            if (role == stats::kRoleActiveHarm) out = active_in_hit ? 1.0 : 0.0;
-            else out = (role == stats::kRoleTarget || role == stats::kRoleClosestInHit) && target ? 1.0 : 0.0;
-            return true;
-        }
-        case stats::kHostHitSourceType:
-            out = static_cast<double>(source_type);
-            return true;
-        case stats::kHostIsEnemy:
-        case stats::kHostIsNeutral: {
-            int a = 0, b = 0;
-            if (!parse_pair(name, a, b) || a == b || !target) {
-                out = 0;
-                return true;
-            }
-            // the caster and the target (either way round): the relation of the hit; any other pair is the caster's own side
-            const bool pair = (a == stats::kRoleCaster && b == stats::kRoleTarget) || (a == stats::kRoleTarget && b == stats::kRoleCaster);
-            if (!pair) {
-                out = 0;
-                return true;
-            }
-            out = (fn == stats::kHostIsEnemy ? enemy : neutral) ? 1.0 : 0.0;
-            return true;
-        }
-        default:
-            return false;
+    if (fn == stats::role_fn(stats::kRoleTarget, stats::kRoleOpEffectRemaining)) {
+        out = target && target_effects ? target_effects->remaining(std::strtoll(name.c_str(), nullptr, 10)) : 0.0;
+        return true;
     }
+    if (fn == stats::kHostEffectHasTag && effect_guid != 0) {
+        out = 0;
+        if (effect_tags) {
+            for (const std::string& t : *effect_tags) {
+                if (tag_matches(t, name)) out = 1;
+            }
+        }
+        return true;
+    }
+    if (fn == stats::kHostEffectIs && effect_guid != 0) {
+        out = effect_guid == std::strtoll(name.c_str(), nullptr, 10) ? 1.0 : 0.0;
+        return true;
+    }
+    // CalcEffectDuration(<effect>): the lengths worked out beforehand for the effects the expression names (an effect not worked out reads as 0)
+    if (fn == stats::kHostEffectDuration && effect_durations) {
+        const auto it = effect_durations->find(std::strtoll(name.c_str(), nullptr, 10));
+        out = it == effect_durations->end() ? 0.0 : it->second;
+        return true;
+    }
+    return eval_actor_host_fn(*this, fn, name, out);
 }
 // -- C_Y_B x C.O.A --
 

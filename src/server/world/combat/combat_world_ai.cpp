@@ -3,6 +3,7 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #include "combat/combat_world.h"
 
+#include "combat/combat_world_npc.h"
 #include "combat/npc_ability_replicator.h"
 #include "combat/npc_kits.h"
 #include "combat/npc_replicator.h"
@@ -74,7 +75,8 @@ bool segment_touches_player(const Vec3& from, const Vec3& dir, double length, do
     return distance_cm(closest, p) <= proj_radius + player.radius_cm();
 }
 
-void gather_nearby_players(const std::vector<PlayerPort*>& players, const Vec3& self, double max_dist, std::vector<npc::ai::Candidate>& out) {
+void gather_nearby_players(const CombatWorld& world, const std::vector<PlayerPort*>& players, const Vec3& self, double max_dist,
+                           std::vector<npc::ai::Candidate>& out) {
     for (PlayerPort* p : players) {
         const Fighter& f = p->fighter();
         if (distance_xy_cm(f.position(), self) > max_dist) continue;
@@ -83,12 +85,12 @@ void gather_nearby_players(const std::vector<PlayerPort*>& players, const Vec3& 
         c.pos = f.position();
         c.radius_cm = f.radius_cm();
         c.alive = f.alive();
-        c.hostile = true;
+        c.hostile = !world.is_pet(c.id);
         out.push_back(c);
     }
 }
 
-npc::ai::Sense build_ai_sense(const world::WorldActor& a, double radius_cm, double attack_range_cm, double max_dist,
+npc::ai::Sense build_ai_sense(const CombatWorld& world, const world::WorldActor& a, double radius_cm, double attack_range_cm, double max_dist,
                               const std::vector<PlayerPort*>& players) {
     npc::ai::Sense s;
     s.self = {a.x, a.y, a.z};
@@ -96,7 +98,7 @@ npc::ai::Sense build_ai_sense(const world::WorldActor& a, double radius_cm, doub
     s.home = {a.npc.home_x, a.npc.home_y, a.npc.home_z};
     s.self_yaw_degrees = a.yaw_degrees;
     s.attack_range_cm = attack_range_cm;
-    gather_nearby_players(players, s.self, max_dist, s.known);
+    gather_nearby_players(world, players, s.self, max_dist, s.known);
     return s;
 }
 
@@ -147,77 +149,51 @@ void collect_nearby_stats_candidates(world::ActorRegistry& registry, const Vec3&
     std::sort(out.begin(), out.end());
 }
 
-}  // namespace
-
-class CombatWorld::Npc final : public Fighter {
-public:
-    Npc(CombatWorld& w, uint64_t actor, npc::MotionStats bp_in, std::string leaf_in, int level_in)
-        : world(w), actor_id(actor), bp(std::move(bp_in)), leaf(std::move(leaf_in)), lvl(level_in) {}
-
-    uint64_t id() const override { return actor_id; }
-    bool     is_player() const override { return false; }
-    int      level() const override { return lvl; }
-    Vec3     position() const override {
-        const world::WorldActor* a = world.registry_.find(actor_id);
-        return a ? Vec3{a->x, a->y, a->z} : Vec3{};
-    }
-    double radius_cm() const override { return bp.radius; }
-    bool   alive() const override { return !dead; }
-    const std::vector<int64_t>& alignments() const override { return aligns; }
-    stats::CharacterStats&      stats() override { return *cs; }
-
-    double health() const {
-        const stats::StatValue* v = cs ? cs->find(content::kGuidHealth) : nullptr;
-        return v ? v->value : 0.0;
-    }
-    double max_health() const {
-        const stats::StatValue* v = cs ? cs->find(content::kGuidMaxHealth) : nullptr;
-        return v ? v->value : 0.0;
-    }
-
-    CombatWorld&                           world;
-    uint64_t                               actor_id;
-    npc::MotionStats                       bp;
-    std::string                            leaf;
-    int                                    lvl;
-    std::vector<int64_t>                   aligns;
-    std::unique_ptr<stats::CharacterStats> cs;
-    npc::ai::NpcAi                         ai;
-    bool                                   hostile = false;
-    bool                                   dead = false;
-    bool                                   flags_in_combat = false;
-    uint64_t                               flags_target = 0;
-    bool                                   returning = false;
-    const npc_kits::Kit*                   kit = nullptr;
-    CombatWorld::Attack                    next;
-    double                                 next_attack_at = 0;
-    std::string                            archetype;
-    const std::vector<CreatureAbility>*    anim = nullptr;
-    NpcCastState                           cast;
-    std::map<std::string, double>          cooldown_until;
-    double                                 hold_until = 0;
-    double                                 stand_off_cm = -1;
-    double                                 shot_reach_cm = -1;
-    double                                 fight_began = 0;
-    std::map<std::string, double>          fight_rolls;
-    uint64_t                               killer = 0;
-    std::set<uint64_t>                     attackers;
-    struct Shield {
-        double amount = 0;
-        double until = 0;
-    };
-    std::vector<Shield>                    shields;
-
-    double absorb(double loss, double now) {
-        shields.erase(std::remove_if(shields.begin(), shields.end(), [&](const Shield& s) { return s.amount <= 0 || (s.until > 0 && s.until <= now); }), shields.end());
-        for (Shield& s : shields) {
-            const double take = std::min(s.amount, loss);
-            s.amount -= take;
-            loss -= take;
-        }
-        return loss;
-    }
+struct ModApplyResult {
+    std::vector<double> effective;
+    double              burn_before = 0;
+    double              burn_dur_before = 0;
+    bool                burn_moved = false;
 };
+
+ModApplyResult apply_resolved_mods_to_npc(world::ActorRegistry& registry, const CombatStatIds& id, CombatWorld::Npc& n, const Resolved& r,
+                                          double now) {
+    ModApplyResult out;
+    out.effective.assign(r.mods.size(), 0.0);
+    if (r.miss()) return out;
+    if (const stats::StatValue* v = id.status_burning ? n.cs->find(id.status_burning) : nullptr) out.burn_before = v->value;
+    if (const stats::StatValue* v = id.status_burning_dur ? n.cs->find(id.status_burning_dur) : nullptr) out.burn_dur_before = v->value;
+    for (size_t i = 0; i < r.mods.size(); ++i) {
+        const ResolvedMod& m = r.mods[i];
+        if (!std::isfinite(m.value)) continue;
+        if (id.is_status_stat(m.stat_guid)) {
+            const stats::StatValue* cur = n.cs->find(m.stat_guid);
+            if (!cur || !cur->held()) continue;
+            const double before = cur->value;
+            double next = before + m.value;
+            if (cur->has_max) next = std::min(next, static_cast<double>(cur->max));
+            next = std::max(next, cur->has_min ? static_cast<double>(cur->min) : 0.0);
+            out.effective[i] = static_cast<float>(next) - before;
+            n.cs->set_current(m.stat_guid, static_cast<float>(next));
+            out.burn_moved = true;
+            continue;
+        }
+        if (m.stat_guid != id.health && m.stat_guid != id.mana) continue;
+        const stats::StatValue* cur = n.cs->find(m.stat_guid);
+        const stats::StatValue* max = n.cs->find(m.stat_guid == id.health ? id.max_health : id.max_mana);
+        if (!cur || !max) continue;
+        const double before = cur->value;
+        double value = m.value;
+        if (m.stat_guid == id.health && value < 0) value = -n.absorb(-value, now);
+        const double after = std::clamp(before + value, 0.0, static_cast<double>(max->value));
+        out.effective[i] = after - before;
+        n.cs->set_current(m.stat_guid, static_cast<float>(after));
+        write_stat(registry, n.actor_id, m.stat_guid, static_cast<float>(after));
+    }
+    return out;
+}
+
+}  // namespace
 
 void CombatWorld::deliver_hit(Npc& n, PlayerPort& port, const abilities::AbilityDef& ability, int64_t guid, double now, int64_t projectile) {
     const abilities::HitDef* hit = catalog_.hit(guid);
@@ -264,14 +240,21 @@ void CombatWorld::deliver_hit(Npc& n, PlayerPort& port, const abilities::Ability
 void CombatWorld::resolve_pending(double now) {
     std::vector<Pending> keep;
     for (size_t i = 0; i < pending_.size();) {
+        if (pending_[i].due > now) {
+            bool gone = false;
+            if (pending_[i].animated) {
+                const auto owner = npcs_.find(pending_[i].npc);
+                gone = owner == npcs_.end() || owner->second->dead;
+            }
+            if (!gone) {
+                ++i;
+                continue;
+            }
+        }
         Pending p = pending_[i];
         const auto it = npcs_.find(p.npc);
         if (p.animated && (it == npcs_.end() || it->second->dead)) {
             pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(i));
-            continue;
-        }
-        if (p.due > now) {
-            ++i;
             continue;
         }
         pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(i));
@@ -391,42 +374,65 @@ void CombatWorld::advance_flights(double now) {
     }
 }
 
-Delivery CombatWorld::apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, const Resolved& r, double now) {
+Delivery CombatWorld::apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, const Resolved& r, double now, uint64_t threat_to,
+                                       const HitOrigin* origin) {
+    Npc* n = combatant(npc_actor);
+    if (!n || n->dead) {
+        Delivery d;
+        d.target_object = hit_component_of(npc_actor);
+        return d;
+    }
+    return land_hit(*n, attacker, r, now, true, threat_to, origin);
+}
+
+Delivery CombatWorld::land_hit(Npc& nn, uint64_t attacker, const Resolved& r, double now, bool log, uint64_t threat_to,
+                               const HitOrigin* origin) {
+    Npc* n = &nn;
+    const uint64_t npc_actor = n->actor_id;
     Delivery d;
     d.target_object = hit_component_of(npc_actor);
-    Npc* n = combatant(npc_actor);
-    if (!n || n->dead) return d;
     d.applied = true;
     d.flags = r.flags;
-    d.effective.assign(r.mods.size(), 0.0);
     n->attackers.insert(attacker);
     ++stats_.player_hits;
     const double health_before = n->health();
-    if (!r.miss()) {
-        const CombatStatIds& id = data_.ids();
-        for (size_t i = 0; i < r.mods.size(); ++i) {
-            const ResolvedMod& m = r.mods[i];
-            if ((m.stat_guid != id.health && m.stat_guid != id.mana) || !std::isfinite(m.value)) continue;
-            const stats::StatValue* cur = n->cs->find(m.stat_guid);
-            const stats::StatValue* max = n->cs->find(m.stat_guid == id.health ? id.max_health : id.max_mana);
-            if (!cur || !max) continue;
-            const double before = cur->value;
-            double value = m.value;
-            if (m.stat_guid == id.health && value < 0) value = -n->absorb(-value, now);
-            const double after = std::clamp(before + value, 0.0, static_cast<double>(max->value));
-            d.effective[i] = after - before;
-            n->cs->set_current(m.stat_guid, static_cast<float>(after));
-            write_stat(registry_, npc_actor, m.stat_guid, static_cast<float>(after));
-        }
-    }
+    const CombatStatIds& id = data_.ids();
+    ModApplyResult mod_res = apply_resolved_mods_to_npc(registry_, id, *n, r, now);
+    d.effective = std::move(mod_res.effective);
     const bool lethal = n->health() <= 0.0;
+    const HolderEvent event = event_of_hit(*n, attacker, r, d, lethal, origin);
+    if (is_pet(npc_actor)) {
+        n->attackers.erase(attacker);
+        if (lethal) {
+            n->dead = true;
+            d.lethal = true;
+            d.flags |= stats::kHitLethal;
+            pet_stop(npc_actor);
+        }
+        return d;
+    }
     double threat = r.threat;
     if (threat <= 0 && !r.miss()) {
-        for (const double e : d.effective) threat += e < 0 ? -e : 0;
+        for (size_t i = 0; i < d.effective.size(); ++i) {
+            if (d.effective[i] < 0 && !id.is_status_stat(r.mods[i].stat_guid)) threat += -d.effective[i];
+        }
     }
-    spdlog::info("[combat] player {} hit {} ({}, level {}): {}Health {:.1f} -> {:.1f}, threat {:.1f}", attacker, n->leaf, npc_actor, n->lvl, r.miss() ? "a miss, " : "", health_before, n->health(),
-                 std::max(threat, 1.0));
-    if (!lethal) n->ai.notice(attacker, std::max(threat, 1.0), now);
+    if (log) {
+        spdlog::info("[combat] player {} hit {} ({}, level {}): {}Health {:.1f} -> {:.1f}, threat {:.1f}", attacker, n->leaf, npc_actor, n->lvl,
+                     r.miss() ? "a miss, " : "", health_before, n->health(), std::max(threat, 1.0));
+    }
+    if (mod_res.burn_moved && log) {
+        const stats::StatValue* pool = id.status_burning ? n->cs->find(id.status_burning) : nullptr;
+        const stats::StatValue* dur = id.status_burning_dur ? n->cs->find(id.status_burning_dur) : nullptr;
+        if (pool && dur && (pool->value != mod_res.burn_before || dur->value != mod_res.burn_dur_before)) {
+            spdlog::info("[combat] {} ({}) is burning: {:.1f} fire damage to burn over {:.1f} s (it was {:.1f} over {:.1f} s)", n->leaf, npc_actor,
+                         pool->value, dur->value, mod_res.burn_before, mod_res.burn_dur_before);
+        }
+    }
+    if (!lethal) {
+        n->ai.notice(threat_to != 0 ? threat_to : attacker, std::max(threat, 1.0), now);
+        if (threat_to != 0) n->ai.notice(attacker, 0.01, now);
+    }
     player_exchange(attacker, now);
     if (lethal) {
         d.lethal = true;
@@ -435,6 +441,7 @@ Delivery CombatWorld::apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, co
     } else {
         think(*n, now);
     }
+    hit_reacts(npc_actor, event, threat_to, origin, now);
     return d;
 }
 
@@ -442,6 +449,7 @@ void CombatWorld::kill(Npc& n, uint64_t killer, double now, bool gm) {
     if (n.dead) return;
     n.dead = true;
     n.killer = killer;
+    clear_effects(n);
     n.ai.kill();
     n.cs->set_in_combat(false);
     n.cs->set_current(content::kGuidHealth, 0.0f);
@@ -454,7 +462,7 @@ void CombatWorld::kill(Npc& n, uint64_t killer, double now, bool gm) {
     n.hold_until = 0;
     pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const Pending& p) { return p.npc == n.actor_id; }), pending_.end());
     ++stats_.kills;
-    if (death_hook_) {
+    if (death_hook_ && !is_pet(n.actor_id)) {
         const world::WorldActor* a = registry_.find(n.actor_id);
         DeathEvent e;
         e.npc = n.actor_id;
@@ -563,7 +571,7 @@ void CombatWorld::think(Npc& n, double now) {
     if (!a) return;
     const double attack_range = n.shot_reach_cm > 0 ? n.shot_reach_cm : static_cast<double>(n.next.range_cm);
     const double max_dist = n.ai.params().leash_radius_cm * 2.0 + n.ai.params().aggro_radius_cm;
-    npc::ai::Sense s = build_ai_sense(*a, n.bp.radius, attack_range, max_dist, players_);
+    npc::ai::Sense s = build_ai_sense(*this, *a, n.bp.radius, attack_range, max_dist, players_);
     s.now = now;
     if (nav_) s.line_of_sight = [this](const Vec3& from, const Vec3& to) { return line_clear(from, to); };
     const npc::ai::State before = n.ai.state();
@@ -618,6 +626,7 @@ void CombatWorld::tick(double now) {
     if (!cfg_.enabled) return;
     resolve_pending(now);
     advance_flights(now);
+    advance_effects(now);
     if (now < next_think_) return;
     next_think_ = now + cfg_.think_seconds;
     expire_player_combat_timers(now, players_, player_combat_until_);
@@ -662,8 +671,10 @@ void CombatWorld::tick(double now) {
         }
     }
     for (const uint64_t id : todo) {
+        if (is_pet(id)) continue;
         if (Npc* n = combatant(id)) think(*n, now);
     }
+    tick_pets(now);
 }
 
 }  // namespace aoc::worldd::combat

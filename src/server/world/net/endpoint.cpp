@@ -1,25 +1,54 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  net/endpoint.cpp
-// ============================================================================
 #include "net/endpoint.h"
 #include "net/spsc_ring.h"
+#include "net/tick_profile.h"
 #include "protocol/conn/handshake.h"
 #include "protocol/wire/ue5_primitives.h"
 #include <algorithm>
 #include <cstdio>
-#include <spdlog/spdlog.h>
 
 namespace aoc { namespace worldd {
 
 namespace conn = protocol::conn;
 
+namespace {
+
+std::vector<uint8_t> build_challenge_packet(const conn::HandshakePacket& req, CookieSigner& signer,
+                                            const CookieSigner::RandomFill& random, const std::array<double, 3>& spawn,
+                                            double t, const std::string& from_str) {
+    conn::HandshakePacket c = req;
+    c.type = conn::HandshakeType::Challenge;
+    c.restart = false;
+    c.secret_id = signer.secret_id();
+    c.timestamp = t;
+    c.cookie = signer.sign(c.secret_id, t, from_str);
+    std::array<uint8_t, 38> server_bytes{};
+    random(server_bytes.data(), server_bytes.size());
+    c.ext = conn::IntrepidExt::for_server(*req.ext, server_bytes, spawn);
+    c.padding.assign(conn::kChallengePaddingBytes, 0);
+    random(c.padding.data(), c.padding.size());
+    return conn::build_handshake(c);
+}
+
+std::vector<uint8_t> build_ack_packet(const conn::HandshakePacket& req, const CookieSigner::RandomFill& random) {
+    conn::HandshakePacket a = req;
+    a.type = conn::HandshakeType::Ack;
+    a.timestamp = -1.0;
+    a.padding.assign(conn::kAckPaddingBytes, 0);
+    random(a.padding.data(), a.padding.size());
+    return conn::build_handshake(a);
+}
+
+}  // namespace
+
 Endpoint::Endpoint(EndpointConfig cfg, CookieSigner& signer, LoginQueue& logins, Send send,
                    CookieSigner::RandomFill random, Clock::time_point start)
     : cfg_(std::move(cfg)), signer_(signer), logins_(logins), send_(std::move(send)),
-      random_(std::move(random)), start_(start) {}
+      random_(std::move(random)), start_(start) {
+    if (cfg_.view_threads >= 1 && cfg_.players) view_pool_ = std::make_unique<ViewPool>(cfg_.view_threads);
+}
 
 double Endpoint::seconds(Clock::time_point t) const {
     return std::chrono::duration<double>(t - start_).count();
@@ -39,12 +68,11 @@ void Endpoint::on_datagram(const Address& from, const uint8_t* data, size_t len,
         return;
     }
     auto it = sessions_.find(from);
-    if (it == sessions_.end()) return;  // no handshake from this address
+    if (it == sessions_.end()) return;
     Session& s = *it->second;
     if (!within_rate(s, from, len, now)) return;
     try {
-        // The datagram's acknowledgements first, then its bunches: the retail client's first packet after the join
-        // acknowledges the join and asks for the load in one, and the reply must leave out what was just acknowledged.
+        // Apply packet acknowledgements before bunches so join replies omit data acknowledged in the same datagram.
         const std::vector<InBunch> bunches = s.connection.receive(data, len, now);
         if (s.player) s.player->take_acks(s.connection);
         bool touched_player = false;
@@ -66,15 +94,12 @@ void Endpoint::on_datagram(const Address& from, const uint8_t* data, size_t len,
             }
             apply(s, s.control.on_message(*msg), now);
         }
-        // The datagram is done: the one correction its refused moves left goes out (at most one per datagram).
         if (touched_player && s.player && !s.closing) s.player->end_of_datagram(s.connection);
     } catch (const std::exception& e) {
-        // One session's fault stays its own: it is dropped, the others go on.
         spdlog::error("[endpoint] {} ({}): a datagram threw {}: dropping the session", from.to_string(), s.request.character_id, e.what());
         remove(from, "threw an exception");
     }
 }
-// Cyb / C-O-A
 
 bool Endpoint::within_rate(Session& s, const Address& from, size_t len, Clock::time_point now) {
     const double rate = static_cast<double>(cfg_.max_session_bytes_per_second);
@@ -106,34 +131,18 @@ void Endpoint::on_handshake(const Address& from, const uint8_t* data, size_t len
     const auto p = conn::parse_handshake(data, len);
     if (!p || !p->ext) return;
     const double t = seconds(now);
-
     if (p->type == conn::HandshakeType::Initial) {
-        if (!p->ext->has_initial_marker()) return;
-        if (session_limit_reached(from, now)) return;  // no Challenge: the client would only be refused next
-        conn::HandshakePacket c = *p;
-        c.type = conn::HandshakeType::Challenge;
-        c.restart = false;
-        c.secret_id = signer_.secret_id();
-        c.timestamp = t;
-        c.cookie = signer_.sign(c.secret_id, t, from.to_string());
-        std::array<uint8_t, 38> server_bytes{};
-        random_(server_bytes.data(), server_bytes.size());
-        c.ext = conn::IntrepidExt::for_server(*p->ext, server_bytes, cfg_.spawn);
-        c.padding.assign(conn::kChallengePaddingBytes, 0);
-        random_(c.padding.data(), c.padding.size());
-        send_(from, conn::build_handshake(c));
+        if (!p->ext->has_initial_marker() || session_limit_reached(from, now)) return;
+        send_(from, build_challenge_packet(*p, signer_, random_, cfg_.spawn, t, from.to_string()));
         return;
     }
     if (p->type != conn::HandshakeType::Response) return;
-
     auto existing = sessions_.find(from);
     if (existing != sessions_.end() && existing->second->cookie == p->cookie) {
-        send_(from, existing->second->ack_packet);  // our Ack was lost
+        send_(from, existing->second->ack_packet);
         return;
     }
     if (existing != sessions_.end() && p->timestamp <= existing->second->cookie_timestamp) {
-        // A replay of an earlier Response; a client that retried its Initial
-        // answers a newer Challenge.
         spdlog::debug("[endpoint] {}: ignoring a Response older than its session", from.to_string());
         return;
     }
@@ -142,77 +151,47 @@ void Endpoint::on_handshake(const Address& from, const uint8_t* data, size_t len
         return;
     }
     if (existing == sessions_.end() && session_limit_reached(from, now)) return;
-
     const std::string character_id = ::ue5::guid_to_hex(p->ext->character_id().data());
     const std::string ticket = ::ue5::guid_to_hex(p->ext->ticket().data());
-
-    // A client that retried its Initial answers the newer Challenge with the character id and ticket of the
-    // session it replaces: that login is already running or done, and the ticket was spent by it.  Carry it over
-    // rather than redeem again (the gateway refuses a second redemption).  A refused login is asked again (a
-    // service that was down may be up now; a spent ticket is refused again), and so is a session being closed:
-    // one that was kicked for another client's login of the character must not take the character back.
+    // Carry over an active login with the same character and ticket so the gateway is not asked to redeem a spent ticket twice.
     bool carried = false;
     uint64_t carried_id = 0;
     std::optional<LoginResult> carried_result;
-    // A worldd without content.db cannot value a character: the login is refused before the ticket is redeemed.
     const bool no_content = cfg_.players && !cfg_.players->ready();
     if (existing != sessions_.end()) {
         const Session& old = *existing->second;
         const auto& result = old.control.login();
-        if (!old.closing && old.request.character_id == character_id && old.request.ticket == ticket &&
-            (!result || result->accepted)) {
+        if (!old.closing && old.request.character_id == character_id && old.request.ticket == ticket && (!result || result->accepted)) {
             carried = true;
             carried_id = old.id;
             carried_result = result;
         }
         remove(from, carried ? "reconnected, keeping its login" : "reconnected");
     }
-
     const auto seqs = conn::initial_sequences(p->cookie);
-    ConnectionConfig cc;
-    cc.outer = conn::outer_header_of(*p);
-    cc.custom_field = p->ext->custom_field();
-    cc.server_initial_seq = seqs.server;
-    cc.client_initial_seq = seqs.client;
-
+    ConnectionConfig cc{conn::outer_header_of(*p), p->ext->custom_field(), seqs.server, seqs.client};
     auto s = std::make_unique<Session>(cc, now, cfg_.world, random_challenge());
     s->id = carried ? carried_id : next_session_id_++;
     s->address = from;
     s->cookie = p->cookie;
     s->cookie_timestamp = p->timestamp;
     s->deadline = now + cfg_.login_deadline;
-    s->request.character_id = character_id;
-    s->request.ticket = ticket;
-
-    conn::HandshakePacket a = *p;
-    a.type = conn::HandshakeType::Ack;
-    a.timestamp = -1.0;
-    a.padding.assign(conn::kAckPaddingBytes, 0);
-    random_(a.padding.data(), a.padding.size());
-    s->ack_packet = conn::build_handshake(a);
+    s->request = LoginRequest{character_id, ticket};
+    s->ack_packet = build_ack_packet(*p, random_);
     send_(from, s->ack_packet);
-// C.Y.B x CoA
-
     Session& session = *s;
     by_id_[session.id] = from;
     if (carried) {
-        spdlog::info("[endpoint] {} connected again for character {}: its login goes on", from.to_string(),
-                     character_id);
+        spdlog::info("[endpoint] {} connected again for character {}: its login goes on", from.to_string(), character_id);
     } else if (no_content) {
-        spdlog::warn("[endpoint] {} connected for character {}: refused, worldd has no content.db ({})", from.to_string(), character_id,
-                     cfg_.players->content_problem());
+        spdlog::warn("[endpoint] {} connected for character {}: refused, worldd has no content.db ({})", from.to_string(), character_id, cfg_.players->content_problem());
     } else {
         spdlog::info("[endpoint] {} connected for character {}", from.to_string(), character_id);
         logins_.submit(session.id, session.request);
     }
     sessions_[from] = std::move(s);
-    // A pending login's result reaches the session by its id; one that finished is applied now.
     if (carried_result) on_login_result(session, *carried_result, now);
-    if (!carried && no_content) {
-        LoginResult refusal;
-        refusal.error = login_text::kContentMissing;
-        on_login_result(session, refusal, now);
-    }
+    if (!carried && no_content) on_login_result(session, LoginResult{false, {}, login_text::kContentMissing}, now);
 }
 
 void Endpoint::post_login_result(uint64_t session_id, LoginResult result) {
@@ -248,7 +227,7 @@ size_t Endpoint::drain_outbound() {
 }
 
 void Endpoint::on_login_result(Session& s, LoginResult result, Clock::time_point now) {
-    if (s.closing) return;  // already kicked or refused
+    if (s.closing) return;
     if (result.accepted) {
         auto other = by_character_.find(result.character.id);
         if (other != by_character_.end() && !(other->second == s.address)) {
@@ -257,20 +236,12 @@ void Endpoint::on_login_result(Session& s, LoginResult result, Clock::time_point
                 spdlog::info("[endpoint] character {} logged in again: dropping {}", result.character.id,
                              other->second.to_string());
                 if (PlayerSession* old = os->second->player.get()) {
-                    // The record in `result` was read when this login began: the old session knows where the character is
-                    // now (its last periodic save may be a minute old, and its end is saved only now). The new session starts
-                    // from that position, and the old one's hand-over goes to the saver now, before anything the new
-                    // session saves.
-                    const GoodPosition g = old->last_position();   // (a rider: beside its mount, on its feet; the mounts milestone, stage 3)
+                    const GoodPosition g = old->last_position();
                     if (g.has_time_stamp) {
                         result.character.has_position = true;
                         result.character.position = {g.x, g.y, g.z, static_cast<float>(g.yaw_degrees)};
                     }
-                    // the same goes for the items (plan B2): the record's are as old as the login's read, the old session's are the character's.
-                    // When they differ from the record's, the old session's final save (handed to the saver below) is all that holds them in the
-                    // database, and the saver may lose it: the new session is told, and saves its inventory when it ends even if the player
-                    // never touches an item.
-                    // (review A M3: the old session ends FIRST: its end persists a mount's Health into its inventory, and the new session must start from that)
+                    // Finish the old session first so mount health is persisted into its inventory before handover.
                     old->finish("logged in elsewhere");
                     std::string unused;
                     const auto record_items = items::Inventory::from_items(result.character.items, unused);
@@ -286,7 +257,6 @@ void Endpoint::on_login_result(Session& s, LoginResult result, Clock::time_point
     }
     apply(s, s.control.on_login(result), now);
     if (!result.accepted && !s.closing) {
-        // Refused before Hello: the Failure waits for Hello, but not for long.
         const auto soon = now + cfg_.close_linger;
         if (soon < s.deadline) s.deadline = soon;
     }
@@ -315,7 +285,7 @@ void Endpoint::apply(Session& s, ControlChannel::Reply reply, Clock::time_point 
 void Endpoint::start_player(Session& s, Clock::time_point now) {
     if (!cfg_.players || s.player || s.closing) return;
     const auto& login = s.control.login();
-    if (!login || !login->accepted) return;   // cannot be: Join follows an accepted login
+    if (!login || !login->accepted) return;
     std::vector<std::string> notes;
     const bootstrap::LoginIdentity identity = make_login_identity(s.control.login_message(), login->character, &notes);
     for (const std::string& note : notes) spdlog::info("[endpoint] character {} ({}): {}", s.character_name, s.request.character_id, note);
@@ -325,7 +295,6 @@ void Endpoint::start_player(Session& s, Clock::time_point now) {
     if (s.player && s.carried_items_differ) s.player->inventory_may_be_unsaved();
     if (!s.player) {
         spdlog::error("[endpoint] character {} ({}) cannot join the world: {}", s.character_name, s.request.character_id, error);
-        // The player's text: the one refusal a player can do something about (pick another character) is named.
         const char* text = refusal == bootstrap::SetupRefusal::UnsupportedRace ? login_text::kRaceUnsupported : login_text::kLoginFailed;
         apply(s, s.control.kick(text), now);
     }
@@ -336,7 +305,7 @@ void Endpoint::remove(const Address& a, const char* why) {
     if (it == sessions_.end()) return;
     Session& s = *it->second;
     spdlog::info("[endpoint] {} ({}): {}", a.to_string(), s.request.character_id, why);
-    if (s.player) s.player->finish(why);   // the last good position is saved whatever ended the session
+    if (s.player) s.player->finish(why);
     auto c = by_character_.find(s.request.character_id);
     if (c != by_character_.end() && c->second == a) by_character_.erase(c);
     auto i = by_id_.find(s.id);
@@ -363,8 +332,12 @@ void Endpoint::log_refused_for_limit(Clock::time_point now) {
 void Endpoint::tick(Clock::time_point now) {
     drain_inbound(now);
     signer_.update(seconds(now));
-    if (cfg_.players) cfg_.players->tick_world(seconds(now));   // plan E1, stage 2: the NPCs walk
-
+    TickProfile& profile = tick_profile();
+    const bool timing = profile.on;
+    std::chrono::steady_clock::time_point t0{};
+    if (timing) t0 = std::chrono::steady_clock::now();
+    if (cfg_.players) cfg_.players->tick_world(seconds(now));
+    if (timing) profile.world_us += tick_profile_us_since(t0);
     std::vector<std::pair<uint64_t, LoginResult>> done;
     for (AsyncTaskCompletion c{}; rings_->completions.try_pop(c);) done.emplace_back(c.session_id, std::move(c.result));
     {
@@ -374,15 +347,15 @@ void Endpoint::tick(Clock::time_point now) {
     }
     for (auto& [id, result] : done) {
         const auto at = by_id_.find(id);
-        if (at == by_id_.end()) continue;  // its session is gone
+        if (at == by_id_.end()) continue;
         const auto s = sessions_.find(at->second);
         if (s != sessions_.end() && s->second->id == id) on_login_result(*s->second, std::move(result), now);
     }
     log_refused_for_limit(now);
-// [C_Y_B - CoA]
-
     std::vector<std::pair<Address, const char*>> drop;
-    for (auto& [addr, s] : sessions_) {
+    if (view_pool_) {
+        tick_in_phases(now, drop);
+    } else for (auto& [addr, s] : sessions_) {
         if (s->connection.closed_by_client()) { drop.emplace_back(addr, "the client quit"); continue; }
         if (s->connection.timed_out(now)) { drop.emplace_back(addr, "timed out"); continue; }
         if (s->connection.failed()) { drop.emplace_back(addr, "broke the protocol"); continue; }
@@ -391,22 +364,50 @@ void Endpoint::tick(Clock::time_point now) {
             continue;
         }
         try {
+            std::chrono::steady_clock::time_point a{}, b{};
+            const double view_before = timing ? profile.view_us : 0.0;
+            if (timing) a = std::chrono::steady_clock::now();
             if (s->player && !s->closing) {
                 s->player->tick(s->connection, now);
                 if (s->player->failed()) apply(*s, s->control.kick(login_text::kLoginFailed), now);
             }
+            if (timing) b = std::chrono::steady_clock::now();
             for (auto& pkt : s->connection.flush(now)) send_(addr, pkt);
-            if (s->player) s->player->take_acks(s->connection);   // what flush dropped counts as lost
-            if (s->closing && (now >= s->close_by || s->connection.unacked_reliable(0) == 0))
-                drop.emplace_back(addr, "closed");
+            if (timing) {
+                const auto c = std::chrono::steady_clock::now();
+                profile.sessions_us += std::chrono::duration<double, std::micro>(b - a).count();
+                profile.flush_us += std::chrono::duration<double, std::micro>(c - b).count();
+                s->profile_us += std::chrono::duration<double, std::micro>(c - a).count();
+                s->profile_view_us += profile.view_us - view_before;
+            }
+            if (s->player) s->player->take_acks(s->connection);
+            if (s->closing && (now >= s->close_by || s->connection.unacked_reliable(0) == 0)) drop.emplace_back(addr, "closed");
         } catch (const std::exception& e) {
-            // One session's fault stays its own: it is dropped, the others go on.
             spdlog::error("[endpoint] {} ({}): the tick threw {}: dropping the session", addr.to_string(), s->request.character_id, e.what());
             drop.emplace_back(addr, "threw an exception");
         }
     }
     for (const auto& [addr, why] : drop) remove(addr, why);
     drain_outbound();
+}
+
+void Endpoint::take_costliest(TickProfile& profile) {
+    const Session* top = nullptr;
+    for (auto& [addr, s] : sessions_) {
+        if (!top || s->profile_us > top->profile_us) top = s.get();
+    }
+    if (top && top->profile_us > 0) {
+        profile.top_name = top->player ? top->player->name() : top->character_name;
+        profile.top_us = top->profile_us;
+        profile.top_view_us = top->profile_view_us;
+        const ActorView* view = top->player ? top->player->actor_view() : nullptr;
+        profile.top_awake = view ? view->count(world::ClientState::Awake) : 0;
+        profile.top_dormant = view ? view->count(world::ClientState::Dormant) : 0;
+    }
+    for (auto& [addr, s] : sessions_) {
+        s->profile_us = 0;
+        s->profile_view_us = 0;
+    }
 }
 
 void Endpoint::kick_all(const std::string& text, Clock::time_point now) {

@@ -64,9 +64,11 @@
 
 #include "bootstrap/ability_replication.h"
 #include "content/content_db.h"
+#include "session/item_cast.h"
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -121,7 +123,9 @@ struct TriggerInfo {
     int32_t  animation_index = 0;
     double   input_x = 0, input_y = 0;
     uint32_t target_count = 0;   // plan D2: how many targets the call names (an ability that needs one is aimed at the caster: nothing else is there)
-    bool     item = false;       // plan D2: the call names an item (a consumable's ability): not run by the generic runtime
+    bool     item = false;       // plan D2: the call names an item (a mount's, a consumable's ability): the generic runtime runs only a consumable's (item_cast)
+    /// The session checked that the bag slot the call names holds an item whose use casts this ability (a consumable): its numbers. Null: not a consumable's cast.
+    std::shared_ptr<const ItemCast> item_cast;
     /// plan E1, stage 3: the actors the call's Targets name other than the caster's own components, as the session resolved them (an NPC's ObjectId).
     std::vector<uint64_t> target_actors;
 };
@@ -233,6 +237,8 @@ public:
 
     // ---- state, for the log and the tests ------------------------------------------------------------------------
     double stamina() const { return stat(content::kGuidStamina); }
+    /// A level gained: Stamina back at its maximum.
+    void refill_stamina(bootstrap::AbilityChange& c) { set_stat(c, content::kGuidStamina, max_stamina()); }
     double max_stamina() const { return stat(content::kGuidMaxStamina); }
     double stat(int64_t record) const {
         const auto it = stats_.find(record);

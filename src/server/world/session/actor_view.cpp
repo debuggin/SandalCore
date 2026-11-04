@@ -7,6 +7,8 @@
 //  See actor_view.h.
 // ============================================================================
 #include "session/actor_view.h"
+#include "net/tick_loop.h"
+#include "net/tick_profile.h"
 
 #include "gather/node_wire.h"
 #include "world/interaction_state.h"
@@ -35,29 +37,6 @@ void add_ability_exports(std::vector<repl::ContentBlock>& blocks, const std::vec
         for (const repl::ExportChain& x : exports) b.exports.push_back(x);
     }
 }
-
-/// repl::update_actor with the exports of a creature's attack added to the AbilityComponent's block.
-std::optional<repl::Emission> update_with_ability_exports(const repl::Actor& actor, repl::ActorShadow& shadow, const repl::ExportAcks& acks,
-                                                          const std::vector<repl::ExportChain>& exports, bool* failed, repl::SentRecord* record) {
-    if (exports.empty()) return repl::update_actor(actor, shadow, acks, failed, record);
-    if (failed) *failed = false;
-    repl::ShadowUndo undo;
-    std::vector<repl::ContentBlock> blocks;
-    if (!repl::collect_update_blocks(actor, shadow, blocks, &undo)) {
-        if (failed) *failed = true;
-        return std::nullopt;
-    }
-    if (blocks.empty()) return std::nullopt;
-    add_ability_exports(blocks, exports);
-    auto e = repl::assemble_blocks(actor, blocks, acks);
-    if (!e) {
-        undo.rollback(shadow);
-        if (failed) *failed = true;
-    } else if (record) {
-        *record = repl::sent_record(undo, shadow);
-    }
-    return e;
-}
 }  // namespace
 
 ActorView::ActorView(world::ActorRegistry& registry, Config config, std::function<bool(uint32_t)> reserved)
@@ -71,6 +50,8 @@ void ActorView::finish() {
     if (finished_) return;
     finished_ = true;
     registry_.off_remove(listener_);
+    if (phase_taken_ && config_.phases) config_.phases->leave(phase_);   // the tick it passed on is the other views' to take
+    phase_taken_ = false;
 }
 
 
@@ -178,7 +159,7 @@ const repl::Actor& ActorView::view_of(const world::WorldActor& a, repl::Actor& s
     return scratch;
 }
 
-std::optional<repl::Emission> ActorView::build_open(const world::WorldActor& a, repl::ActorShadow& work, bool first) {
+std::optional<repl::Emission> ActorView::build_open(const world::WorldActor& a, repl::ActorShadow& work, bool first, bool* private_form) {
     bool failed = false;
     repl::Actor scratch;
     const repl::Actor* shown = &view_of(a, scratch);
@@ -187,6 +168,7 @@ std::optional<repl::Emission> ActorView::build_open(const world::WorldActor& a, 
         a.first_open_form(scratch);
         shown = &scratch;
     }
+    if (private_form) *private_form = shown != &a.actor;
     const repl::Actor& actor = *shown;
     if (a.open_exports.empty() && a.ability_exports.empty()) return repl::open_actor(actor, work, acks_, &failed);
     // the blocks by hand: the actor's block carries the exports its values name by path, the AbilityComponent's those of the attack it shows
@@ -204,8 +186,9 @@ std::optional<repl::Emission> ActorView::build_open(const world::WorldActor& a, 
     return em;
 }
 
-
-bool ActorView::open(Connection& conn, world::WorldActor& a, Entry& e, bool snapshot, Clock::time_point now) {
+bool ActorView::open(Connection& conn, const world::WorldActor& a, Entry& e, bool snapshot, Clock::time_point now) {
+    TickProfileSpan span(&tick_profile().open_us);   // (--loop-stats)
+    if (tick_profile().on) ++tick_profile().opens;
     const uint32_t channel = allocate_channel(conn);
     if (channel == 0) {
         ++stats_.no_channel;
@@ -215,14 +198,14 @@ bool ActorView::open(Connection& conn, world::WorldActor& a, Entry& e, bool snap
     repl::ActorShadow work;   // a new channel: the client has nothing of the actor (the shadow's masks stay: there are none)
     bool first = true;
     if (a.keep_fast_shadow) {   // ... but for the fast arrays of an actor it keeps them of: it has the list it was last sent, and the open sends the changes
-        const auto kept = kept_.find(a.id);
-        if (kept != kept_.end()) {
+        if (const auto kept = kept_.find(a.id); kept != kept_.end()) {
             work = kept->second;
             work.keep_fast = true;
             first = false;
         }
     }
-    auto em = build_open(a, work, first);
+    bool private_form = false;
+    auto em = build_open(a, work, first, &private_form);
     if (!em) {
         e.broken = true;
         ++stats_.broken;
@@ -236,14 +219,13 @@ bool ActorView::open(Connection& conn, world::WorldActor& a, Entry& e, bool snap
         ++stats_.refused_opens;
         return false;
     }
-    if (a.kind == world::ActorKind::NodeLayout) {   // Nodes 1, stage 3a: each open of a town's scenery, for the user's test
+    if (a.kind == world::ActorKind::NodeLayout) {
         spdlog::info("[scenery] open for player {} on channel {}: {} (node {}), level {}, {} items, PlotChangeVersion {}, {} payload bits, {} bits in the open", config_.player_id, channel,
                      a.scenery.name, a.scenery.node, a.scenery.level, a.scenery.items, a.scenery.plot_version, a.scenery.payload_bits, open_bits);
     }
-    if (a.kind == world::ActorKind::Foliage) {   // Gathering stage 3: the user's test reads these (the cell actor's states are what hides a cut tree; its mere presence is what lets the client offer one)
-        // every cell has an actor from the start, so the opens are many: the first 100 first looks are said, and every open of a cell that was ever cut or grew (its version moved) always is
-        const bool changed = a.version > 1;
-        const bool say = changed || foliage_opens_logged_ < 100;
+    if (a.kind == world::ActorKind::Player) log_player(a, true, nullptr);
+    if (a.kind == world::ActorKind::Foliage) {
+        const bool changed = a.version > 1, say = changed || foliage_opens_logged_ < 100;
         if (!changed) ++foliage_opens_logged_;
         spdlog::log(say ? spdlog::level::info : spdlog::level::debug, "[foliage] state actor open for player {} on channel {}: {} ({}, {} bits)", config_.player_id, channel, a.label,
                     first ? "first look at the cell" : "the changes since the last look", open_bits);
@@ -259,6 +241,9 @@ bool ActorView::open(Connection& conn, world::WorldActor& a, Entry& e, bool snap
     e.channel = channel;
     e.sent_version = a.version;
     e.sent_reliable = a.reliable_version;
+    e.shape_epoch = a.shape_epoch;   // (shared updates: this shadow is started now, from the values the actor has now)
+    e.private_form = private_form;
+    e.tainted = false;
     e.state = snapshot ? ClientState::Snapshot : ClientState::Awake;
     e.close_due = now + (a.dormancy_delay.count() > 0 ? a.dormancy_delay : config_.relevancy.dormancy_delay);
     channel_owner_[channel] = a.id;
@@ -268,34 +253,50 @@ bool ActorView::open(Connection& conn, world::WorldActor& a, Entry& e, bool snap
     return true;
 }
 
-bool ActorView::send_update(Connection& conn, world::WorldActor& a, Entry& e) {
+bool ActorView::send_update(Connection& conn, const world::WorldActor& a, Entry& e) {
     if (a.version == e.sent_version && a.reliable_version == e.sent_reliable) return true;
-    repl::ActorShadow work = e.shadow;
-    bool failed = false;
-    repl::SentRecord record;
-    repl::Actor scratch;
-    auto em = update_with_ability_exports(view_of(a, scratch), work, acks_, a.ability_exports, &failed, &record);
-    if (failed) {
+    TickProfile& profile = tick_profile();   // (--loop-stats: the building of the change, the rest)
+    TickProfileSpan span(&profile.update_us);
+    std::chrono::steady_clock::time_point t1{};
+    if (profile.on) {
+        ++profile.updates;
+        t1 = std::chrono::steady_clock::now();
+    }
+    Built built;
+    build_update(a, e, built);
+    if (profile.on) profile.update_build_us += tick_profile_us_since(t1);
+    if (built.failed) {
         e.broken = true;
         ++stats_.broken;
         spdlog::warn("[actors] an update of actor {} does not build: it is not updated again", a.id);
         return false;
     }
-    // reliably when the change must not be lost, when the client may not have the channel yet (open_acked), and while an earlier reliable chain
-    // is in flight: its resend would otherwise land after this chain and overwrite it with older values (send_ledger.h)
     const bool reliable = a.reliable_version != e.sent_reliable || !e.open_acked || e.ledger.reliable_pending();
-    if (!em) {   // the version moved but no handle changed (a value set to what it was)
+    if (!built.em) {   // the version moved but no handle changed (a value set to what it was)
         e.sent_version = a.version;
         e.sent_reliable = a.reliable_version;
+        e.private_form = built.private_form;
+        e.tainted = false;
         return true;
     }
     ChainId chain = 0;
     size_t parts = 1;
-    if (!send(conn, e.channel, /*open=*/false, reliable, *em, &chain, &parts)) return false;
-    e.shadow = std::move(work);
+    if (!send(conn, e.channel, /*open=*/false, reliable, *built.em, &chain, &parts)) {
+        ++stats_.refused_updates;
+        built.undo.rollback(e.shadow);   // the connection did not take the chain: the client has what it had
+        return false;
+    }
+    if (built.redo) {   // a shared update: the shadow is given what the update wrote
+        built.redo->apply(e.shadow);
+        ++stats_.shared_updates;
+    }
     e.sent_version = a.version;
     e.sent_reliable = a.reliable_version;
-    e.ledger.sent(chain, reliable, parts, record, e.shadow);
+    e.private_form = built.private_form;
+    e.tainted = false;
+    const size_t naks_before = e.ledger.naks();
+    e.ledger.sent(chain, reliable, parts, built.shared_record ? *built.shared_record : built.record, e.shadow);
+    if (e.ledger.naks() > naks_before) e.tainted = true;   // it dropped its oldest chain as a NAK: values went back into the shadow, so it is no copy of the others until the next update
     if (chain_trace_) chain_trace_(chain, a.id, reliable, parts, e.ledger.entries());
     if (e.ledger.tracks(chain)) {
         e.chains.push_back(chain);
@@ -321,14 +322,15 @@ bool ActorView::close(Connection& conn, uint64_t id, Entry& e, uint32_t reason, 
         return false;
     }
     if (reason != kCloseDormancy) {
-        const world::WorldActor* a = registry_.find(id);
+        const world::WorldActor* a = reg().find(id);
         if (a && a->kind == world::ActorKind::NodeLayout) {
             spdlog::info("[scenery] close for player {} on channel {}: {} (node {}), {}", config_.player_id, e.channel, a->scenery.name, a->scenery.node,
                          reason == kCloseRelevancy ? "out of range" : "destroyed");
         }
+        if (a && a->kind == world::ActorKind::Player) log_player(*a, false, reason == kCloseRelevancy ? "out of range" : "destroyed");
     }
     release(e);
-    if (const world::WorldActor* held = registry_.find(id); held && held->keep_fast_shadow) {
+    if (const world::WorldActor* held = reg().find(id); held && held->keep_fast_shadow) {
         kept_[id] = std::move(e.shadow);
         kept_[id].keep_fast = true;
     }
@@ -343,7 +345,6 @@ bool ActorView::close(Connection& conn, uint64_t id, Entry& e, uint32_t reason, 
     return true;
 }
 
-
 void ActorView::on_removed(const world::WorldActor& a) {
     kept_.erase(a.id);
     const auto it = entries_.find(a.id);
@@ -353,6 +354,7 @@ void ActorView::on_removed(const world::WorldActor& a) {
     r.state = it->second.state;
     if (it->second.state == ClientState::Dormant) r.actor = a.actor;   // opened once more, to be destroyed
     removed_.push_back(std::move(r));
+    if (a.kind == world::ActorKind::Player && !finished_) log_player(a, false, "left the world");
 }
 
 void ActorView::flush_removed(Connection& conn) {
@@ -449,9 +451,9 @@ bool ActorView::open_scenery(Connection& conn, double x, double y, Clock::time_p
     scratch_.clear();
     registry_.query_wide(x, y, cfg.hysteresis_cm, scratch_);   // the towns' replicators are wide actors: the grid query never finds them
     for (const uint64_t id : scratch_) {
-        const world::WorldActor* a = registry_.find(id);
+        const world::WorldActor* a = reg().find(id);
         if (!a || a->kind != world::ActorKind::NodeLayout) continue;
-        if (a->owner != 0 && a->owner != config_.player_id) continue;
+        if (!for_this_player(*a)) continue;
         if (entries_.count(id) != 0) continue;   // the view has it already (open, or given up as broken): the passes look after it
         const double d = world::horizontal_distance(a->x, a->y, x, y);
         if (world::classify(cfg, d, a->awake_radius_cm, a->never_dormant, ClientState::None) != Ring::Awake) continue;   // (a replicator is awake or nothing)
@@ -478,7 +480,7 @@ bool ActorView::open_scenery(Connection& conn, double x, double y, Clock::time_p
             all = false;
             break;
         }
-        world::WorldActor* a = registry_.find(c.id);
+        const world::WorldActor* a = reg().find(c.id);
         if (!a) continue;
         Entry& e = entries_.emplace(c.id, Entry{}).first->second;
         if (open(conn, *a, e, /*snapshot=*/false, now)) {
@@ -496,12 +498,25 @@ bool ActorView::update_now(Connection& conn, uint64_t actor) {
     if (finished_) return false;
     const auto it = entries_.find(actor);
     if (it == entries_.end() || it->second.state != ClientState::Awake || it->second.broken) return false;
-    world::WorldActor* a = registry_.find(actor);
+    const world::WorldActor* a = reg().find(actor);
     return a && send_update(conn, *a, it->second);
 }
 
 void ActorView::tick(Connection& conn, double x, double y, Clock::time_point now) {
     if (finished_) return;
+    TickProfile& profile = tick_profile();   // (--loop-stats: where the tick's time goes)
+    std::chrono::steady_clock::time_point started{};
+    if (profile.on) started = std::chrono::steady_clock::now();
+    tick_unprofiled(conn, x, y, now);
+    if (profile.on) profile.view_us += tick_profile_us_since(started);
+}
+
+void ActorView::tick_unprofiled(Connection& conn, double x, double y, Clock::time_point now) {
+    run_due_closes(conn, now);
+    if (pass_due(now)) pass(conn, x, y, now);
+}
+
+void ActorView::run_due_closes(Connection& conn, Clock::time_point now) {
     flush_removed(conn);
     // the Dormancy closes whose time has come: the snapshots in the order they were opened (an actor with a delay of its own may be due after one opened later)
     for (size_t i = 0; i < pending_snapshots_.size();) {
@@ -518,12 +533,34 @@ void ActorView::tick(Connection& conn, double x, double y, Clock::time_point now
         if (!close(conn, id, it->second, kCloseDormancy, ClientState::Dormant)) break;
         pending_snapshots_.erase(pending_snapshots_.begin() + static_cast<std::ptrdiff_t>(i));
     }
-    if (passed_ && now - last_pass_ < config_.relevancy.tick) return;
-    passed_ = true;
-    last_pass_ = now;
-    pass(conn, x, y, now);
 }
 
+bool ActorView::pass_due(Clock::time_point now) {
+    if (passed_ && now - last_pass_ < config_.relevancy.tick) return false;
+    if (config_.phases) {   // the pass runs on the tick of this view's phase, so that the players' passes do not all land on one tick of the cycle (view_phases.h)
+        if (!phase_taken_) {
+            phase_ = config_.phases->join();
+            phase_taken_ = true;
+        }
+        if (!config_.phases->due(phase_)) return false;
+        phase_ = config_.phases->balance(phase_);
+    }
+    passed_ = true;
+    last_pass_ = now;
+    return true;
+}
+
+bool ActorView::plan(Clock::time_point now) { return !finished_ && pass_due(now); }
+
+void ActorView::run(Connection& conn, double x, double y, Clock::time_point now, bool pass_is_due) {
+    if (finished_) return;
+    TickProfile& profile = tick_profile();   // (--loop-stats: the worker's own, while the passes run on several threads)
+    std::chrono::steady_clock::time_point started{};
+    if (profile.on) started = std::chrono::steady_clock::now();
+    run_due_closes(conn, now);
+    if (pass_is_due) pass(conn, x, y, now);
+    if (profile.on) profile.view_us += tick_profile_us_since(started);
+}
 
 void ActorView::pass(Connection& conn, double x, double y, Clock::time_point now) {
     ++stats_.passes;
@@ -531,40 +568,20 @@ void ActorView::pass(Connection& conn, double x, double y, Clock::time_point now
         ++stats_.throttled;   // the player's own data goes first: nothing of the world is added to a busy connection
         return;
     }
-    const world::RelevancyConfig& cfg = config_.relevancy;
-    scratch_.clear();
-    registry_.query(x, y, world::query_radius(cfg, largest_awake_), scratch_);
-    registry_.query_wide(x, y, cfg.hysteresis_cm, scratch_);   // the towns' replicators (1.45 km): beyond the grid query's reach
-    for (const auto& [id, e] : entries_) scratch_.push_back(id);   // what the view tracks, in range or not
-    std::sort(scratch_.begin(), scratch_.end());
-    scratch_.erase(std::unique(scratch_.begin(), scratch_.end()), scratch_.end());
-
-    struct Cand {
-        double   d;
-        uint64_t id;
-        Ring     ring;
-    };
-    std::vector<Cand> cands;
-    cands.reserve(scratch_.size());
-    for (const uint64_t id : scratch_) {
-        const world::WorldActor* a = registry_.find(id);
-        if (!a) continue;   // removed: flush_removed deals with it
-        if (a->owner != 0 && a->owner != config_.player_id) continue;   // another player's (its lingering zones): not for this connection
-        const auto it = entries_.find(id);
-        const ClientState prior = it == entries_.end() ? ClientState::None : it->second.state;
-        const double d = world::horizontal_distance(a->x, a->y, x, y);
-        world::Ring ring = world::classify(cfg, d, a->awake_radius_cm, a->never_dormant, prior);
-        if (a->snapshot_only && ring == Ring::Awake) ring = Ring::Snapshot;   // never awake: a snapshot wherever it is in range
-        cands.push_back({d, id, ring});
-        // a wide actor (a town's replicator, 1.45 km) is found by query_wide: raising the grid query's radius to it would make every view visit a quarter of the world's cells for good
-        if (a->awake_radius_cm > largest_awake_ && a->awake_radius_cm <= world::ActorRegistry::kWideCm) largest_awake_ = a->awake_radius_cm;
+    TickProfile& profile = tick_profile();   // (--loop-stats: the scan below, apart from the sends after it)
+    std::chrono::steady_clock::time_point scan_started{};
+    if (profile.on) {
+        scan_started = std::chrono::steady_clock::now();
+        ++profile.view_passes;
     }
-    std::sort(cands.begin(), cands.end(), [](const Cand& l, const Cand& r) { return l.d != r.d ? l.d < r.d : l.id < r.id; });
+    scan(x, y);
+    if (profile.on) profile.view_scan_us += tick_profile_us_since(scan_started);
 
     size_t opens = 0;
     bool capped = false;
-    for (const Cand& c : cands) {
-        world::WorldActor* a = registry_.find(c.id);
+    for (size_t index = 0; index < cands_.size(); ++index) {
+        const Cand& c = cands_[index];
+        const world::WorldActor* a = reg().find(c.id);
         if (!a) continue;
         if (conn.queued_bunches() > config_.max_queued_bunches) {   // this pass's own sends filled the queue
             ++stats_.throttled;
@@ -575,62 +592,63 @@ void ActorView::pass(Connection& conn, double x, double y, Clock::time_point now
             if (c.ring == Ring::Out) continue;
             it = entries_.emplace(c.id, Entry{}).first;
         }
-        Entry& e = it->second;
-        if (e.broken) continue;
-        switch (e.state) {
-            case ClientState::None:
-                if (c.ring == Ring::Out) {
-                    entries_.erase(it);
-                    break;
-                }
-                if (opens >= cfg.max_opens_per_tick) {
-                    capped = true;
-                    entries_.erase(it);
-                    break;
-                }
-                if (open(conn, *a, e, c.ring == Ring::Snapshot, now)) ++opens;
-                else if (!e.broken && e.state == ClientState::None) entries_.erase(it);
-                break;
-            case ClientState::Dormant:
-                if (c.ring == Ring::Out) {
-                    ++stats_.forgotten;
-                    entries_.erase(it);   // the client keeps the actor it has
-                    break;
-                }
-                // nothing that must not be lost changed since the snapshot: a walking NPC moves `version` every step, and a dormant actor's
-                // position is sent whole when it wakes anyway (E1 review A2: re-opening on every move made each walker 160-170 m away, or near
-                // another player, a whole snapshot about five times a second)
-                if (c.ring == Ring::Snapshot && a->reliable_version == e.sent_reliable && e.sent_version != 0) break;
-                if (opens >= cfg.max_opens_per_tick) {
-                    capped = true;
-                    break;
-                }
-                if (open(conn, *a, e, c.ring == Ring::Snapshot, now)) {
-                    ++opens;
-                    if (c.ring != Ring::Snapshot) ++stats_.wakes;   // (a new snapshot of a changed dormant actor is not a wake)
-                }
-                break;
-            case ClientState::Snapshot:
-                if (c.ring == Ring::Awake) {   // came close before the Dormancy close was due: it stays open
-                    e.state = ClientState::Awake;
-                    ++stats_.wakes;
-                }
-                break;   // its close is the pending list's
-            case ClientState::Awake:
-                if (c.ring == Ring::Awake) {
-                    send_update(conn, *a, e);
-                } else if (c.ring == Ring::Snapshot) {
-                    if (send_update(conn, *a, e) || e.broken) {
-                        const uint32_t version = a->version;
-                        if (close(conn, c.id, e, kCloseDormancy, ClientState::Dormant)) e.sent_version = version;
-                    }
-                } else {
-                    if (close(conn, c.id, e, kCloseRelevancy, ClientState::None)) entries_.erase(it);
-                }
-                break;
-        }
+        it->second.scan_rank = static_cast<uint32_t>(index);   // (the next scan starts from this order)
+        if (!it->second.broken && pass_entry(conn, c, *a, now, opens)) capped = true;
     }
     if (capped) ++stats_.capped;
+}
+
+bool ActorView::pass_entry(Connection& conn, const Cand& c, const world::WorldActor& a, Clock::time_point now, size_t& opens) {
+    const auto it = entries_.find(c.id);
+    if (it == entries_.end()) return false;
+    Entry& e = it->second;
+    const size_t max_opens = config_.relevancy.max_opens_per_tick;
+    switch (e.state) {
+        case ClientState::None:
+            if (c.ring == Ring::Out) {
+                entries_.erase(it);
+                return false;
+            }
+            if (opens >= max_opens) {
+                entries_.erase(it);
+                return true;
+            }
+            if (open(conn, a, e, c.ring == Ring::Snapshot, now)) ++opens;
+            else if (!e.broken && e.state == ClientState::None) entries_.erase(it);
+            return false;
+        case ClientState::Dormant:
+            if (c.ring == Ring::Out) {
+                ++stats_.forgotten;
+                entries_.erase(it);   // the client keeps the actor it has
+                return false;
+            }
+            if (c.ring == Ring::Snapshot && a.reliable_version == e.sent_reliable && e.sent_version != 0) return false;
+            if (opens >= max_opens) return true;
+            if (open(conn, a, e, c.ring == Ring::Snapshot, now)) {
+                ++opens;
+                if (c.ring != Ring::Snapshot) ++stats_.wakes;   // (a new snapshot of a changed dormant actor is not a wake)
+            }
+            return false;
+        case ClientState::Snapshot:
+            if (c.ring == Ring::Awake) {   // came close before the Dormancy close was due: it stays open
+                e.state = ClientState::Awake;
+                ++stats_.wakes;
+            }
+            return false;
+        case ClientState::Awake:
+            if (c.ring == Ring::Awake) {
+                send_update(conn, a, e);
+            } else if (c.ring == Ring::Snapshot) {
+                if (send_update(conn, a, e) || e.broken) {
+                    const uint32_t version = a.version;
+                    if (close(conn, c.id, e, kCloseDormancy, ClientState::Dormant)) e.sent_version = version;
+                }
+            } else if (close(conn, c.id, e, kCloseRelevancy, ClientState::None)) {
+                entries_.erase(it);
+            }
+            return false;
+    }
+    return false;
 }
 
 }  // namespace aoc::worldd

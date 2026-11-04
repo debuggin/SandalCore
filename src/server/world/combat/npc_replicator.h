@@ -17,11 +17,15 @@
 // ============================================================================
 #pragma once
 
+#include "bootstrap/ability_replication.h"
 #include "protocol/repl/replicator.h"
 #include "stats/character_stats.h"
 #include "world/actor_registry.h"
 
+#include <array>
 #include <cstdint>
+#include <map>
+#include <vector>
 
 namespace aoc::worldd::combat {
 
@@ -52,5 +56,17 @@ bool read_stat(const world::WorldActor& actor, int64_t record, float& value);
 
 /// Whether the actor's open has a stats component with the EveryoneProxy list (a creature or a person has; a banner, a tent and a quest sparkle have none).
 bool has_stats(const world::WorldActor& actor);
+
+/// A CurrentEffects item of a creature, shaped as a player's: the effect and its start on the synchronized clock, duration and tick, its stacks, and the character that applied it.
+struct EffectItemWrite {
+    bootstrap::EffectItem   item;
+    std::array<uint32_t, 4> applier = {0, 0, 0, 0};
+};
+using EffectItemIds = std::map<int64_t, int32_t>;
+
+bool write_effect_items(world::ActorRegistry& registry, uint64_t actor_id, EffectItemIds& ids, const std::vector<int64_t>& removed, const std::vector<EffectItemWrite>& added,
+                        const std::vector<EffectItemWrite>& changed);
+
+std::vector<EffectItemWrite> read_effect_items(const world::WorldActor& actor);
 
 }  // namespace aoc::worldd::combat

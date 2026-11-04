@@ -451,72 +451,77 @@ struct WorldStreamServer::Impl final : wsv1::WorldStreamService::Service {
         return grpc::Status::OK;
     }
 
+    /// Network thread: fills the answer for the non-player actor `a`; false when its kind is not mapped.
+    bool inspect_actor(uint64_t id, const world::WorldActor& a, wsv1::InspectResponse* resp) {
+        namespace sd = stream_detail;
+        uint8_t kind = 0;
+        if (!mstream::kind_of(a.kind, kind)) return false;
+        std::vector<mstream::Overlay> ov;
+        std::vector<combat::CombatWorld::Summary> scratch;
+        gather_overlay(ov, scratch);
+        const mstream::Overlay* mine = nullptr;
+        for (const mstream::Overlay& o : ov) {
+            if (o.id == id) mine = &o;
+        }
+        sd::put_entity(resp->mutable_entity(), mstream::make_rec(a, kind, kind == mstream::kNpc ? mine : nullptr));
+        wsv1::ActorDetail* d = resp->mutable_actor();
+        std::string scratch_name;
+        d->set_name(sd::display_name(a, scratch_name));
+        d->set_archetype(a.npc.archetype);
+        d->set_source(sd::source_name(a.npc.source));
+        d->set_level(static_cast<uint32_t>(std::max(0, a.npc.level)));
+        combat::CombatWorld* cw = world.combat();
+        const npc::ai::NpcAi* ai = cw ? cw->ai_of(id) : nullptr;
+        if (ai) {
+            d->set_combatant(true);
+            d->set_health(cw->health_of(id));
+            d->set_max_health(cw->max_health_of(id));
+            d->set_ai_state(sd::ai_state_name(ai->state()));
+            d->set_target(ai->target());
+            std::vector<npc::ai::ThreatTable::Entry> threat = ai->threat().entries();
+            std::sort(threat.begin(), threat.end(), [](const auto& x, const auto& y) { return x.threat > y.threat; });
+            for (const auto& t : threat) {
+                wsv1::ThreatEntry* out = d->add_threat();
+                out->set_id(t.id);
+                out->set_threat(t.threat);
+            }
+        } else {
+            d->set_ai_state("none");
+        }
+        d->set_home_x_cm(mstream::to_cm(a.npc.home_x));
+        d->set_home_y_cm(mstream::to_cm(a.npc.home_y));
+        d->set_home_z_cm(mstream::to_cm(a.npc.home_z));
+        d->set_distance_from_home_cm(std::hypot(a.x - a.npc.home_x, a.y - a.npc.home_y));
+        d->set_aggro_radius_cm(a.npc.aggro_radius_cm);
+        d->set_leash_radius_cm(ai ? ai->params().leash_radius_cm : a.npc.leash_radius_cm);
+        d->set_respawn_seconds(a.npc.respawn_seconds);
+        d->set_respawn_rule(a.npc.respawn_rule);
+        for (const int64_t t : a.npc.loot_tables) d->add_loot_tables(t);
+        npc::NpcWorld* nw = world.npcs();
+        d->set_standing(kind == mstream::kNpc && nw && nw->has(id) && nw->stands(id));
+        nav::Vec3 spawn_ground, spawn_ai{a.npc.home_x, a.npc.home_y, a.npc.home_z};
+        if (nw) nw->spawn_point(id, &spawn_ground, &spawn_ai);
+        d->set_spawn_x_cm(mstream::to_cm(spawn_ai.x));
+        d->set_spawn_y_cm(mstream::to_cm(spawn_ai.y));
+        d->set_spawn_z_cm(mstream::to_cm(spawn_ai.z));
+        if (const combat::Aftermath* after = world.aftermath()) {
+            const double now = world.world_clock();
+            if (const combat::Corpse* c = after->corpse_of(id); c && !c->living && !c->is_pile) {
+                d->set_corpse(true);
+                d->set_corpse_loot_stacks(static_cast<uint32_t>(c->remaining()));
+                d->set_corpse_closes_in_seconds(std::max(0.0, c->close_at - now));
+            }
+            d->set_respawn_in_seconds(after->respawn_in(id, now));
+        }
+        return true;
+    }
+
     /// Network thread: fills the answer for the entity `id`; false when there is none.
     bool inspect(uint64_t id, wsv1::InspectResponse* resp) {
-        namespace sd = stream_detail;
-        if (const world::WorldActor* a = world.registry().find(id)) {
-            uint8_t kind = 0;
-            if (!mstream::kind_of(a->kind, kind)) return false;
-            std::vector<mstream::Overlay> ov;
-            std::vector<combat::CombatWorld::Summary> scratch;
-            gather_overlay(ov, scratch);
-            const mstream::Overlay* mine = nullptr;
-            for (const mstream::Overlay& o : ov) {
-                if (o.id == id) mine = &o;
-            }
-            sd::put_entity(resp->mutable_entity(), mstream::make_rec(*a, kind, kind == mstream::kNpc ? mine : nullptr));
-            wsv1::ActorDetail* d = resp->mutable_actor();
-            std::string scratch_name;
-            d->set_name(sd::display_name(*a, scratch_name));
-            d->set_archetype(a->npc.archetype);
-            d->set_source(sd::source_name(a->npc.source));
-            d->set_level(static_cast<uint32_t>(std::max(0, a->npc.level)));
-            combat::CombatWorld* cw = world.combat();
-            const npc::ai::NpcAi* ai = cw ? cw->ai_of(id) : nullptr;
-            if (ai) {
-                d->set_combatant(true);
-                d->set_health(cw->health_of(id));
-                d->set_max_health(cw->max_health_of(id));
-                d->set_ai_state(sd::ai_state_name(ai->state()));
-                d->set_target(ai->target());
-                std::vector<npc::ai::ThreatTable::Entry> threat = ai->threat().entries();
-                std::sort(threat.begin(), threat.end(), [](const auto& x, const auto& y) { return x.threat > y.threat; });
-                for (const auto& t : threat) {
-                    wsv1::ThreatEntry* out = d->add_threat();
-                    out->set_id(t.id);
-                    out->set_threat(t.threat);
-                }
-            } else {
-                d->set_ai_state("none");
-            }
-            d->set_home_x_cm(mstream::to_cm(a->npc.home_x));
-            d->set_home_y_cm(mstream::to_cm(a->npc.home_y));
-            d->set_home_z_cm(mstream::to_cm(a->npc.home_z));
-            d->set_distance_from_home_cm(std::hypot(a->x - a->npc.home_x, a->y - a->npc.home_y));
-            d->set_aggro_radius_cm(a->npc.aggro_radius_cm);
-            d->set_leash_radius_cm(ai ? ai->params().leash_radius_cm : a->npc.leash_radius_cm);
-            d->set_respawn_seconds(a->npc.respawn_seconds);
-            d->set_respawn_rule(a->npc.respawn_rule);
-            for (const int64_t t : a->npc.loot_tables) d->add_loot_tables(t);
-            npc::NpcWorld* nw = world.npcs();
-            d->set_standing(kind == mstream::kNpc && nw && nw->has(id) && nw->stands(id));
-            // its spawn point is where the NPC world made it: the same as its home until a game master moves it
-            nav::Vec3 spawn_ground, spawn_ai{a->npc.home_x, a->npc.home_y, a->npc.home_z};
-            if (nw) nw->spawn_point(id, &spawn_ground, &spawn_ai);
-            d->set_spawn_x_cm(mstream::to_cm(spawn_ai.x));
-            d->set_spawn_y_cm(mstream::to_cm(spawn_ai.y));
-            d->set_spawn_z_cm(mstream::to_cm(spawn_ai.z));
-            // a dead one: its corpse, what is left on it, and when its spawn point makes it again
-            if (const combat::Aftermath* after = world.aftermath()) {
-                const double now = world.world_clock();
-                if (const combat::Corpse* c = after->corpse_of(id); c && !c->living && !c->is_pile) {
-                    d->set_corpse(true);
-                    d->set_corpse_loot_stacks(static_cast<uint32_t>(c->remaining()));
-                    d->set_corpse_closes_in_seconds(std::max(0.0, c->close_at - now));
-                }
-                d->set_respawn_in_seconds(after->respawn_in(id, now));
-            }
-            return true;
+        // A Player actor is the registry's copy of a player's pawn, under the id the player's own row has (the pawn's ObjectId).  The map does not show it as an actor (kind_of has no kind for
+        // it), so the registry's Player actors are skipped and the player branch below answers for the player.
+        if (const world::WorldActor* a = world.registry().find(id); a && a->kind != world::ActorKind::Player) {
+            return inspect_actor(id, *a, resp);
         }
         gather_players(rows);
         for (std::size_t i = 0; i < rows.size(); ++i) {

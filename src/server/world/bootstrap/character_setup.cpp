@@ -289,7 +289,7 @@ bool setup_character_talents(const svc::Character& ch, const content::ContentDb&
         s.weapon_skill_line.name = primary->line_name;
         out.wielded_line = primary->line;
     }
-    const std::vector<int64_t> item_abilities = carried_item_abilities(stat_context.mounts, inventory);
+    const std::vector<int64_t> item_abilities = carried_item_abilities(stat_context.mounts, inventory, &content);
     const talents::AbilityLists lists = talents::join_abilities(book, general_unstuck(), primary ? primary->combo : 0,
                                                                 carried_combos(content, inventory), static_known_tail(), item_abilities);
     s.known_abilities = lists.known;
@@ -305,7 +305,7 @@ bool setup_character_stats(const svc::Character& ch, const StatContext& stat_con
     stats::CharacterStats character_stats(*stat_context.bundle, *stat_context.gear, ch.class_id, ch.level, stat_context.rounding);
     if (out.book) {
         character_stats.set_passives(out.book->passives(out.wielded_line));
-        character_stats.set_ranks(out.book->held_ranks());
+        character_stats.set_ranks(out.book->held_ranks(out.wielded_line));
     } else {
         character_stats.set_passives(rank_effects_of(granted));
     }
@@ -397,13 +397,23 @@ std::vector<int64_t> carried_combos(const content::ContentDb& content, const ite
     return out;
 }
 
-std::vector<int64_t> carried_item_abilities(const content::MountData* mounts, const items::Inventory& inventory) {
+std::vector<int64_t> carried_item_abilities(const content::MountData* mounts, const items::Inventory& inventory, const content::ContentDb* content) {
     std::vector<int64_t> out;
-    if (!mounts) return out;
+    if (!mounts && !content) return out;
+    std::vector<int64_t> seen;
     for (const int64_t record : inventory.records()) {
-        const content::MountRow* row = mounts->find(record);
-        if (!row || row->cast_ability == 0) continue;
-        if (std::find(out.begin(), out.end(), row->cast_ability) == out.end()) out.push_back(row->cast_ability);
+        if (std::find(seen.begin(), seen.end(), record) != seen.end()) continue;
+        seen.push_back(record);
+        int64_t ability = 0;
+        if (mounts) {
+            const content::MountRow* row = mounts->find(record);
+            if (row) ability = row->cast_ability;
+        }
+        if (ability == 0 && content) {
+            std::string error;
+            ability = content->consumable_ability(record, error);
+        }
+        if (ability != 0 && std::find(out.begin(), out.end(), ability) == out.end()) out.push_back(ability);
     }
     return out;
 }

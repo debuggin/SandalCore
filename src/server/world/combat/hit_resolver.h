@@ -22,6 +22,7 @@
 #include "combat/combat_data.h"
 #include "combat/fighter.h"
 #include "combat/hit_context.h"
+#include "effects/effect_book.h"
 #include "session/ability_catalog.h"
 #include "stats/stat_engine.h"
 
@@ -73,6 +74,7 @@ struct HitMeta {
     bool                     target_is_active = false;    // this target is the caster's selected enemy
     bool                     active_in_hit = false;       // the caster's selected enemy is among the targets the hit reaches
     bool                     target_is_closest = false;   // this target is the one the hit reaches nearest the caster
+    const TargetEffects*     target_effects = nullptr;    // the effects the target holds, for the reads of them (null: it holds none that the expressions can see)
 };
 // (C-O-A ~ C.Y.B)
 
@@ -82,10 +84,23 @@ struct ResolvedMod {
     double  value = 0;      // the formula's value: a loss is negative
 };
 
+/// The number a session's own dice (its abilities' hit, block and critical rolls, RandDouble) start from.  `world_seed` is the one number the whole run starts from (worldd draws a new one on
+/// every start unless --combat-seed names it); 0, a test's world, keeps the plain function of the player id.  A player id is never used twice in a run, so a new login rolls a new sequence too.
+inline uint64_t session_dice_seed(uint64_t world_seed, uint64_t player_id) {
+    const uint64_t base = player_id * 7919u + 1u;
+    if (world_seed == 0) return base;
+    stats::SplitMix mix;
+    mix.state = world_seed ^ (base * 0x9E3779B97F4A7C15ull);
+    const uint64_t seed = mix.next();
+    return seed != 0 ? seed : 1;
+}
+
 struct Resolved {
     uint8_t                  flags = 0;     // stats::kHitMiss | kHitBlock | kHitCrit (Lethal is the applier's)
     std::vector<ResolvedMod> mods;
     double                   threat = 0;    // what a damaging hit adds to the target's threat table
+    /// The effects the hit puts on its target, each with its numbers worked out (see HitResolver::resolve_effects); empty until that is asked.
+    std::vector<effects::Applied> effects;
     bool miss() const { return (flags & stats::kHitMiss) != 0; }
 };
 
@@ -101,6 +116,23 @@ public:
     /// `target` may be the attacker's own evaluation (a hit on the caster itself); `host` must derive from ContextHost.
     bool resolve_with(stats::CharacterStats::Evaluation& attacker, ContextHost& host, const stats::CharacterStats::Evaluation* target, double distance_cm, bool enemy,
                       bool neutral, const abilities::HitDef& hit, const HitMeta& meta, Resolved& out, std::string& why);
+
+    /// What `hit` puts on its target besides its stat mods: for each effect row that applies to the target, its requirement, its stack count (no expression: one; a count of
+    /// 0 or less means the effect is NOT applied, which is how the data makes an effect conditional), the effect's own requirement, and the numbers an application needs
+    /// (the duration, the in-place stack limit, one stack's stat mod values) worked out for the two as they are now.  Appends the ones that pass to `out.effects`.
+    /// Call it AFTER the hit's own stat mods were applied to the target: an effect may require what the mods just raised (the burn needs the burn the hit added).  A shield
+    /// (TempHealth) is not a stat mod of the effect: it is left out.  False, with `why`, when the two cannot be evaluated.
+    bool resolve_effects(Fighter& attacker, Fighter& target, const abilities::HitDef& hit, const HitMeta& meta, Resolved& out, std::string& why);
+    /// The same with the caller's own evaluation of the attacker and ContextHost (see resolve_with); `target` must be the target's evaluation as it is after the hit.
+    bool resolve_effects_with(stats::CharacterStats::Evaluation& attacker, ContextHost& host, const stats::CharacterStats::Evaluation* target, double distance_cm, bool enemy,
+                              bool neutral, const abilities::HitDef& hit, const HitMeta& meta, Resolved& out, std::string& why);
+    /// The shield (the TempHealth mods) one application of an effect gives its holder, worked out for the two as they are now; a mod that reads GetOwner() reads the holder (Brace's shield is a
+    /// share of the pet's own Health, not its summoner's).  0 when it gives none or does not run.
+    double effect_shield(Fighter& attacker, Fighter& holder, const abilities::EffectDef& effect);
+    /// Whether an expression (a montage's choice) holds for the fighter as it is now; `none` for no expression, and for one that does not run.
+    bool holds(Fighter& fighter, int64_t expr, bool none);
+    /// Whether the hit's own requirement holds for the two (true when it has none, false when it does not run).
+    bool requirement_holds(Fighter& attacker, Fighter& target, const abilities::HitDef& hit, const HitMeta& meta);
 
     /// The chances of the three rolls for a hit of the aspect between two stat views (the stats' own, before a hit's overrides).
     struct Rates {

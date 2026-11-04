@@ -36,6 +36,7 @@
 #include "stats/gather_host.h"
 #include "world/city_nodes.h"
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -43,6 +44,22 @@
 #include <vector>
 
 namespace aoc::worldd::combat {
+
+inline constexpr int64_t kMaxRolledQuantity = 1 << 20;
+
+inline int64_t rolled_quantity(double v) {
+    if (!std::isfinite(v)) return 0;
+    const double whole = std::floor(v + 1e-9);
+    if (whole <= 0.0) return 0;
+    return whole >= static_cast<double>(kMaxRolledQuantity) ? kMaxRolledQuantity : static_cast<int64_t>(whole);
+}
+
+inline constexpr int64_t kMaxRolledXp = 1'000'000'000;
+
+inline int64_t rolled_xp(double v) {
+    if (!std::isfinite(v) || v <= 0.0) return 0;
+    return v >= static_cast<double>(kMaxRolledXp) ? kMaxRolledXp : static_cast<int64_t>(std::llround(v));
+}
 
 struct RolledItem {
     int64_t item = 0;

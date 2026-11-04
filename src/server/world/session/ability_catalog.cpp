@@ -15,15 +15,212 @@ namespace aoc::worldd::abilities {
 
 namespace {
 
-/// extra's ReactionsIds (the guids, in the listed order).
-void reaction_ids_of(const std::string& extra_json, std::vector<int64_t>& out) {
+/// A list of guids in extra (ReactionsIds, ModifyCooldownsIds), in the listed order.
+void ids_of(const std::string& extra_json, const char* key, std::vector<int64_t>& out) {
     const nlohmann::json extra = nlohmann::json::parse(extra_json, nullptr, false);
     if (!extra.is_object()) return;
-    const auto it = extra.find("ReactionsIds");
+    const auto it = extra.find(key);
     if (it == extra.end() || !it->is_array()) return;
     for (const auto& v : *it) {
         if (v.is_number_integer() && v.get<int64_t>() != 0) out.push_back(v.get<int64_t>());
     }
+}
+
+void reaction_ids_of(const std::string& extra_json, std::vector<int64_t>& out) { ids_of(extra_json, "ReactionsIds", out); }
+
+void load_modify_cooldowns(const content::AbilityContent& db, std::map<int64_t, Catalog::ModifyCooldownDef>& out) {
+    std::vector<content::ModifyCooldownRow> rows;
+    db.modify_cooldowns(rows);
+    for (content::ModifyCooldownRow& row : rows) {
+        Catalog::ModifyCooldownDef def;
+        def.name = std::move(row.name);
+        def.delta_expr = row.delta_expr;
+        const nlohmann::json list = nlohmann::json::parse(row.abilities, nullptr, false);
+        if (list.is_array()) {
+            for (const auto& v : list) {
+                if (v.is_number_integer() && v.get<int64_t>() != 0) def.abilities.push_back(v.get<int64_t>());
+            }
+        }
+        out.emplace(row.guid, std::move(def));
+    }
+}
+
+bool load_effects(const content::AbilityContent& db, std::map<int64_t, EffectDef>& effects,
+                  std::map<std::string, int64_t, std::less<>>& effect_names, std::string& error) {
+    std::vector<int64_t> guids;
+    if (!db.guids(content::AbilityContent::Table::Effect, guids, error)) return false;
+    for (const int64_t g : guids) {
+        EffectDef d;
+        auto row = db.effect(g, error);
+        if (!row) return false;
+        d.row = std::move(*row);
+        if (!db.mods("effect", g, d.mods, error)) return false;
+        std::vector<content::EffectHitRow> hits;
+        if (!db.effect_hits(g, hits, error)) return false;
+        for (const content::EffectHitRow& h : hits) d.hits.emplace_back(h.phase, h.hit_guid);
+        if (db.has_reactions()) reaction_ids_of(d.row.extra, d.reactions);
+        effect_names[d.row.name] = g;
+        effects.emplace(g, std::move(d));
+    }
+    return true;
+}
+
+// what the hit takes off its targets: extra's EffectsToRemoveIds (the effects' guids) and MaxNumEffectsToRemove
+void parse_hit_extra(HitDef& d) {
+    const nlohmann::json extra = nlohmann::json::parse(d.row.extra, nullptr, false);
+    if (!extra.is_object()) return;
+    const auto rm = extra.find("EffectsToRemoveIds");
+    if (rm != extra.end() && rm->is_array()) {
+        for (const auto& v : *rm) {
+            if (v.is_number_integer()) d.remove_effects.push_back(v.get<int64_t>());
+        }
+    }
+    const auto mx = extra.find("MaxNumEffectsToRemove");
+    if (mx != extra.end() && mx->is_number_integer()) d.max_remove = mx->get<int>();
+    const auto rk = extra.find("EffectRemoval");
+    if (rk != extra.end() && rk->is_string()) {
+        const std::string kind = rk->get<std::string>();
+        d.removal = kind == "none" ? HitDef::Removal::None : kind == "debuff" ? HitDef::Removal::Debuff : kind == "buff" ? HitDef::Removal::Buff : HitDef::Removal::Other;
+    }
+    const auto rd = extra.find("RemoveAsDispel");
+    if (rd != extra.end() && rd->is_boolean()) d.remove_as_dispel = rd->get<bool>();
+    const auto zs = extra.find("LingeringZonesIds");
+    if (zs != extra.end() && zs->is_array()) {
+        for (const auto& v : *zs) {
+            if (v.is_number_integer() && v.get<int64_t>() != 0) d.zones.push_back(v.get<int64_t>());
+        }
+    }
+    // plan E1, stage 3 (contentc version 9)
+    const auto tags = extra.find("EventTags");
+    if (tags != extra.end() && tags->is_array()) {
+        for (const auto& v : *tags) {
+            if (v.is_string()) d.tags.push_back(v.get<std::string>());
+        }
+    }
+    const auto id_of = [&](const char* key) -> int64_t {
+        const auto it = extra.find(key);
+        return it != extra.end() && it->is_number_integer() ? it->get<int64_t>() : 0;
+    };
+    const auto flag = [&](const char* key) {
+        const auto it = extra.find(key);
+        return it != extra.end() && it->is_boolean() && it->get<bool>();
+    };
+    d.crit_rate_expr = id_of("CritRateExpr");
+    d.block_rate_expr = id_of("BlockRateExpr");
+    d.miss_rate_expr = id_of("MissRateExpr");
+    d.force_cant_crit = flag("bForceCantCrit");
+    d.force_cant_block = flag("bForceCantBlock");
+    d.force_cant_miss = flag("bForceCantMiss");
+    d.force_roll_crit = flag("bForceRollCrit");
+    d.force_roll_block = flag("bForceRollBlock");
+    d.force_roll_miss = flag("bForceRollMiss");
+    d.use_item_tags = flag("bShouldUseItemTags");
+}
+
+bool load_hits(const content::AbilityContent& db, std::map<int64_t, HitDef>& hits,
+               std::map<std::string, int64_t, std::less<>>& hit_names, std::string& error) {
+    std::vector<int64_t> guids;
+    if (!db.guids(content::AbilityContent::Table::Hit, guids, error)) return false;
+    for (const int64_t g : guids) {
+        HitDef d;
+        auto row = db.hit(g, error);
+        if (!row) return false;
+        d.row = std::move(*row);
+        if (!db.hit_effects(g, d.effects, error) || !db.mods("hit", g, d.mods, error) || !db.hit_projectiles(g, d.fires, error)) return false;
+        parse_hit_extra(d);
+        if (db.has_reactions()) {
+            reaction_ids_of(d.row.extra, d.reactions);
+            ids_of(d.row.extra, "ModifyCooldownsIds", d.modify_cooldowns);
+            if (!db.hit_recursive(g, d.recursive, error)) return false;
+        }
+        hit_names[d.row.name] = g;
+        hits.emplace(g, std::move(d));
+    }
+    return true;
+}
+
+// the zones the ability itself spawns: extra's LingeringEffectsIds, minus the ones a hit of it spawns (they come with the hit)
+void parse_ability_zones(const std::map<int64_t, HitDef>& hits, AbilityDef& d) {
+    const nlohmann::json extra = nlohmann::json::parse(d.row.extra, nullptr, false);
+    if (!extra.is_object()) return;
+    const auto zs = extra.find("LingeringEffectsIds");
+    if (zs == extra.end() || !zs->is_array()) return;
+    std::set<int64_t> by_hit;
+    for (const content::AbilityHitRow& h : d.hits) {
+        const auto hit = hits.find(h.hit_guid);
+        if (hit != hits.end()) by_hit.insert(hit->second.zones.begin(), hit->second.zones.end());
+    }
+    for (const auto& v : *zs) {
+        if (v.is_number_integer() && v.get<int64_t>() != 0 && !by_hit.count(v.get<int64_t>())) d.zones.push_back(v.get<int64_t>());
+    }
+}
+
+bool load_abilities(const content::AbilityContent& db, const std::map<int64_t, HitDef>& hits, std::map<int64_t, AbilityDef>& abilities,
+                    std::map<std::string, int64_t, std::less<>>& ability_names, std::string& error) {
+    std::vector<int64_t> guids;
+    if (!db.guids(content::AbilityContent::Table::Ability, guids, error)) return false;
+    for (const int64_t g : guids) {
+        AbilityDef d;
+        auto row = db.ability(g, error);
+        if (!row) return false;
+        d.row = std::move(*row);
+        if (!db.costs(g, d.costs, error) || !db.effect_costs(g, d.effect_costs, error) || !db.montages(g, d.montages, error) ||
+            !db.ability_hits(g, d.hits, error) || !db.ability_effects(g, d.effects, error) || !db.targetings(g, d.targetings, error))
+            return false;
+        parse_ability_zones(hits, d);
+        ability_names[d.row.name] = g;
+        abilities.emplace(g, std::move(d));
+    }
+    return true;
+}
+
+// a carrier lists only reactions the tables have
+void prune_reactions(const std::map<int64_t, ReactionDef>& reactions, std::map<int64_t, EffectDef>& effects, std::map<int64_t, HitDef>& hits) {
+    for (auto& [g, e] : effects) {
+        e.reactions.erase(std::remove_if(e.reactions.begin(), e.reactions.end(), [&](int64_t r) { return !reactions.count(r); }), e.reactions.end());
+    }
+    for (auto& [g, h] : hits) {
+        h.reactions.erase(std::remove_if(h.reactions.begin(), h.reactions.end(), [&](int64_t r) { return !reactions.count(r); }), h.reactions.end());
+        h.recursive.erase(std::remove_if(h.recursive.begin(), h.recursive.end(), [&](const content::RecursiveHitRow& r) { return !hits.count(r.child_hit); }), h.recursive.end());
+    }
+}
+
+// every row a row names is in the catalog: a hit of an effect, an effect of a hit, a hit of an ability (a dangling guid would be found at a cast)
+bool verify_catalog_links(const std::map<int64_t, EffectDef>& effects, const std::map<int64_t, HitDef>& hits,
+                          const std::map<int64_t, AbilityDef>& abilities, const std::map<int64_t, ReactionDef>& reactions, std::string& error) {
+    for (const auto& [g, r] : reactions) {
+        for (const int64_t h : r.row.hits) {
+            if (!hits.count(h)) {
+                error = "reaction " + r.row.name + " applies hit " + std::to_string(h) + ", which the tables do not have";
+                return false;
+            }
+        }
+    }
+    for (const auto& [g, e] : effects) {
+        for (const auto& [phase, hit] : e.hits) {
+            if (!hits.count(hit)) {
+                error = "effect " + e.row.name + " names hit " + std::to_string(hit) + " (" + phase + "), which the tables do not have";
+                return false;
+            }
+        }
+    }
+    for (const auto& [g, h] : hits) {
+        for (const content::HitEffectRow& x : h.effects) {
+            if (!effects.count(x.effect_guid)) {
+                error = "hit " + h.row.name + " applies effect " + std::to_string(x.effect_guid) + ", which the tables do not have";
+                return false;
+            }
+        }
+    }
+    for (const auto& [g, a] : abilities) {
+        for (const content::AbilityHitRow& h : a.hits) {
+            if (!hits.count(h.hit_guid)) {
+                error = "ability " + a.row.name + " fires hit " + std::to_string(h.hit_guid) + ", which the tables do not have";
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 }  // namespace
@@ -54,106 +251,11 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
         }
     }
 // ~ C Y B :: C-O-A ~
-
+    load_modify_cooldowns(*db, c.modify_cooldowns_);
+    if (!load_effects(*db, c.effects_, c.effect_names_, error) || !load_hits(*db, c.hits_, c.hit_names_, error) ||
+        !load_abilities(*db, c.hits_, c.abilities_, c.ability_names_, error))
+        return std::nullopt;
     std::vector<int64_t> guids;
-    if (!db->guids(content::AbilityContent::Table::Effect, guids, error)) return std::nullopt;
-    for (const int64_t g : guids) {
-        EffectDef d;
-        auto row = db->effect(g, error);
-        if (!row) return std::nullopt;
-        d.row = std::move(*row);
-        if (!db->mods("effect", g, d.mods, error)) return std::nullopt;
-        std::vector<content::EffectHitRow> hits;
-        if (!db->effect_hits(g, hits, error)) return std::nullopt;
-        for (const content::EffectHitRow& h : hits) d.hits.emplace_back(h.phase, h.hit_guid);
-        if (db->has_reactions()) reaction_ids_of(d.row.extra, d.reactions);
-        c.effect_names_[d.row.name] = g;
-        c.effects_.emplace(g, std::move(d));
-    }
-    if (!db->guids(content::AbilityContent::Table::Hit, guids, error)) return std::nullopt;
-    for (const int64_t g : guids) {
-        HitDef d;
-        auto row = db->hit(g, error);
-        if (!row) return std::nullopt;
-        d.row = std::move(*row);
-        if (!db->hit_effects(g, d.effects, error) || !db->mods("hit", g, d.mods, error) || !db->hit_projectiles(g, d.fires, error)) return std::nullopt;
-        // what the hit takes off its targets: extra's EffectsToRemoveIds (the effects' guids) and MaxNumEffectsToRemove
-        const nlohmann::json extra = nlohmann::json::parse(d.row.extra, nullptr, false);
-        if (extra.is_object()) {
-            const auto rm = extra.find("EffectsToRemoveIds");
-            if (rm != extra.end() && rm->is_array()) {
-                for (const auto& v : *rm) {
-                    if (v.is_number_integer()) d.remove_effects.push_back(v.get<int64_t>());
-                }
-            }
-            const auto mx = extra.find("MaxNumEffectsToRemove");
-            if (mx != extra.end() && mx->is_number_integer()) d.max_remove = mx->get<int>();
-            const auto zs = extra.find("LingeringZonesIds");
-            if (zs != extra.end() && zs->is_array()) {
-                for (const auto& v : *zs) {
-                    if (v.is_number_integer() && v.get<int64_t>() != 0) d.zones.push_back(v.get<int64_t>());
-                }
-            }
-            // plan E1, stage 3 (contentc version 9)
-            const auto tags = extra.find("EventTags");
-            if (tags != extra.end() && tags->is_array()) {
-                for (const auto& v : *tags) {
-                    if (v.is_string()) d.tags.push_back(v.get<std::string>());
-                }
-            }
-            const auto id_of = [&](const char* key) -> int64_t {
-                const auto it = extra.find(key);
-                return it != extra.end() && it->is_number_integer() ? it->get<int64_t>() : 0;
-            };
-            const auto flag = [&](const char* key) {
-                const auto it = extra.find(key);
-                return it != extra.end() && it->is_boolean() && it->get<bool>();
-            };
-            d.crit_rate_expr = id_of("CritRateExpr");
-            d.block_rate_expr = id_of("BlockRateExpr");
-            d.miss_rate_expr = id_of("MissRateExpr");
-            d.force_cant_crit = flag("bForceCantCrit");
-            d.force_cant_block = flag("bForceCantBlock");
-            d.force_cant_miss = flag("bForceCantMiss");
-            d.force_roll_crit = flag("bForceRollCrit");
-            d.force_roll_block = flag("bForceRollBlock");
-            d.force_roll_miss = flag("bForceRollMiss");
-            d.use_item_tags = flag("bShouldUseItemTags");
-        }
-        if (db->has_reactions()) {
-            reaction_ids_of(d.row.extra, d.reactions);
-            if (!db->hit_recursive(g, d.recursive, error)) return std::nullopt;
-        }
-        c.hit_names_[d.row.name] = g;
-        c.hits_.emplace(g, std::move(d));
-    }
-    if (!db->guids(content::AbilityContent::Table::Ability, guids, error)) return std::nullopt;
-    for (const int64_t g : guids) {
-        AbilityDef d;
-        auto row = db->ability(g, error);
-        if (!row) return std::nullopt;
-        d.row = std::move(*row);
-        if (!db->costs(g, d.costs, error) || !db->effect_costs(g, d.effect_costs, error) || !db->montages(g, d.montages, error) ||
-            !db->ability_hits(g, d.hits, error) || !db->ability_effects(g, d.effects, error) || !db->targetings(g, d.targetings, error))
-            return std::nullopt;
-        // the zones the ability itself spawns: extra's LingeringEffectsIds, minus the ones a hit of it spawns (they come with the hit)
-        const nlohmann::json extra = nlohmann::json::parse(d.row.extra, nullptr, false);
-        if (extra.is_object()) {
-            const auto zs = extra.find("LingeringEffectsIds");
-            if (zs != extra.end() && zs->is_array()) {
-                std::set<int64_t> by_hit;
-                for (const content::AbilityHitRow& h : d.hits) {
-                    const auto hit = c.hits_.find(h.hit_guid);
-                    if (hit != c.hits_.end()) by_hit.insert(hit->second.zones.begin(), hit->second.zones.end());
-                }
-                for (const auto& v : *zs) {
-                    if (v.is_number_integer() && v.get<int64_t>() != 0 && !by_hit.count(v.get<int64_t>())) d.zones.push_back(v.get<int64_t>());
-                }
-            }
-        }
-        c.ability_names_[d.row.name] = g;
-        c.abilities_.emplace(g, std::move(d));
-    }
     if (!db->guids(content::AbilityContent::Table::Zone, guids, error)) return std::nullopt;
     for (const int64_t g : guids) {
         auto row = db->zone(g, error);
@@ -173,51 +275,10 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
     for (const int64_t g : guids) {
         auto row = db->reaction(g, error);
         if (!row) return std::nullopt;
-        ReactionDef d;
-        d.row = std::move(*row);
-        c.reactions_.emplace(g, std::move(d));
+        c.reactions_.emplace(g, ReactionDef{std::move(*row)});
     }
-    for (const auto& [g, r] : c.reactions_) {
-        for (const int64_t h : r.row.hits) {
-            if (!c.hits_.count(h)) {
-                error = "reaction " + r.row.name + " applies hit " + std::to_string(h) + ", which the tables do not have";
-                return std::nullopt;
-            }
-        }
-    }
-    // a carrier lists only reactions the tables have
-    for (auto& [g, e] : c.effects_) {
-        e.reactions.erase(std::remove_if(e.reactions.begin(), e.reactions.end(), [&](int64_t r) { return !c.reactions_.count(r); }), e.reactions.end());
-    }
-    for (auto& [g, h] : c.hits_) {
-        h.reactions.erase(std::remove_if(h.reactions.begin(), h.reactions.end(), [&](int64_t r) { return !c.reactions_.count(r); }), h.reactions.end());
-        h.recursive.erase(std::remove_if(h.recursive.begin(), h.recursive.end(), [&](const content::RecursiveHitRow& r) { return !c.hits_.count(r.child_hit); }), h.recursive.end());
-    }
-    // every row a row names is in the catalog: a hit of an effect, an effect of a hit, a hit of an ability (a dangling guid would be found at a cast)
-    for (const auto& [g, e] : c.effects_) {
-        for (const auto& [phase, hit] : e.hits) {
-            if (!c.hits_.count(hit)) {
-                error = "effect " + e.row.name + " names hit " + std::to_string(hit) + " (" + phase + "), which the tables do not have";
-                return std::nullopt;
-            }
-        }
-    }
-    for (const auto& [g, h] : c.hits_) {
-        for (const content::HitEffectRow& x : h.effects) {
-            if (!c.effects_.count(x.effect_guid)) {
-                error = "hit " + h.row.name + " applies effect " + std::to_string(x.effect_guid) + ", which the tables do not have";
-                return std::nullopt;
-            }
-        }
-    }
-    for (const auto& [g, a] : c.abilities_) {
-        for (const content::AbilityHitRow& h : a.hits) {
-            if (!c.hits_.count(h.hit_guid)) {
-                error = "ability " + a.row.name + " fires hit " + std::to_string(h.hit_guid) + ", which the tables do not have";
-                return std::nullopt;
-            }
-        }
-    }
+    prune_reactions(c.reactions_, c.effects_, c.hits_);
+    if (!verify_catalog_links(c.effects_, c.hits_, c.abilities_, c.reactions_, error)) return std::nullopt;
     return c;
 }
 

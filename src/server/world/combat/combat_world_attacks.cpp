@@ -4,6 +4,7 @@
 #include "combat/combat_world.h"
 
 #include "bootstrap/constants.h"
+#include "combat/combat_world_npc.h"
 #include "combat/npc_ability_replicator.h"
 #include "combat/npc_kits.h"
 #include "npc/area_npcs.h"
@@ -276,76 +277,6 @@ void populate_animated_pending(PendingT& p, const PlanT& plan, const NpcAbilityD
 
 }  // namespace
 
-class CombatWorld::Npc final : public Fighter {
-public:
-    Npc(CombatWorld& w, uint64_t actor, npc::MotionStats bp_in, std::string leaf_in, int level_in)
-        : world(w), actor_id(actor), bp(std::move(bp_in)), leaf(std::move(leaf_in)), lvl(level_in) {}
-
-    uint64_t id() const override { return actor_id; }
-    bool     is_player() const override { return false; }
-    int      level() const override { return lvl; }
-    Vec3     position() const override {
-        const world::WorldActor* a = world.registry_.find(actor_id);
-        return a ? Vec3{a->x, a->y, a->z} : Vec3{};
-    }
-    double radius_cm() const override { return bp.radius; }
-    bool   alive() const override { return !dead; }
-    const std::vector<int64_t>& alignments() const override { return aligns; }
-    stats::CharacterStats&      stats() override { return *cs; }
-
-    double health() const {
-        const stats::StatValue* v = cs ? cs->find(content::kGuidHealth) : nullptr;
-        return v ? v->value : 0.0;
-    }
-    double max_health() const {
-        const stats::StatValue* v = cs ? cs->find(content::kGuidMaxHealth) : nullptr;
-        return v ? v->value : 0.0;
-    }
-
-    CombatWorld&                           world;
-    uint64_t                               actor_id;
-    npc::MotionStats                       bp;
-    std::string                            leaf;
-    int                                    lvl;
-    std::vector<int64_t>                   aligns;
-    std::unique_ptr<stats::CharacterStats> cs;
-    npc::ai::NpcAi                         ai;
-    bool                                   hostile = false;
-    bool                                   dead = false;
-    bool                                   flags_in_combat = false;
-    uint64_t                               flags_target = 0;
-    bool                                   returning = false;
-    const npc_kits::Kit*                   kit = nullptr;
-    CombatWorld::Attack                    next;
-    double                                 next_attack_at = 0;
-    std::string                            archetype;
-    const std::vector<CreatureAbility>*    anim = nullptr;
-    NpcCastState                           cast;
-    std::map<std::string, double>          cooldown_until;
-    double                                 hold_until = 0;
-    double                                 stand_off_cm = -1;
-    double                                 shot_reach_cm = -1;
-    double                                 fight_began = 0;
-    std::map<std::string, double>          fight_rolls;
-    uint64_t                               killer = 0;
-    std::set<uint64_t>                     attackers;
-    struct Shield {
-        double amount = 0;
-        double until = 0;
-    };
-    std::vector<Shield>                    shields;
-
-    double absorb(double loss, double now) {
-        shields.erase(std::remove_if(shields.begin(), shields.end(), [&](const Shield& s) { return s.amount <= 0 || (s.until > 0 && s.until <= now); }), shields.end());
-        for (Shield& s : shields) {
-            const double take = std::min(s.amount, loss);
-            s.amount -= take;
-            loss -= take;
-        }
-        return loss;
-    }
-};
-
 CombatWorld::Attack CombatWorld::choose_attack(Npc& n) {
     Attack a;
     a.windup_ms = static_cast<int>(cfg_.default_windup * 1000);
@@ -457,12 +388,14 @@ bool CombatWorld::can_animate(const Npc& n) const {
 
 bool CombatWorld::launches_projectiles(const abilities::AbilityDef& def) const {
     if (!anim_) return false;
-    bool rows = false;
-    for (const content::AbilityHitRow& r : def.hits) rows = rows || r.source == "projectile";
-    if (!rows) return false;
     for (const content::MontageRow& m : def.montages) {
         const MontageData* md = m.soft_path.empty() ? nullptr : anim_->montage(m.soft_path);
-        if (md && !md->fires.empty()) return true;
+        if (!md) continue;
+        for (const MontageData::Fire& fire : md->fires) {
+            for (const content::AbilityHitRow& r : def.hits) {
+                if (r.source == "projectile" && r.key == fire.key && catalog_.projectile(r.owner_guid)) return true;
+            }
+        }
     }
     return false;
 }

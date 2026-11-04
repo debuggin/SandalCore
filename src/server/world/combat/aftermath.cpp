@@ -31,6 +31,190 @@ std::vector<std::string> tags_of(const std::string& csv) {
     return out;
 }
 
+std::vector<PlayerPort*> collect_death_fighters(CombatWorld& combat, const DeathEvent& d, std::set<uint64_t>& rights) {
+    // who fought it and is here to be rewarded
+    std::vector<PlayerPort*> fighters;
+    if (d.gm) {
+        // a game master's kill: nobody fought it, so every player in the world may take its loot, and nobody is given experience
+        fighters = combat.players();
+    } else {
+        if (const auto killer = combat.find_player(d.killer)) fighters.push_back(killer);
+        for (const uint64_t id : d.attackers) {
+            PlayerPort* p = combat.find_player(id);
+            if (p && std::find(fighters.begin(), fighters.end(), p) == fighters.end()) fighters.push_back(p);
+        }
+    }
+    for (PlayerPort* p : fighters) rights.insert(p->actor_id());
+    return fighters;
+}
+
+std::string format_looter_note(const DeathEvent& d, double max_level, const AftermathConfig& cfg) {
+    // Loot_Falloff is 1 for a gap of 0 to 9 levels and 0 from 10 (the reward tables' own, settled against retail 2026-10-08): said on the line so a drop that did not come can be read
+    const int gap = static_cast<int>(std::lround(std::fabs(max_level - static_cast<double>(d.level))));
+    std::string looter_note = ", looter level " + std::to_string(static_cast<int>(std::lround(max_level))) + " (" + std::to_string(gap) + " level" + (gap == 1 ? "" : "s") + " apart: Loot_Falloff " +
+                  (gap >= 10 ? "0, no gear, recipe or Glint loot" : "1") + ")" + (cfg.loot_chance_mult != 1.0 ? ", loot chances x" + std::to_string(cfg.loot_chance_mult).substr(0, 5) : std::string());
+    if (d.gm) looter_note = ", a game master's kill, rolled as for a player of the creature's own level" + (cfg.loot_chance_mult != 1.0 ? ", loot chances x" + std::to_string(cfg.loot_chance_mult).substr(0, 5) : std::string());
+    if (cfg.loot_rarity_boost != 1.0) {   // the test boost of the rarity rolls (worldd --loot-rarity-boost): said on every kill's line
+        char boost[32];
+        std::snprintf(boost, sizeof boost, "%g", cfg.loot_rarity_boost);
+        looter_note += std::string(", rarity odds x") + boost + " (test boost)";
+    }
+    return looter_note;
+}
+
+struct DeathRollOutcome {
+    Rolled rolled;
+    std::string looter_note;
+    double max_level = 1.0;
+};
+
+DeathRollOutcome roll_death_rewards(const DeathEvent& d, const std::vector<PlayerPort*>& fighters, const RewardBook& book, const AftermathConfig& cfg,
+                                    RollContext& ctx) {
+    DeathRollOutcome out;
+    for (PlayerPort* p : fighters) out.max_level = std::max<double>(out.max_level, p->fighter().level());
+    if (d.gm) out.max_level = std::max(1, d.level);   // rolled as for a player of the creature's own level: no level gap takes anything off
+    std::vector<std::string> tags = d.motion ? tags_of(d.motion->tags) : std::vector<std::string>{};
+    ctx.npc_tags = &tags;
+    ctx.loot_max_level = out.max_level;
+    ctx.chance_mult = cfg.loot_chance_mult;
+    ctx.rarity_boost = cfg.loot_rarity_boost;
+    out.looter_note = format_looter_note(d, out.max_level, cfg);
+    if (ctx.nodes) {
+        // the zone of influence where it died: its biome and node answer the tables' node reads
+        const world::NodeSite site = ctx.nodes->node_at(d.position.x, d.position.y);
+        ctx.node = site.node_rank;
+        ctx.biome = site.biome;
+    }
+    std::vector<int64_t> roots;
+    if (d.motion) roots = d.motion->rewards;
+    if (d.info) roots.insert(roots.end(), d.info->loot_tables.begin(), d.info->loot_tables.end());
+    ctx.player_level = out.max_level;
+    out.rolled = book.roll(roots, ctx);
+    ctx.npc_tags = nullptr;
+    return out;
+}
+
+std::string format_roll_note(const Rolled& rolled, double elite_rank) {
+    // what the rarity rolls did, for the death line: the creature's elite rank (a gear roll adds 2 per rank), the qualities rolled, and the Common outcomes the test boost threw back
+    if (rolled.quality_rolls <= 0 && rolled.quality_failures <= 0) return {};
+    return ", " + std::to_string(rolled.quality_rolls) + " quality roll(s) at elite rank " + std::to_string(static_cast<int>(std::lround(elite_rank))) +
+           (rolled.boost_redraws > 0 ? " (" + std::to_string(rolled.boost_redraws) + " Common outcome(s) thrown back by the rarity boost)" : std::string()) +
+           (rolled.quality_failures > 0 ? ", " + std::to_string(rolled.quality_failures) + " quality formula(s) did not run" : std::string());
+}
+
+std::vector<LootStack> build_loot_stacks(const Rolled& rolled, const std::function<int(int64_t)>& quality_of, const items::CurrencyTable* currencies) {
+    // the loot: a stack has the quality its variation rolled (a gear or a resource drop), else the item record's default (a Glint tier keeps its 1, 21 or 41)
+    std::vector<LootStack> stacks;
+    for (const std::vector<RolledItem>* list : {&rolled.loot, &rolled.direct}) {
+        for (const RolledItem& it : *list) {
+            LootStack s;
+            s.item = it.item;
+            s.variation = it.variation;
+            s.quantity = it.quantity;
+            s.quality = it.quality > 0 ? std::clamp(it.quality, items::kMinQuality, items::kMaxQuality) : (quality_of ? std::max(1, quality_of(it.item)) : 1);
+            stacks.push_back(s);
+        }
+    }
+    if (currencies && !stacks.empty()) {
+        // Glint tiers: the rolled Glint of a currency tier is summed and paid in its kinds, the biggest first, each under its rate; the other stacks stay where they are
+        std::vector<items::CurrencyLine> lines;
+        lines.reserve(stacks.size());
+        for (const LootStack& s : stacks) lines.push_back({s.item, s.quantity});
+        const items::CompressedLines split = currencies->compress(lines);
+        if (split.changed) {
+            std::vector<LootStack> paid;
+            paid.reserve(split.lines.size());
+            for (const items::CompressedLines::Line& l : split.lines) {
+                if (l.from >= 0) {
+                    paid.push_back(stacks[static_cast<size_t>(l.from)]);
+                    continue;
+                }
+                LootStack s;
+                s.item = l.item;
+                s.quantity = l.quantity;
+                s.quality = quality_of ? std::max(1, quality_of(l.item)) : 1;
+                paid.push_back(s);
+            }
+            stacks = std::move(paid);
+        }
+    }
+    return stacks;
+}
+
+struct LootAttachEnv {
+    world::ActorRegistry& registry;
+    const world::Minter& mint;
+    double loot_corpse_seconds = 0.0;
+    Aftermath::Stats& stats;
+    std::function<int(int64_t, int)> rarity_of;
+};
+
+void attach_corpse_loot(const DeathEvent& d, const std::vector<PlayerPort*>& fighters, std::vector<LootStack> stacks, Corpse& c,
+                        const LootAttachEnv& env) {
+    if (!stacks.empty() && !fighters.empty()) {
+        int top = 0;
+        for (const LootStack& s : stacks) top = std::max(top, env.rarity_of(s.item, s.quality));
+        std::vector<protocol::repl::GuidValue> guids;
+        for (PlayerPort* p : fighters) {
+            const auto w = p->character_guid();
+            guids.push_back({w[0], w[1], w[2], w[3]});
+        }
+        std::string why;
+        const auto parts = world::add_loot(env.registry, d.npc, env.mint, guids.front(), guids, top, why);
+        if (parts) {
+            c.parts = *parts;
+            c.loot = std::move(stacks);
+            c.top_rarity = top;
+            c.close_at = d.at + env.loot_corpse_seconds;
+            ++env.stats.corpses_with_loot;
+            env.stats.loot_stacks += c.loot.size();
+        } else {
+            spdlog::warn("[loot] {} ({}) died with {} stack(s) of loot but its corpse takes no components: {}", c.name, d.blueprint, stacks.size(), why);
+        }
+    } else if (!stacks.empty() && d.gm) {
+        // a game master's kill with nobody in the world to take it: the roll stays on the corpse (the log and Inspect say what it holds), but it gets no loot components
+        c.loot = std::move(stacks);
+    }
+}
+
+uint64_t award_death_xp(const DeathEvent& d, const Corpse& c, const std::vector<PlayerPort*>& fighters, const std::vector<RolledXp>& xp_rows,
+                        const std::function<int64_t(double, double)>& xp_at_level) {
+    // the experience: each fighter's own decay (a game master's kill gives none)
+    uint64_t xp_awarded = 0;
+    for (PlayerPort* p : fighters) {
+        if (d.gm) break;
+        const double player_level = p->fighter().level();
+        KillReward kr;
+        kr.npc = d.npc;
+        kr.name = c.name;
+        kr.blueprint = d.blueprint;
+        kr.level = d.level;
+        kr.instance = d.info ? d.info->instance_guid : 0;
+        for (const RolledXp& x : xp_rows) {
+            const int64_t amount = xp_at_level(x.amount, player_level);
+            if (x.type == "Adventuring") kr.adventuring_xp += amount;
+            else if (x.type == "Weapon") kr.weapon_xp += amount;
+            else if (x.type == "NodeActivity") kr.node_xp += amount;
+        }
+        kr.loot = c.parts.has_value();
+        p->receive_kill(kr, d.at);
+        xp_awarded += static_cast<uint64_t>(std::max<int64_t>(0, kr.adventuring_xp));
+    }
+    return xp_awarded;
+}
+
+std::string format_loot_listing(const std::vector<LootStack>& loot, const std::function<std::string(int64_t)>& name_of,
+                                const std::function<int(int64_t, int)>& rarity_fn) {
+    std::string listing;
+    for (const LootStack& s : loot) {
+        const std::string n = name_of ? name_of(s.item) : std::string();
+        // each stack names its quality and the rarity the client shows for it (a Glint tier is always its colour)
+        listing += (listing.empty() ? "" : ", ") + (n.empty() ? "item " + std::to_string(s.item) : n) + " x" + std::to_string(s.quantity) + " q" + std::to_string(s.quality) + " " +
+                 std::string(items::rarity_name(rarity_fn(s.item, s.quality)));
+    }
+    return listing;
+}
+
 }  // namespace
 
 int Aftermath::rarity_of(int64_t item, int quality) const {
@@ -51,46 +235,23 @@ void Aftermath::install() {
 void Aftermath::on_death(const DeathEvent& d) {
     ++stats_.deaths;
     const bool huntable = huntable_ && d.info && huntable_(*d.info);
-    if (!cfg_.enabled) {
-        // the corpse still goes: nothing more is made of the death
-        Corpse c;
-        c.npc = d.npc;
-        c.died_at = d.at;
-        c.close_at = d.at + cfg_.corpse_seconds;
-        if (huntable) {   // (a huntable's corpse is hunted, not looted: it stays for the hunt whatever happens to the rewards)
-            c.huntable = true;
-            c.close_at = d.at + cfg_.hunt_corpse_seconds;
-        }
-        corpses_[d.npc] = std::move(c);
-        return;
-    }
     Corpse c;
     c.npc = d.npc;
     c.died_at = d.at;
-    c.close_at = d.at + cfg_.corpse_seconds;
-    if (huntable) {   // Gathering stage 3: no loot pile, a corpse that waits for the hunter
-        c.huntable = true;
-        c.close_at = d.at + cfg_.hunt_corpse_seconds;
+    c.close_at = d.at + (huntable ? cfg_.hunt_corpse_seconds : cfg_.corpse_seconds);
+    c.huntable = huntable;
+    if (!cfg_.enabled) {
+        // the corpse still goes: nothing more is made of the death
+        // (a huntable's corpse is hunted, not looted: it stays for the hunt whatever happens to the rewards)
+        corpses_[d.npc] = std::move(c);
+        return;
     }
+    // Gathering stage 3: no loot pile, a corpse that waits for the hunter
     // (the Nodes 1 test of 2026-10-10: the death and loot lines had an empty creature name) the creature's name, else its Blueprint's
     c.name = d.info && !d.info->name.empty() ? d.info->name : d.blueprint;
     std::string looter_note;   // for the death line: the highest looter's level, the level gap and the data's Loot_Falloff
     std::string roll_note;     // ... and what the rarity rolls did (item rarities, step 1)
-
-    // who fought it and is here to be rewarded
-    std::vector<PlayerPort*> fighters;
-    if (d.gm) {
-        // a game master's kill: nobody fought it, so every player in the world may take its loot, and nobody is given experience
-        fighters = combat_.players();
-    } else {
-        if (const auto killer = combat_.find_player(d.killer)) fighters.push_back(killer);
-        for (const uint64_t id : d.attackers) {
-            PlayerPort* p = combat_.find_player(id);
-            if (p && std::find(fighters.begin(), fighters.end(), p) == fighters.end()) fighters.push_back(p);
-        }
-    }
-    for (PlayerPort* p : fighters) c.rights.insert(p->actor_id());
-
+    const std::vector<PlayerPort*> fighters = collect_death_fighters(combat_, d, c.rights);
     // the respawn: from the death, not from the corpse's closing
     if (d.info) schedule_respawn(*d.info, d.at, d.npc);
 // C.Y.B and C-O-A
@@ -98,141 +259,29 @@ void Aftermath::on_death(const DeathEvent& d) {
     if (book_ && (!fighters.empty() || d.gm)) {
         Fighter* npc = combat_.fighter_of(d.npc);
         std::string err;
-        std::unique_ptr<stats::CharacterStats::Evaluation> ev = npc ? npc->stats().evaluation({}, err) : nullptr;
-        if (ev) {
-            std::vector<std::string> tags = d.motion ? tags_of(d.motion->tags) : std::vector<std::string>{};
-            double max_level = 1;
-            for (PlayerPort* p : fighters) max_level = std::max<double>(max_level, p->fighter().level());
-            if (d.gm) max_level = std::max(1, d.level);   // rolled as for a player of the creature's own level: no level gap takes anything off
+        if (std::unique_ptr<stats::CharacterStats::Evaluation> ev = npc ? npc->stats().evaluation({}, err) : nullptr) {
             RollContext ctx;
             ctx.npc = ev.get();
-            ctx.npc_tags = &tags;
-            ctx.loot_max_level = max_level;
-            ctx.chance_mult = cfg_.loot_chance_mult;
-            ctx.rarity_boost = cfg_.loot_rarity_boost;
             ctx.rng = &rng_;
-            // Loot_Falloff is 1 for a gap of 0 to 9 levels and 0 from 10 (the reward tables' own, settled against retail 2026-10-08): said on the line so a drop that did not come can be read
-            const int gap = static_cast<int>(std::lround(std::fabs(max_level - static_cast<double>(d.level))));
-            looter_note = ", looter level " + std::to_string(static_cast<int>(std::lround(max_level))) + " (" + std::to_string(gap) + " level" + (gap == 1 ? "" : "s") + " apart: Loot_Falloff " +
-                          (gap >= 10 ? "0, no gear, recipe or Glint loot" : "1") + ")" + (cfg_.loot_chance_mult != 1.0 ? ", loot chances x" + std::to_string(cfg_.loot_chance_mult).substr(0, 5) : std::string());
-            if (d.gm) looter_note = ", a game master's kill, rolled as for a player of the creature's own level" + (cfg_.loot_chance_mult != 1.0 ? ", loot chances x" + std::to_string(cfg_.loot_chance_mult).substr(0, 5) : std::string());
-            if (cfg_.loot_rarity_boost != 1.0) {   // the test boost of the rarity rolls (worldd --loot-rarity-boost): said on every kill's line
-                char boost[32];
-                std::snprintf(boost, sizeof boost, "%g", cfg_.loot_rarity_boost);
-                looter_note += std::string(", rarity odds x") + boost + " (test boost)";
-            }
-            if (nodes_) {
-                // the zone of influence where it died: its biome and node answer the tables' node reads
-                const world::NodeSite site = nodes_->node_at(d.position.x, d.position.y);
-                ctx.nodes = nodes_;
-                ctx.node = site.node_rank;
-                ctx.biome = site.biome;
-            }
-            std::vector<int64_t> roots;
-            if (d.motion) roots = d.motion->rewards;
-            if (d.info) roots.insert(roots.end(), d.info->loot_tables.begin(), d.info->loot_tables.end());
-            ctx.player_level = max_level;
-            Rolled rolled = book_->roll(roots, ctx);
+            ctx.nodes = nodes_;
+            DeathRollOutcome out = roll_death_rewards(d, fighters, *book_, cfg_, ctx);
+            looter_note = std::move(out.looter_note);
             if (huntable) {   // the kill's experience stays; its items (the Glint certificates, the Bezoar roll) are not dropped: the corpse's reward is the hunt's
-                rolled.loot.clear();
-                rolled.direct.clear();
+                out.rolled.loot.clear();
+                out.rolled.direct.clear();
             }
-            // what the rarity rolls did, for the death line: the creature's elite rank (a gear roll adds 2 per rank), the qualities rolled, and the Common outcomes the test boost threw back
-            if (rolled.quality_rolls > 0 || rolled.quality_failures > 0) {
-                roll_note = ", " + std::to_string(rolled.quality_rolls) + " quality roll(s) at elite rank " + std::to_string(static_cast<int>(std::lround(npc->stats().npc().elite_rank))) +
-                            (rolled.boost_redraws > 0 ? " (" + std::to_string(rolled.boost_redraws) + " Common outcome(s) thrown back by the rarity boost)" : std::string()) +
-                            (rolled.quality_failures > 0 ? ", " + std::to_string(rolled.quality_failures) + " quality formula(s) did not run" : std::string());
-            }
-            // the loot: a stack has the quality its variation rolled (a gear or a resource drop), else the item record's default (a Glint tier keeps its 1, 21 or 41)
-            std::vector<LootStack> stacks;
-            for (const std::vector<RolledItem>* list : {&rolled.loot, &rolled.direct}) {
-                for (const RolledItem& it : *list) {
-                    LootStack s;
-                    s.item = it.item;
-                    s.variation = it.variation;
-                    s.quantity = it.quantity;
-                    s.quality = it.quality > 0 ? std::clamp(it.quality, items::kMinQuality, items::kMaxQuality) : (quality_of_ ? std::max(1, quality_of_(it.item)) : 1);
-                    stacks.push_back(s);
-                }
-            }
-            if (currencies_ && !stacks.empty()) {
-                // Glint tiers: the rolled Glint of a currency tier is summed and paid in its kinds, the biggest first, each under its rate; the other stacks stay where they are
-                std::vector<items::CurrencyLine> lines;
-                lines.reserve(stacks.size());
-                for (const LootStack& s : stacks) lines.push_back({s.item, s.quantity});
-                const items::CompressedLines split = currencies_->compress(lines);
-                if (split.changed) {
-                    std::vector<LootStack> paid;
-                    paid.reserve(split.lines.size());
-                    for (const items::CompressedLines::Line& l : split.lines) {
-                        if (l.from >= 0) {
-                            paid.push_back(stacks[static_cast<size_t>(l.from)]);
-                            continue;
-                        }
-                        LootStack s;
-                        s.item = l.item;
-                        s.quantity = l.quantity;
-                        s.quality = quality_of_ ? std::max(1, quality_of_(l.item)) : 1;
-                        paid.push_back(s);
-                    }
-                    stacks = std::move(paid);
-                }
-            }
-            if (!stacks.empty() && !fighters.empty()) {
-                int top = 0;
-                for (const LootStack& s : stacks) top = std::max(top, rarity_of(s.item, s.quality));
-                std::vector<protocol::repl::GuidValue> guids;
-                for (PlayerPort* p : fighters) {
-                    const auto w = p->character_guid();
-                    guids.push_back({w[0], w[1], w[2], w[3]});
-                }
-                std::string why;
-                const auto parts = world::add_loot(registry_, d.npc, mint_, guids.front(), guids, top, why);
-                if (parts) {
-                    c.parts = *parts;
-                    c.loot = std::move(stacks);
-                    c.top_rarity = top;
-                    c.close_at = d.at + cfg_.loot_corpse_seconds;
-                    ++stats_.corpses_with_loot;
-                    stats_.loot_stacks += c.loot.size();
-                } else {
-                    spdlog::warn("[loot] {} ({}) died with {} stack(s) of loot but its corpse takes no components: {}", c.name, d.blueprint, stacks.size(), why);
-                }
-            } else if (!stacks.empty() && d.gm) {
-                // a game master's kill with nobody in the world to take it: the roll stays on the corpse (the log and Inspect say what it holds), but it gets no loot components
-                c.loot = std::move(stacks);
-            }
-            // the experience: each fighter's own decay (a game master's kill gives none)
-            for (PlayerPort* p : fighters) {
-                if (d.gm) break;
-                ctx.player_level = p->fighter().level();
-                KillReward kr;
-                kr.npc = d.npc;
-                kr.name = c.name;
-                kr.blueprint = d.blueprint;
-                kr.level = d.level;
-                kr.instance = d.info ? d.info->instance_guid : 0;
-                for (const RolledXp& x : rolled.xp) {
-                    const int64_t amount = book_->xp_for(x.amount, ctx);
-                    if (x.type == "Adventuring") kr.adventuring_xp += amount;
-                    else if (x.type == "Weapon") kr.weapon_xp += amount;
-                    else if (x.type == "NodeActivity") kr.node_xp += amount;
-                }
-                kr.loot = c.parts.has_value();
-                p->receive_kill(kr, d.at);
-                stats_.xp_awarded += static_cast<uint64_t>(std::max<int64_t>(0, kr.adventuring_xp));
-            }
+            roll_note = format_roll_note(out.rolled, npc->stats().npc().elite_rank);
+            LootAttachEnv env{registry_, mint_, cfg_.loot_corpse_seconds, stats_, [this](int64_t item, int q) { return rarity_of(item, q); }};
+            attach_corpse_loot(d, fighters, build_loot_stacks(out.rolled, quality_of_, currencies_), c, env);
+            stats_.xp_awarded += award_death_xp(d, c, fighters, out.rolled.xp, [&](double amt, double lvl) {
+                ctx.player_level = lvl;
+                return book_->xp_for(amt, ctx);
+            });
         } else {
             spdlog::debug("[loot] {} has no stats to roll its rewards with: {}", d.blueprint, err);
         }
     }
-    std::string listing;
-    for (const LootStack& s : c.loot) {
-        const std::string n = name_of_ ? name_of_(s.item) : std::string();
-        // each stack names its quality and the rarity the client shows for it (a Glint tier is always its colour)
-        listing += (listing.empty() ? "" : ", ") + (n.empty() ? "item " + std::to_string(s.item) : n) + " x" + std::to_string(s.quantity) + " q" + std::to_string(s.quality) + " " +
-                 std::string(items::rarity_name(rarity_of(s.item, s.quality)));
-    }
+    const std::string listing = format_loot_listing(c.loot, name_of_, [this](int64_t item, int q) { return rarity_of(item, q); });
     const std::string who = d.gm ? std::to_string(fighters.size()) + " player(s) in the world may take its loot" : std::to_string(fighters.size()) + " fought it";
     spdlog::info("[loot] {} ({}, level {}) died: {}{}{}, {} stack(s) of loot{}{}{}, closes in {:.0f} s{}{}", c.name, d.blueprint, d.level, who, looter_note, roll_note, c.loot.size(),
                  listing.empty() ? "" : " (", listing, listing.empty() ? "" : ")", c.close_at - d.at, respawns_.empty() ? "" : "; its spawn point refills it",
@@ -392,7 +441,9 @@ void Aftermath::hunt_cancelled(uint64_t npc) {
 }
 
 bool Aftermath::hunt_done(uint64_t npc, double now) {
-    const auto it = corpses_.find(npc);
+    auto it = corpses_.find(npc);
+    // a completion that comes more than 5 s after the channel's end (a stall) finds no record: a huntable creature that still stands is hunted as it stands, so that it still dies and is removed
+    if (it == corpses_.end() && hunt_started(npc, now, 0.0)) it = corpses_.find(npc);
     if (it == corpses_.end() || !it->second.huntable) return false;
     Corpse& c = it->second;
     if (c.living) {   // the hunt is the creature's end: it dies for its clients with the done update, and its spawn point refills it
