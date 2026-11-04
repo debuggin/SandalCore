@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 
+	"aocrop/services/internal/dbtest"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -57,59 +59,36 @@ func schemaWithout(t *testing.T, pool *pgxpool.Pool, skip string) []string {
 	return out
 }
 
-// ~ C Y B :: C-O-A ~
+// constraintDefinition is the definition of the named constraint in THIS test's schema. A lookup by name alone reads every schema of the database (each test has one, and each of them has
+// character_items_container): it can read another test's definition, and while another package's test drops its schema it fails with "could not open relation with OID".
+func constraintDefinition(pool *pgxpool.Pool, name string) (string, error) {
+	var def string
+	err := pool.QueryRow(context.Background(), `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = $1 AND connamespace = current_schema()::regnamespace`, name).Scan(&def)
+	return def, err
+}
 
-func TestMigration0011AddsOneTableAndTouchesNothingElse(t *testing.T) {
+// A schema of another test holds a constraint of the same name with another definition: the name alone finds both, the lookup of the test finds its own.
+func TestConstraintLookupReadsOnlyItsOwnSchema(t *testing.T) {
 	ctx := context.Background()
 	pool := before11(t)
-	chars := rows(t, pool, true)
-	if len(chars) == 0 {
-		t.Fatal("the play database has no characters")
-	}
-	if tableExists(t, pool, "character_resource_items") {
-		t.Fatal("character_resource_items exists before 0011")
-	}
-	schemaBefore := schemaWithout(t, pool, "character_resource_items")
-	var itemsBefore int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM character_items`).Scan(&itemsBefore); err != nil {
+	other := dbtest.Pool(t)
+	if _, err := other.Exec(ctx, `CREATE TABLE lookup_probe (container text, CONSTRAINT character_items_container CHECK (container = 'Elsewhere'))`); err != nil {
 		t.Fatal(err)
 	}
-	if err := Migrate(ctx, pool); err != nil {
-		t.Fatalf("migrate: %v", err)
+	var byName int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE conname = 'character_items_container'`).Scan(&byName); err != nil || byName < 2 {
+		t.Fatalf("the name alone finds %d constraints (%v): both schemas should show, or this check proves nothing", byName, err)
 	}
-	if !tableExists(t, pool, "character_resource_items") {
-		t.Fatal("0011 did not make character_resource_items")
+	def, err := constraintDefinition(pool, "character_items_container")
+	if err != nil || !strings.Contains(def, "'Backpack'") || strings.Contains(def, "Elsewhere") {
+		t.Errorf("the lookup of the test read %q (%v): it must read its own schema's constraint", def, err)
 	}
-	// nothing else changed: the same tables, columns, defaults and constraints (character_items' container CHECK is the one a wider design would have touched), the same items, every character as it was
-	if after := schemaWithout(t, pool, "character_resource_items"); strings.Join(after, "\n") != strings.Join(schemaBefore, "\n") {
-		t.Errorf("0011 changed more than character_resource_items:\nbefore %d entries, after %d", len(schemaBefore), len(after))
-	}
-	var itemsAfter int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM character_items`).Scan(&itemsAfter); err != nil || itemsAfter != itemsBefore {
-		t.Errorf("character_items has %d rows after 0011 (%v), %d before", itemsAfter, err, itemsBefore)
-	}
-	var def string
-	if err := pool.QueryRow(ctx, `SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'character_items_container'`).Scan(&def); err != nil || !strings.Contains(def, "'Backpack'") || strings.Contains(def, "Resource") {
-		t.Errorf("character_items_container is %q (%v): it must stay as migration 0004 made it", def, err)
-	}
-	after := rows(t, pool, true)
-	if len(after) != len(chars) {
-		t.Fatalf("%d characters after, %d before", len(after), len(chars))
-	}
-	for id, b := range chars {
-		a := after[id]
-		a.race, a.gender, a.class, b.race, b.gender, b.class = nil, nil, nil, nil, nil, nil // pointers: compared by value
-		if a != b {
-			t.Errorf("%s changed by 0011", b.name)
-		}
-	}
-	// the new table starts empty: nothing is backfilled (the login repair of worldd moves what a character holds in the Backpack)
-	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM character_resource_items`).Scan(&n); err != nil || n != 0 {
-		t.Errorf("character_resource_items has %d rows after the migration (%v), want none", n, err)
-	}
+}
 
-	// a row, and the constraints
+// ~ C Y B :: C-O-A ~
+
+func verifyMigration0011Constraints(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
 	const guid = "0123456789abcdef0123456789abcdef"
 	insert := func(container string, slot int, record int64, instance string, quantity, quality int, durability float64) error {
 		_, err := pool.Exec(ctx, `INSERT INTO character_resource_items (character_id, container, slot, item_record_id, instance_guid, quantity, quality, durability)
@@ -156,26 +135,79 @@ func TestMigration0011AddsOneTableAndTouchesNothingElse(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO character_resource_items (character_id, container, slot, item_record_id, instance_guid) VALUES ('no such character', 'Resource0', 20, 7, 'ffffffffffffffffffffffffffffff0e')`); err == nil {
 		t.Error("an item of a character that does not exist was accepted")
 	}
+}
 
-	// a second run changes nothing
-	var rowsNow int
+func verifyMigration0011IdempotentAndCascade(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	var rowsNow, rowsAfter, n int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM character_resource_items`).Scan(&rowsNow); err != nil {
 		t.Fatal(err)
 	}
 	if err := Migrate(ctx, pool); err != nil {
 		t.Errorf("second migrate: %v", err)
 	}
-	var rowsAfter int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM character_resource_items`).Scan(&rowsAfter); err != nil || rowsAfter != rowsNow {
 		t.Errorf("after the second migrate %d rows (%v), %d before", rowsAfter, err, rowsNow)
 	}
-	// deleting a character takes its resource items along
 	if _, err := pool.Exec(ctx, `DELETE FROM characters WHERE id = $1`, cybID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM character_resource_items WHERE character_id = $1`, cybID).Scan(&n); err != nil || n != 0 {
 		t.Errorf("%d resource items outlive their character (%v)", n, err)
 	}
+}
+
+func TestMigration0011AddsOneTableAndTouchesNothingElse(t *testing.T) {
+	ctx := context.Background()
+	pool := before11(t)
+	chars := rows(t, pool, true)
+	if len(chars) == 0 {
+		t.Fatal("the play database has no characters")
+	}
+	if tableExists(t, pool, "character_resource_items") {
+		t.Fatal("character_resource_items exists before 0011")
+	}
+	schemaBefore := schemaWithout(t, pool, "character_resource_items")
+	var itemsBefore int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM character_items`).Scan(&itemsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if !tableExists(t, pool, "character_resource_items") {
+		t.Fatal("0011 did not make character_resource_items")
+	}
+	// nothing else changed: the same tables, columns, defaults and constraints (character_items' container CHECK is the one a wider design would have touched), the same items, every character as it was
+	if after := schemaWithout(t, pool, "character_resource_items"); strings.Join(after, "\n") != strings.Join(schemaBefore, "\n") {
+		t.Errorf("0011 changed more than character_resource_items:\nbefore %d entries, after %d", len(schemaBefore), len(after))
+	}
+	var itemsAfter int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM character_items`).Scan(&itemsAfter); err != nil || itemsAfter != itemsBefore {
+		t.Errorf("character_items has %d rows after 0011 (%v), %d before", itemsAfter, err, itemsBefore)
+	}
+	def, err := constraintDefinition(pool, "character_items_container")
+	if err != nil || !strings.Contains(def, "'Backpack'") || strings.Contains(def, "Resource") {
+		t.Errorf("character_items_container is %q (%v): it must stay as migration 0004 made it", def, err)
+	}
+	after := rows(t, pool, true)
+	if len(after) != len(chars) {
+		t.Fatalf("%d characters after, %d before", len(after), len(chars))
+	}
+	for id, b := range chars {
+		a := after[id]
+		a.race, a.gender, a.class, b.race, b.gender, b.class = nil, nil, nil, nil, nil, nil // pointers: compared by value
+		if a != b {
+			t.Errorf("%s changed by 0011", b.name)
+		}
+	}
+	// the new table starts empty: nothing is backfilled (the login repair of worldd moves what a character holds in the Backpack)
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM character_resource_items`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("character_resource_items has %d rows after the migration (%v), want none", n, err)
+	}
+	verifyMigration0011Constraints(t, ctx, pool)
+	verifyMigration0011IdempotentAndCascade(t, ctx, pool)
 }
 
 // C.O.A.Cyb

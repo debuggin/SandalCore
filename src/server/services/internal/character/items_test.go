@@ -455,3 +455,40 @@ func TestSaveInventoryDiffLiveDB(t *testing.T) {
 		t.Errorf("Inventory after diff save:\n got %+v\nwant %+v", got, want)
 	}
 }
+
+func TestGrantMissingKitsLockedRowWaitsAtLeastTimeout(t *testing.T) {
+	ctx := context.Background()
+	s, acc := setup(t)
+	saved := grantLockTimeout
+	grantLockTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { grantLockTimeout = saved })
+	ch, err := s.Create(ctx, New{AccountID: acc, Name: "LockedKitWait", ClassID: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := lockCharacter(ctx, tx, ch.ID); err != nil {
+		t.Fatal(err)
+	}
+	kits := &fakeKits{}
+	t0 := time.Now()
+	res, err := s.GrantMissingKits(ctx, kits)
+	took := time.Since(t0)
+	if err != nil || res.Granted != 0 || len(res.Skipped) != 1 {
+		t.Fatalf("GrantMissingKits with a locked character = (%+v, %v), want 0 granted and 1 skipped", res, err)
+	}
+	if took < 250*time.Millisecond {
+		t.Errorf("the locked row was skipped after %v, want at least 250ms", took)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.GrantMissingKits(ctx, kits); err != nil || again.Granted != 1 || len(again.Skipped) != 0 {
+		t.Fatalf("GrantMissingKits on the next start = (%+v, %v), want 1 granted and 0 skipped", again, err)
+	}
+}
+

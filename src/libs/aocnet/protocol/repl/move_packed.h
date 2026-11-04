@@ -48,6 +48,10 @@ QuantVec quantize_move_location_clamped(double x, double y, double z, double max
 QuantVec quantize_move_acceleration_clamped(
     double x, double y, double z, double max_abs_cm_s2 = kMaxMoveAccelCmPerSec2) noexcept;
 
+struct NetworkMove;
+/// The base of a move for a log line: `"CollisionCylinder" of object 17045704` for one named in place, `object 17045708` for a plain one, with `, bone X` when it has one.
+std::string describe_base(const NetworkMove& m);
+
 struct NetworkMove {
     float    time_stamp = 0;
     QuantVec acceleration;
@@ -55,18 +59,30 @@ struct NetworkMove {
     Rot      control_rotation;
     uint8_t  compressed_flags = 0;
     std::optional<emit::FIntrepidNetworkGUID> base;
+    /// MovementBase named in place (GUID ObjectId 1, then export flags, the outer and the path): an object the server never exported to the client, such as a component of an
+    /// actor worldd never replicated a GUID for.  Unreal sends a base only when the move's Location (and maybe Acceleration) is RELATIVE to it, so a move with a base is
+    /// not a world position until the base is placed.
+    std::optional<InlineObject>               base_inline;
     std::optional<NameValue>                  base_bone;
     uint8_t  movement_mode = kMoveWalking;
     uint8_t  input_bits = 0;
 
     bool operator==(const NetworkMove&) const = default;
 
+    /// The move stands on a movement base (plain or named in place): its Location is relative to it.
+    bool has_base() const noexcept { return base.has_value() || base_inline.has_value(); }
+
     Vec3d  acceleration_cm() const { return dequantize_vector(acceleration, kMoveAccelerationScale); }
     Vec3d  location_cm() const { return dequantize_vector(location, kMoveLocationScale); }
     double pitch_degrees() const noexcept { return dequantize_rotation_axis_16(control_rotation.pitch); }
     double yaw_degrees() const noexcept { return dequantize_rotation_axis_16(control_rotation.yaw); }
     double roll_degrees() const noexcept { return dequantize_rotation_axis_16(control_rotation.roll); }
-    bool   has_valid_base() const noexcept { return !base.has_value() || is_valid_movement_base_guid(*base); }
+    bool   has_valid_base() const noexcept {
+        if (base.has_value() && base_inline.has_value()) return false;
+        if (base.has_value() && !is_valid_movement_base_guid(*base)) return false;
+        if (base_inline.has_value() && !inline_object_fits(*base_inline)) return false;
+        return true;
+    }
     int    input_x() const { return (input_bits & 1) ? 1 : (input_bits & 2) ? -1 : 0; }
     int    input_y() const { return (input_bits & 4) ? 1 : (input_bits & 8) ? -1 : 0; }
 };

@@ -15,6 +15,107 @@ constexpr uint8_t kExportHasPath = 0x01;
 constexpr uint8_t kExportNoLoad = 0x02;
 constexpr uint8_t kExportHasChecksum = 0x04;
 
+aoc::protocol::repl::NetworkMove walking_move(float ts, double x, double y, double z) {
+    aoc::protocol::repl::NetworkMove m;
+    m.time_stamp = ts;
+    m.acceleration = aoc::protocol::repl::quantize_vector(10, 0, 0, 0);
+    m.location = aoc::protocol::repl::quantize_vector(100, x, y, z);
+    m.control_rotation.yaw = 16384;
+    return m;
+}
+
+bool same_bit_range(const uint8_t* a, const uint8_t* b, size_t bits) {
+    for (size_t i = 0; i < bits; ++i) {
+        if (((a[i >> 3] >> (i & 7)) & 1) != ((b[i >> 3] >> (i & 7)) & 1)) return false;
+    }
+    return true;
+}
+
+std::vector<uint8_t> written(const aoc::protocol::repl::MovePacked& p, size_t* bits) {
+    aoc::protocol::emit::BunchWriter w;
+    if (!aoc::protocol::repl::write_move_packed(w, p)) {
+        *bits = 0;
+        return {};
+    }
+    *bits = w.bit_pos();
+    return std::vector<uint8_t>(w.data(), w.data() + w.byte_size());
+}
+
+int test_move_base_inline_bone_and_refusals(
+    aoc::protocol::repl::MovePacked p,
+    const aoc::protocol::emit::FIntrepidNetworkGUID& horse,
+    const aoc::protocol::repl::InlineObject& cylinder) {
+    using namespace aoc::protocol::repl;
+    size_t bits = 0;
+    p.new_move.base_bone = NameValue::plain("spine_01", 3);
+    const auto with_bone = written(p, &bits);
+    const auto rb = read_move_packed(with_bone.data(), with_bone.size(), 0, bits);
+    SANDAL_ASSERT(rb.has_value());
+    SANDAL_ASSERT(rb->new_move.base_bone.has_value());
+    SANDAL_ASSERT(rb->new_move.base_bone->text == "spine_01");
+    SANDAL_ASSERT(rb->new_move.base_inline.has_value());
+    SANDAL_ASSERT(
+        describe_base(rb->new_move) == "\"CollisionCylinder\" of object 17045704, bone spine_01");
+
+    MovePacked both;
+    both.new_move = walking_move(1.0f, 0, 0, 0);
+    both.new_move.base = horse;
+    both.new_move.base_inline = cylinder;
+    aoc::protocol::emit::BunchWriter w;
+    SANDAL_ASSERT(!write_move_packed(w, both) && w.bit_pos() == 0);
+
+    MovePacked broken;
+    broken.new_move = walking_move(1.0f, 0, 0, 0);
+    broken.new_move.base_inline = cylinder;
+    broken.new_move.base_inline->flags = kExportHasChecksum;
+    aoc::protocol::emit::BunchWriter w2;
+    SANDAL_ASSERT(!write_move_packed(w2, broken) && w2.bit_pos() == 0);
+    return 0;
+}
+
+int test_move_base_inline() {
+    using namespace aoc::protocol::repl;
+    aoc::protocol::emit::FIntrepidNetworkGUID horse;
+    horse.ObjectId = 17045704;
+    horse.ServerId = 60;
+    horse.Randomizer = 0x5a5a5a5a;
+    InlineObject cylinder;
+    cylinder.flags = static_cast<uint8_t>(kExportHasPath | kExportHasChecksum);
+    cylinder.outer = horse;
+    cylinder.path = "CollisionCylinder";
+    cylinder.checksum = 0xb876932f;
+
+    MovePacked p;
+    p.new_move = walking_move(20.5f, 12.25, -30.5, 197.0);
+    p.new_move.base_inline = cylinder;
+    p.pending = walking_move(20.48f, 12.0, -30.0, 197.0);
+    p.pending->base_inline = cylinder;
+    p.old = walking_move(20.46f, 11.5, -29.5, 197.0);
+    p.old->base = horse;
+
+    size_t bits = 0;
+    const auto data = written(p, &bits);
+    SANDAL_ASSERT(bits > 0);
+    std::string why;
+    const auto r = read_move_packed(data.data(), data.size(), 0, bits, &why);
+    SANDAL_ASSERT(r.has_value());
+    SANDAL_ASSERT(r->new_move.base_inline && *r->new_move.base_inline == cylinder);
+    SANDAL_ASSERT(!r->new_move.base && r->new_move.has_base());
+    SANDAL_ASSERT((r->new_move.location_cm() == Vec3d{12.25, -30.5, 197.0}));
+    SANDAL_ASSERT(r->new_move.time_stamp == 20.5f && r->new_move.control_rotation.yaw == 16384);
+    SANDAL_ASSERT(r->pending && r->pending->base_inline && *r->pending->base_inline == cylinder);
+    SANDAL_ASSERT(r->old && r->old->base && *r->old->base == horse && !r->old->base_inline);
+    SANDAL_ASSERT(*r == p);
+
+    size_t again_bits = 0;
+    const auto again = written(*r, &again_bits);
+    SANDAL_ASSERT(again_bits == bits && same_bit_range(again.data(), data.data(), bits));
+    SANDAL_ASSERT(describe_base(r->new_move) == "\"CollisionCylinder\" of object 17045704");
+    SANDAL_ASSERT(describe_base(*r->old) == "object 17045704");
+    SANDAL_ASSERT(describe_base(walking_move(1, 0, 0, 0)) == "none");
+    return test_move_base_inline_bone_and_refusals(p, horse, cylinder);
+}
+
 int test_move_packed_quantization_and_bounds() {
     using namespace aoc::protocol::repl;
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -170,6 +271,7 @@ int test_object_id_1_inline_movement_base_roundtrip() {
     SANDAL_ASSERT(val_noload.has_value() && r_noload.remaining_bits() == 0);
     const auto* dec_noload = val_noload->get_if<aoc::protocol::repl::InlineObject>();
     SANDAL_ASSERT(dec_noload != nullptr && *dec_noload == no_load);
+    if (test_move_base_inline() != 0) return 1;
     if (test_move_packed_quantization_and_bounds() != 0) return 1;
     if (test_server_guid_allocator_pm52_and_shards() != 0) return 1;
     return test_packet_notify_14bit_wraparound();
@@ -241,6 +343,9 @@ int main(int argc, char** argv) {
     }
     if (sandal::test::should_run_case(cfg, "inline_movement_base_invalid_flags_rejected")) {
         if (test_inline_movement_base_invalid_flags_rejected() != 0) return 1;
+    }
+    if (sandal::test::should_run_case(cfg, "move_base_inline")) {
+        if (test_move_base_inline() != 0) return 1;
     }
     if (sandal::test::should_run_case(cfg, "move_packed_quantization_and_bounds")) {
         if (test_move_packed_quantization_and_bounds() != 0) return 1;

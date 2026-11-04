@@ -1,6 +1,6 @@
 <#
   Go services helper.
-    scripts\services.ps1 up      start PostgreSQL + NATS (docker compose, waits for healthy)
+    scripts\services.ps1 up      start PostgreSQL (docker compose, waits for healthy)
     scripts\services.ps1 test    buf lint + generated-code check, go vet + go test (needs 'up'); the tests of the
                                  character creation rules and of the character service's content.db use
                                  $env:AOC_CONTENT_DB (or dist\content\content.db) when that file exists, and skip without it
@@ -106,6 +106,15 @@ function Get-ServiceProcess {
         Where-Object { $exes -contains $_.Path }
 }
 
+function Stop-ServiceProcesses($procs) { # WHY: stop worldd first so its gRPC streams close from its side
+    $worlds = @($procs | Where-Object { $_.Name -eq 'worldd' })
+    $others = @($procs | Where-Object { $_.Name -ne 'worldd' })
+    $worlds | Stop-Process -Force -ErrorAction SilentlyContinue
+    $worlds | ForEach-Object { $null = $_.WaitForExit(5000) }
+    $others | Stop-Process -Force -ErrorAction SilentlyContinue
+    $others | ForEach-Object { $null = $_.WaitForExit(5000) }
+}
+
 # Lets only this user open $path (like the launcher's saved login token).
 function Set-OwnerOnly($path) {
     & icacls $path /inheritance:r /grant:r "${env:USERDOMAIN}\${env:USERNAME}:(F)" | Out-Null
@@ -137,7 +146,7 @@ try {
             if (-not (Test-Path -LiteralPath $contentDb)) {
                 & (Join-Path $root 'scripts\extract_game_data.ps1')
             }
-            & docker compose -f $compose --env-file $envFile up -d --wait
+            & docker compose -f $compose --env-file $envFile up -d --wait --remove-orphans   # (a NATS container left by an older compose file is removed)
             if ($LASTEXITCODE -ne 0) { throw 'docker compose up failed (is Docker running?)' }
             # The init script creates aoc_test only on a fresh volume; make sure it exists.
             $exists = & docker compose -f $compose --env-file $envFile exec -T postgres psql -U aoc -d aoc -tAc "SELECT 1 FROM pg_database WHERE datname = 'aoc_test'"
@@ -150,7 +159,7 @@ try {
             if (-not (Test-Path -LiteralPath $compose)) {
                 $null = Sync-SandalDeployStage -RepoRoot $root
             }
-            & docker compose -f $compose --env-file $envFile down
+            & docker compose -f $compose --env-file $envFile down --remove-orphans
             if ($LASTEXITCODE -ne 0) { throw 'docker compose down failed' }
         }
         'test' {
@@ -289,7 +298,7 @@ try {
                 Start-Sleep -Seconds 2
                 $dead = @($started | Where-Object { $_.Process.HasExited })
                 if ($dead.Count -gt 0) {
-                    Get-ServiceProcess | Stop-Process -Force -ErrorAction SilentlyContinue
+                    Stop-ServiceProcesses @(Get-ServiceProcess)
                     $why = ($dead | ForEach-Object {
                         '{0} exited with code {1} (see {2})' -f $_.Name, $_.Process.ExitCode, $_.Log
                     }) -join '; '
@@ -305,8 +314,7 @@ try {
                 Write-Host "nothing to stop: no auth, character, citynode, quests, mesh, gateway or worldd running from this checkout"
             } else {
                 $what = Format-Process $procs
-                $procs | Stop-Process -Force -ErrorAction SilentlyContinue
-                $procs | ForEach-Object { $null = $_.WaitForExit(5000) }
+                Stop-ServiceProcesses $procs
                 Write-Host "stopped $what"
             }
         }

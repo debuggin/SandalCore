@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
+//go:build !aoc_standin
+
 package citynode
 
 import "aocrop/services/gen/citynodeconsts"

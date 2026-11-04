@@ -37,8 +37,9 @@
   4 GB of memory for any one program; the first build of the C++ libraries (vcpkg) comes on top and can take a long time.
 
   Every step is skipped when what it reads is unchanged since the last run (a stamp per step in dist\content\.extract), so scripts\build.ps1 and the launchers can call
-  this every time. The supported client build is the one of 2026-01-29 (AOCClient-Win64-Shipping.exe 235,606,624 bytes, CacheDB.dbc 144,085,052 bytes); with another
-  build the script warns and goes on.
+  this every time. The navigation mesh step, the longest, reads the map, the towns' floors and buildings, the Riverlands' rectangles and where the five towns' nodes stand
+  in content.db: it runs again when one of those changes, not when other game numbers do. The supported client build is the one of 2026-01-29 (AOCClient-Win64-Shipping.exe
+  235,606,624 bytes, CacheDB.dbc 144,085,052 bytes); with another build the script warns and goes on.
 
 .PARAMETER GameRoot
   The game's "Game" folder (the one that holds AOCClient.exe and AOC\). Default: GAME_ROOT, src\config\paths.json, Steam's libraries, the usual folders.
@@ -90,7 +91,9 @@ $lastLog   = Join-Path $stampDir 'last_run.log'
 $NpcFolders = @('AOC/Content/DesignAssets/Population/NPC/Beast/Rabid', 'AOC/Content/DesignAssets/Population/NPC/Beast/Canine', 'AOC/Content/DesignAssets/Population/NPC/Beast/Bear',
                'AOC/Content/DesignAssets/Population/NPC/Beast/Bird/Raven', 'AOC/Content/DesignAssets/Population/NPC/Humanoid/Goblin',
                # the bandits (raiders, captains, archers, mages, healers: their Blueprints, trees and animation montages) and the one raider montage that lives beside the raider's animations
-               'AOC/Content/DesignAssets/Population/NPC/PCRaces/Bandits', 'AOC/Content/Characters/NPC/Human/BanditRaider')
+               'AOC/Content/DesignAssets/Population/NPC/PCRaces/Bandits', 'AOC/Content/Characters/NPC/Human/BanditRaider',
+               # the Summoner's pets
+               'AOC/Content/DesignAssets/Population/NPC/TestNPCs/Pets')
 # The folders whose montages also export the time of their animation end notify (the montage table's anim_end): where an ability's task is done and its cooldowns start (the bandits').
 # The other creatures' abilities are done when their montage is over.
 $NpcAnimEndFolders = @('AOC/Content/DesignAssets/Population/NPC/PCRaces/Bandits', 'AOC/Content/Characters/NPC/Human/BanditRaider')
@@ -113,7 +116,7 @@ if ($NavThreads -le 0) { $NavThreads = [Math]::Max(2, [Math]::Min(8, [int]($core
 # Output
 # ---------------------------------------------------------------------------------------------------------------------
 function Write-Log([string]$text) {
-    if (Test-Path -LiteralPath $stampDir) { try { Add-Content -LiteralPath $logFile -Value $text -Encoding ASCII } catch { } }
+    if (-not $CheckOnly -and (Test-Path -LiteralPath $stampDir)) { try { Add-Content -LiteralPath $logFile -Value $text -Encoding ASCII } catch { } }
 }
 function Say([string]$text, [string]$color = '') {
     if ($color) { Write-Host $text -ForegroundColor $color } else { Write-Host $text }
@@ -340,8 +343,10 @@ function Assert-Files([string[]]$rel, [string]$why) {
 # ---------------------------------------------------------------------------------------------------------------------
 # Start
 # ---------------------------------------------------------------------------------------------------------------------
-New-Item -ItemType Directory -Force -Path $stampDir | Out-Null
-Set-Content -LiteralPath $logFile -Value ("extract_game_data.ps1 " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
+if (-not $CheckOnly) {      # -CheckOnly changes nothing: no folder, no log
+    New-Item -ItemType Directory -Force -Path $stampDir | Out-Null
+    Set-Content -LiteralPath $logFile -Value ("extract_game_data.ps1 " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
+}
 
 $found = Find-GameRoot
 if (-not $found) {
@@ -416,12 +421,36 @@ function Get-SeedLevels {
     return ($pairs -join ';')
 }
 function Get-CodeLayouts  { (Get-CodeHash @('src\tools\schemagen\gen_town_layouts.py')) + ' ' + (Get-SeedLevels) }
+# WHY: navmesh hashes only the exact files and city_node rows it reads (not upstream step IDs) so unrelated content.db edits do not trigger an 8+ minute navmesh rebuild.
+function Get-NodeRowsHash {
+    $db = Join-Path $outDir 'content.db'
+    if (Test-Path -LiteralPath $db) {
+        $oldPref = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $pyArgs = @($python.Prefix) + @('-I', (Join-Path $PSScriptRoot 'nav_inputs.py'), $db)
+            $rows = @(& $python.Exe @pyArgs 2>$null)
+            if ($LASTEXITCODE -eq 0) { return Get-TextHash ($rows -join "`n") }
+        } catch { } finally { $ErrorActionPreference = $oldPref }
+    }
+    return 'no node rows ' + [guid]::NewGuid()      # unreadable: never equal to a record, so the step runs (and says what is wrong)
+}
+function Get-NavmeshInputs {
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($rel in @('build\gen\nav\region_rects.tsv', 'dist\content\town_layouts.bin')) {
+        $full = Join-Path $repoRoot $rel
+        $parts.Add($(if (Test-Path -LiteralPath $full) { "$rel $(Get-FileSha $full)" } else { "$rel missing" }))
+    }
+    $parts.Add('city_node ' + (Get-NodeRowsHash))
+    return ($parts -join "`n")
+}
 $ids = @{}
 
 # A step's id says what its output is a function of: the player's game files, the code that makes it and the ids of the steps it reads.
 function Get-Id([string]$step) {
     if ($ids.ContainsKey($step)) { return $ids[$step] }
     $usmap = Get-FileSha $usmapSrc
+    if ($step -eq 'navmesh') { return Get-TextHash ("navmesh $gameId $usmap " + (Get-CodeMapc) + (Get-Id 'navbuild') + (Get-Id 'townfloors') + (Get-NavmeshInputs)) }
     $v = switch ($step) {
         'config'   { Get-TextHash ("config $gameId $usmap " + (Get-CodeMapc)) }
         'curves'   { Get-TextHash ("curves $gameId $usmap " + (Get-CodeMapc)) }
@@ -435,7 +464,6 @@ function Get-Id([string]$step) {
         'townfloors' { Get-TextHash ("townfloors $gameId $usmap " + (Get-CodeMapc)) }
         'townlayouts' { Get-TextHash ("townlayouts $gameId $usmap " + (Get-CodeMapc) + (Get-CodeLayouts) + (Get-Id 'database')) }
         'npcabilities' { Get-TextHash ("npcabilities $gameId $usmap " + (Get-CodeMapc) + (Get-CodeNpcAbilities) + ($NpcFolders -join ';') + ($NpcAnimEndFolders -join ';') + ($NpcSensesFolders -join ';') + (Get-Id 'database')) }
-        'navmesh'  { Get-TextHash ("navmesh $gameId $usmap " + (Get-CodeMapc) + (Get-Id 'region') + (Get-Id 'navbuild') + (Get-Id 'townfloors') + (Get-Id 'townlayouts') + (Get-Id 'database')) }
     }
     $ids[$step] = $v
     return $v
@@ -619,12 +647,13 @@ try {
         Say ''
         Say ("[{0}/{1}] {2}" -f $index, $selected.Count, $s.Title) 'Cyan'
         $script:stepPeak = [long]0
+        $idBefore = if ($s.Outputs.Count -gt 0) { Get-Id $s.Name }      # the id of the inputs the step starts from: an input that changes while the step runs must leave its stamp out of date
         $sw = [Diagnostics.Stopwatch]::StartNew()
         & $s.Run
         $sw.Stop()
         if ($s.Outputs.Count -gt 0) {
             Assert-Files $s.Outputs "the $($s.Name) step finished without writing it"
-            $stamp = [ordered]@{ step = $s.Name; inputs = (Get-Id $s.Name); finished = (Get-Date).ToUniversalTime().ToString('s') + 'Z'; seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1); outputs = $s.Outputs }
+            $stamp = [ordered]@{ step = $s.Name; inputs = $idBefore; finished = (Get-Date).ToUniversalTime().ToString('s') + 'Z'; seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1); outputs = $s.Outputs }
             ($stamp | ConvertTo-Json) | Set-Content -LiteralPath (Join-Path $stampDir "$($s.Name).json") -Encoding ASCII
         }
         $peakGb = [Math]::Round($script:stepPeak / 1GB, 2)

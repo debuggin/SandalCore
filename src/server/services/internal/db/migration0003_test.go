@@ -248,36 +248,8 @@ func legacySetup(t *testing.T) (*pgxpool.Pool, *notices, []legacyRow) {
 	return pool, got, legacy
 }
 
-func TestMigration0003DerivesRaceGenderAndClassAndKeepsTheOldValues(t *testing.T) {
-	ctx := context.Background()
-	pool, notes, legacy := legacySetup(t)
-	before := rows(t, pool, false)
-
-	if err := Migrate(ctx, pool); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	after := rows(t, pool, true)
-	if len(after) != len(legacy) {
-		t.Fatalf("%d rows after the migration, %d before", len(after), len(legacy))
-	}
-	for _, r := range legacy {
-		a, b := after[r.id], before[r.id]
-		if !eq(a.race, r.race) || !eq(a.gender, r.gender) || !eq(a.class, r.class) {
-			t.Errorf("%s: race %s gender %s class %s, want %s %s %s", r.name, show(a.race), show(a.gender), show(a.class), show(r.race), show(r.gender), show(r.class))
-		}
-		// Nothing is lost: the old columns, and everything else, are as they were.
-		a.race, a.gender, a.class, b.race, b.gender, b.class = nil, nil, nil, nil, nil, nil
-		if a != b {
-			t.Errorf("%s changed: %+v, was %+v", r.name, a, b)
-		}
-	}
-	// cyb is a Kaelar male Bard, still: the class was in race_id (2).
-	if c := after["bbec5c86eb101fe5f38c87f0fa22e7d0"]; *c.race != 0 || *c.gender != 0 || *c.class != 2 || c.raceID != 2 || c.genderID != 1 {
-		t.Errorf("cyb: %+v", c)
-	}
-
-	// The log: one summary, and one warning per row that was left without something.
-	list := notes.taking()
+func verifyMigration0003Logs(t *testing.T, list []string, legacy []legacyRow) {
+	t.Helper()
 	summary := ""
 	warns := map[string]string{}
 	for _, n := range list {
@@ -310,7 +282,56 @@ func TestMigration0003DerivesRaceGenderAndClassAndKeepsTheOldValues(t *testing.T
 	}
 }
 
+func TestMigration0003DerivesRaceGenderAndClassAndKeepsTheOldValues(t *testing.T) {
+	ctx := context.Background()
+	pool, notes, legacy := legacySetup(t)
+	before := rows(t, pool, false)
+
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	after := rows(t, pool, true)
+	if len(after) != len(legacy) {
+		t.Fatalf("%d rows after the migration, %d before", len(after), len(legacy))
+	}
+	for _, r := range legacy {
+		a, b := after[r.id], before[r.id]
+		if !eq(a.race, r.race) || !eq(a.gender, r.gender) || !eq(a.class, r.class) {
+			t.Errorf("%s: race %s gender %s class %s, want %s %s %s", r.name, show(a.race), show(a.gender), show(a.class), show(r.race), show(r.gender), show(r.class))
+		}
+		// Nothing is lost: the old columns, and everything else, are as they were.
+		a.race, a.gender, a.class, b.race, b.gender, b.class = nil, nil, nil, nil, nil, nil
+		if a != b {
+			t.Errorf("%s changed: %+v, was %+v", r.name, a, b)
+		}
+	}
+	// cyb is a Kaelar male Bard, still: the class was in race_id (2).
+	if c := after["bbec5c86eb101fe5f38c87f0fa22e7d0"]; *c.race != 0 || *c.gender != 0 || *c.class != 2 || c.raceID != 2 || c.genderID != 1 {
+		t.Errorf("cyb: %+v", c)
+	}
+	verifyMigration0003Logs(t, notes.taking(), legacy)
+}
+
 // [C O A + Cyb]
+
+func rerunMigration0003(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	sql, err := migrations.ReadFile(migration0003)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, string(sql)); err != nil {
+		t.Fatalf("the migration run again: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // The migration can be run again: the data is the same, the old values are
 // still there, and a value written since (by the services, which do not look at
@@ -324,26 +345,8 @@ func TestMigration0003IsIdempotentAndNeverOverwrites(t *testing.T) {
 	first := rows(t, pool, true)
 	firstNotes := notes.taking()
 
-	run := func() {
-		t.Helper()
-		sql, err := migrations.ReadFile(migration0003)
-		if err != nil {
-			t.Fatal(err)
-		}
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback(ctx)
-		if _, err := tx.Exec(ctx, string(sql)); err != nil {
-			t.Fatalf("the migration run again: %v", err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	run()
-	run()
+	rerunMigration0003(t, ctx, pool)
+	rerunMigration0003(t, ctx, pool)
 	second := rows(t, pool, true)
 	for id, a := range first {
 		b := second[id]
@@ -352,7 +355,6 @@ func TestMigration0003IsIdempotentAndNeverOverwrites(t *testing.T) {
 			t.Errorf("%s changed when the migration ran again: %+v, was %+v", a.name, b, a)
 		}
 	}
-	// The same warnings each time (the rows are still left), and a summary of nothing derived.
 	warnings := func(list []string) (n int) {
 		for _, s := range list {
 			if strings.HasPrefix(s, "WARNING: migration 0003: ") {
@@ -369,18 +371,15 @@ func TestMigration0003IsIdempotentAndNeverOverwrites(t *testing.T) {
 		t.Errorf("a second run derived something: %v", again)
 	}
 
-	// A row the services wrote after the migration: its columns hold what they said, whatever the JSON or the
-	// legacy columns say, and running the migration again leaves them alone.
 	if _, err := pool.Exec(ctx, `INSERT INTO characters (id, account_id, name, race, gender, class_id, archetype_id, class_name, appearance)
 		SELECT 'ffffffffffffffffffffffffffffffff', account_id, 'Service', 3, 1, 5, 17752, 'Rogue', '{"race":"Dunir","gender":"Male","class":"Bard"}'
 		FROM characters LIMIT 1`); err != nil {
 		t.Fatal(err)
 	}
-	// ... and one whose derived value was corrected by hand
 	if _, err := pool.Exec(ctx, `UPDATE characters SET race = 5 WHERE name = 'DunirTank'`); err != nil {
 		t.Fatal(err)
 	}
-	run()
+	rerunMigration0003(t, ctx, pool)
 	after := rows(t, pool, true)
 	svc := after["ffffffffffffffffffffffffffffffff"]
 	if *svc.race != 3 || *svc.gender != 1 || *svc.class != 5 || svc.raceID != 0 || svc.genderID != 0 {
@@ -441,22 +440,34 @@ func TestMigration0003Constraints(t *testing.T) {
 
 // [C-Y-B x C O A]
 
+func shortenedMigration0003Files(t *testing.T) fstest.MapFS {
+	t.Helper()
+	original, err := migrations.ReadFile(migration0003)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const timeout = "SET LOCAL lock_timeout = '10s';"
+	const short = "SET LOCAL lock_timeout = '200ms';"
+	if !bytes.Contains(original, []byte(timeout)) {
+		t.Fatalf("the migration has no %q to shorten for this test", timeout)
+	}
+	shortened := bytes.Replace(original, []byte(timeout), []byte(short), 1)
+	// the copy holds the short timeout: that, not the measured time, shows the wait below is the short one (its time is only checked from below)
+	if !bytes.Contains(shortened, []byte(short)) || bytes.Contains(shortened, []byte(timeout)) {
+		t.Fatal("the copy this test runs does not hold the 200 ms timeout")
+	}
+	files := upTo(t, 4)
+	files["0003_character_race_class.sql"] = &fstest.MapFile{Data: shortened}
+	return files
+}
+
 // A table that stays locked fails the start with a lock timeout (SQLSTATE 55P03) instead of waiting for ever, and
 // leaves nothing applied: not the columns, not the version. The retry, once the lock is gone, works. The migration's
 // own 10 s is shortened to 200 ms in the copy this test runs.
 func TestMigration0003FailsOnAHeldLockAndTheRetryWorks(t *testing.T) {
 	ctx := context.Background()
 	pool, _, legacy := legacySetup(t)
-	original, err := migrations.ReadFile(migration0003)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const timeout = "SET LOCAL lock_timeout = '10s';"
-	if !bytes.Contains(original, []byte(timeout)) {
-		t.Fatalf("the migration has no %q to shorten for this test", timeout)
-	}
-	files := upTo(t, 4)
-	files["0003_character_race_class.sql"] = &fstest.MapFile{Data: bytes.Replace(original, []byte(timeout), []byte("SET LOCAL lock_timeout = '200ms';"), 1)}
+	files := shortenedMigration0003Files(t)
 
 	// another transaction has a row of characters locked for update, as a running service's save would
 	holder, err := pool.Begin(ctx)
@@ -473,8 +484,9 @@ func TestMigration0003FailsOnAHeldLockAndTheRetryWorks(t *testing.T) {
 	if err == nil || !asPg(err, &pgErr) || pgErr.Code != "55P03" {
 		t.Fatalf("migrate with the table locked: %v, want SQLSTATE 55P03 (lock_not_available)", err)
 	}
-	if waited := time.Since(start); waited < 150*time.Millisecond || waited > 5*time.Second {
-		t.Errorf("the migration waited %s for the lock, want about 200 ms", waited)
+	// no upper limit: a busy machine, and the other tests' migrations that the call queues behind, make the wait longer than the timeout
+	if waited := time.Since(start); waited < 150*time.Millisecond {
+		t.Errorf("the migration waited only %s for the lock, want at least about 200 ms", waited)
 	}
 	var recorded, columns int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = 3`).Scan(&recorded); err != nil {
@@ -505,6 +517,25 @@ func TestMigration0003FailsOnAHeldLockAndTheRetryWorks(t *testing.T) {
 
 // -- C O A & C | Y | B --
 
+func readLegacySnapshots(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[string]snapshot {
+	t.Helper()
+	after := map[string]snapshot{}
+	r, err := pool.Query(ctx, `SELECT id, name, race_id, gender_id, archetype_id, class_name, appearance::text, level FROM characters`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r.Next() {
+		var id string
+		var s snapshot
+		if err := r.Scan(&id, &s.name, &s.raceID, &s.genderID, &s.archetypeID, &s.className, &s.appearance, &s.level); err != nil {
+			t.Fatal(err)
+		}
+		after[id] = s
+	}
+	r.Close()
+	return after
+}
+
 // The rollback in services/README.md ("Rolling back migration 0003"), run as written: a row a B1 service wrote
 // (race_id and gender_id 0) gets the class and the 1/2 gender the pre-B1 services read, the rows that were migrated
 // keep what they had, the first schema is back, and the migration can be applied again.
@@ -528,7 +559,6 @@ func TestMigration0003RollbackFromTheREADME(t *testing.T) {
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	// a character a B1 service made: its columns set, the legacy ones left at their defaults
 	const made = "ffffffffffffffffffffffffffffffff"
 	if _, err := pool.Exec(ctx, `INSERT INTO characters (id, account_id, name, race, gender, class_id, archetype_id, class_name, appearance)
 		SELECT $1, account_id, 'Service', 6, 1, 7, 17754, 'Tank', '{"race":"Dunir","gender":"Female","class":"Tank"}'
@@ -539,20 +569,7 @@ func TestMigration0003RollbackFromTheREADME(t *testing.T) {
 		t.Fatalf("the README's rollback: %v", err)
 	}
 
-	after := map[string]snapshot{}
-	r, err := pool.Query(ctx, `SELECT id, name, race_id, gender_id, archetype_id, class_name, appearance::text, level FROM characters`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for r.Next() {
-		var id string
-		var s snapshot
-		if err := r.Scan(&id, &s.name, &s.raceID, &s.genderID, &s.archetypeID, &s.className, &s.appearance, &s.level); err != nil {
-			t.Fatal(err)
-		}
-		after[id] = s
-	}
-	r.Close()
+	after := readLegacySnapshots(t, ctx, pool)
 	if len(after) != len(legacy)+1 {
 		t.Fatalf("%d rows after the rollback, want %d", len(after), len(legacy)+1)
 	}
@@ -564,7 +581,6 @@ func TestMigration0003RollbackFromTheREADME(t *testing.T) {
 	if s := after[made]; s.raceID != 7 || s.genderID != 2 {
 		t.Errorf("the B1 row after the rollback: race_id %d gender_id %d, want its class 7 and gender 2 (Female)", s.raceID, s.genderID)
 	}
-	// the first schema again: no new columns, no defaults, no record of the version, race_id and gender_id required
 	var columns, recorded int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema()
 		AND table_name = 'characters' AND (column_name IN ('race', 'gender', 'class_id')
@@ -583,7 +599,6 @@ func TestMigration0003RollbackFromTheREADME(t *testing.T) {
 	if err == nil || !asPg(err, &pgErr) || pgErr.Code != "23502" {
 		t.Errorf("an insert without race_id: %v, want a not-null violation as in the first schema", err)
 	}
-	// ... and the migration applies again
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("the migration after the rollback: %v", err)
 	}

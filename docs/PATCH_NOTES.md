@@ -1,5 +1,43 @@
 # Patch notes
 
+## 2026-11-04: Summoner pets, multiplayer presence, mob debuffs, consumables and 30 Hz tick scaling
+
+### New
+- Summoner pets: the Guardian, Hunter and Mystic summon after their 8 s cast, follow the Summoner, fight using the
+  owner's stats, take pet bar commands and stances (Attack, Follow, Stay, Go To within 40 m, Aggressive, Defensive,
+  Passive, Dismiss), cast their ten pet abilities manually or in auto mode, and accept Summoner abilities cast on them.
+- Multiplayer presence (stage A): players within 150 m of each other see each other's characters and `PlayerState`
+  records in the world, standing, walking and stopping with their name, race, gender, level and equipped gear, and
+  leaving other players' views on logout.
+- Mob damage-over-time and stat debuffs: mobs take the Burning debuff (1 s fire ticks for 8 s, up to 24 s), Bleeding
+  (1 s ticks for 6 s per attacker), Hemorrhage (0.5 s ticks for 5 s on a bleeding mob) and Poison (2 s ticks for 20 s,
+  scaling with up to 10 stacks), plus Shaken, Volatile, Demoralized, Blinded, Shocked and Wounded. Debuffs persist
+  while a mob walks home after leashing and re-engage once it reaches home.
+- Consumables (scrolls and elixirs): using a scroll or elixir from the item bag consumes one from the stack, triggers
+  the 1 s cooldown, and applies its stat and artisan rating buff for its duration (300 s to 10,800 s for scrolls,
+  3,600 s for elixirs) at the item's quality, with one active scroll and one active elixir at a time.
+- Weapon talent trees: extended finisher talents (Burning, Chilled, Volatile, Bleed, Snare, Wound, Stagger, Daze,
+  Concussion, Heartseeker, Arrowstorm, Unstoppable, Swordmaster's Swiftness and Bullseye) fire on deadly finishing hits
+  (25 % base roll plus 10 % per Proc Chance talent), and weapon damage talents (Damage Focus, Projectile Damage,
+  Finisher Damage, Deadly Finisher Damage) scale hits for the active weapon across swaps.
+- Crowded-area 30 Hz tick scaling: a fixed-rate server tick, round-robin view updates, shared mob replication bunches
+  across observers, parallel view evaluation on up to 4 processor cores, and retail-paced movement acknowledgements
+  sustain 30 updates per second with roughly twice as many simulated walking players in one area.
+
+### Fixed
+- Ranged weapon auto-attacks and class projectiles: Wand, Shortbow, Longbow and Book swings, plus Mock, Quick Wit,
+  Jest, Sleep Dart, Throw, Salvo, Mend, Discordance (with 10 m bounces) and Firebolt/Frostbolt land when their
+  projectiles reach the target and carry the character's class animation speed rate.
+- Elevated platform mount riding: tracked player positions when standing on or beside a mount on an elevated base so
+  mounting is no longer refused as out of range.
+- Combat rolls, Guard and level-ups: seeded hit, block and critical rolls per server start; restored Stamina recovery
+  after a quick tap of Guard; restored Health, Mana and Stamina on level-up; and kept Options menu choices across
+  logins.
+- Harvesting, crafting and data extraction: dropped overflow harvests even if the player disconnects immediately,
+  routed GM vendor material purchases into material bags when the backpack is full, capped gathering channels and
+  quantities against overflow, and skipped `navmesh` rebuilds in `scripts\extract_game_data.ps1` unless map geometry or
+  city node inputs in `src/server/world` change.
+
 ## 2026-10-17: The towns' ground, the launcher and hardening
 
 ### New
