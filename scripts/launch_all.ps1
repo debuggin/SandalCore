@@ -31,7 +31,7 @@ function Resolve-GameClientPaths {
         [Parameter(Mandatory)][string]$DistDirPath
     )
     $gameExe = if ($env:GAME_EXE -and (Test-Path -LiteralPath $env:GAME_EXE -PathType Leaf)) { $env:GAME_EXE } else { '' }
-    foreach ($pathsJson in @((Join-Path $ConfigDirPath 'paths.json'), (Join-Path $DistDirPath 'config/paths.json'))) {
+    foreach ($pathsJson in @((Join-Path $ConfigDirPath 'paths.local.json'), (Join-Path $ConfigDirPath 'paths.json'), (Join-Path $DistDirPath 'config/paths.json'))) {
         if (-not $gameExe -and (Test-Path -LiteralPath $pathsJson -PathType Leaf)) {
             $parsed = Get-Content -LiteralPath $pathsJson -Raw | ConvertFrom-Json
             $cand = if ($parsed.PSObject.Properties['game_executable']) { [string]$parsed.game_executable } else { '' }
@@ -97,14 +97,36 @@ function Sync-LaunchDistConfig {
     $targetConfigDir = Join-Path $DistDirPath 'config'
     $null = New-Item -ItemType Directory -Path $targetConfigDir -Force
     if (Test-Path -LiteralPath $SourceConfigDir -PathType Container) {
-        Get-ChildItem -LiteralPath $SourceConfigDir -Recurse -File | Where-Object { $_.Name -notlike '*.local.json' } | ForEach-Object {
+        Get-ChildItem -LiteralPath $SourceConfigDir -Recurse -File | Where-Object { $_.Name -notlike '*.local.json' -and $_.Name -notlike '*.local.env' -and $_.Name -notlike '*.example' -and $_.Extension -ine '.md' } | ForEach-Object {
             $rel = [System.IO.Path]::GetRelativePath($SourceConfigDir, $_.FullName)
             $dest = Join-Path $targetConfigDir $rel
             $destParent = Split-Path -Path $dest -Parent
             if ($destParent -and -not (Test-Path -LiteralPath $destParent -PathType Container)) {
                 $null = New-Item -ItemType Directory -Path $destParent -Force
             }
-            Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+            if (-not (Test-Path -LiteralPath $dest -PathType Leaf)) {
+                Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+            } elseif ($_.Extension -ieq '.json') {
+                $tplObj = Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+                $dstObj = Get-Content -LiteralPath $dest -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($null -ne $tplObj -and $null -ne $dstObj -and $tplObj -isnot [System.Array] -and $dstObj -isnot [System.Array]) {
+                    foreach ($prop in $dstObj.PSObject.Properties) {
+                        $tplObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
+                    }
+                    [System.IO.File]::WriteAllText($dest, (($tplObj | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
+                }
+            }
+            if ($_.Extension -ieq '.json') {
+                $localJson = Join-Path $_.DirectoryName "$($_.BaseName).local.json"
+                if (Test-Path -LiteralPath $localJson -PathType Leaf) {
+                    $baseObj = Get-Content -LiteralPath $dest -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $localObj = Get-Content -LiteralPath $localJson -Raw -Encoding UTF8 | ConvertFrom-Json
+                    foreach ($prop in $localObj.PSObject.Properties) {
+                        $baseObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
+                    }
+                    [System.IO.File]::WriteAllText($dest, (($baseObj | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
+                }
+            }
         }
     }
     Get-ChildItem -LiteralPath $targetConfigDir -Filter '*.local.json' -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force

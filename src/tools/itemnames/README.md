@@ -2,7 +2,7 @@
 
 Reads the words the game's items are named with out of your own game files.
 
-    dotnet tools/itemnames/bin/Release/net8.0/itemnames.dll read --table AOC/Content/UI_Kit/Items.uasset [--table ...] [--out-dir dist/content] [--check]
+    dotnet src/tools/itemnames/bin/Release/net8.0/itemnames.dll read --table AOC/Content/UI_Kit/Items.uasset [--table ...] [--out-dir dist/content] [--check]
 
 `scripts/extract_game_data.ps1` runs it as the `names` step (`-Only tools,names`); it needs only the game's containers (a few seconds).
 The tables it reads are listed in the script (`$StringTables`): the string tables that an item's name points at in the design data.

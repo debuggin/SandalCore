@@ -248,9 +248,9 @@ public static class SandalCoreLockContentionHelper {
                 )) {
                     $null = New-Item -ItemType Directory -Path (Join-Path $tmpRepo $relDir) -Force
                 }
-                Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\server.json') -Value '{"game_port":7777}' -Encoding utf8
-                Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\profiles\local-dev.env') -Value 'AOC_ENV=dev' -Encoding utf8
-                Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\server.local.json') -Value '{"secret":"exclude-me"}' -Encoding utf8
+                Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\server.json') -Value '{"game_port":7777,"ics_host":"127.0.0.1"}' -Encoding utf8
+                Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\profiles\local-dev.env.example') -Value 'AOC_ENV=dev' -Encoding utf8
+                Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\server.local.json') -Value '{"secret":"exclude-me","ics_host":"custom.local.host"}' -Encoding utf8
                 Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\local.json') -Value '{"secret":"exclude-me-too"}' -Encoding utf8
                 Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\certs\amazon_ca_bundle.pem') -Value '-----BEGIN CERTIFICATE-----' -Encoding utf8
                 Set-Content -LiteralPath (Join-Path $tmpRepo 'src\server\services\sql\migrations\001_accounts.sql') -Value 'CREATE TABLE accounts(id INT);' -Encoding utf8

@@ -32,6 +32,8 @@ function Test-SandalTestsDirectoryBounds {
 }
 
 function Test-SandalGitTrackedAssets {
+    [CmdletBinding()]
+    [Alias('Test-SandalTrackedFiles')]
     param(
         [Parameter(Mandatory)][string]$RootPath,
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations
@@ -41,6 +43,7 @@ function Test-SandalGitTrackedAssets {
     if ($LASTEXITCODE -ne 0) {
         throw "git ls-files failed with exit code $LASTEXITCODE"
     }
+    $localLeakRegex = 'andis\.' + 'network|8a02a4030c447486' + '5cc02c73b73e6b3b4b1f83033c1149bd|zenith-cliff-' + 'marsh-spruce'
     foreach ($entry in $tracked) {
         if ([string]::IsNullOrWhiteSpace($entry)) {
             continue
@@ -49,8 +52,15 @@ function Test-SandalGitTrackedAssets {
         if ($norm -match '\.(pak|utoc|ucas|pdb|dmp|pcapng)$') {
             $Violations.Add("Forbidden binary asset tracked in git: $norm")
         }
-        if ($norm -match '^(?:src/config/certs|dist/certs)/.*\.key$' -or $norm -in @('src/config/sandal.env', 'deploy/.env')) {
+        if ($norm -like '*.env' -or $norm -like '*.local.json' -or $norm -like '*.local.env' -or $norm -match '\.(key|crt|pfx|p12)$') {
             $Violations.Add("Forbidden secret or environment file tracked in git: $norm")
+        }
+        $fullPath = Join-Path $RootPath ($norm -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+        if ((Test-Path -LiteralPath $fullPath -PathType Leaf) -and $norm -notmatch '\.(png|jpg|ico|woff2?|ttf|usmap|bin|db|exe|dll|so|a|lib)$') {
+            $content = [System.IO.File]::ReadAllText($fullPath)
+            if ($content -match $localLeakRegex) {
+                $Violations.Add("Forbidden local host or secret token tracked in git: $norm")
+            }
         }
     }
 }
@@ -100,11 +110,13 @@ function Test-SandalEnvSchemaTemplates {
     if ($schemaKeys.Count -ne 72) {
         $Violations.Add("sandal.env.example expected 72 keys, found $($schemaKeys.Count)")
     }
-    foreach ($name in @('local-dev.env', 'docker-single.env', 'prod-mesh.env')) {
-        $profilePath = Join-Path $profilesDir $name
-        if (-not (Test-Path -LiteralPath $profilePath)) {
-            $Violations.Add("Missing profile template: $profilePath")
-        } elseif ($name -ieq 'prod-mesh.env' -and ([System.IO.File]::ReadAllText($profilePath) -match 'aoc:aoc@|sslmode=disable')) {
+    foreach ($stem in @('local-dev', 'docker-single', 'prod-mesh')) {
+        $exCandidate = Join-Path $profilesDir "$stem.env.example"
+        $envCandidate = Join-Path $profilesDir "$stem.env"
+        $profilePath = if (Test-Path -LiteralPath $exCandidate -PathType Leaf) { $exCandidate } else { $envCandidate }
+        if (-not (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
+            $Violations.Add("Missing profile template: $exCandidate")
+        } elseif ($stem -ieq 'prod-mesh' -and ([System.IO.File]::ReadAllText($profilePath) -match 'aoc:aoc@|sslmode=disable')) {
             $Violations.Add("Unredacted dev credentials or disabled TLS in $profilePath")
         }
     }

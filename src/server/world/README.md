@@ -53,7 +53,7 @@ replication library (`libs/aocnet/protocol/repl`, plan A4R) and the connection's
 | `world/map_stream`, `svc/world_stream`, `svc/world_stream_impl` | The world stream: a read-only view of the world for admin tools (`WorldStreamService`, served on `AOC_WORLD_STREAM_ADDR`, default `127.0.0.1:50057`, service token): a compact snapshot of the players, NPCs, resource nodes, mounts and loot piles built by the network thread five times a second, the frames each subscriber is owed (a full snapshot, then deltas; or counts per cell), and Inspect, Search and GetStatus (below) |
 | `respawn/` | Embersprings: the respawn points a player discovers, attunes to and comes back at: the rules (`embersprings.h`, header only), the actors made from the data's respawn points (`make_shrines.h`) and the session's and the bootstrap's members (`*.inc`, included at the end of their `.cpp`) (below) |
 | `vendor/node_tax` | Plan E1 (fix 4): the tax table the vendor window waits for: retail's 78 tags (`node_tax_table.h`, generated from the retail capture), every tax 0%, for the node the client asked for (below) |
-| `stats/` | The stat engine (plan B3; a library of its own, `worldd_stats`): the reader and interpreter of the compiled stat program (`stat_program.h`, `stat_engine.h`), the worn items' contribution (`gear.h`) and one player's stats as the client holds them (`character_stats.h`); [README](stats/README.md), and "Stats" below |
+| `stats/` | The stat engine (plan B3; a library of its own, `worldd_stats`): the reader and interpreter of the compiled stat program (`stat_program.h`, `stat_engine.h`), the worn items' contribution (`gear.h`) and one player's stats as the client holds them (`character_stats.h`); [README](../../libs/aocstats/README.md), and "Stats" below |
 
 The wire formats live in libaocnet (`libs/aocnet/protocol/conn`): the handshake with Intrepid's
 94-byte extension, the packet notify header, data-packet framing, and the NMT messages, each
@@ -1573,7 +1573,7 @@ leash radius the AI really uses once it has fought. Every action is logged (`[np
 ## Run
 
 `scripts\services.ps1 run` starts it with the Go services, and
-`launch_worldd.bat` starts the whole stack with the game client. Build it first:
+`start.bat` (`scripts\launch_all.ps1`) starts the whole stack with the game client. Build it first:
 
 ```powershell
 scripts\build.ps1 -Target worldd

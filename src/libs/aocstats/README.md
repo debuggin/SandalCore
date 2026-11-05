@@ -3,7 +3,7 @@
 A small C++20 library (`worldd_stats`, no dependency on the rest of worldd or the net code) that reads the
 compiled stat formula graph that `services/internal/statprog` (Go) writes, and runs it for one character: the
 stats of its class at its level with its equipment, each with the audience mask of its replication. The format, the
-model and the compiler are documented in [`services/internal/statprog/README.md`](../../../services/internal/statprog/README.md);
+model and the compiler are documented in [`src/server/services/internal/statprog/README.md`](../../server/services/internal/statprog/README.md);
 this is the reader and the interpreter, the gear rules and the character's stats, which `worldd` runs (`server/worldd/README.md`, "Stats").
 
 ```cpp
@@ -96,9 +96,9 @@ Host functions **180 to 184** (`kHostArtisanStat` .. `kHostGatherBaseSecs`) are 
 
 ## Tests
 
-`test_worldd_stats` (`stats/tests/test_worldd_stats.cpp`, target in a separate block at the end of `server/worldd/CMakeLists.txt`)
-runs the shared corpus [`stats/testdata/corpus.txt`](testdata/corpus.txt) that the Go side writes
-(`go run ./internal/statprog/cmd/statprog corpus --out ../server/worldd/stats/testdata/corpus.txt`; `--check` fails when it is stale;
+`test_worldd_stats` ([`tests/test_worldd_stats.cpp`](tests/test_worldd_stats.cpp), target in `src/libs/aocstats/CMakeLists.txt`)
+runs the shared corpus `build/gen/fixtures/corpus.txt` (`src/tests/cpp/stats/testdata/corpus.txt`) that the Go side writes
+(`go run ./internal/statprog/cmd/statprog corpus --out ../../../build/gen/fixtures/corpus.txt`; `--check` fails when it is stale;
 the file is `-text` so git never changes its line ends):
 
 - 5 bundles parse and verify (the real graph, its double-mode variant, the `TinyGraph` that uses every instruction and state

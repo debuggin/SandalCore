@@ -5,7 +5,7 @@ artisan stats) are not stored anywhere in the design data: they are a graph of f
 have a `Base`, `ValueMin`, `ValueMax` and `RegenRate` expression, four `StatInitializerList` rows give the
 starting values, equations (`EvalE`) and formulas (`EvalFormula`) are shared sub-expressions. This package
 compiles that graph into a small versioned program format (`Bundle`), checks it, and runs it. The C++ interpreter
-in [`server/worldd/stats`](../../../server/worldd/stats/README.md) reads the same bytes and gives the same bits.
+in [`src/libs/aocstats`](../../../../libs/aocstats/README.md) reads the same bytes and gives the same bits.
 
 ```
 content.db --LoadContentDB--> Graph --Compile--> Bundle --Encode--> bytes --Decode (verify)--> Bundle --Run--> stats

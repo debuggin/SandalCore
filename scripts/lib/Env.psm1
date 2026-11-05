@@ -40,6 +40,23 @@ function Set-SandalSecretAcl {
     return [pscustomobject]@{ Path = $LiteralPath; Mode = '0600'; InheritanceDisabled = $true }
 }
 
+function Get-SandalLocalOverlayMap {
+    param([string]$TemplatePath, [string]$EnvPath)
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if ($TemplatePath) {
+        $tplParent = Split-Path -Parent $TemplatePath
+        if ($tplParent) { $candidates.Add((Join-Path $tplParent 'sandal.local.env')) }
+    }
+    if ($EnvPath) {
+        $envParent = Split-Path -Parent $EnvPath
+        if ($envParent) { $candidates.Add((Join-Path $envParent 'sandal.local.env')) }
+    }
+    foreach ($cand in $candidates) {
+        if (Test-Path -LiteralPath $cand -PathType Leaf) { return (Get-SandalEnvMap -EnvPath $cand) }
+    }
+    return [ordered]@{}
+}
+
 function Initialize-SandalEnv {
     [CmdletBinding()]
     param(
@@ -51,6 +68,8 @@ function Initialize-SandalEnv {
     $parent = Split-Path -Parent $EnvPath
     if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
     $existingMap = if (Test-Path -LiteralPath $EnvPath -PathType Leaf) { Get-SandalEnvMap -EnvPath $EnvPath } else { [ordered]@{} }
+    $localMap = if (-not $Force) { Get-SandalLocalOverlayMap -TemplatePath $TemplatePath -EnvPath $EnvPath } else { [ordered]@{} }
+    foreach ($lk in $localMap.Keys) { $existingMap[$lk] = $localMap[$lk] }
     $sourcePath = if ($TemplatePath -and (Test-Path -LiteralPath $TemplatePath -PathType Leaf)) { $TemplatePath } elseif (Test-Path -LiteralPath $EnvPath -PathType Leaf) { $EnvPath } else { '' }
     $inLines = if ($sourcePath) { [System.IO.File]::ReadAllLines($sourcePath, [System.Text.Encoding]::UTF8) } else { @() }
     $outLines = [System.Collections.Generic.List[string]]::new()
@@ -61,9 +80,9 @@ function Initialize-SandalEnv {
     foreach ($line in $inLines) {
         if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$') { $outLines.Add($line); continue }
         $key = $Matches[1]
-        $val = $Matches[2].Trim()
+        $val = if ($localMap.Contains($key)) { [string]$localMap[$key] } else { $Matches[2].Trim() }
         $null = $seenKeys.Add($key)
-        if ($key -notin $SecretKeys) { $outLines.Add($line); continue }
+        if ($key -notin $SecretKeys) { $outLines.Add("${key}=${val}"); continue }
         $null = $seenSecrets.Add($key)
         $existingVal = if ($existingMap.Contains($key)) { [string]$existingMap[$key] } else { '' }
         if (-not $Force -and $existingVal -and -not $existingVal.StartsWith('CHANGE_ME')) {
@@ -97,17 +116,64 @@ function Initialize-SandalEnv {
     return [pscustomobject]@{ EnvPath = $EnvPath; GeneratedKeys = $generated.ToArray(); Acl = $aclInfo }
 }
 
+function Merge-SandalLocalJsonOverlay {
+    param(
+        [Parameter(Mandatory)][string]$TemplateJsonPath,
+        [Parameter(Mandatory)][string]$TargetJsonPath,
+        [string]$LocalJsonPath = ''
+    )
+    if (-not (Test-Path -LiteralPath $TargetJsonPath -PathType Leaf)) {
+        Copy-Item -LiteralPath $TemplateJsonPath -Destination $TargetJsonPath -Force
+    } else {
+        $tplObj = Get-Content -LiteralPath $TemplateJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $dstObj = Get-Content -LiteralPath $TargetJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($null -ne $tplObj -and $null -ne $dstObj -and $tplObj -isnot [System.Array] -and $dstObj -isnot [System.Array]) {
+            foreach ($prop in $dstObj.PSObject.Properties) {
+                $tplObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
+            }
+            [System.IO.File]::WriteAllText($TargetJsonPath, (($tplObj | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
+        }
+    }
+    if (-not $LocalJsonPath -or -not (Test-Path -LiteralPath $LocalJsonPath -PathType Leaf)) { return }
+    $baseObj = Get-Content -LiteralPath $TargetJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $localObj = Get-Content -LiteralPath $LocalJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($null -eq $baseObj -or $null -eq $localObj -or $baseObj -is [System.Array]) { return }
+    foreach ($prop in $localObj.PSObject.Properties) {
+        if ($prop.Name -ieq 'secret') { continue }
+        $baseObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
+    }
+    [System.IO.File]::WriteAllText($TargetJsonPath, (($baseObj | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
+}
+
 function Copy-SandalConfigStage {
     param([string]$SourceDir, [string]$DestDir)
     if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) { return }
     $null = New-Item -ItemType Directory -Path $DestDir -Force
     foreach ($item in @(Get-ChildItem -LiteralPath $SourceDir -Recurse -File)) {
-        if ($item.Name -like '*.local.json' -or $item.Name -eq 'local.json' -or $item.Name -like '*.example' -or $item.Extension -ieq '.md') { continue }
+        if ($item.Name -like '*.local.json' -or $item.Name -eq 'local.json' -or $item.Name -like '*.local.env' -or $item.Name -like '*.example' -or $item.Extension -ieq '.md') { continue }
         $rel = [System.IO.Path]::GetRelativePath($SourceDir, $item.FullName)
         $target = Join-Path $DestDir $rel
         $parent = Split-Path -Parent $target
         if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
-        Copy-Item -LiteralPath $item.FullName -Destination $target -Force
+        if ($item.Extension -ieq '.json') {
+            $localFile = Join-Path $item.DirectoryName "$($item.BaseName).local.json"
+            Merge-SandalLocalJsonOverlay -TemplateJsonPath $item.FullName -TargetJsonPath $target -LocalJsonPath $localFile
+        } elseif (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+            Copy-Item -LiteralPath $item.FullName -Destination $target -Force
+        }
+    }
+    $srcProfiles = Join-Path $SourceDir 'profiles'
+    if (Test-Path -LiteralPath $srcProfiles -PathType Container) {
+        $dstProfiles = Join-Path $DestDir 'profiles'
+        $null = New-Item -ItemType Directory -Path $dstProfiles -Force
+        foreach ($ex in @(Get-ChildItem -LiteralPath $srcProfiles -Filter '*.env.example' -File)) {
+            $envName = $ex.Name -replace '\.example$', ''
+            $dstEnv = Join-Path $dstProfiles $envName
+            $srcEnv = Join-Path $srcProfiles $envName
+            if (-not (Test-Path -LiteralPath $srcEnv -PathType Leaf) -and -not (Test-Path -LiteralPath $dstEnv -PathType Leaf)) {
+                Copy-Item -LiteralPath $ex.FullName -Destination $dstEnv -Force
+            }
+        }
     }
 }
 

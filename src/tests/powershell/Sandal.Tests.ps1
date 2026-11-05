@@ -185,7 +185,8 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                 foreach ($dir in @('src\config\hotfixes', 'src\server\services\sql\migrations', 'src\deploy\postgres\init')) {
                     $null = New-Item -ItemType Directory -Path (Join-Path $tmpRepo $dir) -Force
                 }
-                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\realm.json'), '{"realm_name":"Verra"}')
+                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\realm.json'), '{"realm_name":"Verra","game_connection_token":"default-token"}')
+                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\realm.local.json'), '{"game_connection_token":"custom-local-token"}')
                 [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\override.local.json'), '{"debug":true}')
                 [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\server\services\sql\migrations\001_schema.sql'), 'SELECT 1;')
                 [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\hotfixes\002_seed.sql'), 'SELECT 2;')
@@ -197,6 +198,17 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
 
                 if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo 'dist\config\realm.json') -PathType Leaf)) {
                     throw 'Expected src/config/realm.json to be staged to dist/config/realm.json'
+                }
+                $stagedRealm = Get-Content -LiteralPath (Join-Path $tmpRepo 'dist\config\realm.json') -Raw | ConvertFrom-Json
+                if ($stagedRealm.game_connection_token -ne 'custom-local-token') {
+                    throw "Expected realm.local.json overlay to set game_connection_token='custom-local-token', got '$($stagedRealm.game_connection_token)'"
+                }
+                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'dist\config\realm.json'), '{"realm_name":"CustomRuntimeRealm","game_connection_token":"custom-local-token"}')
+                $null = Sync-SandalDistStage -RepoRoot $tmpRepo -Config 'Release'
+                $reStagedRealm = Get-Content -LiteralPath (Join-Path $tmpRepo 'dist\config\realm.json') -Raw | ConvertFrom-Json
+                $srcTemplateRealm = Get-Content -LiteralPath (Join-Path $tmpRepo 'src\config\realm.json') -Raw | ConvertFrom-Json
+                if ($reStagedRealm.realm_name -ne 'CustomRuntimeRealm' -or $srcTemplateRealm.realm_name -ne 'Verra') {
+                    throw "Expected runtime edit in dist/config/realm.json ('CustomRuntimeRealm') to be preserved while src/config/realm.json remains 'Verra'"
                 }
                 if (Test-Path -LiteralPath (Join-Path $tmpRepo 'dist\config\override.local.json')) {
                     throw 'Expected *.local.json to be excluded from dist/config/'

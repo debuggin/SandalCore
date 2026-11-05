@@ -64,11 +64,3 @@ This document lists the known issues of the current SandalCore main in one place
 | **Players / Crowds** | Each player who sees a character is sent its updates on their own: unlike a mob, a player's character takes no part in the updates that the players' views share, so many players in one place cost the server more than as many mobs. | None. | Open: let a player's character use the shared update. |
 | **Players / Game master text** | When a game master gives a player's id to a command that takes a mob's id, the answer says "is a actor, not a creature" instead of "is the player X". | Give the mob's id, not the player's. | Open: add the Player kind to the answer, and look players up before actors. |
 | **Players / Movement base** | A client that says it stands on another player's character is placed from the server's copy of that character, which trails the character by a tick or more, and the base is not refused. | None. | Open: refuse another player's character as a movement base. |
-
----
-
-## Codebase Markers Summary
-
-An audit of internal code markers across active services and servers (recounted 28 October 2026) indicates:
-- **`TODO` markers**: 18 instances across 6 files (focused on edge-case protocol fields, auxiliary telemetry, and stubbed RPC fallbacks).
-- **`FIXME` markers**: 0 active instances.

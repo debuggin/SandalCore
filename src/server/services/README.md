@@ -44,35 +44,35 @@ loses its session. `stop` needs neither Go nor Docker.
 `run` clears `AOC_MESH_STATIC_WORLD`: worldd registers itself, and a static world would take players
 whenever worldd's heartbeats lapse, with tickets worldd could never redeem.
 
-The whole stack with the game client is `launch_worldd.bat` (`scripts\launch_all.bat` does the work and
+The whole stack with the game client is `start.bat` (`scripts\launch_all.ps1` does the work and
 takes no arguments): the Go services and worldd, the tether and the launcher window. Build worldd
 first (`scripts\build.ps1 -Target worldd`). It first stops any of them left running from this checkout.
-`launch_all.bat` checks that the process on each port it waits for (TCP, and the UDP ports of worldd, 7777,
+`scripts\launch_all.ps1` checks that the process on each port it waits for (TCP, and the UDP ports of worldd, 7777,
 and tether_server, 19021) is the expected program running from this checkout. The same program from another
 checkout or worktree fails the launch, as does anything else, with `port N is held by <name> (pid P) at
 <path>`. Stop the other checkout's servers first. When it fails, it points to the log files above.
 
-The game client learns its session token from tether_server. `launch_all.bat` starts it with
+The game client learns its session token from tether_server. `scripts\launch_all.ps1` starts it with
 `--login-token-file`, which makes it hand a game client on this machine (127.0.0.0/8 only) the
 token launcher.exe saved at login, `dist\Release\data\ics_auth_token.txt`; without the flag it sends
-the emulator token, which the gateway refuses, and never reads the file. `launch_all.bat` deletes
+the emulator token, which the gateway refuses, and never reads the file. `scripts\launch_all.ps1` deletes
 the file from an earlier sign-in first. It then just opens the launcher window: you sign in there
 (or "Keep me signed in" does it) and press LAUNCH GAME, which starts the game client with the tether
-port and the arguments of `config\server.json`. To sign in without the launcher window, put an
-account registered through the launcher in `config\dev_login.local.json`
-(git-ignored; `launch_all.bat` does not copy `*.local.json` into `dist`):
+port and the arguments of `src\config\server.json`. To sign in without the launcher window, put an
+account registered through the launcher in `src\config\dev_login.local.json`
+(git-ignored):
 
     {"username": "admin", "password": "..."}
 
 and `scripts\services.ps1 login` signs in with it and saves the token for tether_server. The file
 is read as UTF-8, so passwords with non-ASCII characters work.
 
-The gateway serves TLS with `certs\server.pem` and `certs\server.key`, relative to the directory
-it runs in (the repo root under `services.ps1`), the certificate `launch_all.bat` makes the client
-trust. The key is not in git, so a fresh clone or worktree has none, and the gateway refuses to
+The gateway serves TLS with `dist\certs\server.pem` and `dist\certs\server.key`, relative to the directory
+it runs in (the repo root under `services.ps1`), the certificate `scripts\launch_all.ps1` provisions for the client.
+The key is not in git, so a fresh clone or worktree has none, and the gateway refuses to
 start without it (it never falls back to plaintext). It checks the key before it opens the
-database. For `launch_all.bat` in a worktree, copy the main checkout's `certs\server.key` into the
-worktree's `certs\`: `certs/*.key` is git-ignored.
+database. For `scripts\launch_all.ps1` in a worktree, copy the main checkout's `dist\certs\server.key` into the
+worktree's `dist\certs\`: `*.key` is git-ignored.
 `AOC_GATEWAY_TLS_KEY` and `AOC_GATEWAY_TLS_CERT` point the gateway alone elsewhere.
 
 A client whose TLS handshake fails is logged as `WARN ics: TLS handshake failed remote=...
@@ -80,7 +80,7 @@ err=...` in `gateway.log`. The gateway's gRPC library requires the client to off
 the log says `missing selected ALPN property`, set `GRPC_ENFORCE_ALPN_ENABLED=false` for the
 gateway: the game client has only been proven against the retired grpc-c++ login server, which does not
 enforce ALPN. `services.ps1 run` passes its environment on, so in a console run
-`set GRPC_ENFORCE_ALPN_ENABLED=false` and then `scripts\launch_all.bat` from that console.
+`set GRPC_ENFORCE_ALPN_ENABLED=false` and then `start.bat` (`scripts\launch_all.ps1`) from that console.
 
 What the gateway answers the game client:
 - Replies echo the request's `system_data`; pushes echo nothing.
@@ -287,7 +287,7 @@ DELETE FROM schema_migrations WHERE version = 4;
 COMMIT;
 ```
 
-**Content.** contentc version 3 adds `equip_slot`, `item`, `item_equip_slot` and `starting_equipment` to `content.db` (see "Content"). A `content.db` built before B2 has none of them, so after pulling B2 **rebuild it with contentc (`cd services && go run ./cmd/contentc`) and restart both services**: with the old file
+**Content.** contentc version 3 adds `equip_slot`, `item`, `item_equip_slot` and `starting_equipment` to `content.db` (see "Content"). A `content.db` built before B2 has none of them, so after pulling B2 **rebuild it with contentc (`cd src/server/services && go run ./cmd/contentc`) and restart both services**: with the old file
 the character service cannot make kits (it refuses every creation and skips the backfill with a warning) and **worldd refuses every login** (`ContentDb::open` fails on the missing item tables, like a missing file; see
 `server/worldd/README.md`, "Items and inventory"). `internal/kit`'s `TestLoadRefusesAContentDBBuiltBeforeB2` and worldd's `test_worldd_session` pin both.
 
@@ -651,7 +651,7 @@ contentc checks what the engine needs to hold: every curve an item names exists 
 10,568 items at six qualities and both roundings and for 400 random sets of worn items (whole sets, so that the tiers apply), and the stored bundle is exactly what compiling the file's own graph gives.
 
 **Rebuild and refusal.** Version 4 is the oldest `content.db` this checkout reads: `content.DB.RequireVersion` refuses an older file (and one with no `stat_program` row) with "built by contentc version 3, this checkout needs version 4 or later
-(the stat program and the item stat tables, plan B3): rebuild it with this checkout's contentc: cd services && go run ./cmd/contentc". The character service calls it when it loads the file (it then refuses every creation and skips the
+(the stat program and the item stat tables, plan B3): rebuild it with this checkout's contentc: cd src/server/services && go run ./cmd/contentc". The character service calls it when it loads the file (it then refuses every creation and skips the
 backfill, as for a missing file), and **worldd refuses every login** with an older file or a damaged stat program (`server/worldd/README.md`). After pulling B3 rebuild `content.db` and restart both services. Going back is safe: a version 4
 file only adds tables and one column (`item.quality_curve_guid`), so B2's worldd and character service read it as before.
 
@@ -684,7 +684,7 @@ was affected: Jest's Pep hit (`Bard_QuickWit_Jest`), whose requirement the retai
 
 **Format 2 and the refusal.** The stored bundle is format version 2 (the opcodes and the table of expression programs), which a build of this contentc writes and this checkout's engines read. A file built by contentc 4 or 5 has a version 1 bundle
 that the new `Decode` and `parse_bundle` refuse (worldd's `PlayerWorld` checks the row's version against `kBundleVersion`); `content.DB.RequireVersion` and worldd's `kMinContentcVersion` are 6, so every reader refuses an older file with the way to rebuild it
-(`cd services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it.
+(`cd src/server/services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it.
 
 **Stage 2 (contentc still version 6).** Hits export `extra.HitFX` (OnHitFXId / OnActivateFXId set: the confirmation rule) and `MaxNumEffectsToRemove`; `GetAbilityRecordByName("X")` is rewritten to the ability's reference like a named one; `cmd/contentc/ability_names.tsv` is the name list of the captures' abilities that seeds the closure
 (abilities no rank grants but a capture shows: the Summoner's, the weapon combos, consumables' uses). The expression compiler gains the host operations (`OpHost0/1/2`, `format.go`, `compile.go`, `engine.go`), `RandDoubleRange`, the zero-argument `GetAbilityProgressRatio` and the StatMod terms' sibling scope; the stat corpus has the new lines.
@@ -704,7 +704,7 @@ that the new `Decode` and `parse_bundle` refuse (worldd's `PlayerWorld` checks t
 | `npc_route` | 1,346 | a PathingRoute: the actor's transform and the spline's points (8,609 in all) and, from **version 8**, what a patrol walks: `waypoints` (a JSON array of [x, y, z]: 11,934 in 1,332 routes; 924 routes also carry the spline of the same points, 408 only the waypoints, 14 neither), `pauses` (seconds at each waypoint), `start_closest`, `relative_city_node`, `relative_encounter` (a route a city node or an encounter places) and `pathing_set`; 1,619 instances name a route, 142 of them within a kilometre of the login spot (stage 2 walks them: `server/worldd/npc/`) |
 | `vendor_def`, `vendor_def_inventory`, `vendor_inventory`, `vendor_listing` | 95; 469; 278; 9,704 | a VendorDef (its guid is what the server sends the client as `ClientOpenVendor`'s `MerchSetId`: the client draws the window from its own copy of the same data), its inventories (the window's tabs), and each inventory's listings: an item and the offers that price it (an empty list is free) |
 
-The 26 `PTR_ONLY_Vendor_*` defs are the public test realm's vendors: their listings are the GM and PTR items, free, and they are what worldd's GM vendors open (`server/worldd/vendor/gm_vendor.h`). `content.DB.RequireVersion` and worldd's `kMinContentcVersion` are **8** (stage 2 of E1 added the routes' waypoints and the instances' patrol settings: the v7 file has the spline points only, empty for 408 routes): every reader refuses an older file with the way to rebuild it (`cd services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it (the file is 303.1 MB).
+The 26 `PTR_ONLY_Vendor_*` defs are the public test realm's vendors: their listings are the GM and PTR items, free, and they are what worldd's GM vendors open (`server/worldd/vendor/gm_vendor.h`). `content.DB.RequireVersion` and worldd's `kMinContentcVersion` are **8** (stage 2 of E1 added the routes' waypoints and the instances' patrol settings: the v7 file has the spline points only, empty for 408 routes): every reader refuses an older file with the way to rebuild it (`cd src/server/services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it (the file is 303.1 MB).
 Tests: `cmd/contentc/population_test.go` (`TestArchetypePath`, `TestSyntheticPopulation`, `TestSyntheticPopulationRefuses`, `TestRealPopulation`: the real file's counts above) and `gear_real_test.go` (version 8: the waypoints and the instances' patrol settings on the synthetic rows, 1,332 routes with waypoints and 924 with both on the real file); `content_test.go` lists the new tables.
 
 ## Combat (plan E1, stage 3, contentc version 9)
@@ -746,7 +746,7 @@ The expressions compile into the stat program through the shared `exprSet` (`ab_
 
 **Where the data and the retail disagree** (kept, not resolved: stage 1's report lists them). The item text of the Drake of the Canopy and the Thundering Bolt Beast says 1000 % Maximum Health, the Blueprints' own stat lists (`Mount_DrakeOfTheCanopy`, `Mount_ThunderingBoltBeast`: `GetStatInitRunningTotal() * 5`) say x5, and retail's Drake has MaxHealth 24375, which is x5 of a level 25 owner's 4875: `health_pct` follows the text, as the design (the item tooltip is the truth) does.
 
-`content.DB.RequireVersion` and worldd's `kMinContentcVersion` are **11**: every reader refuses an older file with the way to rebuild it (`cd services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it. Tests: `cmd/contentc/mounts_test.go` (the text of an item, a synthetic design database: the four tables, the equations a stat list reads, what is refused), `mounts_real_test.go` (the real file's counts above, the golden items of the captures, the stat curve's values, the roads and the dash), `internal/content/mounts_test.go` (the readers).
+`content.DB.RequireVersion` and worldd's `kMinContentcVersion` are **11**: every reader refuses an older file with the way to rebuild it (`cd src/server/services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it. Tests: `cmd/contentc/mounts_test.go` (the text of an item, a synthetic design database: the four tables, the equations a stat list reads, what is refused), `mounts_real_test.go` (the real file's counts above, the golden items of the captures, the stat curve's values, the roads and the dash), `internal/content/mounts_test.go` (the readers).
 
 **The roads (stage 4; no schema change, contentc stays at version 11).** `contentc roads [--content content.db] [--raw roads_raw.tsv] [--out roads.tsv] [--node-level Wilderness] [--check]` (`cmd/contentc/roads.go`) resolves what the map's road splines are worth to a mount. `tools/mapc` (`mapc roads`) writes `dist/content/roads_raw.tsv`: each `BP_RoadActor_C` with its `RoadPresetRecord` and owner ZOI guids and its spline sampled every 200 cm. For every road this takes the preset's `RoadAppearancesIds[node level]` (`ENodeLevel`: Wilderness 0 to Metropolis 6; the level worldd's `--spawn-node-level` names, Wilderness by default), the appearance's `RoadBuffs` entry for `ECharacterClassification::Mount` (the effect `Road_Tn_Speed_Mount`, the `mount_effect` table's road rows) and its `RoadWidth`, and writes `dist/content/roads.tsv`: `road`, tier, half width (max(RoadWidth, 1000) / 2, modelled) and the points. A preset with no Mount buff at that level (a Vein or a Capillary below its levels, `Node_N3` at 0, the 6-level `LionsHold_Roads` at Metropolis) gives a mount nothing and its roads are left out, an inactive road too; a road whose preset is no record is an error. At Wilderness the E1 area's 49 road actors give 42 roads: 11 Riverlands Artery (T1, 6.6 km) and 31 Lions Hold (T2, 7.8 km). It reads the three record tables from `content.db` (`record`) and `mount_effect`; run it again after a new `roads_raw.tsv` or `content.db`. `contentc` itself and the schema are unchanged.
 
@@ -807,7 +807,7 @@ Exit status: 0 done, 1 worldd refused it or could not be reached, 2 the command 
 
 **The client's own GM RPCs** on the PlayerController, `ServerTeleportXYZ` (rpc 967: `X`, `Y`, `Z` whole cm, `OptionalRadius`), `ServerTeleport` (964: `DestinationLookupKey`,
 `OptionalRadius`) and `ServerTeleportPlayer` (966: `CharacterNames`, `X`, `Y`, `Z`) are answered with the same teleport **only with the GM switch on**: `worldd --gm-commands`
-or `AOC_GM_COMMANDS=1` (off by default; `launch_nodes1.bat` turns it on). `ServerTeleport` takes a place's name (the table above; unknown keys are logged and moved nowhere);
+or `AOC_GM_COMMANDS=1` (off by default; `scripts\launch_all.ps1` supports enabling it via environment/config). `ServerTeleport` takes a place's name (the table above; unknown keys are logged and moved nowhere);
 `ServerTeleportPlayer` names characters separated by commas, semicolons or spaces. **Whether the shipping client's console can send them at all is not known**: worldd logs
 every one it receives, with its parameters, switch or no switch (`[gm] cyb: the client sent ServerTeleportXYZ (X=... Y=... Z=...): answering` or `refused: GM commands are off`),
 so a test settles it. The admin API does not depend on the switch.
@@ -866,7 +866,7 @@ Enums are stored as their text and, where the host answers with them, as the ord
 
 **The ZOI surface.** `tools/capture/gen_zoi_surface.py` decodes the ZOI chunk grid of the export (30,558 files) into `server/worldd/world/zoi_surface_table.h`: the owner of every 512 cm cell of the world at the surface height, run-length coded (4,635 chunk columns, 58 owners), so that `world::zoi_at(x, y)` gives the zone at a point for the whole world. See `server/worldd/README.md`.
 
-**The transforms keep the sign of a zero (Nodes 1, stage 3a).** The town replicator sends the layouts' transforms bit for bit and retail's carry `-0.0` (29 of Joeva's 85 items). A `REAL` column of SQLite stores a whole-number float as an integer and reads it back as `+0.0`, so the ten transform columns (`qx` .. `sz`) of `node_layout_prop`, `node_layout_plot` and `node_asset_set_member` are declared with no type (`internal/content/nodes.go`, `TestNodeTransformColumnsKeepNegativeZero`). The version stays 12: every reader sees the same numbers. **Rebuild `content.db` with this contentc** for the signs to be kept (`cd services && go run ./cmd/contentc`, 30 s); a file built before has `+0.0` where retail has `-0.0`, which `test_worldd_node_layout` reports as a difference in the layout items.
+**The transforms keep the sign of a zero (Nodes 1, stage 3a).** The town replicator sends the layouts' transforms bit for bit and retail's carry `-0.0` (29 of Joeva's 85 items). A `REAL` column of SQLite stores a whole-number float as an integer and reads it back as `+0.0`, so the ten transform columns (`qx` .. `sz`) of `node_layout_prop`, `node_layout_plot` and `node_asset_set_member` are declared with no type (`internal/content/nodes.go`, `TestNodeTransformColumnsKeepNegativeZero`). The version stays 12: every reader sees the same numbers. **Rebuild `content.db` with this contentc** for the signs to be kept (`cd src/server/services && go run ./cmd/contentc`, 30 s); a file built before has `+0.0` where retail has `-0.0`, which `test_worldd_node_layout` reports as a difference in the layout items.
 
 ## Gathering data (Gathering stage 2, part "Gathering data"; contentc version 13; migration 0010)
 
@@ -939,7 +939,7 @@ over the whole set of a `SaveInventory`, because a table cannot hold a rule over
 | `gather_interaction` | 236 | each `GatheringInteractionData`: the profession, certification and tier, the tool's equip slot (-1 when the data names none), `base_duration`, the compiled duration and wear formulas (`ab_expr` ids), the reward table, the state the harvest leaves the foliage in (Empty = 3) and the range of the `PlayerInteractionDef` named like it (radius, tolerance, combat) |
 | `gather_interaction_def` | 194 | each `PlayerInteractionDef` that names a `GatheringInteractionData`, by its own guid: the 53 `Hunting_<X>` defs a huntable creature's asset names, and the ranges of the nodes' and the foliage's |
 
-`EFoliageState` is Infancy 0, Juvenile 1, Adult 2, Empty 3 (the captured `IndexedStates` carry 3 for a harvested instance and 0 and 1 for a growing one). Stage 2's `gather_def` is untouched (the 339 placed nodes); the new `gather_interaction` holds every interaction, so the foliage and the Hunting corpses use the same rolls. The 5 formulas the interactions add join the expression set (`meta gather.exprs` is 35, `ab_expr` 1,880), so the stat program bundle in `stat_program` grew by 146 bytes and the shared stat corpus was rewritten (`go run ./internal/statprog/cmd/statprog corpus --out ..\server\worldd\stats\testdata\corpus.txt`; `TestCorpusUpToDate` and worldd's `test_worldd_content_db` on the real file hold it). Counts and the cross-references (every def's three state slots are rows of `foliage_state`, every state's interaction a row of `gather_interaction`, an interaction def's `gather_guid` a row or the 0 of "none") are pinned by `cmd/contentc/foliage_real_test.go`; `content.DB.FoliageDefs()`, `FoliageStates()`, `GatherInteractions()` and `GatherInteractionDefs()` read them. `MinContentcVersion` and worldd's `kMinContentcVersion` are **15**: every reader refuses an older file with the way to rebuild it (`cd services && go run ./cmd/contentc`), and nothing else needs a migration (no database table is added).
+`EFoliageState` is Infancy 0, Juvenile 1, Adult 2, Empty 3 (the captured `IndexedStates` carry 3 for a harvested instance and 0 and 1 for a growing one). Stage 2's `gather_def` is untouched (the 339 placed nodes); the new `gather_interaction` holds every interaction, so the foliage and the Hunting corpses use the same rolls. The 5 formulas the interactions add join the expression set (`meta gather.exprs` is 35, `ab_expr` 1,880), so the stat program bundle in `stat_program` grew by 146 bytes and the shared stat corpus was rewritten (`go run ./internal/statprog/cmd/statprog corpus --out ..\server\worldd\stats\testdata\corpus.txt`; `TestCorpusUpToDate` and worldd's `test_worldd_content_db` on the real file hold it). Counts and the cross-references (every def's three state slots are rows of `foliage_state`, every state's interaction a row of `gather_interaction`, an interaction def's `gather_guid` a row or the 0 of "none") are pinned by `cmd/contentc/foliage_real_test.go`; `content.DB.FoliageDefs()`, `FoliageStates()`, `GatherInteractions()` and `GatherInteractionDefs()` read them. `MinContentcVersion` and worldd's `kMinContentcVersion` are **15**: every reader refuses an older file with the way to rebuild it (`cd src/server/services && go run ./cmd/contentc`), and nothing else needs a migration (no database table is added).
 
 
 ## Item display names (Gathering stage 3, "the pick-up popup"; contentc version 16)
@@ -977,7 +977,7 @@ The inputs stay outside the repo and are given as flags with environment default
 | Flag | Environment | What |
 |---|---|---|
 | `--dbc` | `AOC_DESIGN_DB` | the client's `CacheDB.dbc`, in the game's `Game\AOC\Plugins\DesignDataPlugin\Generated\Client` |
-| `--usmap` | `AOC_USMAP` | the mappings file: `layouts/aoc.usmap` (`extract_game_data.bat` copies it to `dist/content/aoc.usmap`) |
+| `--usmap` | `AOC_USMAP` | the mappings file: `src/config/layouts/aoc.usmap` (`scripts\extract_game_data.ps1` copies it to `dist/content/aoc.usmap`) |
 | `--config` | `AOC_CLIENT_CONFIG` | the game's `AOC\Config` directory (`mapc export-config` writes it to `dist/content/client_config`): `DefaultCombat.ini` is the source of the combat tables and of `StatRegenTime` |
 | `--out` | | `dist/content/content.db` at the repo root (git-ignored) |
 | `--artisan-curves` | `AOC_ARTISAN_CURVES` | optional (Gathering stage 2): `mapc artisan-curves`' output, the profession level-up curves of the paks; default `dist/content/artisan_curves.tsv`. Without it the placeholder curves stay and the build says so |
@@ -990,18 +990,18 @@ warns when it finds one, and `meta` records the names. Until 2026-10-01 there wa
 none of them one of the typed tables, and `meta` keeps a note of that. The folder holds only
 `CacheDB.dbc` now.
 
-`extract_game_data.bat` runs contentc with the right inputs. By hand:
+`scripts\extract_game_data.ps1` runs contentc with the right inputs. By hand:
 
 ```powershell
 $env:AOC_DESIGN_DB = '<game>\Game\AOC\Plugins\DesignDataPlugin\Generated\Client\CacheDB.dbc'
-$env:AOC_USMAP = 'layouts\aoc.usmap'
+$env:AOC_USMAP = 'src\config\layouts\aoc.usmap'
 $env:AOC_CLIENT_CONFIG = 'dist\content\client_config'      # written by `mapc export-config`
-cd services; go run ./cmd/contentc
+cd src\server\services; go run ./cmd/contentc
 ```
 
 ### The mappings file
 
-`layouts/aoc.usmap` is the mappings file of the 2026-01-29 client, usmap version 4, uncompressed (72,456 names, 3,122 enums, 15,419 schemas): the names, types, properties, super classes and enumerators of the game's compiled-in classes, structs and enums, with no game content. contentc and mapc read it to decode the design database and the cooked assets. `internal/designdb/exe_gen.go` (committed) holds the facts a `.usmap` cannot carry but the decoder needs: the 398 record types by TypeId, the properties the database does not store (Transient), the four 16-byte-aligned record structs, and the natively serialized structs. Both files belong to this client build; the generator that made them is not part of this repository.
+`src/config/layouts/aoc.usmap` is the mappings file of the 2026-01-29 client, usmap version 4, uncompressed (72,456 names, 3,122 enums, 15,419 schemas): the names, types, properties, super classes and enumerators of the game's compiled-in classes, structs and enums, with no game content. contentc and mapc read it to decode the design database and the cooked assets. `internal/designdb/exe_gen.go` (committed) holds the facts a `.usmap` cannot carry but the decoder needs: the 398 record types by TypeId, the properties the database does not store (Transient), the four 16-byte-aligned record structs, and the natively serialized structs. Both files belong to this client build; the generator that made them is not part of this repository.
 
 The output is written beside `--out` and renamed over it when the run has succeeded; a failed run
 leaves the previous file alone. A run takes about 30 s (the table classification runs on all cores, the
@@ -1129,7 +1129,7 @@ adds that directory to `PATH` for its own run; for the commands below, put it on
 After changing a proto:
 
 ```bash
-cd services && buf lint ../proto/internal && buf generate
+cd src/server/services && buf lint ../proto/internal && buf generate
 ```
 
 Generated code in `services/gen/` is checked in.

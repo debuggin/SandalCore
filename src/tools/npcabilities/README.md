@@ -2,7 +2,7 @@
 
 Reads what the creatures of the game attack with out of your own game files, for the creatures that play their attacks with their own animation.
 
-    dotnet tools/npcabilities/bin/Release/net8.0/npcabilities.dll read --dir AOC/Content/DesignAssets/Population/NPC/Beast/Rabid [--dir ...] [--senses-dir AOC/Content/DesignAssets/Population] [--out-dir dist/content] [--check]
+    dotnet src/tools/npcabilities/bin/Release/net8.0/npcabilities.dll read --dir AOC/Content/DesignAssets/Population/NPC/Beast/Rabid [--dir ...] [--senses-dir AOC/Content/DesignAssets/Population] [--out-dir dist/content] [--check]
 
 `scripts/extract_game_data.ps1` runs it as the `npcabilities` step (`-Only tools,npcabilities`); it needs only the game's containers (no map read, about a minute).
 The folders it reads are listed in the script (`$NpcFolders`): one per creature kind, holding the kind's Blueprints and the animation montages beside them.
@@ -78,8 +78,8 @@ its rotation rate: its facing never jumps, and it is never stopped only to turn.
 
 ## The people's looks and names
 
-    dotnet tools/npcabilities/bin/Release/net8.0/npcabilities.dll looks [--out-dir dist/content] [--check]
-    python tools/npcabilities/looks.py --content-db dist/content/content.db --out-dir dist/content
+    dotnet src/tools/npcabilities/bin/Release/net8.0/npcabilities.dll looks [--out-dir dist/content] [--check]
+    python src/tools/npcabilities/looks.py --content-db dist/content/content.db --out-dir dist/content
 
 The same step (`-Only tools,npcabilities`) also writes four tables that dress and name the humanoid NPCs (about a minute more; worldd reads them from the folder of `npc_motion.tsv`):
 
@@ -92,4 +92,4 @@ The same step (`-Only tools,npcabilities`) also writes four tables that dress an
   the tree, or a tree one of its states plays, has a task that wanders (`wander`) and one that patrols (`patrol`), 1 or 0. A creature can only do what its tree has states for: the quest
   givers' tree only idles, so they stand at their post whatever their population instance says (worldd reads the Blueprints whose tree has neither task as `standing` NPCs).
 
-The tool is a project of its own (it builds on `tools/mapc`'s `Game` class) so that a change to it restamps only its own step.
+The tool is a project of its own (it builds on `src/tools/mapc`'s `Game` class) so that a change to it restamps only its own step.

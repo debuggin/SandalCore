@@ -499,9 +499,15 @@ emulator.db*
 *.token
 .env
 .env.*
+*.env
+!*.env.example
+!/src/config/sandal.env.example
+!/src/config/profiles/*.env.example
 /src/config/*.local.json
+/src/config/*.local.env
 /src/config/local.json
 src/config/*.local.json
+src/config/*.local.env
 src/config/local.json
 ics_auth_token.txt
 

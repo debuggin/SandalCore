@@ -178,7 +178,15 @@ try {
             $savedPath = $env:Path
             $savedTestDb = $env:AOC_TEST_DATABASE_URL
             $savedContentDb = $env:AOC_CONTENT_DB
-            $env:AOC_TEST_DATABASE_URL = 'postgres://aoc:aoc@127.0.0.1:5432/aoc_test?sslmode=disable'
+            $pgPass = if ($env:POSTGRES_PASSWORD) { $env:POSTGRES_PASSWORD } else { '' }
+            foreach ($candEnv in @($envFile, (Join-Path $root 'src' 'config' 'sandal.local.env'))) {
+                if (-not $pgPass -and (Test-Path -LiteralPath $candEnv -PathType Leaf)) {
+                    $m = Get-SandalEnvMap -EnvPath $candEnv
+                    if ($m.Contains('POSTGRES_PASSWORD') -and -not [string]::IsNullOrWhiteSpace($m['POSTGRES_PASSWORD'])) { $pgPass = [string]$m['POSTGRES_PASSWORD'] }
+                }
+            }
+            if (-not $pgPass) { $pgPass = 'aoc' }
+            $env:AOC_TEST_DATABASE_URL = "postgres://aoc:$pgPass@127.0.0.1:5432/aoc_test?sslmode=disable"
             # The tests of the creation rules read the real content.db when there is one (they skip without).
             if (Test-Path $contentDb) { $env:AOC_CONTENT_DB = $contentDb }
             $env:Path = (Join-Path (& go env GOPATH) 'bin') + $pathSep + $env:Path   # buf and its plugins
