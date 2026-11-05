@@ -277,7 +277,7 @@ Each service runs `internal/db` migrations automatically on startup inside an ad
 - **`0003_character_race_class.sql` – `0008_gm_starter_mounts.sql`**: Character `race`/`gender`/`class_id`, `character_items`, `character_experience`, `character_skill_ranks`, `character_action_bar`, mount `persisted_health`/`persisted_mana`/`lock_expiration`, and starter mount tracking.
 - **`0009_city_nodes.sql`**: `city_node_state`, `city_node_clock`, and `city_node_seed`.
 - **`0010_character_professions.sql` – `0019_character_processing_job_ratings.sql`**: `character_professions`, `character_resource_items`, `character_wallet`, `character_processing_jobs` (plus `rating_xp`, `rating_quantity`, `rating_rarity`), `character_known_recipes`, `character_completed_ftues`, `character_quests*`, `character_warehouse_items`, and `character_attunements` / `character_home_attunement`.
-- **`0020_hotfix_overlays.sql` – `0023_rbac_audit_and_idempotency.sql`**: Runtime hotfix overlays, 3-schema separation, differential save stored procedures, and RBAC audit/idempotency tables.
+- **`0020_hotfix_overlays.sql` – `0024_query_covering_indexes_and_fencing.sql`**: Runtime hotfix overlays, 3-schema separation, differential save stored procedures, RBAC audit/idempotency tables, character fencing token column, and covering/partial query indexes.
 
 ### Protobuf Code Generation (`src/server/proto/internal/aoc/...`)
 
@@ -290,3 +290,188 @@ cd src/server/services && buf lint ../proto/internal && buf generate
 ```
 
 Generated Go stubs under `src/server/services/internal/proto/aoc/` and `src/server/services/internal/icspb/` are committed to version control and verified against `src/server/proto/` during `pwsh -File sandal.ps1 test`.
+
+---
+
+## SQL Migration Rollback Runbook
+
+Each SQL block below rolls back its corresponding schema migration inside a single transaction and removes its version entry from `schema_migrations`:
+
+```sql
+-- rollback of migration 0003
+BEGIN;
+UPDATE characters SET race_id = COALESCE(class_id, 0), gender_id = COALESCE(gender, 0) + 1
+WHERE race_id = 0 AND gender_id = 0;
+ALTER TABLE characters ALTER COLUMN race_id DROP DEFAULT, ALTER COLUMN gender_id DROP DEFAULT;
+ALTER TABLE characters DROP COLUMN race, DROP COLUMN gender, DROP COLUMN class_id;
+DELETE FROM schema_migrations WHERE version = 3;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0004
+BEGIN;
+DROP TABLE character_items;
+DELETE FROM schema_migrations WHERE version = 4;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0005
+BEGIN;
+DROP TABLE character_experience;
+ALTER TABLE characters DROP COLUMN gm_starter_set_granted_at;
+DELETE FROM schema_migrations WHERE version = 5;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0006
+BEGIN;
+DROP TABLE character_skill_ranks;
+DROP TABLE character_action_bar;
+DELETE FROM schema_migrations WHERE version = 6;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0007
+BEGIN;
+ALTER TABLE character_items
+    DROP CONSTRAINT character_items_persisted_health,
+    DROP CONSTRAINT character_items_persisted_mana,
+    DROP CONSTRAINT character_items_lock_expiration,
+    DROP COLUMN persisted_health,
+    DROP COLUMN persisted_mana,
+    DROP COLUMN lock_expiration;
+DELETE FROM schema_migrations WHERE version = 7;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0008
+BEGIN;
+ALTER TABLE characters DROP COLUMN gm_starter_mounts_granted_at;
+DELETE FROM schema_migrations WHERE version = 8;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0009
+BEGIN;
+DROP TABLE city_node_state;
+DROP TABLE city_node_clock;
+DROP TABLE city_node_seed;
+DELETE FROM schema_migrations WHERE version = 9;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0010
+BEGIN;
+DROP TABLE character_professions;
+DELETE FROM schema_migrations WHERE version = 10;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0011
+BEGIN;
+DROP TABLE character_resource_items;
+DELETE FROM schema_migrations WHERE version = 11;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0012
+BEGIN;
+DROP TABLE character_wallet;
+DELETE FROM schema_migrations WHERE version = 12;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0013
+BEGIN;
+DROP TABLE character_processing_jobs;
+DELETE FROM schema_migrations WHERE version = 13;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0014
+BEGIN;
+DROP TABLE character_known_recipes;
+DELETE FROM schema_migrations WHERE version = 14;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0015
+BEGIN;
+DROP TABLE character_completed_ftues;
+DELETE FROM schema_migrations WHERE version = 15;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0016
+BEGIN;
+DROP TABLE character_quest_commands;
+DROP TABLE character_quest_variables;
+DROP TABLE character_quests_completed;
+DROP TABLE character_quests;
+DELETE FROM schema_migrations WHERE version = 16;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0017
+BEGIN;
+DROP TABLE character_warehouse_items;
+DELETE FROM schema_migrations WHERE version = 17;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0018
+BEGIN;
+DROP TABLE character_home_attunement;
+DROP TABLE character_attunements;
+DELETE FROM schema_migrations WHERE version = 18;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0019
+BEGIN;
+ALTER TABLE character_processing_jobs
+    DROP CONSTRAINT character_processing_jobs_rating_xp,
+    DROP CONSTRAINT character_processing_jobs_rating_quantity,
+    DROP CONSTRAINT character_processing_jobs_rating_rarity,
+    DROP COLUMN rating_xp,
+    DROP COLUMN rating_quantity,
+    DROP COLUMN rating_rarity;
+DELETE FROM schema_migrations WHERE version = 19;
+COMMIT;
+```
+
+```sql
+-- rollback of migration 0024
+BEGIN;
+DROP INDEX IF EXISTS idx_gm_audit_log_command_created;
+DROP INDEX IF EXISTS idx_gm_audit_log_created_at;
+DROP INDEX IF EXISTS idx_hotfix_audit_log_recorded_at;
+DROP INDEX IF EXISTS idx_hotfix_overlays_active_order;
+DROP INDEX IF EXISTS idx_character_known_recipes_taught;
+DROP INDEX IF EXISTS idx_character_skill_ranks_tree;
+DROP INDEX IF EXISTS idx_character_resource_items_char_order_id;
+DROP INDEX IF EXISTS idx_character_items_char_order_id;
+DROP INDEX IF EXISTS idx_world_servers_heartbeat_server_id;
+DROP INDEX IF EXISTS idx_characters_ungranted_starter_mounts;
+DROP INDEX IF EXISTS idx_characters_ungranted_starter_set;
+DROP INDEX IF EXISTS idx_characters_account_created_id;
+ALTER TABLE characters DROP COLUMN IF EXISTS fencing_token;
+DELETE FROM schema_migrations WHERE version = 24;
+COMMIT;
+```
