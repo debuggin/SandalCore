@@ -1,3 +1,4 @@
+#Requires -Version 7.2
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -155,21 +156,33 @@ Describe 'Test-SandalRootDirectoryHierarchy' {
         }
     }
 
-    It 'catches stray root .bat files and orphaned root cache/lock artifacts' {
+    It 'catches stray root .bat files, scripts/*.bat files, and orphaned root cache/lock artifacts while allowing root start.bat and stop.bat' {
+        foreach ($canonicalBat in @('start.bat', 'stop.bat', 'dist\launch_launcher.bat')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $script:RepoRoot $canonicalBat) -PathType Leaf)) {
+                throw "Expected canonical .bat file '$canonicalBat' to exist."
+            }
+        }
+        if (Test-Path -LiteralPath (Join-Path $script:RepoRoot 'scripts\launch_all.bat')) {
+            throw 'Expected scripts/launch_all.bat to be removed.'
+        }
         $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-hierarchy-bat-' + [guid]::NewGuid().ToString('N'))
         try {
-            $null = New-Item -ItemType Directory -Path $tmpRoot -Force
+            $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'scripts') -Force
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'start.bat') -Value '@echo off' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'stop.bat') -Value '@echo off' -Encoding utf8
             $cleanFindings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot
             if (@($cleanFindings).Count -ne 0) {
-                throw "Expected 0 findings on empty temp root, got $(@($cleanFindings).Count)"
+                throw "Expected 0 findings when start.bat and stop.bat exist on temp root, got $(@($cleanFindings).Count): $($cleanFindings -join '; ')"
             }
             Set-Content -LiteralPath (Join-Path $tmpRoot 'stray_root.bat') -Value '@echo off' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'scripts\launch_all.bat') -Value '@echo off' -Encoding utf8
             $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot '.pytest_cache') -Force
             Set-Content -LiteralPath (Join-Path $tmpRoot '.beads.gate.lock') -Value '' -Encoding utf8
             $findings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot
             $joined = $findings -join "`n"
             foreach ($expectedPattern in @(
                 'NoRootBatFiles:.*stray_root\.bat',
+                'NoBatInScripts:.*scripts/launch_all\.bat',
                 'NoRootCacheOrGateLocks:.*\.pytest_cache',
                 'NoRootCacheOrGateLocks:.*\.beads\.gate\.lock'
             )) {

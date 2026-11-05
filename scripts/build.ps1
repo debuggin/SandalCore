@@ -240,6 +240,18 @@ foreach ($t in $targets) {
     }
 }
 
+$launcherCsproj = Join-Path $srcDir 'clients\launcher\SandalLauncher.csproj'
+$dotnetExe = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+if (($Target -in @('all', 'launcher', 'SandalLauncher')) -and (Test-Path -LiteralPath $launcherCsproj -PathType Leaf) -and $dotnetExe) {
+    $distLauncherDir = Join-Path $repoRoot 'dist' 'launcher'
+    New-Item -ItemType Directory -Force -Path $distDir, $distLauncherDir | Out-Null
+    Write-Host "Publishing SandalLauncher (.NET 8) to $distDir and $distLauncherDir ..."
+    & $dotnetExe publish $launcherCsproj -c $Config -o $distDir --nologo
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish SandalLauncher to $distDir failed (exit $LASTEXITCODE)." }
+    & $dotnetExe publish $launcherCsproj -c $Config -o $distLauncherDir --nologo
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish SandalLauncher to $distLauncherDir failed (exit $LASTEXITCODE)." }
+}
+
 # -- Runtime DLLs ---------------------------------------------------------
 # The programs load vcpkg's DLLs from their own folder. With vcpkg's per-program copy off (see the header), copy them once here: the ones that
 # are missing in dist\<Config>, older than the vcpkg copy, or of another size. The folder is read from the CMake cache.

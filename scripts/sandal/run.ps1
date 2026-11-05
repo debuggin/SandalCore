@@ -79,8 +79,8 @@ if (-not $opts.DryRun) {
     $env:PATH = "$distRelDir$pathSep$distSvcDir$pathSep$prevPath"
     try {
         $null = Ensure-SandalGameData -RepoRoot $rootPath
-        $worlddExe = Join-Path $distRelDir "worldd$exeExt"
-        if (-not (Test-Path -LiteralPath $worlddExe -PathType Leaf)) {
+        $hasWorld = (Test-Path -LiteralPath (Join-Path $distRelDir "world$exeExt") -PathType Leaf) -or (Test-Path -LiteralPath (Join-Path $distRelDir "worldd$exeExt") -PathType Leaf)
+        if (-not $hasWorld) {
             $buildScript = Join-Path $rootPath 'scripts/build.ps1'
             if ($opts.Json) {
                 & $buildScript -Config Release 6>&1 | Out-Host
@@ -89,6 +89,15 @@ if (-not $opts.DryRun) {
             }
             if ($LASTEXITCODE -ne 0) {
                 throw "scripts/build.ps1 failed with exit code $LASTEXITCODE."
+            }
+        }
+        $launcherExe = Join-Path $rootPath "dist/launcher/SandalLauncher$exeExt"
+        $launcherCsproj = Join-Path $rootPath 'src/clients/launcher/SandalLauncher.csproj'
+        if (-not (Test-Path -LiteralPath $launcherExe -PathType Leaf) -and (Test-Path -LiteralPath $launcherCsproj -PathType Leaf)) {
+            $dotnetCmd = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($dotnetCmd) {
+                $null = & $dotnetCmd.Source publish $launcherCsproj -c Release -o (Join-Path $rootPath 'dist/launcher') --nologo 2>&1
+                $null = & $dotnetCmd.Source publish $launcherCsproj -c Release -o $distRelDir --nologo 2>&1
             }
         }
         $gatewayExe = Join-Path $distSvcDir "gateway$exeExt"

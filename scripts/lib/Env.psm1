@@ -49,28 +49,40 @@ function Initialize-SandalEnv {
         [switch]$Force
     )
     $parent = Split-Path -Parent $EnvPath
-    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
-        $null = New-Item -ItemType Directory -Path $parent -Force
-    }
-    $sourcePath = if (Test-Path -LiteralPath $EnvPath -PathType Leaf) { $EnvPath } elseif ($TemplatePath -and (Test-Path -LiteralPath $TemplatePath -PathType Leaf)) { $TemplatePath } else { '' }
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
+    $existingMap = if (Test-Path -LiteralPath $EnvPath -PathType Leaf) { Get-SandalEnvMap -EnvPath $EnvPath } else { [ordered]@{} }
+    $sourcePath = if ($TemplatePath -and (Test-Path -LiteralPath $TemplatePath -PathType Leaf)) { $TemplatePath } elseif (Test-Path -LiteralPath $EnvPath -PathType Leaf) { $EnvPath } else { '' }
     $inLines = if ($sourcePath) { [System.IO.File]::ReadAllLines($sourcePath, [System.Text.Encoding]::UTF8) } else { @() }
     $outLines = [System.Collections.Generic.List[string]]::new()
     $seenSecrets = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    $seenKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $generated = [System.Collections.Generic.List[string]]::new()
 
     foreach ($line in $inLines) {
-        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$' -and ($Matches[1] -in $SecretKeys)) {
-            $key = $Matches[1]
-            $val = $Matches[2].Trim()
-            $null = $seenSecrets.Add($key)
-            if ($Force -or [string]::IsNullOrWhiteSpace($val) -or $val.StartsWith('CHANGE_ME')) {
-                $val = New-SandalCsprngSecret -ByteLength 32
-                $generated.Add($key)
-            }
-            $outLines.Add("${key}=${val}")
-        } else {
-            $outLines.Add($line)
+        if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$') { $outLines.Add($line); continue }
+        $key = $Matches[1]
+        $val = $Matches[2].Trim()
+        $null = $seenKeys.Add($key)
+        if ($key -notin $SecretKeys) { $outLines.Add($line); continue }
+        $null = $seenSecrets.Add($key)
+        $existingVal = if ($existingMap.Contains($key)) { [string]$existingMap[$key] } else { '' }
+        if (-not $Force -and $existingVal -and -not $existingVal.StartsWith('CHANGE_ME')) {
+            $val = $existingVal
+        } elseif ($Force -or [string]::IsNullOrWhiteSpace($val) -or $val.StartsWith('CHANGE_ME')) {
+            $val = New-SandalCsprngSecret -ByteLength 32
+            $generated.Add($key)
         }
+        $outLines.Add("${key}=${val}")
+    }
+    foreach ($extraKey in $existingMap.Keys) {
+        if ($seenKeys.Contains($extraKey)) { continue }
+        $val = [string]$existingMap[$extraKey]
+        if ($extraKey -in $SecretKeys -and ($Force -or [string]::IsNullOrWhiteSpace($val) -or $val.StartsWith('CHANGE_ME'))) {
+            $val = New-SandalCsprngSecret -ByteLength 32
+            $generated.Add($extraKey)
+        }
+        if ($extraKey -in $SecretKeys) { $null = $seenSecrets.Add($extraKey) }
+        $outLines.Add("${extraKey}=${val}")
     }
     foreach ($key in $SecretKeys) {
         if (-not $seenSecrets.Contains($key)) {
@@ -108,6 +120,73 @@ function Copy-SandalSqlFiles {
     }
 }
 
+function Write-SandalLauncherScripts {
+    param([Parameter(Mandatory)][string]$DistDir)
+    $batLines = @(
+        '@echo off',
+        'setlocal',
+        'set "DIST_DIR=%~dp0"',
+        'if exist "%DIST_DIR%launcher\SandalLauncher.exe" (',
+        '    start "" "%DIST_DIR%launcher\SandalLauncher.exe" %*',
+        '    exit /b 0',
+        ')',
+        'if exist "%DIST_DIR%Release\SandalLauncher.exe" (',
+        '    start "" "%DIST_DIR%Release\SandalLauncher.exe" %*',
+        '    exit /b 0',
+        ')',
+        'if exist "%DIST_DIR%Debug\SandalLauncher.exe" (',
+        '    start "" "%DIST_DIR%Debug\SandalLauncher.exe" %*',
+        '    exit /b 0',
+        ')',
+        'echo SandalLauncher.exe not found in "%DIST_DIR%launcher", "%DIST_DIR%Release", or "%DIST_DIR%Debug". Run: pwsh ./scripts/build.ps1 -Target SandalLauncher',
+        'exit /b 1'
+    )
+    [System.IO.File]::WriteAllText((Join-Path $DistDir 'launch_launcher.bat'), (($batLines -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($false))
+    $ps1Lines = @(
+        '#Requires -Version 7.2',
+        'Set-StrictMode -Version Latest',
+        '$ErrorActionPreference = ''Stop''',
+        '$exeName = if ($IsWindows) { ''SandalLauncher.exe'' } else { ''SandalLauncher'' }',
+        'foreach ($sub in @(''launcher'', ''Release'', ''Debug'')) {',
+        '    $candidate = Join-Path $PSScriptRoot $sub $exeName',
+        '    if (Test-Path -LiteralPath $candidate -PathType Leaf) { & $candidate @args; exit $LASTEXITCODE }',
+        '    $dllCandidate = Join-Path $PSScriptRoot $sub ''SandalLauncher.dll''',
+        '    if (Test-Path -LiteralPath $dllCandidate -PathType Leaf) { & dotnet $dllCandidate @args; exit $LASTEXITCODE }',
+        '}',
+        '[Console]::Error.WriteLine("SandalLauncher not found under $PSScriptRoot/launcher, Release, or Debug. Run: pwsh ./scripts/build.ps1 -Target SandalLauncher")',
+        'exit 1'
+    )
+    [System.IO.File]::WriteAllText((Join-Path $DistDir 'launch_launcher.ps1'), (($ps1Lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+}
+
+function Sync-SandalLauncherStage {
+    param([string]$RepoRoot, [string]$DistDir, [string]$Config)
+    $configDir = Join-Path $DistDir $Config
+    if (Test-Path -LiteralPath $configDir -PathType Container) {
+        foreach ($pair in @(@('world.exe', 'worldd.exe'), @('tether.exe', 'tether_server.exe'))) {
+            $srcExe = Join-Path $configDir $pair[0]
+            $dstExe = Join-Path $configDir $pair[1]
+            if ((Test-Path -LiteralPath $srcExe -PathType Leaf) -and ((-not (Test-Path -LiteralPath $dstExe -PathType Leaf)) -or ((Get-Item -LiteralPath $srcExe).LastWriteTimeUtc -gt (Get-Item -LiteralPath $dstExe).LastWriteTimeUtc))) {
+                Copy-Item -LiteralPath $srcExe -Destination $dstExe -Force
+            }
+        }
+    }
+    $buildOut = Join-Path $RepoRoot "build\dotnet\bin\SandalLauncher\$Config\net8.0"
+    if (-not (Test-Path -LiteralPath $buildOut -PathType Container)) { return }
+    $srcBin = Join-Path $buildOut 'SandalLauncher.exe'
+    if (-not (Test-Path -LiteralPath $srcBin -PathType Leaf)) {
+        $srcBin = Join-Path $buildOut 'SandalLauncher.dll'
+    }
+    if (-not (Test-Path -LiteralPath $srcBin -PathType Leaf)) { return }
+    $launcherDir = Join-Path $DistDir 'launcher'
+    $null = New-Item -ItemType Directory -Path $launcherDir, $configDir -Force
+    $destBin = Join-Path $launcherDir (Split-Path $srcBin -Leaf)
+    if ((-not (Test-Path -LiteralPath $destBin -PathType Leaf)) -or ((Get-Item -LiteralPath $srcBin).LastWriteTimeUtc -gt (Get-Item -LiteralPath $destBin).LastWriteTimeUtc)) {
+        Copy-Item -Path (Join-Path $buildOut '*') -Destination $launcherDir -Recurse -Force
+        Copy-Item -Path (Join-Path $buildOut '*') -Destination $configDir -Recurse -Force
+    }
+}
+
 function Sync-SandalDistStage {
     [CmdletBinding()]
     param(
@@ -115,7 +194,7 @@ function Sync-SandalDistStage {
         [string]$Config = 'Release'
     )
     $distDir = Join-Path $RepoRoot 'dist'
-    foreach ($sub in @('config', 'certs', 'logs', 'content', 'nav', 'sql\migrations', 'sql\seed', "$Config\config", "$Config\sql\migrations")) {
+    foreach ($sub in @('config', 'sql', 'services', 'tools', 'content', 'nav', 'certs', 'logs', 'launcher', 'sql\migrations', 'sql\seed', "$Config\config", "$Config\sql\migrations")) {
         $null = New-Item -ItemType Directory -Path (Join-Path $distDir $sub) -Force
     }
     $srcConfig = Join-Path $RepoRoot 'src\config'
@@ -132,6 +211,8 @@ function Sync-SandalDistStage {
     if (Test-Path -LiteralPath $caBundle -PathType Leaf) {
         Copy-Item -LiteralPath $caBundle -Destination (Join-Path $distDir 'certs\amazon_ca_bundle.pem') -Force
     }
+    Sync-SandalLauncherStage -RepoRoot $RepoRoot -DistDir $distDir -Config $Config
+    Write-SandalLauncherScripts -DistDir $distDir
     return [pscustomobject]@{ DistDir = $distDir; Config = $Config }
 }
 

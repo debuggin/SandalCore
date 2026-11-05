@@ -1,3 +1,4 @@
+#Requires -Version 7.2
 [CmdletBinding()]
 param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -142,6 +143,10 @@ function Test-SandalNoPythonInScripts {
             $rel = [System.IO.Path]::GetRelativePath($RootPath, $py.FullName).Replace('\', '/')
             $findings.Add("NoPythonInScripts: forbidden Python script in scripts/: $rel")
         }
+        foreach ($bat in @(Get-ChildItem -LiteralPath $scriptsDir -Filter '*.bat' -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+            $rel = [System.IO.Path]::GetRelativePath($RootPath, $bat.FullName).Replace('\', '/')
+            $findings.Add("NoBatInScripts: forbidden .bat script in scripts/: $rel")
+        }
     }
     if ($null -ne $Violations) { foreach ($item in $findings) { $Violations.Add($item) } }
     return , $findings.ToArray()
@@ -176,10 +181,12 @@ function Test-SandalRootDirectoryHierarchy {
     $findings = [System.Collections.Generic.List[string]]::new()
     $null = Test-SandalNoPythonInScripts -RootPath $RepoRoot -Violations $findings
     $allowedRootDirs = @('src', 'build', 'dist', 'deploy', 'docs', 'scripts', '.github')
-    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'GEMINI.md', '.gitignore', '.gitattributes', '.graphifyignore', 'sandal.ps1')
+    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'GEMINI.md', '.gitignore', '.gitattributes', '.graphifyignore', 'sandal.ps1', 'start.bat', 'stop.bat')
     $stealthDirs = @('.git', '.agents', '.claude', '_workspace', '.beads', 'graphify-out')
     foreach ($bat in @(Get-ChildItem -LiteralPath $RepoRoot -Filter '*.bat' -File -Force -ErrorAction SilentlyContinue)) {
-        $findings.Add("NoRootBatFiles: forbidden root .bat file: $($bat.Name)")
+        if ($bat.Name -notin @('start.bat', 'stop.bat')) {
+            $findings.Add("NoRootBatFiles: forbidden root .bat file: $($bat.Name)")
+        }
     }
     if (Test-Path -LiteralPath (Join-Path $RepoRoot '.pytest_cache')) { $findings.Add('NoRootCacheOrGateLocks: forbidden root cache or lock artifact: .pytest_cache') }
     $gateLock = Join-Path $RepoRoot '.beads.gate.lock'

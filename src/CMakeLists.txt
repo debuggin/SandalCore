@@ -130,7 +130,6 @@ if(WIN32)
         clients/launcher/launcher_ui.cpp
         libs/aoccore/auth/ics_token_acl.cpp
     )
-    add_custom_target(SandalLauncher DEPENDS launcher)
     target_include_directories(launcher PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/clients/launcher"
         "${CMAKE_CURRENT_SOURCE_DIR}/libs/aoccore"
@@ -153,12 +152,15 @@ if(WIN32)
     set_target_properties(launcher PROPERTIES FOLDER "Tools")
 endif()
 
-add_custom_target(LauncherBuild
-    COMMAND dotnet build "${CMAKE_CURRENT_SOURCE_DIR}/clients/launcher/SandalLauncher.csproj" -c $<CONFIG>
+add_custom_target(LauncherBuild ALL
+    COMMAND dotnet publish "${CMAKE_CURRENT_SOURCE_DIR}/clients/launcher/SandalLauncher.csproj" -c $<CONFIG> -o "${AOC_DIST_ROOT}/$<CONFIG>" --nologo
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${AOC_DIST_ROOT}/launcher"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${AOC_DIST_ROOT}/$<CONFIG>" "${AOC_DIST_ROOT}/launcher"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "Building Avalonia 11 C# Desktop Shell (SandalLauncher.csproj)"
+    COMMENT "Publishing SandalLauncher (.NET 8 Avalonia) to dist/$<CONFIG> and dist/launcher..."
     VERBATIM
 )
+add_custom_target(SandalLauncher DEPENDS LauncherBuild)
 set_target_properties(LauncherBuild PROPERTIES FOLDER "Tools")
 
 option(AOC_DATA_FREE "Enable --data-free synthetic fixtures for hermetic CTest runs" ON)

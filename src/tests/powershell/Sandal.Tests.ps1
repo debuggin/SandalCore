@@ -207,6 +207,23 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                 if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo 'dist\sql\seed\002_seed.sql') -PathType Leaf)) {
                     throw 'Expected hotfixes/*.sql to be staged to dist/sql/seed/'
                 }
+                if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo 'dist\launcher') -PathType Container)) {
+                    throw 'Expected dist/launcher directory to be created by Sync-SandalDistStage'
+                }
+                foreach ($launcherScript in @('dist\launch_launcher.bat', 'dist\launch_launcher.ps1')) {
+                    if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo $launcherScript) -PathType Leaf)) {
+                        throw "Expected $launcherScript to be materialized by Sync-SandalDistStage"
+                    }
+                }
+                $mockLauncherOut = Join-Path $tmpRepo 'build\dotnet\bin\SandalLauncher\Release\net8.0'
+                $null = New-Item -ItemType Directory -Path $mockLauncherOut -Force
+                [System.IO.File]::WriteAllText((Join-Path $mockLauncherOut 'SandalLauncher.exe'), 'MZ-mock')
+                $null = Sync-SandalDistStage -RepoRoot $tmpRepo -Config 'Release'
+                foreach ($stagedLauncher in @('dist\launcher\SandalLauncher.exe', 'dist\Release\SandalLauncher.exe')) {
+                    if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo $stagedLauncher) -PathType Leaf)) {
+                        throw "Expected $stagedLauncher to be synced from build/dotnet/bin by Sync-SandalDistStage"
+                    }
+                }
                 if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo 'deploy\compose.yml') -PathType Leaf)) {
                     throw 'Expected src/deploy/compose.yml to be materialized to deploy/compose.yml'
                 }
