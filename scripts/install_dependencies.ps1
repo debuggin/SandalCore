@@ -21,6 +21,7 @@
 .PARAMETER SkipDocker
   Do not offer standalone Windows Docker CLI + WSL2 Docker Engine (you run PostgreSQL 17 and the server services natively without containers).
 #>
+#Requires -Version 7.2
 [CmdletBinding()]
 param(
     [switch]$CheckOnly,
@@ -168,6 +169,70 @@ function Install-Winget([string]$id, [string]$name, [string[]]$extra = @()) {
     return $true
 }
 
+function Get-DockerCliState {
+    $hasCli = $null -ne (Get-Command docker -ErrorAction SilentlyContinue)
+    $hasCompose = $false
+    $hasBuildx = $false
+    $desktopInstalled = $IsWindows -and (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe') -PathType Leaf)
+    $desktopActive = $false
+    if ($hasCli) {
+        $null = & docker compose version *> $null
+        $hasCompose = ($LASTEXITCODE -eq 0)
+        $null = & docker buildx version *> $null
+        $hasBuildx = ($LASTEXITCODE -eq 0)
+        if ($env:DOCKER_HOST -notin @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
+            $null = & docker info *> $null
+            if ($LASTEXITCODE -eq 0) { $desktopActive = $true }
+        }
+        if (-not $desktopActive -and $IsWindows) {
+            $null = & docker --host npipe:////./pipe/docker_engine info *> $null
+            if ($LASTEXITCODE -eq 0) { $desktopActive = $true }
+        }
+        if (-not $desktopActive -and $IsWindows) {
+            $null = & docker --context desktop-linux info *> $null
+            if ($LASTEXITCODE -eq 0) { $desktopActive = $true }
+        }
+    }
+    return [pscustomobject]@{
+        HasCli           = $hasCli
+        HasCompose       = $hasCompose
+        HasBuildx        = $hasBuildx
+        DesktopInstalled = $desktopInstalled
+        DesktopActive    = $desktopActive
+        AllCliReady      = ($hasCli -and $hasCompose -and $hasBuildx)
+    }
+}
+
+function Install-MissingDockerComponents {
+    $state = Get-DockerCliState
+    if ($state.HasCli) {
+        Write-Host 'INFO: Docker CLI already installed; skipping Docker.DockerCLI installation.' -ForegroundColor Cyan
+    } else {
+        [void](Install-Winget 'Docker.DockerCLI' 'Docker CLI')
+    }
+    $state = Get-DockerCliState
+    if (-not $state.HasCompose) {
+        [void](Install-Winget 'Docker.DockerCompose' 'Docker Compose')
+    }
+    if (-not $state.HasBuildx) {
+        [void](Install-Winget 'Docker.DockerBuildx' 'Docker Buildx')
+    }
+    $state = Get-DockerCliState
+    if ($state.DesktopActive) {
+        if ($env:DOCKER_HOST -in @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
+            Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
+        }
+        Write-Host 'INFO: Active Docker Desktop daemon detected; preserving existing Docker context and skipping DOCKER_HOST=tcp://[::1]:2375 override.' -ForegroundColor Cyan
+        return
+    }
+    [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://[::1]:2375', 'User')
+    $env:DOCKER_HOST = 'tcp://[::1]:2375'
+    $wslDockerInstaller = Join-Path $PSScriptRoot 'sandal\Install-WslDocker.ps1'
+    if (Test-Path $wslDockerInstaller) {
+        & $wslDockerInstaller
+    }
+}
+
 # ---------------------------------------------------------------- check
 # ~ CoA x C | Y | B ~
 $goNeed = Get-GoRequired
@@ -181,7 +246,8 @@ $goHave = Get-GoVersion
 $items['Go']            = [bool]($goHave -and (-not $goNeed -or (Test-VersionAtLeast $goHave $goNeed)))
 $items['.NET 8 SDK']    = [bool](Find-DotnetSdk8)
 $items['Python 3.10+']  = [bool](Find-Python310)
-$items['Docker']        = [bool](Get-Command docker -ErrorAction SilentlyContinue)
+$dockerCliState = if ($SkipDocker) { [pscustomobject]@{ AllCliReady = [bool](Get-Command docker -ErrorAction SilentlyContinue) } } else { Get-DockerCliState }
+$items['Docker']        = [bool]$dockerCliState.AllCliReady
 
 Write-Host ''
 Write-Host 'Sandal Core dependency check' -ForegroundColor White
@@ -198,7 +264,7 @@ Write-Host ''
 
 $missing = @($items.Keys | Where-Object { -not $items[$_] -and -not ($_ -eq 'Docker' -and $SkipDocker) })
 $wingetNote = if ($script:winget) { 'winget: OK' } else { 'winget: MISSING (needed only to install missing items)' }
-Write-Host "  $wingetNote" 
+Write-Host "  $wingetNote"
 if ($CheckOnly) {
     if ($missing.Count) { Write-Host "Missing: $($missing -join ', ')"; exit 1 }
     Write-Host 'Everything required is installed.'; exit 0
@@ -248,15 +314,7 @@ if (-not $items['Go'] -and (Confirm-Install "Go $goNeed or newer")) {
 }
 if (-not $SkipDocker -and -not $items['Docker'] -and
     (Confirm-Install 'Standalone Windows Docker CLI + WSL2 Docker Engine (Docker.DockerCLI, Docker.DockerCompose, Docker.DockerBuildx + DOCKER_HOST=tcp://[::1]:2375)')) {
-    [void](Install-Winget 'Docker.DockerCLI' 'Docker CLI')
-    [void](Install-Winget 'Docker.DockerCompose' 'Docker Compose')
-    [void](Install-Winget 'Docker.DockerBuildx' 'Docker Buildx')
-    [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://[::1]:2375', 'User')
-    $env:DOCKER_HOST = 'tcp://[::1]:2375'
-    $wslDockerInstaller = Join-Path $PSScriptRoot 'sandal\Install-WslDocker.ps1'
-    if (Test-Path $wslDockerInstaller) {
-        & $wslDockerInstaller
-    }
+    Install-MissingDockerComponents
 }
 if (-not $items['.NET 8 SDK'] -and (Confirm-Install '.NET 8 SDK (builds mapc, which reads your game files)')) {
     [void](Install-Winget 'Microsoft.DotNet.SDK.8' '.NET 8 SDK')

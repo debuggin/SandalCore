@@ -321,4 +321,188 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
             }
         }
     }
+
+    Context 'Get-DockerDesktopState backend & plugin detection (Wave 25A)' {
+        It 'detects Docker Desktop backend including desktop-linux fallback behind stale DOCKER_HOST=:2375' {
+            $tmpExe = Join-Path ([System.IO.Path]::GetTempPath()) "docker-desktop-mock-$([guid]::NewGuid()).exe"
+            $prevHost = if (Test-Path Env:\DOCKER_HOST) { $env:DOCKER_HOST } else { $null }
+            try {
+                Set-Content -LiteralPath $tmpExe -Value 'mock' -Encoding ascii
+                $env:DOCKER_HOST = 'tcp://[::1]:2375'
+                $cmdRunner = {
+                    param([string]$Command, [string[]]$Arguments)
+                    $joined = "$Command $($Arguments -join ' ')"
+                    if ($joined -match '--version|compose version|buildx version') {
+                        return [pscustomobject]@{ ExitCode = 0; Output = '27.3.1' }
+                    }
+                    if ($joined -match '--context desktop-linux info') {
+                        return [pscustomobject]@{ ExitCode = 0; Output = 'docker-desktop|Docker Desktop' }
+                    }
+                    if ($joined -match 'docker info') {
+                        return [pscustomobject]@{ ExitCode = 1; Output = '' }
+                    }
+                    return [pscustomobject]@{ ExitCode = 1; Output = '' }
+                }
+                $state = Get-DockerDesktopState -DockerDesktopExePath $tmpExe -CommandRunner $cmdRunner
+                $state.DesktopInstalled | Should -Be $true
+                $state.CliInstalled | Should -Be $true
+                $state.ComposeInstalled | Should -Be $true
+                $state.BuildxInstalled | Should -Be $true
+                $state.DaemonReachable | Should -Be $true
+                $state.ActiveBackend | Should -Be 'docker-desktop'
+                $state.Endpoint | Should -Be 'context:desktop-linux'
+                $env:DOCKER_HOST | Should -Be 'tcp://[::1]:2375'
+            } finally {
+                if (Test-Path -LiteralPath $tmpExe) { Remove-Item -LiteralPath $tmpExe -Force }
+                if ($null -eq $prevHost) { Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue }
+                else { $env:DOCKER_HOST = $prevHost }
+            }
+        }
+
+        It 'detects wsl-docker backend when DOCKER_HOST is :2375 and Linux daemon responds' {
+            $prevHost = if (Test-Path Env:\DOCKER_HOST) { $env:DOCKER_HOST } else { $null }
+            try {
+                $env:DOCKER_HOST = 'tcp://[::1]:2375'
+                $cmdRunner = {
+                    param([string]$Command, [string[]]$Arguments)
+                    $joined = "$Command $($Arguments -join ' ')"
+                    if ($joined -match '--version|compose version|buildx version') {
+                        return [pscustomobject]@{ ExitCode = 0; Output = '27.3.1' }
+                    }
+                    if ($joined -match 'docker info') {
+                        return [pscustomobject]@{ ExitCode = 0; Output = 'sandal-wsl|Ubuntu 24.04.1 LTS' }
+                    }
+                    return [pscustomobject]@{ ExitCode = 1; Output = '' }
+                }
+                $state = Get-DockerDesktopState -DockerDesktopExePath 'Z:\nonexistent\Docker Desktop.exe' -CommandRunner $cmdRunner
+                $state.DesktopInstalled | Should -Be $false
+                $state.CliInstalled | Should -Be $true
+                $state.ComposeInstalled | Should -Be $true
+                $state.BuildxInstalled | Should -Be $true
+                $state.DaemonReachable | Should -Be $true
+                $state.ActiveBackend | Should -Be 'wsl-docker'
+                $state.Endpoint | Should -Be 'tcp://[::1]:2375'
+            } finally {
+                if ($null -eq $prevHost) { Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue }
+                else { $env:DOCKER_HOST = $prevHost }
+            }
+        }
+
+        It 'reports ActiveBackend=none when CLI or plugins are missing' {
+            $cmdRunner = {
+                param([string]$Command, [string[]]$Arguments)
+                $null = $Command; $null = $Arguments
+                return [pscustomobject]@{ ExitCode = 1; Output = '' }
+            }
+            $state = Get-DockerDesktopState -DockerDesktopExePath 'Z:\nonexistent\Docker Desktop.exe' -CommandRunner $cmdRunner
+            $state.DesktopInstalled | Should -Be $false
+            $state.CliInstalled | Should -Be $false
+            $state.ComposeInstalled | Should -Be $false
+            $state.BuildxInstalled | Should -Be $false
+            $state.DaemonReachable | Should -Be $false
+            $state.ActiveBackend | Should -Be 'none'
+        }
+    }
+
+    Context 'Resolve-WslDockerDistro multi-distro selection & WSL1->WSL2 upgrade (Wave 25A)' {
+        It 'selects Debian or Fedora while ignoring docker-desktop and docker-desktop-data' {
+            $debRunner = {
+                param([string[]]$WslArgs)
+                $null = $WslArgs
+                return [pscustomobject]@{ ExitCode = 0; Output = "docker-desktop`ndocker-desktop-data`nDebian`nFedora-40`n" }
+            }
+            (Resolve-WslDockerDistro -Runner $debRunner) | Should -Be 'Debian'
+
+            $fedRunner = {
+                param([string[]]$WslArgs)
+                $null = $WslArgs
+                return [pscustomobject]@{ ExitCode = 0; Output = "docker-desktop`ndocker-desktop-data`nFedora-40`nArch`n" }
+            }
+            (Resolve-WslDockerDistro -Runner $fedRunner) | Should -Be 'Fedora-40'
+        }
+
+        It 'honors SANDAL_WSL_DISTRO when -Distro is not bound and upgrades WSL1 distro to WSL2 in Ensure-WslUbuntu' {
+            $prevEnv = if (Test-Path Env:\SANDAL_WSL_DISTRO) { $env:SANDAL_WSL_DISTRO } else { $null }
+            $recorded = [System.Collections.Generic.List[string]]::new()
+            try {
+                $env:SANDAL_WSL_DISTRO = 'Debian'
+                $runner = {
+                    param([string[]]$WslArgs)
+                    $joined = $WslArgs -join ' '
+                    $recorded.Add($joined)
+                    if ($joined -eq '-l -q') {
+                        return [pscustomobject]@{ ExitCode = 0; Output = "Ubuntu-24.04`nDebian`n" }
+                    }
+                    if ($joined -eq '-l -v') {
+                        return [pscustomobject]@{
+                            ExitCode = 0
+                            Output   = "  NAME            STATE           VERSION`n* Debian          Stopped         1`n  Ubuntu-24.04    Running         2"
+                        }
+                    }
+                    return [pscustomobject]@{ ExitCode = 0; Output = '' }
+                }.GetNewClosure()
+                $res = Ensure-WslUbuntu -Runner $runner
+                $res.Installed | Should -Be $true
+                $res.Action | Should -Be 'Reused'
+                $res.Distro | Should -Be 'Debian'
+                ($recorded -join "`n") | Should -Match '--set-version Debian 2'
+            } finally {
+                if ($null -eq $prevEnv) { Remove-Item Env:\SANDAL_WSL_DISTRO -ErrorAction SilentlyContinue }
+                else { $env:SANDAL_WSL_DISTRO = $prevEnv }
+            }
+        }
+    }
+
+    Context 'Ensure-LinuxDockerEngine exit-42 systemd restart & multi-distro provision-docker.sh (Wave 25A)' {
+        It 'terminates the WSL2 distro and retries provision-docker.sh when exit code 42 is returned' {
+            $recorded = [System.Collections.Generic.List[string]]::new()
+            $state = @{ ProvCount = 0 }
+            $runner = {
+                param([string[]]$WslArgs)
+                $joined = $WslArgs -join ' '
+                $recorded.Add($joined)
+                if ($joined -eq '-l -q') {
+                    return [pscustomobject]@{ ExitCode = 0; Output = "Debian`n" }
+                }
+                if ($joined -match 'provision-docker\.sh') {
+                    $state.ProvCount = [int]$state.ProvCount + 1
+                    if ($state.ProvCount -eq 1) {
+                        return [pscustomobject]@{ ExitCode = 42; Output = 'INFO: systemd is enabled in /etc/wsl.conf but WSL2 distro must be restarted to boot systemd as PID 1.' }
+                    }
+                    return [pscustomobject]@{ ExitCode = 0; Output = 'INFO: provisioned' }
+                }
+                return [pscustomobject]@{ ExitCode = 1; Output = '' }
+            }.GetNewClosure()
+            $res = Ensure-LinuxDockerEngine -Distro 'Debian' -Runner $runner
+            $res.Ready | Should -Be $true
+            $res.Action | Should -Be 'Provisioned'
+            $res.Distro | Should -Be 'Debian'
+            $all = $recorded -join "`n"
+            $all | Should -Match '--terminate Debian'
+            $state.ProvCount | Should -Be 2
+        }
+
+        It 'verifies provision-docker.sh contains multi-distro package managers, sandal-tcp.conf drop-in, safe daemon.json cleanup, section-aware /etc/wsl.conf merge, and exit 42' {
+            $provScript = Join-Path $repoRoot 'scripts/wsl/provision-docker.sh'
+            $content = Get-Content -LiteralPath $provScript -Raw
+            $content | Should -Match 'sandal-tcp\.conf'
+            $content | Should -Match 'apt-get'
+            $content | Should -Match 'dnf'
+            $content | Should -Match 'yum'
+            $content | Should -Match 'pacman'
+            $content | Should -Match 'zypper'
+            $content | Should -Match 'apk'
+            $content | Should -Match '--ensure-systemd-only'
+            $content | Should -Match 'exit 42'
+            $content | Should -Not -Match ([regex]::Escape('/"hosts"[[:space:]]*:/d'))
+
+            $wslCheck = Invoke-WslRunner -WslArgs @('-d', 'Ubuntu', '--', 'bash', '-c', 'tmp=$(mktemp); printf "[automount]\nenabled=true\n[network]\ngenerateResolvConf=true\n" > "$tmp"; WSL_CONF_PATH="$tmp" SYSTEMD_RUN_DIR="/nonexistent-systemd-dir" bash scripts/wsl/provision-docker.sh --ensure-systemd-only; rc=$?; cat "$tmp"; rm -f "$tmp"; exit $rc')
+            if ($wslCheck.ExitCode -eq 42) {
+                $wslCheck.Output | Should -Match '\[automount\]'
+                $wslCheck.Output | Should -Match '\[network\]'
+                $wslCheck.Output | Should -Match '\[boot\]'
+                $wslCheck.Output | Should -Match 'systemd=true'
+            }
+        }
+    }
 }

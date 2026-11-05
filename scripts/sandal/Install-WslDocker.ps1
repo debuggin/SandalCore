@@ -47,6 +47,55 @@ function Resolve-WslDockerInstallOptions {
     }
 }
 
+function Test-HostDockerDesktopActive {
+    if (-not $IsWindows -or $null -eq (Get-Command docker -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+    if ($env:DOCKER_HOST -notin @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
+        $null = & docker info *> $null
+        if ($LASTEXITCODE -eq 0) { return $true }
+    }
+    $null = & docker --host npipe:////./pipe/docker_engine info *> $null
+    if ($LASTEXITCODE -eq 0) { return $true }
+    $null = & docker --context desktop-linux info *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Install-HostDockerCliComponents {
+    param([bool]$JsonMode)
+    if ($IsWindows) {
+        if ($null -ne (Get-Command docker -ErrorAction SilentlyContinue)) {
+            if (-not $JsonMode) { Write-Host 'INFO: Docker CLI already installed; skipping Docker.DockerCLI installation.' }
+        } else {
+            & winget install --id Docker.DockerCLI -e --source winget --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -ne 0) { throw "winget install failed for Docker.DockerCLI with exit code $LASTEXITCODE." }
+        }
+        $null = & docker compose version *> $null
+        if ($LASTEXITCODE -ne 0) {
+            & winget install --id Docker.DockerCompose -e --source winget --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -ne 0) { throw "winget install failed for Docker.DockerCompose with exit code $LASTEXITCODE." }
+        }
+        $null = & docker buildx version *> $null
+        if ($LASTEXITCODE -ne 0) {
+            & winget install --id Docker.DockerBuildx -e --source winget --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -ne 0) { throw "winget install failed for Docker.DockerBuildx with exit code $LASTEXITCODE." }
+        }
+    }
+    if (Test-HostDockerDesktopActive) {
+        if ($env:DOCKER_HOST -in @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
+            Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
+        }
+        if (-not $JsonMode) {
+            Write-Host 'INFO: Active Docker Desktop daemon detected; preserving existing Docker context and skipping DOCKER_HOST=tcp://[::1]:2375 override.'
+        }
+        return
+    }
+    $env:DOCKER_HOST = 'tcp://[::1]:2375'
+    if ($IsWindows) {
+        [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://[::1]:2375', 'User')
+    }
+}
+
 $inheritedJson = [bool](Get-Variable -Name AsJson -ValueOnly -ErrorAction SilentlyContinue)
 $inheritedDryRun = [bool](Get-Variable -Name IsDryRun -ValueOnly -ErrorAction SilentlyContinue)
 $inheritedNoColor = [bool](Get-Variable -Name UseNoColor -ValueOnly -ErrorAction SilentlyContinue)
@@ -55,18 +104,7 @@ $baseNoColor = [bool]($NoColor -or $inheritedNoColor -or -not [string]::IsNullOr
 $opts = Resolve-WslDockerInstallOptions -BaseDistro $Distro -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -BaseNoColor $baseNoColor -RawArgs $Arguments
 
 if (-not $opts.DryRun -and -not $PSBoundParameters.ContainsKey('Runner') -and $null -eq $Runner) {
-    $env:DOCKER_HOST = 'tcp://[::1]:2375'
-    if ($IsWindows) {
-        [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://[::1]:2375', 'User')
-        if ($null -eq (Get-Command docker -ErrorAction SilentlyContinue)) {
-            foreach ($pkg in @('Docker.DockerCLI', 'Docker.DockerCompose', 'Docker.DockerBuildx')) {
-                & winget install --id $pkg -e --source winget --accept-package-agreements --accept-source-agreements
-                if ($LASTEXITCODE -ne 0) {
-                    throw "winget install failed for $pkg with exit code $LASTEXITCODE."
-                }
-            }
-        }
-    }
+    Install-HostDockerCliComponents -JsonMode $opts.Json
 }
 
 $effectiveRunner = if ($null -ne $Runner) {
@@ -102,18 +140,23 @@ $readyState = Test-WslDockerReady -Distro $opts.Distro -Runner $effectiveRunner
 $isSuccess = [bool]($opts.DryRun -or $readyState.Ready)
 
 $payload = [ordered]@{
-    ok          = $isSuccess
-    command     = 'install-wsl-docker'
-    distro      = $opts.Distro
-    dry_run     = [bool]$opts.DryRun
-    no_color    = [bool]$opts.NoColor
-    socket      = '/var/run/docker.sock'
-    docker_host = 'tcp://[::1]:2375'
-    tcp_2375    = $true
-    wsl_config  = $wslConfig
-    ubuntu      = $ubuntuState
-    engine      = $engineState
-    ready       = $readyState
+    ok             = $isSuccess
+    command        = 'install-wsl-docker'
+    distro         = $opts.Distro
+    dry_run        = [bool]$opts.DryRun
+    no_color       = [bool]$opts.NoColor
+    socket         = '/var/run/docker.sock'
+    docker_host    = 'tcp://[::1]:2375'
+    tcp_2375       = $true
+    wsl_config     = $wslConfig
+    ubuntu         = $ubuntuState
+    engine         = $engineState
+    ready          = $readyState
+    WslConfig      = $wslConfig
+    WslUbuntu      = $ubuntuState
+    DockerEngine   = $engineState
+    DockerEndpoint = 'tcp://[::1]:2375'
+    ProfileWrapper = $false
 }
 
 if ($opts.Json) {
