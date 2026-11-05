@@ -1,5 +1,15 @@
 # Patch notes
 
+## 2026-11-05: 11-container Linux stack, Avalonia `SandalLauncher`, `content.db` v40 auto-rebuild, and E2E API verification
+
+### New
+- Containerized 11-container Linux server stack (`src/deploy/compose.yml` & `deploy/compose.yml`): all C++23 (`world` / `aoc-world`) and Go (`gateway`, `auth`, `character`, `citynode`, `quest`, `mesh`, `mesh-gateway`) services plus `ingress-proxy` (Envoy v1.31.2), `web-admin` (Nginx + Admin UI/BFF), and `postgres` (PostgreSQL 17) build and run inside multi-stage Linux Docker containers (`src/deploy/docker/cpp.Dockerfile`, `src/deploy/docker/go.Dockerfile`) across isolated `edge_net`, `service_net`, and `data_net` networks.
+- Envoy edge ingress (`src/deploy/envoy/envoy.yaml`): unified routing on `:8080` (HTTP/2 & `web-admin` browser UI), `:9090` (gRPC ingress for `auth.v1`, `character.v1`, `citynode.v1`, `quest.v1`, `mesh.v1`, `gateway.v1`, `ics.v1`, and `worldadmin.v1`), and `:50061` (ICS TLS 1.3 edge listener forwarded to `gateway:50061`).
+- Authoritative C++23 `world` (`aoc-world`) on `:7777/udp` with `content.db` v40 auto-rebuild: `start.bat` (`pwsh -File sandal.ps1 run`) and `pwsh -File sandal.ps1 extract` verify `dist/content/content.db` against `contentc` schema version `40` (`Ensure-SandalContentDbCurrent`), trigger fast `contentc` rebuild or full extraction when out of date, hardlink/sync `deploy/content/content.db`, and restart `content.db` consumer containers (`aoc-world`, `aoc-character`, `aoc-citynode`).
+- `.NET 10` Avalonia desktop launcher (`SandalLauncher`, `src/clients/launcher/SandalLauncher.csproj`): single semi-transparent card UI over 3 randomized backgrounds with multi-drive Steam library discovery, `PLAY` pre-authentication, `Create Account` (`409 Conflict` uniqueness validation), `Temp Account` ephemeral sessions, saved logins via `LauncherProfiles.json` / Windows Credential Manager, in-process `LocalTetherListener` on `127.0.0.1:19021/udp` serving `ActiveAccessToken` and `127.0.0.1:50061` directly from memory (zero token files on disk), and native in-game character creation over ICS `:50061`.
+- TLS certificate reuse and user-scoped trust (`scripts/sandal/certs.ps1`): preserves user-supplied certificates (`dist/certs/server.pem` + `server.key`, such as Let's Encrypt wildcard ECDSA P-256 certs) untouched while purging stale `ca.*`/`client.*` files, or generates local development certificates and imports `ca.crt` into `Cert:\CurrentUser\Root` (user-scoped, zero administrator privileges required) alongside `SandalLauncher` `X509ChainPolicy.CustomTrustStore`.
+- Live functional API and 10-stage fake-client play-flow verification (`scripts/test_functional_apis.ps1` & `pwsh -File sandal.ps1 test`): automated end-to-end verification across all HTTP, gRPC, ICS TLS `:50061`, and UDP `:7777` world entry/gameplay stages.
+
 ## 2026-11-04: Summoner pets, multiplayer presence, mob debuffs, consumables and 30 Hz tick scaling
 
 ### New
@@ -38,32 +48,21 @@
   quantities against overflow, and skipped `navmesh` rebuilds in `scripts\extract_game_data.ps1` unless map geometry or
   city node inputs in `src/server/world` change.
 
-## 2026-10-17: The towns' ground, the launcher and hardening
+## 2026-10-17: The towns' ground, the launcher (historical — superseded by `.NET 10` Avalonia `SandalLauncher` in `2026-11-05`) and hardening
 
 ### New
 - Solid ground in the five towns: Winstead, Joeva, New Aela, Halcyon and Miraleth have their real floor, read from the
   game's own town platforms. Logins, teleports, mount summons, dismounts and respawns inside a town land on its streets.
 - A safety net under the towns: a player who falls far below a town is put back on its floor within a few seconds.
-- Keep me signed in: a box on the launcher's sign-in form. A sign-in with the box ticked is saved in Windows Credential
-  Manager (for your Windows account only, never in a file or a log). From then on the launcher signs in by itself at
-  start: three seconds with Cancel, then the sign-in, retried for up to a minute while the servers start. A refused
-  sign-in keeps the saved one and shows the form; Logout forgets it. It signs in by itself only against a server on
-  this PC.
-- LAUNCH GAME: after signing in, the player presses LAUNCH GAME to start the game. The launch script no longer starts
-  the game, and a sign-in never starts it. While the game is open the button reads GAME RUNNING; if a game is already
-  open it says so and starts nothing, so a second game client cannot be opened by mistake.
+- *(Historical — superseded by `.NET 10` Avalonia `SandalLauncher` in `2026-11-05`)* Keep me signed in: a box on the legacy launcher's sign-in form saved credentials in Windows Credential Manager and retried sign-in against local loopback.
+- *(Historical — superseded by `.NET 10` Avalonia `SandalLauncher` **`PLAY`** button and in-memory `LocalTetherListener` `:19021/udp` in `2026-11-05`)* LAUNCH GAME: started the game client after sign-in and prevented duplicate client launches.
 - The data extractor builds the towns' floor: a new step, `townfloors`, reads the two town platform maps of your own
   install into `dist\content\town_platforms.bin` (a few seconds).
 
 ### Fixed
 - Logging in inside a town takes about 30 seconds instead of about two minutes: the server sends a town's buildings and
   streets during the login, before the character appears, so the client finds its floor.
-- Launcher: the game path is saved only next to the launcher and only when it changes (it used to be written to three
-  places, including the repository's own `src\config\paths.json`); Auto-Detect searches fixed drives only; sign-in requests
-  time out.
-- Launcher sign-in is stricter: the saved sign-in goes only to `127.0.0.1`, `localhost` or `::1`, written exactly
-  like that; the host and port are read once per sign-in and used for every retry; a reply is limited to 64 KB, a
-  request to 15 seconds, and a redirect is never followed; registry text and long folder names are read safely.
+- *(Historical — superseded by `.NET 10` Avalonia `SandalLauncher` in `2026-11-05`)* Legacy launcher path persistence (`dist\config\paths.json`) and loopback sign-in request bounds (`127.0.0.1`, `localhost`, `::1`, 64 KB response limit, 15 s timeout).
 - Hardening, thanks to DuskyProjects for the bounds and overflow checks: the packet reader, packet framing, bunch
   headers and replication handles check sizes and numbers instead of reading past their end; so do the navigation mesh,
   geometry, road, city node and UDP address readers and the map tool's geometry reader. The per-account character limit

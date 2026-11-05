@@ -9,7 +9,7 @@ This directory indexes the clean-room bit-stream wire specifications for Unreal 
 The reverse-engineering workbench (`scripts/re_workbench.ps1`) reconciles three independent sources before a codec enters `src/libs/aocnet/`:
 
 1. **Static Schema (`S` — Rizin CFG + USMAP)**: Extracts `UScriptStruct::ICppStructOps` trait flags (`WithNetSerializer`, `WithNetSharedSerialization`) and property handles pinned by `(ExecSHA256, PdbGUID, EngineNetVer, GameNetVer)` via `scripts/re_workbench.ps1` (`static_rizin_usmap` and `manifest_verifier` stages).
-2. **Runtime Instrumentation (`R` — Frida `CModule` Ring Hook)**: Captures pre- and post-call `FArchive` bit-cursor positions (`BitTraceSlot`, `< 150 ns` hot-path budget) via a 65,536-slot lock-free SPSC ring buffer in `cmodule/ring_hook.c` (`frida_session` stage in `scripts/re_workbench.ps1`).
+2. **Runtime Instrumentation (`R` — Frida `CModule` Ring Hook)**: Captures pre- and post-call `FArchive` bit-cursor positions (`BitTraceSlot`, `< 150 ns` hot-path budget) via a 65,536-slot lock-free SPSC ring buffer in `src/tools/re-workbench/cmodule/ring_hook.c` and the Frida agent in `src/tools/re-workbench/agent/index.ts` (`frida_session` stage in `scripts/re_workbench.ps1`).
 3. **Differential Bit-Oracle & 3-Way Reconciler (`I` — `0`-Residue Verification)**: Cross-joins static schemas, runtime bit deltas, and server codecs via `scripts/re_workbench.ps1` (`bit_oracle`, `reconcile_3way`, `gap_correlator`, and `spec_generator` stages), requiring `is_error == False` and `leftover_bits == 0` across all captured bunches.
 
 ## 2. P0 `NetSerializeStruct` Wire Codecs & `PropType::Unknown` Guard

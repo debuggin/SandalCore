@@ -2,7 +2,7 @@
 
 Reads what the creatures of the game attack with out of your own game files, for the creatures that play their attacks with their own animation.
 
-    dotnet build/dotnet/bin/npcabilities/Release/net8.0/npcabilities.dll read --dir AOC/Content/DesignAssets/Population/NPC/Beast/Rabid [--dir ...] [--senses-dir AOC/Content/DesignAssets/Population] [--out-dir dist/content] [--check]
+    dotnet build/dotnet/bin/npcabilities/Release/net10.0/npcabilities.dll read --paks "<PakDir>" --usmap src/config/layouts/aoc.usmap --dir AOC/Content/DesignAssets/Population/NPC/Beast/Rabid [--dir ...] [--senses-dir AOC/Content/DesignAssets/Population] [--out-dir dist/content] [--check]
 
 `scripts/extract_game_data.ps1` runs it as the `npcabilities` step (`-Only tools,npcabilities`); it needs only the game's containers (no map read, about a minute).
 The folders it reads are listed in the script (`$NpcFolders`): one per creature kind, holding the kind's Blueprints and the animation montages beside them.
@@ -78,9 +78,9 @@ its rotation rate: its facing never jumps, and it is never stopped only to turn.
 
 ## The people's looks and names
 
-    dotnet build/dotnet/bin/npcabilities/Release/net8.0/npcabilities.dll looks [--out-dir dist/content] [--check]
-    pwsh -File src/tools/npcabilities/looks.ps1 --db dist/content/content.db --out dist/content/npc_appearances.tsv --names-out dist/content/npc_names.tsv [--check]
-    pwsh -File src/tools/npcabilities/targeting.ps1 --db dist/content/content.db --abilities dist/content/npc_abilities.tsv --montages dist/content/npc_montages.tsv --out dist/content/npc_targeting.tsv [--check]
+    dotnet build/dotnet/bin/npcabilities/Release/net10.0/npcabilities.dll looks --paks "<PakDir>" --usmap src/config/layouts/aoc.usmap [--out-dir dist/content] [--check]
+    pwsh -File src/tools/npcabilities/looks.ps1 --content-db dist/content/content.db --out-dir dist/content [--appearances-out dist/content/npc_appearances.tsv --names-out dist/content/npc_names.tsv]
+    pwsh -File src/tools/npcabilities/targeting.ps1 --content-db dist/content/content.db --abilities dist/content/npc_abilities.tsv --out dist/content/npc_targeting.tsv
 
 The same step (`-Only tools,npcabilities`) also writes four tables that dress and name the humanoid NPCs (about a minute more; `world` reads them from the folder of `npc_motion.tsv`):
 

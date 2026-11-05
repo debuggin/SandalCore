@@ -3,7 +3,7 @@
 > [!NOTE]
 > This roadmap reflects the ongoing development progress of SandalCore. SandalCore is a work in progress, not a final product. Features and milestones evolve continuously as the protocol is worked out and the server emulation advances.
 
-**Last updated:** 4 November 2026
+**Last updated:** 5 November 2026
 
 ---
 
@@ -13,7 +13,7 @@
 
 **Current phases:** `6- Progression and items`, `7- Combat and abilities`, `8- Gathering and professions`, `9- Living world`, `10- City nodes`, `11- Quests`, `12- Economy` and `13- Social` (all in progress)
 
-Phases 1-5 (the network protocol, login, entering the world, stats and mounts) are complete and validated against retail captures and test suites in `src/server/world/tests`. Phases 6-13 work in their first parts, and what is left of each is named in its line below and under "Achieved and left". Since the first phases the server gained NPC conversations and the first part of quests, vendors and currency, crafting at the towns' stations, item rarities, weapon combo finishers, magic weapon scaling, mobs that notice and chase by their own settings, storage, NPC looks and names, and the Embersprings.
+Phases 1-5 (the network protocol, login, entering the world, stats and mounts) are complete and validated against retail captures and test suites in `src/tests/cpp/`. Phases 6-13 work in their first parts, and what is left of each is named in its line below and under "Achieved and left". Since the first phases the server gained NPC conversations and the first part of quests, vendors and currency, crafting at the towns' stations, item rarities, weapon combo finishers, magic weapon scaling, mobs that notice and chase by their own settings, storage, NPC looks and names, and the Embersprings.
 
 ---
 

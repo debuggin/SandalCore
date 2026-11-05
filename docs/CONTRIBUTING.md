@@ -22,25 +22,30 @@ To keep the repository clean, legal, and safe for everyone, all contributors mus
 
 Before submitting changes, ensure your modifications compile cleanly and pass all test suites.
 
-Run `scripts\extract_game_data.ps1` once first (`scripts\build.ps1 -Target all` does): the build and the tests need the game data it makes from your own Ashes of Creation install. Everything it writes is git-ignored (`dist/` and the files listed in `.gitignore`); never commit any of it.
+Run `pwsh -File sandal.ps1 extract` once first (`start.bat` runs this automatically): the build and the tests require the game data extracted from your installed Ashes of Creation client (`scripts\extract_game_data.ps1`). Everything written to `dist/`, `deploy/`, and `build/` (as well as the generated files listed in `.gitignore`) is git-ignored; never commit any extracted or generated game data.
 
 - **Go Services** (in `src/server/services/`):
   ```bash
   go vet ./...
   go test ./...
   ```
-- **C++ Components**:
-  Build using CMake and run the test suite:
+- **Stack Verification & Functional API Tests**:
+  Build the stack and run the verification & functional API test suites:
   ```powershell
-  powershell -File scripts/run_tests.ps1
+  pwsh -File sandal.ps1 test
+  pwsh -File scripts/test_functional_apis.ps1
   ```
-- **Python / PowerShell Scripts**:
+- **PowerShell Scripts**:
   Verify scripts execute without syntax or parsing errors.
 
 ### Commit Messages
 
-- Use clear, past-tense commit titles, as the project's own history does: e.g., `Fixed harvest channel cancel state`, `Added validation for mount possession RPC`.
-- Include the rationale behind non-obvious fixes.
+- Format commit subject lines using **Conventional Commits v1.0.0** (`<type>(<scope>): <imperative summary>`, `<= 72` characters), such as:
+  - `feat(world): implement summoner pet stance commands`
+  - `fix(gateway): validate ICS session ticket expiration`
+  - `docs(readme): document content.db v40 auto-rebuild flow`
+- Supported types include `feat`, `fix`, `refactor`, `perf`, `test`, `docs`, `build`, `ops`, `ci`, `chore`, and `revert`.
+- Include the rationale (`WHY`) behind non-obvious architectural or protocol fixes in the commit body.
 
 ---
 
