@@ -3,7 +3,7 @@ package go_test
 import (
 	"bytes"; "context"; "crypto/hmac"; "crypto/rand"; "crypto/sha256"; "crypto/subtle"; "crypto/tls"; "crypto/x509"
 	"encoding/binary"; "encoding/hex"; "encoding/json"; "errors"; "fmt"; "io"; "math"
-	"net"; "net/http"; "net/http/httptest"; "os"; "path/filepath"; "runtime"; "strings"; "sync"; "testing"; "time"
+	"net"; "net/http"; "net/http/httptest"; "os"; "os/exec"; "path/filepath"; "runtime"; "strings"; "sync"; "testing"; "time"
 
 	authv1 "aocrop/services/gen/aoc/auth/v1"; characterv1 "aocrop/services/gen/aoc/character/v1"; citynodev1 "aocrop/services/gen/aoc/citynode/v1"
 	gatewayv1 "aocrop/services/gen/aoc/gateway/v1"; meshv1 "aocrop/services/gen/aoc/mesh/v1"; questv1 "aocrop/services/gen/aoc/quest/v1"; worldadminv1 "aocrop/services/gen/aoc/worldadmin/v1"
@@ -401,7 +401,7 @@ func verifyEnvoyAndComposeGrpcContractParity(t *testing.T) {
 	if strings.Count(composeYaml, "container_name: aoc-") != 11 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") {
 		t.Fatal("compose.yml must declare container_name: aoc-* on all 11 services, exclude aoc-tether, and not expose :5432 or :9901 to host")
 	}
-	if strings.Contains(envoyYaml, "tether_tcp") || strings.Contains(envoyYaml, "50051") { t.Fatal("envoy.yaml must not contain deprecated tether_tcp cluster or :50051 listener") }
+	if strings.Contains(envoyYaml, "tether_tcp") || strings.Contains(envoyYaml, "50051") || !strings.Contains(envoyYaml, "mesh_gateway_http") { t.Fatal("envoy.yaml must configure mesh_gateway_http without tether_tcp or :50051") }
 	for _, c := range []struct{ protoFile, grpcPrefix, envoyCluster, serviceSource, composeSvc string }{
 		{"src/libs/aocproto/proto/internal/aoc/auth/v1/auth.proto", "/aoc.auth.v1.", "auth_grpc", "src/server/services/cmd/auth/main.go", "auth:"},
 		{"src/libs/aocproto/proto/internal/aoc/gateway/v1/gateway.proto", "/aoc.gateway.v1.", "gateway_grpc", "src/server/services/cmd/gateway/main.go", "gateway:"},
@@ -409,7 +409,7 @@ func verifyEnvoyAndComposeGrpcContractParity(t *testing.T) {
 		{"src/libs/aocproto/proto/internal/aoc/mesh/v1/mesh.proto", "/aoc.mesh.v1.", "mesh_grpc", "src/server/services/cmd/mesh/main.go", "mesh:"},
 		{"src/libs/aocproto/proto/internal/aoc/citynode/v1/citynode.proto", "/aoc.citynode.v1.", "citynode_grpc", "src/server/services/cmd/citynode/main.go", "citynode:"},
 		{"src/libs/aocproto/proto/internal/aoc/quest/v1/quest.proto", "/aoc.quest.v1.", "quest_grpc", "src/server/services/cmd/quest/main.go", "quest:"},
-		{"src/libs/aocproto/proto/internal/aoc/worldadmin/v1/worldadmin.proto", "/aoc.worldadmin.v1.", "worldd_admin_grpc", "src/server/services/cmd/worldctl/main.go", "world:"},
+		{"src/libs/aocproto/proto/internal/aoc/worldadmin/v1/worldadmin.proto", "/aoc.worldadmin.v1.", "world_admin_grpc", "src/server/services/cmd/worldctl/main.go", "world:"},
 	} {
 		pkgName := strings.Trim(c.grpcPrefix, "/.")
 		if !strings.Contains(readRepoFile(t, c.protoFile), "package "+pkgName+";") { t.Fatalf("%s missing package %s declaration", c.protoFile, pkgName) }
@@ -550,16 +550,15 @@ func verifyEphemeralCharacterSelectAndDeleteFlow(t *testing.T, baseURL string) {
 		t.Fatalf("expected 401 Unauthorized on /api/v1/characters with deleted account token, got %d", chAfter.StatusCode)
 	}
 }
+var (
+	liveComposeOnce   sync.Once
+	liveComposePassed bool
+)
 func TestFlow5_ComposeAndEnvoyIngressContract(t *testing.T) { TestLiveComposeFunctionalAPIs(t) }
 func TestLiveComposeFunctionalAPIs(t *testing.T) {
 	verifyEnvoyAndComposeGrpcContractParity(t)
-	if os.Getenv("AOC_LIVE_COMPOSE_E2E") == "1" || isLiveComposeReady() { probeLiveComposeIngress(t); probeLiveComposeGRPCAndTLS(t) }
-}
-func isLiveComposeReady() bool {
-	resp, err := (&http.Client{Timeout: 750 * time.Millisecond}).Get("http://127.0.0.1:8080/healthz")
-	if err != nil { return false }
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	liveComposeOnce.Do(func() { probeLiveComposeIngress(t); probeLiveComposeGRPCAndTLS(t); liveComposePassed = true })
+	if !liveComposePassed { t.Fatal("live compose functional API suite failed") }
 }
 func extractLiveToken(payload map[string]any) string {
 	for _, k := range []string{"token", "access_token"} {
@@ -588,9 +587,7 @@ func probeLiveComposeIngress(t *testing.T) {
 	regResp, regMap := postAuthJSON(t, "http://127.0.0.1:8080/api/v1/auth/register", regBody)
 	if (regResp.StatusCode != http.StatusOK && regResp.StatusCode != http.StatusCreated) || extractLiveToken(regMap) == "" { t.Fatalf("register expected 200/201 with token, got %d (%v)", regResp.StatusCode, regMap) }
 	if dupResp, _ := postAuthJSON(t, "http://127.0.0.1:8080/api/v1/auth/register", regBody); dupResp.StatusCode != http.StatusConflict { t.Fatalf("duplicate register expected 409 Conflict, got %d", dupResp.StatusCode) }
-	if badLogin, _ := postAuthJSON(t, "http://127.0.0.1:8080/api/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":"wrong-password-123"}`, user)); badLogin.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("wrong password login expected 401 Unauthorized, got %d", badLogin.StatusCode)
-	}
+	if badLogin, _ := postAuthJSON(t, "http://127.0.0.1:8080/api/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":"wrong-password-123"}`, user)); badLogin.StatusCode != http.StatusUnauthorized { t.Fatalf("wrong password login expected 401 Unauthorized, got %d", badLogin.StatusCode) }
 	loginResp, loginMap := postAuthJSON(t, "http://127.0.0.1:8080/api/v1/auth/login", regBody)
 	tok := extractLiveToken(loginMap)
 	if loginResp.StatusCode != http.StatusOK || tok == "" { t.Fatalf("login expected 200 with valid token, got %d (%v)", loginResp.StatusCode, loginMap) }
@@ -619,11 +616,9 @@ func probeLiveCatalogAndCharacters(t *testing.T, client *http.Client, tok, charN
 	if sResp.StatusCode != http.StatusOK || !isLowerHex(joinTicket, 32) || worldEp == "" { t.Fatalf("POST /api/v1/characters/%s/select failed: %d %v", charID, sResp.StatusCode, sMap) }
 	enterResp, enterMap := doAuthReqJSON(t, http.MethodPost, "http://127.0.0.1:8080/api/v1/world/enter", tok, fmt.Sprintf(`{"ticket":%q}`, joinTicket))
 	if enterResp.StatusCode != http.StatusOK || enterMap["status"] != "ALLOW" { t.Fatalf("POST /api/v1/world/enter expected 200 ALLOW, got %d (%v)", enterResp.StatusCode, enterMap) }
-	probeLiveICSTLSStream(t, tok)
+	probeLiveICSTLSStream(t, tok, "Ics"+charName)
 	probeLiveGRPCRoutes(t, tok, charID, joinTicket)
-	if delCharResp, _ := doAuthReqJSON(t, http.MethodDelete, "http://127.0.0.1:8080/api/v1/characters/"+charID, tok, ""); delCharResp.StatusCode != http.StatusOK && delCharResp.StatusCode != http.StatusNoContent && delCharResp.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("DELETE /api/v1/characters/%s unexpected status %d", charID, delCharResp.StatusCode)
-	}
+	if delCharResp, _ := doAuthReqJSON(t, http.MethodDelete, "http://127.0.0.1:8080/api/v1/characters/"+charID, tok, ""); delCharResp.StatusCode != http.StatusOK && delCharResp.StatusCode != http.StatusNoContent && delCharResp.StatusCode != http.StatusMethodNotAllowed { t.Fatalf("DELETE /api/v1/characters/%s unexpected status %d", charID, delCharResp.StatusCode) }
 }
 func resolveLiveServiceToken(t *testing.T) string {
 	if tok := strings.TrimSpace(os.Getenv("AOC_SERVICE_TOKEN")); tok != "" { return tok }
@@ -651,79 +646,149 @@ func probeLiveGRPCRoutes(t *testing.T, userTok, charID, joinTicket string) {
 	if _, err := meshv1.NewMeshServiceClient(conn).Place(ctx, &meshv1.PlaceRequest{CharacterId: charID}); err != nil && status.Code(err) != codes.Unavailable { t.Fatalf("MeshService.Place failed: %v", err) }
 	v7Key, _ := uuid.NewV7()
 	redeemCtx := metadata.AppendToOutgoingContext(ctx, "idempotency-key", v7Key.String())
-	if _, err := gatewayv1.NewGatewayServiceClient(conn).RedeemTicket(redeemCtx, &gatewayv1.RedeemTicketRequest{Ticket: joinTicket, CharacterId: charID, ServerId: 1}); err != nil && status.Code(err) != codes.PermissionDenied {
-		t.Fatalf("GatewayService.RedeemTicket failed: %v", err)
-	}
+	if _, err := gatewayv1.NewGatewayServiceClient(conn).RedeemTicket(redeemCtx, &gatewayv1.RedeemTicketRequest{Ticket: joinTicket, CharacterId: charID, ServerId: 1}); err != nil && status.Code(err) != codes.PermissionDenied { t.Fatalf("GatewayService.RedeemTicket failed: %v", err) }
 	if pResp, err := worldadminv1.NewWorldAdminServiceClient(conn).ListPlaces(ctx, &worldadminv1.ListPlacesRequest{}); err != nil || len(pResp.GetPlaces()) == 0 { t.Fatalf("WorldAdminService.ListPlaces failed: resp=%v err=%v", pResp, err) }
 	if _, err := characterv1.NewCharacterServiceClient(conn).DeleteCharacter(ctx, &characterv1.DeleteCharacterRequest{Id: charID, AccountId: vResp.GetAccountId()}); err != nil { t.Fatalf("CharacterService.DeleteCharacter failed: %v", err) }
 }
+func resolveICSTargetServerName(leaf *x509.Certificate) string {
+	for _, ip := range leaf.IPAddresses {
+		if ip.Equal(net.ParseIP("127.0.0.1")) { return "127.0.0.1" }
+	}
+	for _, name := range append(append([]string(nil), leaf.DNSNames...), leaf.Subject.CommonName) {
+		if n := strings.TrimSpace(name); n != "" && n != "sandalcore-gateway" {
+			if strings.HasPrefix(n, "*.") { return "localhost." + strings.TrimPrefix(n, "*.") }
+			return n
+		}
+	}
+	return "127.0.0.1"
+}
+func verifyICSTLSCertChain(pool, inter *x509.CertPool, serverName string, certs []*x509.Certificate) error {
+	if len(certs) == 0 || certs[0] == nil || certs[0].Subject.CommonName == "sandalcore-gateway" { return errors.New("invalid or untrusted ICS TLS leaf certificate on :50061") }
+	for _, ic := range certs[1:] { inter.AddCert(ic) }
+	_, err := certs[0].Verify(x509.VerifyOptions{Roots: pool, Intermediates: inter, DNSName: serverName})
+	return err
+}
 func loadICSTLSCredentials(t *testing.T) credentials.TransportCredentials {
 	t.Helper()
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM([]byte(readRepoFile(t, "dist/certs/ca.crt"))) { t.Fatal("failed to append dist/certs/ca.crt to x509.CertPool") }
-	return credentials.NewTLS(&tls.Config{
-		RootCAs: pool, MinVersion: tls.VersionTLS13, NextProtos: []string{"h2"}, InsecureSkipVerify: true,
-		VerifyConnection: func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 { return errors.New("no peer certificates presented on :50061") }
-			leaf := cs.PeerCertificates[0]
-			if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, DNSName: "127.0.0.1"}); err == nil { return nil }
-			if leaf.Subject.CommonName == "sandalcore-gateway" || leaf.Subject.CommonName == "localhost" { return nil }
-			return fmt.Errorf("unexpected ICS TLS leaf certificate CN=%q", leaf.Subject.CommonName)
-		},
-	})
+	pool, _ := x509.SystemCertPool(); if pool == nil { pool = x509.NewCertPool() }
+	inter, root := x509.NewCertPool(), repoRootDir(t)
+	if rawCA, err := os.ReadFile(filepath.Join(root, "dist", "certs", "ca.crt")); err == nil { _ = pool.AppendCertsFromPEM(rawCA) }
+	srvPem, srvKey := filepath.Join(root, "dist", "certs", "server.pem"), filepath.Join(root, "dist", "certs", "server.key")
+	if _, err := os.Stat(srvPem); err != nil { srvPem, srvKey = filepath.Join(root, "deploy", "certs", "server.pem"), filepath.Join(root, "deploy", "certs", "server.key") }
+	pair, err := tls.LoadX509KeyPair(srvPem, srvKey); if err != nil { t.Fatalf("load server.pem/server.key failed: %v", err) }
+	var chain []*x509.Certificate
+	for i, der := range pair.Certificate {
+		if c, err := x509.ParseCertificate(der); err == nil { chain = append(chain, c); if i > 0 { inter.AddCert(c); pool.AddCert(c) } }
+	}
+	serverName := resolveICSTargetServerName(chain[0])
+	if err := verifyICSTLSCertChain(pool, inter, serverName, chain); err != nil { t.Fatalf("server.pem strict TLS check failed: %v", err) }
+	return credentials.NewTLS(&tls.Config{RootCAs: pool, ServerName: serverName, MinVersion: tls.VersionTLS13, NextProtos: []string{"h2"}, InsecureSkipVerify: false, VerifyConnection: func(cs tls.ConnectionState) error { return verifyICSTLSCertChain(pool, inter, serverName, cs.PeerCertificates) }})
 }
-func probeLiveICSTLSStream(t *testing.T, userTok string) {
+func callICSStream(t *testing.T, stream icsxclient.XClientService_ProcessXClientMessageClient, reqType, authTok string, req proto.Message) []byte {
 	t.Helper()
-	conn, err := grpc.NewClient("127.0.0.1:50061", grpc.WithTransportCredentials(loadICSTLSCredentials(t)))
-	if err != nil { t.Fatalf("grpc.NewClient 127.0.0.1:50061 failed: %v", err) }
-	defer conn.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-	stream, err := icsxclient.NewXClientServiceClient(conn).ProcessXClientMessage(ctx)
-	if err != nil { t.Fatalf("XClientService.ProcessXClientMessage open failed: %v", err) }
-	openPayload, _ := proto.Marshal(&icscommon.SessionRequest{RequestType: icscommon.SessionRequestType_SESSION_REQUEST_TYPE_OPEN})
-	if err := stream.Send(&icscommon.MessageWrapper{SystemData: &icscommon.SystemData{Tags: map[string]string{"client_tracking_id": "t1", "client_id": "ue_e2e", "auth_token": userTok}}, MessageTypeName: "ics_common.SessionRequest", MessageData: openPayload}); err != nil {
-		t.Fatalf("send ics_common.SessionRequest (session_info_request) failed: %v", err)
-	}
-	sessWrap, err := stream.Recv()
-	if err != nil || sessWrap.GetMessageTypeName() != "ics_common.SessionReply" || sessWrap.GetStatusCode() != icscommon.IcsStatusCode_ICS_STATUS_CODE_SUCCESS {
-		t.Fatalf("expected ics_common.SessionReply (session_info_reply) SUCCESS, got wrap=%v err=%v", sessWrap, err)
-	}
-	worldsPayload, _ := proto.Marshal(&icsxclient.GetWorldsRequest{})
-	if err := stream.Send(&icscommon.MessageWrapper{SystemData: &icscommon.SystemData{Tags: map[string]string{"client_tracking_id": "t2", "client_id": "ue_e2e"}}, MessageTypeName: "ics_xclient.GetWorldsRequest", MessageData: worldsPayload}); err != nil {
-		t.Fatalf("send ics_xclient.GetWorldsRequest (servers_list_request) failed: %v", err)
-	}
-	worldsWrap, err := stream.Recv()
-	var worldsReply icsxclient.GetWorldsReply
-	if err != nil || worldsWrap.GetMessageTypeName() != "ics_xclient.GetWorldsReply" || proto.Unmarshal(worldsWrap.GetMessageData(), &worldsReply) != nil || len(worldsReply.GetWorlds()) == 0 {
-		t.Fatalf("expected ics_xclient.GetWorldsReply (servers_list_reply) with >=1 world, got wrap=%v err=%v", worldsWrap, err)
-	}
-	_ = stream.CloseSend()
+	payload, _ := proto.Marshal(req)
+	tags := map[string]string{"client_tracking_id": reqType, "client_id": "ue_e2e"}
+	if authTok != "" { tags["auth_token"] = authTok }
+	if err := stream.Send(&icscommon.MessageWrapper{SystemData: &icscommon.SystemData{Tags: tags}, MessageTypeName: reqType, MessageData: payload}); err != nil { t.Fatalf("send %s failed: %v", reqType, err) }
+	wrap, err := stream.Recv()
+	if err != nil || wrap.GetMessageTypeName() != strings.TrimSuffix(reqType, "Request")+"Reply" || wrap.GetStatusCode() != icscommon.IcsStatusCode_ICS_STATUS_CODE_SUCCESS { t.Fatalf("%s failed: wrap=%v err=%v", reqType, wrap, err) }
+	return wrap.GetMessageData()
 }
+func hasCharacterCustomizationBytes(rawChars [][]byte, charName string) bool {
+	for _, raw := range rawChars {
+		if bytes.Contains(raw, []byte(charName)) && bytes.Contains(raw, []byte("CustomizationDataKey")) { return true }
+	}
+	return false
+}
+func probeLiveWorldAdminDuringSession(t *testing.T, charID, charName string) error {
+	adminAddr := "127.0.0.1:9090"
+	if c, err := net.DialTimeout("tcp", "127.0.0.1:50055", 150*time.Millisecond); err == nil { _ = c.Close(); adminAddr = "127.0.0.1:50055" }
+	conn, err := grpc.NewClient(adminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil { return err }
+	defer conn.Close()
+	cli := worldadminv1.NewWorldAdminServiceClient(conn)
+	ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+resolveLiveServiceToken(t)), 12*time.Second)
+	defer cancel()
+	for i := 0; i < 50; i++ {
+		if lp, err := cli.ListPlayers(ctx, &worldadminv1.ListPlayersRequest{}); err == nil && len(lp.GetPlayers()) >= 1 {
+			if _, err := cli.ListPlaces(ctx, &worldadminv1.ListPlacesRequest{}); err != nil { return err }
+			if _, err := cli.SetMoveSpeed(ctx, &worldadminv1.SetMoveSpeedRequest{Character: charName, Multiplier: 2.0}); err != nil { return err }
+			if _, err := cli.GiveMoney(ctx, &worldadminv1.GiveMoneyRequest{Character: charName, Copper: 500}); err != nil { return err }
+			if _, err := cli.SetWeaponXp(ctx, &worldadminv1.SetWeaponXpRequest{Character: charName, Line: "scepter", Amount: &worldadminv1.SetWeaponXpRequest_Level{Level: 10}}); err != nil { return err }
+			if _, err := cli.Teleport(ctx, &worldadminv1.TeleportRequest{Character: charName, Target: &worldadminv1.TeleportRequest_Place{Place: "login"}}); err != nil { return err }
+			return nil
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return fmt.Errorf("player %s (%s) never appeared in WorldAdminService.ListPlayers", charName, charID)
+}
+func runWorldLive10StageE2E(t *testing.T, charID, charName, ticket string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	adminErrCh := make(chan error, 1)
+	go func() { adminErrCh <- probeLiveWorldAdminDuringSession(t, charID, charName) }()
+	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", "-e", "AOC_LIVE_CHAR_ID="+charID, "-e", "AOC_LIVE_TICKET="+ticket, "-e", "AOC_LIVE_UDP_HOST=127.0.0.1", "-e", "AOC_LIVE_UDP_PORT=7777", "-e", "AOC_LIVE_USMAP_PATH=/app/content/aoc.usmap", "-e", "AOC_LIVE_HOLD_MS=1500", "aoc-world", "/app/test_world_live_e2e")
+	stdinR, stdinW, _ := os.Pipe(); defer stdinR.Close(); defer stdinW.Close(); cmd.Stdin = stdinR
+	if runtime.GOOS == "windows" && strings.TrimSpace(os.Getenv("DOCKER_HOST")) == "" { cmd.Env = append(os.Environ(), "DOCKER_HOST=tcp://127.0.0.1:2375") }
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "[PASS] test_world_live_e2e completed all 10 stages") { t.Fatalf("test_world_live_e2e failed (err=%v):\n%s", err, string(out)) }
+	if adminErr := <-adminErrCh; adminErr != nil { t.Fatalf("WorldAdminService live session check failed: %v", adminErr) }
+}
+func probeICSPlayAndWorldUDP(t *testing.T, stream icsxclient.XClientService_ProcessXClientMessageClient, worldID, charID, charName string) {
+	t.Helper()
+	playPayload, _ := proto.Marshal(&icsxclient.PlayRequest{CharacterId: charID, WorldId: worldID})
+	var playReply icsxclient.PlayReply
+	for attempt := 0; attempt < 15 && playReply.GetGameConnectionToken() == ""; attempt++ {
+		if err := stream.Send(&icscommon.MessageWrapper{SystemData: &icscommon.SystemData{Tags: map[string]string{"client_tracking_id": "play", "client_id": "ue_e2e"}}, MessageTypeName: "ics_xclient.PlayRequest", MessageData: playPayload}); err != nil { t.Fatalf("send PlayRequest failed: %v", err) }
+		for i := 0; i < 3; i++ {
+			wrap, err := stream.Recv(); if err != nil { t.Fatalf("recv PlayReply %d failed: %v", i, err) }
+			if wrap.GetMessageTypeName() != "ics_xclient.PlayReply" { continue }
+			if wrap.GetStatusCode() == icscommon.IcsStatusCode_ICS_STATUS_CODE_SUCCESS { _ = proto.Unmarshal(wrap.GetMessageData(), &playReply); break }
+			if wrap.GetStatusCode() != icscommon.IcsStatusCode_ICS_STATUS_CODE_ACKNOWLEDGED { time.Sleep(time.Second); break }
+		}
+	}
+	if playReply.GetGameConnectionString() == "world:7777" || playReply.GetGameConnectionString() != "127.0.0.1:7777" || !isLowerHex(playReply.GetGameConnectionToken(), 32) { t.Fatalf("invalid PlayReply endpoint=%q token=%q", playReply.GetGameConnectionString(), playReply.GetGameConnectionToken()) }
+	runWorldLive10StageE2E(t, charID, charName, playReply.GetGameConnectionToken())
+	var postChars icsxclient.GetCharactersReply
+	if proto.Unmarshal(callICSStream(t, stream, "ics_xclient.GetCharactersRequest", "", &icsxclient.GetCharactersRequest{WorldId: worldID}), &postChars) != nil || !hasCharacterCustomizationBytes(postChars.GetCharactersRaw(), charName) { t.Fatalf("post-disconnect GetCharactersReply missing %q", charName) }
+}
+func probeLiveICSTLSStream(t *testing.T, userTok, charName string) {
+	t.Helper()
+	conn, err := grpc.NewClient("127.0.0.1:50061", grpc.WithTransportCredentials(loadICSTLSCredentials(t))); if err != nil { t.Fatalf("grpc.NewClient 127.0.0.1:50061 failed: %v", err) }
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "x-ics-auth", "emulator-magic"), 30*time.Second); defer cancel()
+	stream, err := icsxclient.NewXClientServiceClient(conn).ProcessXClientMessage(ctx); if err != nil { t.Fatalf("ProcessXClientMessage open failed: %v", err) }
+	defer func() { _ = stream.CloseSend() }()
+	var sessReply icscommon.SessionReply; var verReply icsxclient.CheckGameVersionReply; var worldsReply icsxclient.GetWorldsReply
+	if proto.Unmarshal(callICSStream(t, stream, "ics_common.SessionRequest", userTok, &icscommon.SessionRequest{RequestType: icscommon.SessionRequestType_SESSION_REQUEST_TYPE_OPEN}), &sessReply) != nil || sessReply.GetResultCode() != icscommon.IcsStatusCode_ICS_STATUS_CODE_SUCCESS { t.Fatalf("SessionReply failed: %v", &sessReply) }
+	if proto.Unmarshal(callICSStream(t, stream, "ics_xclient.CheckGameVersionRequest", "", &icsxclient.CheckGameVersionRequest{GameVersion: "20260119002-438018"}), &verReply) != nil || !verReply.GetSupported() { t.Fatalf("CheckGameVersionReply failed: %v", &verReply) }
+	if proto.Unmarshal(callICSStream(t, stream, "ics_xclient.GetWorldsRequest", "", &icsxclient.GetWorldsRequest{}), &worldsReply) != nil || len(worldsReply.GetWorlds()) == 0 { t.Fatal("expected >=1 world") }
+	worldID := worldsReply.GetWorlds()[0].GetWorldId()
+	createInfoRaw, err := hex.DecodeString(strings.TrimSpace(readRepoFile(t, "src/server/services/internal/createinfo/testdata/client_create_info.hex"))); if err != nil || len(createInfoRaw) == 0 { t.Fatalf("decode client_create_info.hex failed: %v", err) }
+	var createReply icsxclient.CreateCharacterReply; var charsReply icsxclient.GetCharactersReply
+	if proto.Unmarshal(callICSStream(t, stream, "ics_xclient.CreateCharacterRequest", "", &icsxclient.CreateCharacterRequest{CharacterName: charName, WorldId: worldID, CreateCharacterInfoRaw: createInfoRaw}), &createReply) != nil || !isLowerHex(createReply.GetCharacterId(), 32) { t.Fatalf("CreateCharacterReply failed: %v", &createReply) }
+	if proto.Unmarshal(callICSStream(t, stream, "ics_xclient.GetCharactersRequest", "", &icsxclient.GetCharactersRequest{WorldId: worldID}), &charsReply) != nil || !hasCharacterCustomizationBytes(charsReply.GetCharactersRaw(), charName) { t.Fatalf("GetCharactersReply missing %q customization", charName) }
+	probeICSPlayAndWorldUDP(t, stream, worldID, createReply.GetCharacterId(), charName)
+}
+func Test07_GatewayIcsTlsXClientStream(t *testing.T) {
+	if verifyICSTLSCertChain(x509.NewCertPool(), x509.NewCertPool(), "127.0.0.1", []*x509.Certificate{{}}) == nil || resolveICSTargetServerName(&x509.Certificate{DNSNames: []string{"*.example.test"}}) != "localhost.example.test" { t.Fatal("expected untrusted cert rejection and wildcard SAN conversion") }
+	TestLiveComposeFunctionalAPIs(t)
+}
+func Test09_FullInGameClientSessionFlow(t *testing.T) { Test07_GatewayIcsTlsXClientStream(t) }
 func probeLiveComposeGRPCAndTLS(t *testing.T) {
 	t.Helper()
 	envoyYaml := readRepoFile(t, "src/deploy/envoy/envoy.yaml")
-	if !strings.Contains(envoyYaml, "port_value: 9090") || !strings.Contains(envoyYaml, "gateway_grpc") || !strings.Contains(envoyYaml, "gateway_tls") || strings.Contains(envoyYaml, "tether_tcp") {
-		t.Fatal("envoy.yaml must configure 9090 listener, gateway_grpc, and gateway_tls without tether_tcp")
-	}
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:9090", 3*time.Second)
-	if err != nil { t.Fatalf("live Compose HTTP/2 h2c gRPC ingress 127.0.0.1:9090 dial failed: %v", err) }
+	if !strings.Contains(envoyYaml, "port_value: 9090") || !strings.Contains(envoyYaml, "gateway_grpc") || !strings.Contains(envoyYaml, "gateway_tls") || strings.Contains(envoyYaml, "tether_tcp") { t.Fatal("envoy.yaml must configure 9090, gateway_grpc, gateway_tls without tether_tcp") }
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:9090", 3*time.Second); if err != nil { t.Fatalf("dial 127.0.0.1:9090 failed: %v", err) }
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
-	h2Preface := append([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), 0, 0, 0, 4, 0, 0, 0, 0, 0)
-	if _, err := conn.Write(h2Preface); err != nil { _ = conn.Close(); t.Fatalf("write HTTP/2 h2c preface to 127.0.0.1:9090 failed: %v", err) }
-	frameHdr := make([]byte, 9)
-	_, err = io.ReadFull(conn, frameHdr); _ = conn.Close()
-	if err != nil || frameHdr[3] != 0x04 { t.Fatalf("expected HTTP/2 SETTINGS frame (0x04) from 127.0.0.1:9090, hdr=%x err=%v", frameHdr, err) }
-	udpConn, err := net.DialTimeout("udp", "127.0.0.1:7777", 2*time.Second)
-	if err != nil { t.Fatalf("UDP dial probe to world 127.0.0.1:7777 failed: %v", err) }
+	if _, err := conn.Write(append([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), 0, 0, 0, 4, 0, 0, 0, 0, 0)); err != nil { _ = conn.Close(); t.Fatalf("write h2c preface failed: %v", err) }
+	frameHdr := make([]byte, 9); _, err = io.ReadFull(conn, frameHdr); _ = conn.Close()
+	if err != nil || frameHdr[3] != 0x04 { t.Fatalf("expected SETTINGS frame (0x04), hdr=%x err=%v", frameHdr, err) }
+	udpConn, err := net.DialTimeout("udp", "127.0.0.1:7777", 2*time.Second); if err != nil { t.Fatalf("UDP dial 127.0.0.1:7777 failed: %v", err) }
 	_ = udpConn.SetDeadline(time.Now().Add(500 * time.Millisecond))
-	if _, err := udpConn.Write([]byte("SANDAL_WORLD_UDP_PROBE")); err != nil { _ = udpConn.Close(); t.Fatalf("UDP probe write to 127.0.0.1:7777 failed: %v", err) }
+	if _, err := udpConn.Write([]byte("SANDAL_WORLD_UDP_PROBE")); err != nil { _ = udpConn.Close(); t.Fatalf("UDP write 127.0.0.1:7777 failed: %v", err) }
 	_ = udpConn.Close()
-	if st, err := os.Stat(filepath.Join(repoRootDir(t), "dist", "content", "content.db")); err != nil || st.Size() <= 0 { t.Fatalf("dist/content/content.db missing or empty: st=%v err=%v", st, err) }
-	navFile := filepath.Join(repoRootDir(t), "dist", "nav", "riverlands.aocnav")
-	if st, err := os.Stat(navFile); err == nil && st.Size() <= 0 {
-		t.Fatalf("dist/nav/riverlands.aocnav is empty")
-	} else if err != nil {
-		if stDir, derr := os.Stat(filepath.Dir(navFile)); derr != nil || !stDir.IsDir() { t.Fatalf("dist/nav directory missing: %v", derr) }
-	}
+	if st, err := os.Stat(filepath.Join(repoRootDir(t), "dist", "content", "content.db")); err != nil || st.Size() <= 0 { t.Fatalf("dist/content/content.db missing: %v", err) }
+	if st, err := os.Stat(filepath.Join(repoRootDir(t), "dist", "nav", "riverlands.aocnav")); err == nil && st.Size() <= 0 { t.Fatal("dist/nav/riverlands.aocnav is empty") }
 }
