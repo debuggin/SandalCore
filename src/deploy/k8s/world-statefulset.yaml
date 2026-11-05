@@ -1,19 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Production Kubernetes Headless Service, StatefulSet & PodDisruptionBudget for worldd (K8S-01, K8S-02, K8S-04, SEC-13)
+# Production Kubernetes Headless Service, StatefulSet & PodDisruptionBudget for world (K8S-01, K8S-02, K8S-04, SEC-13)
 apiVersion: v1
 kind: Service
 metadata:
-  name: worldd
+  name: world
   namespace: sandal
   labels:
-    app.kubernetes.io/name: worldd
+    app.kubernetes.io/name: world
     app.kubernetes.io/component: zone-authority
     app.kubernetes.io/part-of: sandalcore
 spec:
   clusterIP: None
   publishNotReadyAddresses: true
   selector:
-    app.kubernetes.io/name: worldd
+    app.kubernetes.io/name: world
   ports:
     - name: udp-game
       port: 7777
@@ -39,14 +39,14 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: worldd
+  name: world
   namespace: sandal
   labels:
-    app.kubernetes.io/name: worldd
+    app.kubernetes.io/name: world
     app.kubernetes.io/component: zone-authority
     app.kubernetes.io/part-of: sandalcore
 spec:
-  serviceName: worldd
+  serviceName: world
   replicas: 3
   podManagementPolicy: Parallel
   revisionHistoryLimit: 10
@@ -56,11 +56,11 @@ spec:
       maxUnavailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: worldd
+      app.kubernetes.io/name: world
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: worldd
+        app.kubernetes.io/name: world
         app.kubernetes.io/component: zone-authority
         app.kubernetes.io/part-of: sandalcore
         app.kubernetes.io/tier: backend
@@ -81,16 +81,16 @@ spec:
           whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: worldd
+              app.kubernetes.io/name: world
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: worldd
+              app.kubernetes.io/name: world
       containers:
-        - name: worldd
-          image: ghcr.io/sandalcore/worldd@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099
+        - name: world
+          image: ghcr.io/sandalcore/world@sha256:56fa17d2a7e7f168a043a2712e63aed1f8543aeafdcee47c58dcffe38ed51099
           imagePullPolicy: IfNotPresent
           ports:
             - name: udp-game
@@ -156,8 +156,8 @@ spec:
               exec:
                 command: ["/usr/local/bin/service", "--drain-wait", "5s"]
           volumeMounts:
-            - name: worldd-state
-              mountPath: /var/lib/sandal/worldd
+            - name: world-state
+              mountPath: /var/lib/sandal/world
             - name: tmp-run
               mountPath: /tmp
             - name: navmesh-data
@@ -173,7 +173,7 @@ spec:
             claimName: sandal-navmesh-ro
   volumeClaimTemplates:
     - metadata:
-        name: worldd-state
+        name: world-state
       spec:
         accessModes: ["ReadWriteOnce"]
         storageClassName: fast-nvme-wait-first-consumer
@@ -184,14 +184,14 @@ spec:
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: worldd-pdb
+  name: world-pdb
   namespace: sandal
   labels:
-    app.kubernetes.io/name: worldd
+    app.kubernetes.io/name: world
     app.kubernetes.io/part-of: sandalcore
 spec:
   maxUnavailable: 1
   unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels:
-      app.kubernetes.io/name: worldd
+      app.kubernetes.io/name: world

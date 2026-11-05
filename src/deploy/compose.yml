@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-# Enterprise 12-service stack with 3-zone network isolation and Envoy ingress:
+# Enterprise 11-service stack with 3-zone network isolation and Envoy ingress:
 #   docker compose -f deploy/compose.yml --env-file deploy/.env up -d --wait
 name: aoc
 
@@ -118,6 +118,7 @@ services:
       AOC_CHAR_GRPC_ADDR: ":${CHARACTER_GRPC_PORT:-50053}"
       AOC_CHARACTER_GRPC_ADDR: ":${CHARACTER_GRPC_PORT:-50053}"
       AOC_CHARACTER_GRPC_BIND_ADDR: ":${CHARACTER_GRPC_PORT:-50053}"
+      AOC_GM_STARTER_SET: "${AOC_GM_STARTER_SET:-true}"
     volumes:
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
     depends_on:
@@ -262,8 +263,8 @@ services:
       - "-citynode=${CITYNODE_GRPC_ADDR:-citynode:50056}"
       - "-quest=${QUEST_GRPC_ADDR:-quest:50057}"
       - "-mesh=${MESH_GRPC_ADDR:-mesh:50054}"
-      - "-worldd-host=${WORLDD_PUBLIC_HOST:-127.0.0.1}"
-      - "-worldd-port=${WORLDD_UDP_PORT:-7777}"
+      - "-world-host=${WORLD_PUBLIC_HOST:-127.0.0.1}"
+      - "-world-port=${WORLD_UDP_PORT:-7777}"
       - "-content-db=/app/dist/content/content.db"
     environment:
       AOC_ENV: ${AOC_ENV:-production}
@@ -277,6 +278,8 @@ services:
       AOC_GATEWAY_GRPC_ADDR: ":${GATEWAY_GRPC_PORT:-50050}"
       AOC_GATEWAY_GRPC_BIND_ADDR: ":${GATEWAY_GRPC_PORT:-50050}"
       AOC_GATEWAY_TLS_ADDR: ":50061"
+      AOC_GATEWAY_TLS_CERT: "${AOC_GATEWAY_TLS_CERT:-/app/certs/server.pem}"
+      AOC_GATEWAY_TLS_KEY: "${AOC_GATEWAY_TLS_KEY:-/app/certs/server.key}"
       AOC_AUTH_HTTP_ADDR: "http://auth:8081"
       AOC_AUTH_ADDR: http://auth:8081
       AOC_AUTH_GRPC_ADDR: ${AUTH_GRPC_ADDR:-auth:50052}
@@ -291,8 +294,8 @@ services:
       QUEST_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
       AOC_MESH_GRPC_ADDR: ${MESH_GRPC_ADDR:-mesh:50054}
       MESH_GRPC_ADDR: ${MESH_GRPC_ADDR:-mesh:50054}
-      WORLDD_HOST: ${WORLDD_PUBLIC_HOST:-127.0.0.1}
-      WORLDD_PORT: ${WORLDD_UDP_PORT:-7777}
+      WORLD_HOST: ${WORLD_PUBLIC_HOST:-127.0.0.1}
+      WORLD_PORT: ${WORLD_UDP_PORT:-7777}
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
     volumes:
@@ -321,30 +324,30 @@ services:
       start_period: 5s
       retries: 5
 
-  meshgw:
+  mesh-gateway:
     <<: *hardened
-    container_name: aoc-meshgw
-    hostname: meshgw
+    container_name: aoc-mesh-gateway
+    hostname: mesh-gateway
     build:
       context: ..
       dockerfile: src/deploy/docker/go.Dockerfile
-      target: meshgw
+      target: mesh-gateway
       args:
-        SERVICE_NAME: meshgw
-        SERVICE_HTTP_PORT: ${MESHGW_HTTP_PORT:-8082}
-    image: sandal-meshgw:local
+        SERVICE_NAME: mesh-gateway
+        SERVICE_HTTP_PORT: ${MESH_GATEWAY_HTTP_PORT:-8082}
+    image: sandal-mesh-gateway:local
     command:
-      - "-http=:${MESHGW_HTTP_PORT:-8082}"
+      - "-http=:${MESH_GATEWAY_HTTP_PORT:-8082}"
       - "-mesh=${MESH_GRPC_ADDR:-mesh:50054}"
       - "-citynode=${CITYNODE_GRPC_ADDR:-citynode:50056}"
       - "-quest=${QUEST_GRPC_ADDR:-quest:50057}"
-      - "-worldd-admin=${WORLDD_ADMIN_GRPC_ADDR:-world:50061}"
+      - "-world-admin=${WORLD_ADMIN_GRPC_ADDR:-world:50061}"
     environment:
       AOC_ENV: ${AOC_ENV:-production}
       AOC_ALLOW_INSECURE_DB: "1"
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
-      AOC_MESHGW_ADDR: ":${MESHGW_HTTP_PORT:-8082}"
-      AOC_MESHGW_HTTP_BIND_ADDR: ":${MESHGW_HTTP_PORT:-8082}"
+      AOC_MESH_GATEWAY_ADDR: ":${MESH_GATEWAY_HTTP_PORT:-8082}"
+      AOC_MESH_GATEWAY_HTTP_BIND_ADDR: ":${MESH_GATEWAY_HTTP_PORT:-8082}"
       AOC_MESH_GRPC_ADDR: ${MESH_GRPC_ADDR:-mesh:50054}
       MESH_GRPC_ADDR: ${MESH_GRPC_ADDR:-mesh:50054}
       AOC_CITYNODE_GRPC_ADDR: ${CITYNODE_GRPC_ADDR:-citynode:50056}
@@ -352,11 +355,9 @@ services:
       AOC_QUESTS_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
       AOC_QUEST_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
       QUEST_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
-      AOC_WORLD_ADMIN_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-world:50061}
-      AOC_WORLDD_ADMIN_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-world:50061}
-      WORLDD_ADMIN_GRPC_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-world:50061}
-      AOC_WORLD_STREAM_ADDR: ${WORLDD_STREAM_GRPC_ADDR:-world:50062}
-      AOC_WORLDD_STREAM_ADDR: ${WORLDD_STREAM_GRPC_ADDR:-world:50062}
+      AOC_WORLD_ADMIN_ADDR: ${WORLD_ADMIN_GRPC_ADDR:-world:50061}
+      WORLD_ADMIN_GRPC_ADDR: ${WORLD_ADMIN_GRPC_ADDR:-world:50061}
+      AOC_WORLD_STREAM_ADDR: ${WORLD_STREAM_GRPC_ADDR:-world:50062}
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
     depends_on:
@@ -416,8 +417,8 @@ services:
       target: world
       args:
         TARGET_BINARY: world
-        WORLDD_UDP_PORT: ${WORLDD_UDP_PORT:-7777}
-        WORLDD_ADMIN_PORT: ${WORLDD_ADMIN_PORT:-50061}
+        WORLD_UDP_PORT: ${WORLD_UDP_PORT:-7777}
+        WORLD_ADMIN_PORT: ${WORLD_ADMIN_PORT:-50061}
     image: sandal-world:local
     cpus: 4.0
     mem_limit: 4g
@@ -427,22 +428,23 @@ services:
       - "--gateway=gateway:50050"
       - "--character=character:50053"
       - "--citynode=citynode:50056"
-      - "--port=${WORLDD_UDP_PORT:-7777}"
-      - "--admin-port=${WORLDD_ADMIN_PORT:-50061}"
+      - "--port=${WORLD_UDP_PORT:-7777}"
+      - "--admin-port=${WORLD_ADMIN_PORT:-50061}"
     environment:
-      WORLDD_UDP_PORT: ${WORLDD_UDP_PORT:-7777}
-      WORLDD_ADMIN_PORT: ${WORLDD_ADMIN_PORT:-50061}
-      AOC_WORLD_UDP_PORT: ${WORLDD_UDP_PORT:-7777}
-      AOC_WORLD_ADMIN_ADDR: ":${WORLDD_ADMIN_PORT:-50061}"
+      WORLD_UDP_PORT: ${WORLD_UDP_PORT:-7777}
+      WORLD_ADMIN_PORT: ${WORLD_ADMIN_PORT:-50061}
+      AOC_WORLD_UDP_PORT: ${WORLD_UDP_PORT:-7777}
+      AOC_WORLD_ADMIN_ADDR: ":${WORLD_ADMIN_PORT:-50061}"
       AOC_CITYNODE_GRPC_ADDR: citynode:50056
       AOC_QUESTS_GRPC_ADDR: quest:50057
       AOC_CONTENT_DB: /app/content/content.db
-      AOC_AREA_RADIUS_M: "${AOC_AREA_RADIUS_M:-0}"
+      AOC_AREA_RADIUS_M: "${AOC_AREA_RADIUS_M:--1}"
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
     ports:
-      - "127.0.0.1:${WORLDD_UDP_PORT:-7777}:7777/udp"
+      - "127.0.0.1:${WORLD_UDP_PORT:-7777}:7777/udp"
     volumes:
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/content:ro
+      - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
       - ${AOC_DIST_NAV_DIR:-./nav}:/app/nav:ro
       - ${AOC_DIST_CONFIG_DIR:-./config}:/app/config:ro
     depends_on:
@@ -491,7 +493,7 @@ services:
     depends_on:
       gateway:
         condition: service_healthy
-      meshgw:
+      mesh-gateway:
         condition: service_healthy
       web-admin:
         condition: service_healthy

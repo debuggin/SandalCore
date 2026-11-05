@@ -16,15 +16,15 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-worldd-zone-authority
+  name: allow-world-zone-authority
   namespace: sandal
   labels:
-    app.kubernetes.io/name: worldd
+    app.kubernetes.io/name: world
     app.kubernetes.io/part-of: sandalcore
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: worldd
+      app.kubernetes.io/name: world
   policyTypes:
     - Ingress
     - Egress
@@ -32,10 +32,10 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: meshgw
+              app.kubernetes.io/name: mesh-gateway
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: worldd
+              app.kubernetes.io/name: world
       ports:
         - protocol: UDP
           port: 7777
@@ -47,13 +47,13 @@ spec:
               app.kubernetes.io/name: gateway
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: meshgw
+              app.kubernetes.io/name: mesh-gateway
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: admin
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: worldd
+              app.kubernetes.io/name: world
       ports:
         - protocol: TCP
           port: 50056
@@ -75,10 +75,10 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: worldd
+              app.kubernetes.io/name: world
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: meshgw
+              app.kubernetes.io/name: mesh-gateway
       ports:
         - protocol: UDP
           port: 7777
@@ -149,10 +149,10 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: worldd
+              app.kubernetes.io/name: world
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: meshgw
+              app.kubernetes.io/name: mesh-gateway
       ports:
         - protocol: TCP
           port: 50054
@@ -178,15 +178,15 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-meshgw-datapath
+  name: allow-mesh-gateway-datapath
   namespace: sandal
   labels:
-    app.kubernetes.io/name: meshgw
+    app.kubernetes.io/name: mesh-gateway
     app.kubernetes.io/part-of: sandalcore
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: meshgw
+      app.kubernetes.io/name: mesh-gateway
   policyTypes:
     - Ingress
     - Egress
@@ -217,7 +217,7 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: worldd
+              app.kubernetes.io/name: world
       ports:
         - protocol: UDP
           port: 7777
@@ -279,13 +279,13 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: worldd
+              app.kubernetes.io/name: world
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: gateway
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: meshgw
+              app.kubernetes.io/name: mesh-gateway
       ports:
         - protocol: TCP
           port: 50050
@@ -336,9 +336,9 @@ spec:
               - key: app.kubernetes.io/name
                 operator: In
                 values:
-                  - worldd
+                  - world
                   - gateway
-                  - meshgw
+                  - mesh-gateway
                   - admin
       ports:
         - protocol: TCP

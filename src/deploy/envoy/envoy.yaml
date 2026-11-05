@@ -97,16 +97,16 @@ static_resources:
                           route:
                             cluster: gateway_http
                             timeout: 15s
-                        # /api/v1/gm/* -> meshgw_http (meshgw:8082)
+                        # /api/v1/gm/* -> mesh_gateway_http (mesh-gateway:8082)
                         - match:
                             prefix: "/api/v1/gm/"
                           route:
-                            cluster: meshgw_http
+                            cluster: mesh_gateway_http
                             timeout: 30s
                         - match:
                             prefix: "/api/v1/gm"
                           route:
-                            cluster: meshgw_http
+                            cluster: mesh_gateway_http
                             timeout: 30s
                         # / -> web_admin_http (web-admin:8088)
                         - match:
@@ -180,11 +180,11 @@ static_resources:
                           route:
                             cluster: quest_grpc
                             timeout: 15s
-                        # /aoc.worldadmin.v1. -> worldd_admin_grpc (worldd:50061)
+                        # /aoc.worldadmin.v1. -> world_admin_grpc (world:50061)
                         - match:
                             prefix: "/aoc.worldadmin.v1."
                           route:
-                            cluster: worldd_admin_grpc
+                            cluster: world_admin_grpc
                             timeout: 15s
                 http_filters:
                   - name: envoy.filters.http.router
@@ -231,7 +231,7 @@ static_resources:
                       address: gateway
                       port_value: 8081
 
-    - name: meshgw_http
+    - name: mesh_gateway_http
       connect_timeout: 2s
       type: STRICT_DNS
       lb_policy: ROUND_ROBIN
@@ -248,13 +248,13 @@ static_resources:
           healthy_threshold: 1
           tcp_health_check: {}
       load_assignment:
-        cluster_name: meshgw_http
+        cluster_name: mesh_gateway_http
         endpoints:
           - lb_endpoints:
               - endpoint:
                   address:
                     socket_address:
-                      address: meshgw
+                      address: mesh-gateway
                       port_value: 8082
 
     - name: web_admin_http
@@ -444,7 +444,7 @@ static_resources:
                       address: quest
                       port_value: 50057
 
-    - name: worldd_admin_grpc
+    - name: world_admin_grpc
       connect_timeout: 2s
       type: STRICT_DNS
       lb_policy: ROUND_ROBIN
@@ -462,7 +462,7 @@ static_resources:
           # grpc_health_check: {}
           tcp_health_check: {}
       load_assignment:
-        cluster_name: worldd_admin_grpc
+        cluster_name: world_admin_grpc
         endpoints:
           - lb_endpoints:
               - endpoint:

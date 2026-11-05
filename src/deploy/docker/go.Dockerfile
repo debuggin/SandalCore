@@ -45,7 +45,7 @@ WORKDIR /workspace/src/server/services
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     mkdir -p /out && \
-    for svc in auth character citynode quest mesh gateway meshgw admin; do \
+    for svc in auth character citynode quest mesh gateway mesh-gateway admin; do \
         if [ -d "./cmd/${svc}" ]; then \
             CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o "/out/${svc}" "./cmd/${svc}"; \
         fi; \
@@ -131,10 +131,10 @@ HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
     CMD ["/usr/local/bin/service", "-healthcheck"]
 ENTRYPOINT ["/usr/local/bin/service"]
 
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS meshgw
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS mesh-gateway
 WORKDIR /app
-COPY --from=builder --chown=65532:65532 /out/meshgw /usr/local/bin/service
-COPY --from=builder --chown=65532:65532 /out/meshgw /app/meshgw
+COPY --from=builder --chown=65532:65532 /out/mesh-gateway /usr/local/bin/service
+COPY --from=builder --chown=65532:65532 /out/mesh-gateway /app/mesh-gateway
 COPY --from=builder --chown=65532:65532 /workspace/src/server/services/sql /app/sql
 USER 65532:65532
 EXPOSE 8082/tcp 8086/tcp

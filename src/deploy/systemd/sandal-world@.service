@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Hardened templated systemd unit for bare-metal SandalCore worldd zone shards (OPS-04, STD-10, SEC-13)
-# Usage: systemctl enable --now sandal-worldd@zone-01.service
+# Hardened templated systemd unit for bare-metal SandalCore world zone shards (OPS-04, STD-10, SEC-13)
+# Usage: systemctl enable --now sandal-world@zone-01.service
 
 [Unit]
 Description=SandalCore Authoritative World Zone Shard (%i)
@@ -14,13 +14,13 @@ StartLimitBurst=5
 Type=exec
 User=sandal
 Group=sandal
-StateDirectory=sandal-worldd/%i
-RuntimeDirectory=sandal-worldd/%i
+StateDirectory=sandal-world/%i
+RuntimeDirectory=sandal-world/%i
 ConfigurationDirectory=sandal
 EnvironmentFile=-/etc/sandal/sandal.env
 EnvironmentFile=-/etc/sandal/zones/%i.env
 LoadCredential=service_token:/etc/credstore/sandal_service_token.cred
-ExecStart=/usr/local/bin/worldd --zone=%i --config=/etc/sandal/sandal.env
+ExecStart=/usr/local/bin/world --zone=%i --config=/etc/sandal/sandal.env
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=30

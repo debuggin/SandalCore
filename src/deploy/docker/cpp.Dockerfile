@@ -52,21 +52,24 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     fi && \
     CC=clang-18 CXX=clang++-18 \
     cmake -S src -B build/linux -G Ninja \
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_BUILD_TYPE=Release \
         -DAOC_BUILD_TESTS=OFF \
         -DAOC_PROTO_GEN_DIR=/workspace/build/gen/proto \
         -DAOC_PROTO_GEN_DIR=/workspace/build/gen/cpp/aocproto \
         -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/workspace/build/bin && \
-    (cmake --build build/linux --target world --parallel || cmake --build build/linux --target worldd --parallel) && \
+    cmake --build build/linux --target world test_world_live_e2e --parallel && \
     mkdir -p /workspace/build/bin && \
-    WORLD_BIN="$(find /workspace/dist /workspace/build -type f \( -name world -o -name worldd \) | head -n 1)" && \
+    WORLD_BIN="$(find /workspace/dist /workspace/build -type f -name world | head -n 1)" && \
     if [ "${WORLD_BIN}" != "/workspace/build/bin/world" ]; then cp "${WORLD_BIN}" /workspace/build/bin/world; fi && \
-    cp /workspace/build/bin/world /workspace/build/bin/worldd && \
-    llvm-strip-18 --strip-unneeded /workspace/build/bin/world /workspace/build/bin/worldd && \
+    LIVE_E2E_BIN="$(find /workspace/dist /workspace/build -type f -name test_world_live_e2e | head -n 1)" && \
+    if [ -n "${LIVE_E2E_BIN}" ] && [ "${LIVE_E2E_BIN}" != "/workspace/build/bin/test_world_live_e2e" ]; then cp "${LIVE_E2E_BIN}" /workspace/build/bin/test_world_live_e2e; fi && \
+    llvm-strip-18 --strip-unneeded /workspace/build/bin/world /workspace/build/bin/test_world_live_e2e && \
     mkdir -p /workspace/build/linux/bin && \
     cp /workspace/build/bin/world /workspace/build/linux/bin/world && \
-    cp /workspace/build/bin/world /workspace/build/linux/bin/worldd && \
-    cp /workspace/build/bin/world /workspace/build/linux/bin/service
+    cp /workspace/build/bin/world /workspace/build/linux/bin/service && \
+    cp /workspace/build/bin/test_world_live_e2e /workspace/build/linux/bin/test_world_live_e2e
 
 ARG TARGET_BINARY=world
 
@@ -78,8 +81,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG GIT_REVISION="unknown"
 ARG BUILD_CREATED="1970-01-01T00:00:00Z"
 ARG TARGET_BINARY=world
-ARG WORLDD_UDP_PORT=7777
-ARG WORLDD_ADMIN_PORT=50061
+ARG WORLD_UDP_PORT=7777
+ARG WORLD_ADMIN_PORT=50061
 ARG SERVICE_BIND_ADDR=0.0.0.0
 
 LABEL org.opencontainers.image.title="sandal-cpp-runtime" \
@@ -90,15 +93,16 @@ LABEL org.opencontainers.image.title="sandal-cpp-runtime" \
       org.opencontainers.image.vendor="SandalCore"
 
 ENV TARGET_BINARY=${TARGET_BINARY} \
-    WORLDD_UDP_PORT=${WORLDD_UDP_PORT} \
-    WORLDD_ADMIN_PORT=${WORLDD_ADMIN_PORT} \
+    WORLD_UDP_PORT=${WORLD_UDP_PORT} \
+    WORLD_ADMIN_PORT=${WORLD_ADMIN_PORT} \
     SERVICE_BIND_ADDR=${SERVICE_BIND_ADDR}
 
 WORKDIR /app
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/world /app/world
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/world /usr/local/bin/world
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_live_e2e /app/test_world_live_e2e
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_live_e2e /usr/local/bin/test_world_live_e2e
 COPY --from=builder --chown=65532:65532 /workspace/build/linux/bin/service /usr/local/bin/service
-RUN ln -s /app/world /app/worldd && ln -s /usr/local/bin/world /usr/local/bin/worldd
 USER 65532:65532
 EXPOSE 7777/udp 50061/tcp
 STOPSIGNAL SIGTERM
