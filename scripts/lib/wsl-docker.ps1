@@ -137,6 +137,18 @@ function Assert-NoTcp2375 {
     $null = $Arguments
 }
 
+function Start-WslKeepaliveProcess {
+    param([string]$Distro = 'Ubuntu', [scriptblock]$Runner = $null)
+    if ($null -ne $Runner -or -not $IsWindows -or $null -eq (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { return }
+    try {
+        $existing = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'wsl.exe'" -ErrorAction Stop | Where-Object { $_.CommandLine -match 'sleep infinity' })
+        if ($existing.Count -gt 0) { return }
+        $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "wsl.exe -d $Distro -- sleep infinity" } -ErrorAction Stop
+    } catch {
+        $null = Start-Process -FilePath 'wsl.exe' -ArgumentList @('-d', $Distro, '--', 'sleep', 'infinity') -WindowStyle Hidden -ErrorAction SilentlyContinue
+    }
+}
+
 function Ensure-LinuxDockerEngine {
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -147,15 +159,17 @@ function Ensure-LinuxDockerEngine {
     $Distro = Resolve-WslDockerDistro -Distro $Distro -Runner $Runner
     $readyCheck = Test-WslDockerReady -Distro $Distro -Runner $Runner
     if ($readyCheck.Ready) {
+        Start-WslKeepaliveProcess -Distro $Distro -Runner $Runner
         return [pscustomobject]@{ Ready = $true; Action = 'Reused'; Provisioned = $false; Distro = $Distro }
     }
     if ($DryRun -or -not $PSCmdlet.ShouldProcess($Distro, 'Ensure WSL2 Docker engine with TCP 2375 override')) {
         return [pscustomobject]@{ Ready = $false; Action = 'DryRun'; Provisioned = $false; Distro = $Distro }
     }
+    Start-WslKeepaliveProcess -Distro $Distro -Runner $Runner
     $null = Invoke-WslRunner -WslArgs @('-d', $Distro, '--', 'sh', '-c', 'grep -q "systemd=true" /etc/wsl.conf') -Runner $Runner
     $installed = Invoke-WslRunner -WslArgs @('-d', $Distro, '--', 'sh', '-c', 'command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1') -Runner $Runner
     if ($installed.ExitCode -eq 0) {
-        $startCmd = "mkdir -p /etc/systemd/system/docker.service.d && printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375\n' > /etc/systemd/system/docker.service.d/override.conf && systemctl daemon-reload && systemctl enable docker && systemctl restart docker"
+        $startCmd = "mkdir -p /etc/systemd/system/docker.service.d && printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:2375 -H tcp://[::1]:2375\n' > /etc/systemd/system/docker.service.d/override.conf && systemctl daemon-reload && systemctl enable docker && systemctl restart docker"
         $start = Invoke-WslRunner -WslArgs @('-d', $Distro, '-u', 'root', '--', 'sh', '-c', $startCmd) -Runner $Runner
         return [pscustomobject]@{ Ready = ($start.ExitCode -eq 0); Action = 'Started'; Provisioned = $false; Distro = $Distro }
     }

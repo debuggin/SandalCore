@@ -33,8 +33,8 @@ ensure_docker_tcp_2375_override() {
     DOCKER_OVERRIDE_CHANGED=1
   fi
   mkdir -p "$(dirname "${override_conf}")"
-  if [[ ! -f "${override_conf}" ]] || ! grep -Fq 'ExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375' "${override_conf}"; then
-    printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375\n' >"${override_conf}"
+  if [[ ! -f "${override_conf}" ]] || ! grep -Fq 'ExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:2375 -H tcp://[::1]:2375' "${override_conf}"; then
+    printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:2375 -H tcp://[::1]:2375\n' >"${override_conf}"
     DOCKER_OVERRIDE_CHANGED=1
   fi
 }

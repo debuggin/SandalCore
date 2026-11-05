@@ -88,11 +88,14 @@ function Confirm-WslConfig {
     $state = Get-WslSectionState -ConfigPath $ConfigPath
     $curNet = if ($state.Keys.ContainsKey('networkingMode')) { $state.Keys['networkingMode'] } else { 'mirrored' }
     $curLoop = if ($state.Keys.ContainsKey('hostAddressLoopback')) { $state.Keys['hostAddressLoopback'] } else { 'true' }
+    $curIdle = if ($state.Keys.ContainsKey('vmIdleTimeout')) { $state.Keys['vmIdleTimeout'] } else { '-1' }
     $netVal = Read-SandalConfigValue -Key 'networkingMode' -CurrentValue $curNet -PromptReader $PromptReader
     $loopVal = Read-SandalConfigValue -Key 'hostAddressLoopback' -CurrentValue $curLoop -PromptReader $PromptReader
+    $idleVal = Read-SandalConfigValue -Key 'vmIdleTimeout' -CurrentValue $curIdle -PromptReader $PromptReader
     $hadNet = $state.Keys.ContainsKey('networkingMode') -and ($state.Keys['networkingMode'] -ceq $netVal)
     $hadLoop = $state.Keys.ContainsKey('hostAddressLoopback') -and ($state.Keys['hostAddressLoopback'] -ceq $loopVal)
-    $changed = (-not $state.Exists) -or (-not $hadNet) -or (-not $hadLoop)
+    $hadIdle = $state.Keys.ContainsKey('vmIdleTimeout') -and ($state.Keys['vmIdleTimeout'] -ceq $idleVal)
+    $changed = (-not $state.Exists) -or (-not $hadNet) -or (-not $hadLoop) -or (-not $hadIdle)
     if ($changed -and $PSCmdlet.ShouldProcess($ConfigPath, 'Merge [wsl2] configuration')) {
         $lines = $state.Lines
         if (-not ($lines | Where-Object { $_ -match '^\s*\[wsl2\]\s*$' })) {
@@ -100,6 +103,7 @@ function Confirm-WslConfig {
         }
         $lines = Set-WslSectionKey -Lines $lines -Key 'networkingMode' -Value $netVal
         $lines = Set-WslSectionKey -Lines $lines -Key 'hostAddressLoopback' -Value $loopVal
+        $lines = Set-WslSectionKey -Lines $lines -Key 'vmIdleTimeout' -Value $idleVal
         $parentDir = Split-Path -Path $ConfigPath -Parent
         if (-not [string]::IsNullOrWhiteSpace($parentDir) -and -not (Test-Path -LiteralPath $parentDir)) {
             $null = New-Item -ItemType Directory -Path $parentDir -Force
@@ -112,6 +116,7 @@ function Confirm-WslConfig {
         Changed             = [bool]$changed
         NetworkingMode      = [string]$netVal
         HostAddressLoopback = [string]$loopVal
+        VmIdleTimeout       = [string]$idleVal
         Path                = [string]$ConfigPath
         ShutdownAdvised     = [bool]$changed
     }

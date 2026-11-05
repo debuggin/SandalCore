@@ -106,7 +106,7 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
         It 'preserves existing settings and returns Changed=false on Enter-to-keep' {
             $tmpFile = Join-Path ([System.IO.Path]::GetTempPath()) "wslconfig-test-$([guid]::NewGuid()).ini"
             try {
-                $initial = "[wsl2]`nmemory=12GB`nprocessors=6`nnetworkingMode=mirrored`nhostAddressLoopback=true"
+                $initial = "[wsl2]`nmemory=12GB`nprocessors=6`nnetworkingMode=mirrored`nhostAddressLoopback=true`nvmIdleTimeout=-1"
                 Set-Content -LiteralPath $tmpFile -Value $initial -Encoding utf8
                 $reader = { param($PromptText, $Key, $CurrentValue) return '' }
                 $res = Confirm-WslConfig -ConfigPath $tmpFile -PromptReader $reader
@@ -114,9 +114,11 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
                 $res.ShutdownAdvised | Should -Be $false
                 $res.NetworkingMode | Should -Be 'mirrored'
                 $res.HostAddressLoopback | Should -Be 'true'
+                $res.VmIdleTimeout | Should -Be '-1'
                 $raw = Get-Content -LiteralPath $tmpFile -Raw
                 $raw | Should -Match 'memory=12GB'
                 $raw | Should -Match 'processors=6'
+                $raw | Should -Match 'vmIdleTimeout=-1'
             } finally {
                 if (Test-Path -LiteralPath $tmpFile) {
                     Remove-Item -LiteralPath $tmpFile -Force
@@ -138,10 +140,12 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
                 $res.ShutdownAdvised | Should -Be $true
                 $res.NetworkingMode | Should -Be 'nat'
                 $res.HostAddressLoopback | Should -Be 'true'
+                $res.VmIdleTimeout | Should -Be '-1'
                 $raw = Get-Content -LiteralPath $tmpFile -Raw
                 $raw | Should -Match 'memory=16GB'
                 $raw | Should -Match 'networkingMode=nat'
                 $raw | Should -Match 'hostAddressLoopback=true'
+                $raw | Should -Match 'vmIdleTimeout=-1'
             } finally {
                 if (Test-Path -LiteralPath $tmpFile) {
                     Remove-Item -LiteralPath $tmpFile -Force
@@ -182,7 +186,7 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
             ($recorded -join "`n") | Should -Not -Match ([regex]::Escape("sed -i '/2375/d'"))
         }
 
-        It 'writes override.conf with -H fd:// -H tcp://0.0.0.0:2375 when Docker is installed in WSL2 but not yet running and never runs sed -i /2375/d' {
+        It 'writes override.conf with -H fd:// -H tcp://127.0.0.1:2375 -H tcp://[::1]:2375 when Docker is installed in WSL2 but not yet running and never runs sed -i /2375/d' {
             $recorded = [System.Collections.Generic.List[string]]::new()
             $state = @{ Started = $false }
             $runner = {
@@ -212,7 +216,7 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
             $res.Provisioned | Should -Be $false
             $allCmds = $recorded -join "`n"
             $allCmds | Should -Match '/etc/systemd/system/docker\.service\.d/override\.conf'
-            $allCmds | Should -Match ([regex]::Escape('ExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375'))
+            $allCmds | Should -Match '-H fd:// -H tcp://127\.0\.0\.1:2375 -H tcp://\[::1\]:2375'
             $allCmds | Should -Not -Match ([regex]::Escape("sed -i '/2375/d'"))
         }
     }

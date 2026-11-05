@@ -368,6 +368,17 @@ function Sync-SandalDeployRuntimeDirs {
 
 function Write-SandalDeployScripts {
     param([Parameter(Mandatory)][string]$DeployDir)
+    $wakeLines = @(
+        'if ([string]::IsNullOrWhiteSpace($env:DOCKER_HOST)) { $env:DOCKER_HOST = ''tcp://[::1]:2375'' }',
+        '$null = & docker info *> $null',
+        'if ($LASTEXITCODE -ne 0 -and $IsWindows -and (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {',
+        '    $distro = (@(& wsl.exe -l -q 2>$null) -replace "`0", '''' | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notlike ''docker-desktop*'' } | Select-Object -First 1)',
+        '    if (-not $distro) { $distro = ''Ubuntu'' }',
+        '    $existingKeepalive = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = ''wsl.exe''" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match ''sleep infinity'' })',
+        '    if ($existingKeepalive.Count -eq 0) { $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "wsl.exe -d $distro -- sleep infinity" } -ErrorAction SilentlyContinue }',
+        '    $null = & wsl.exe -d $distro -u root -- sh -c "service docker status >/dev/null 2>&1 || systemctl start docker >/dev/null 2>&1 || service docker start >/dev/null 2>&1"',
+        '}'
+    )
     $upLines = @(
         '#Requires -Version 7.2',
         'param([string]$Profile = ''default'', [switch]$Detach, [switch]$DryRun)',
@@ -380,9 +391,8 @@ function Write-SandalDeployScripts {
         'if ($Profile -ne ''default'') { $cmdArgs.AddRange([string[]]@(''--profile'', $Profile)) }',
         '$cmdArgs.Add(''up'')',
         'if ($Detach) { $cmdArgs.AddRange([string[]]@(''-d'', ''--wait'')) }',
-        'if ($DryRun) { Write-Output ("docker " + ($cmdArgs -join '' '')); exit 0 }',
-        'Push-Location $PSScriptRoot; try { & docker @cmdArgs; exit $LASTEXITCODE } finally { Pop-Location }'
-    )
+        'if ($DryRun) { Write-Output ("docker " + ($cmdArgs -join '' '')); exit 0 }'
+    ) + $wakeLines + @('Push-Location $PSScriptRoot; try { & docker @cmdArgs; exit $LASTEXITCODE } finally { Pop-Location }')
     [System.IO.File]::WriteAllText((Join-Path $DeployDir 'up.ps1'), (($upLines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
     $downLines = @(
         '#Requires -Version 7.2',
@@ -394,9 +404,8 @@ function Write-SandalDeployScripts {
         '$cmdArgs = [System.Collections.Generic.List[string]]::new()',
         '$cmdArgs.AddRange([string[]]@(''compose'', ''-f'', $composeFile, ''--env-file'', $envFile, ''down'', ''--remove-orphans''))',
         'if ($Volumes) { $cmdArgs.Add(''-v'') }',
-        'if ($DryRun) { Write-Output ("docker " + ($cmdArgs -join '' '')); exit 0 }',
-        'Push-Location $PSScriptRoot; try { & docker @cmdArgs; exit $LASTEXITCODE } finally { Pop-Location }'
-    )
+        'if ($DryRun) { Write-Output ("docker " + ($cmdArgs -join '' '')); exit 0 }'
+    ) + $wakeLines + @('Push-Location $PSScriptRoot; try { & docker @cmdArgs; exit $LASTEXITCODE } finally { Pop-Location }')
     [System.IO.File]::WriteAllText((Join-Path $DeployDir 'down.ps1'), (($downLines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
 }
 
@@ -457,6 +466,17 @@ function Set-SandalUserDockerHost {
     }
 }
 
+function Start-SandalWslKeepalive {
+    param([string]$Distro = 'Ubuntu', [scriptblock]$CommandRunner = $null)
+    if ($null -ne $CommandRunner -or -not $IsWindows -or $null -eq (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { return }
+    $wslHelper = Join-Path $PSScriptRoot 'wsl-docker.ps1'
+    if (-not (Get-Command Start-WslKeepaliveProcess -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $wslHelper -PathType Leaf)) { . $wslHelper }
+    if (Get-Command Start-WslKeepaliveProcess -ErrorAction SilentlyContinue) {
+        $resolved = if (Get-Command Resolve-WslDockerDistro -ErrorAction SilentlyContinue) { Resolve-WslDockerDistro -Distro $Distro } else { $Distro }
+        Start-WslKeepaliveProcess -Distro $resolved
+    }
+}
+
 function Ensure-SandalDockerDaemon {
     [CmdletBinding()]
     param(
@@ -473,11 +493,13 @@ function Ensure-SandalDockerDaemon {
     if ([string]::IsNullOrWhiteSpace($env:DOCKER_HOST)) { $env:DOCKER_HOST = 'tcp://[::1]:2375' }
     if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) {
         Set-SandalUserDockerHost -CommandRunner $CommandRunner
+        Start-SandalWslKeepalive -Distro $Distro -CommandRunner $CommandRunner
         return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $false }
     }
     $env:DOCKER_HOST = 'tcp://[::1]:2375'
     Set-SandalUserDockerHost -CommandRunner $CommandRunner
     if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) {
+        Start-SandalWslKeepalive -Distro $Distro -CommandRunner $CommandRunner
         return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $false }
     }
     $resolvedDistro = $Distro
@@ -488,13 +510,11 @@ function Ensure-SandalDockerDaemon {
             $wslRunner = if ($null -ne $CommandRunner) { { param([string[]]$WslArgs) [pscustomobject]@{ ExitCode = (Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList $WslArgs -CommandRunner $CommandRunner); Output = '' } } } else { $null }
             $resolvedDistro = Resolve-WslDockerDistro -Distro $Distro -Runner $wslRunner
         }
-        if (-not $CommandRunner) {
-            $null = Start-Process -FilePath 'wsl.exe' -ArgumentList @('-d', $resolvedDistro, '--', 'bash', '-c', 'pgrep -f sandal-wsl-keepalive >/dev/null 2>&1 || exec -a sandal-wsl-keepalive sleep 86400') -WindowStyle Hidden -ErrorAction SilentlyContinue
-        }
+        Start-SandalWslKeepalive -Distro $resolvedDistro -CommandRunner $CommandRunner
         $bootScript = 'if ! command -v docker >/dev/null 2>&1; then bash scripts/wsl/provision-docker.sh; fi && ' +
             'mkdir -p /etc/systemd/system/docker.service.d && ' +
-            'if ! grep -Fq "ExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375" /etc/systemd/system/docker.service.d/override.conf 2>/dev/null; then ' +
-            'printf "[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://0.0.0.0:2375\n" > /etc/systemd/system/docker.service.d/override.conf && ' +
+            'if ! grep -Fq "ExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:2375 -H tcp://[::1]:2375" /etc/systemd/system/docker.service.d/override.conf 2>/dev/null; then ' +
+            'printf "[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:2375 -H tcp://[::1]:2375\n" > /etc/systemd/system/docker.service.d/override.conf && ' +
             '(systemctl daemon-reload >/dev/null 2>&1 || true) && (systemctl restart docker >/dev/null 2>&1 || service docker restart >/dev/null 2>&1 || service docker start >/dev/null 2>&1); ' +
             'else service docker status >/dev/null 2>&1 || systemctl start docker >/dev/null 2>&1 || service docker start >/dev/null 2>&1; fi'
         $null = Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $resolvedDistro, '-u', 'root', '--', 'sh', '-c', $bootScript) -CommandRunner $CommandRunner

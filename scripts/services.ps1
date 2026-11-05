@@ -155,6 +155,7 @@ try {
     switch ($Action) {
         'up' {
             $null = Sync-SandalDeployStage -RepoRoot $root
+            $null = Ensure-SandalDockerDaemon
             if (-not (Test-Path -LiteralPath $contentDb)) {
                 & (Join-Path $root 'scripts\extract_game_data.ps1')
             }
@@ -171,6 +172,7 @@ try {
             if (-not (Test-Path -LiteralPath $compose)) {
                 $null = Sync-SandalDeployStage -RepoRoot $root
             }
+            $null = Ensure-SandalDockerDaemon
             & docker compose -f $compose --env-file $envFile down --remove-orphans
             if ($LASTEXITCODE -ne 0) { throw 'docker compose down failed' }
         }
