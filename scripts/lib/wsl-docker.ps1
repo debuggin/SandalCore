@@ -137,18 +137,6 @@ function Assert-NoTcp2375 {
     $null = $Arguments
 }
 
-function Start-WslKeepaliveProcess {
-    param([string]$Distro = 'Ubuntu', [scriptblock]$Runner = $null)
-    if ($null -ne $Runner -or -not $IsWindows -or $null -eq (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { return }
-    try {
-        $existing = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'wsl.exe'" -ErrorAction Stop | Where-Object { $_.CommandLine -match 'sleep infinity' })
-        if ($existing.Count -gt 0) { return }
-        $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "wsl.exe -d $Distro -- sleep infinity" } -ErrorAction Stop
-    } catch {
-        $null = Start-Process -FilePath 'wsl.exe' -ArgumentList @('-d', $Distro, '--', 'sleep', 'infinity') -WindowStyle Hidden -ErrorAction SilentlyContinue
-    }
-}
-
 function Ensure-LinuxDockerEngine {
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -159,13 +147,11 @@ function Ensure-LinuxDockerEngine {
     $Distro = Resolve-WslDockerDistro -Distro $Distro -Runner $Runner
     $readyCheck = Test-WslDockerReady -Distro $Distro -Runner $Runner
     if ($readyCheck.Ready) {
-        Start-WslKeepaliveProcess -Distro $Distro -Runner $Runner
         return [pscustomobject]@{ Ready = $true; Action = 'Reused'; Provisioned = $false; Distro = $Distro }
     }
     if ($DryRun -or -not $PSCmdlet.ShouldProcess($Distro, 'Ensure WSL2 Docker engine with TCP 2375 override')) {
         return [pscustomobject]@{ Ready = $false; Action = 'DryRun'; Provisioned = $false; Distro = $Distro }
     }
-    Start-WslKeepaliveProcess -Distro $Distro -Runner $Runner
     $null = Invoke-WslRunner -WslArgs @('-d', $Distro, '--', 'sh', '-c', 'grep -q "systemd=true" /etc/wsl.conf') -Runner $Runner
     $installed = Invoke-WslRunner -WslArgs @('-d', $Distro, '--', 'sh', '-c', 'command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1') -Runner $Runner
     if ($installed.ExitCode -eq 0) {

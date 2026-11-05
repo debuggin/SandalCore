@@ -371,12 +371,13 @@ function Write-SandalDeployScripts {
     $wakeLines = @(
         'if ([string]::IsNullOrWhiteSpace($env:DOCKER_HOST)) { $env:DOCKER_HOST = ''tcp://[::1]:2375'' }',
         '$null = & docker info *> $null',
+        'if ($LASTEXITCODE -ne 0) { $env:DOCKER_HOST = ''tcp://127.0.0.1:2375''; $null = & docker info *> $null }',
         'if ($LASTEXITCODE -ne 0 -and $IsWindows -and (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {',
         '    $distro = (@(& wsl.exe -l -q 2>$null) -replace "`0", '''' | ForEach-Object { $_.Trim() } | Where-Object { $_ -and $_ -notlike ''docker-desktop*'' } | Select-Object -First 1)',
         '    if (-not $distro) { $distro = ''Ubuntu'' }',
-        '    $existingKeepalive = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = ''wsl.exe''" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match ''sleep infinity'' })',
-        '    if ($existingKeepalive.Count -eq 0) { $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "wsl.exe -d $distro -- sleep infinity" } -ErrorAction SilentlyContinue }',
         '    $null = & wsl.exe -d $distro -u root -- sh -c "service docker status >/dev/null 2>&1 || systemctl start docker >/dev/null 2>&1 || service docker start >/dev/null 2>&1"',
+        '    $env:DOCKER_HOST = ''tcp://[::1]:2375''; $null = & docker info *> $null',
+        '    if ($LASTEXITCODE -ne 0) { $env:DOCKER_HOST = ''tcp://127.0.0.1:2375''; $null = & docker info *> $null }',
         '}'
     )
     $upLines = @(
@@ -466,14 +467,13 @@ function Set-SandalUserDockerHost {
     }
 }
 
-function Start-SandalWslKeepalive {
-    param([string]$Distro = 'Ubuntu', [scriptblock]$CommandRunner = $null)
+function Confirm-SandalWslConfig {
+    param([scriptblock]$CommandRunner = $null)
     if ($null -ne $CommandRunner -or -not $IsWindows -or $null -eq (Get-Command wsl.exe -ErrorAction SilentlyContinue)) { return }
-    $wslHelper = Join-Path $PSScriptRoot 'wsl-docker.ps1'
-    if (-not (Get-Command Start-WslKeepaliveProcess -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $wslHelper -PathType Leaf)) { . $wslHelper }
-    if (Get-Command Start-WslKeepaliveProcess -ErrorAction SilentlyContinue) {
-        $resolved = if (Get-Command Resolve-WslDockerDistro -ErrorAction SilentlyContinue) { Resolve-WslDockerDistro -Distro $Distro } else { $Distro }
-        Start-WslKeepaliveProcess -Distro $resolved
+    $wslCfgHelper = Join-Path $PSScriptRoot 'wsl-config.ps1'
+    if (-not (Get-Command Confirm-WslConfig -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $wslCfgHelper -PathType Leaf)) { . $wslCfgHelper }
+    if (Get-Command Confirm-WslConfig -ErrorAction SilentlyContinue) {
+        $null = Confirm-WslConfig -PromptReader { '' }
     }
 }
 
@@ -490,17 +490,23 @@ function Ensure-SandalDockerDaemon {
     if ($null -eq $CommandRunner -and $null -eq (Get-Command docker -ErrorAction SilentlyContinue)) {
         return [pscustomobject]@{ Ready = $false; DryRun = $false; Distro = $Distro; Started = $false }
     }
+    Confirm-SandalWslConfig -CommandRunner $CommandRunner
     if ([string]::IsNullOrWhiteSpace($env:DOCKER_HOST)) { $env:DOCKER_HOST = 'tcp://[::1]:2375' }
     if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) {
         Set-SandalUserDockerHost -CommandRunner $CommandRunner
-        Start-SandalWslKeepalive -Distro $Distro -CommandRunner $CommandRunner
         return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $false }
     }
     $env:DOCKER_HOST = 'tcp://[::1]:2375'
     Set-SandalUserDockerHost -CommandRunner $CommandRunner
     if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) {
-        Start-SandalWslKeepalive -Distro $Distro -CommandRunner $CommandRunner
         return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $false }
+    }
+    if ($null -eq $CommandRunner) {
+        $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
+        if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info')) -eq 0) {
+            return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $false }
+        }
+        $env:DOCKER_HOST = 'tcp://[::1]:2375'
     }
     $resolvedDistro = $Distro
     if ($IsWindows -and ($null -ne $CommandRunner -or $null -ne (Get-Command wsl.exe -ErrorAction SilentlyContinue))) {
@@ -510,7 +516,6 @@ function Ensure-SandalDockerDaemon {
             $wslRunner = if ($null -ne $CommandRunner) { { param([string[]]$WslArgs) [pscustomobject]@{ ExitCode = (Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList $WslArgs -CommandRunner $CommandRunner); Output = '' } } } else { $null }
             $resolvedDistro = Resolve-WslDockerDistro -Distro $Distro -Runner $wslRunner
         }
-        Start-SandalWslKeepalive -Distro $resolvedDistro -CommandRunner $CommandRunner
         $bootScript = 'if ! command -v docker >/dev/null 2>&1; then bash scripts/wsl/provision-docker.sh; fi && ' +
             'mkdir -p /etc/systemd/system/docker.service.d && ' +
             'if ! grep -Fq "ExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:2375 -H tcp://[::1]:2375" /etc/systemd/system/docker.service.d/override.conf 2>/dev/null; then ' +
@@ -521,7 +526,12 @@ function Ensure-SandalDockerDaemon {
         $ready = $false
         for ($i = 0; $i -lt 10; $i++) {
             if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) { $ready = $true; break }
-            if (-not $CommandRunner) { Start-Sleep -Milliseconds 500 }
+            if ($null -eq $CommandRunner) {
+                $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
+                if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info')) -eq 0) { $ready = $true; break }
+                $env:DOCKER_HOST = 'tcp://[::1]:2375'
+                Start-Sleep -Milliseconds 500
+            }
         }
         return [pscustomobject]@{ Ready = $ready; DryRun = $false; Distro = $resolvedDistro; Started = $true }
     }

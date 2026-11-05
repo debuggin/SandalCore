@@ -26,25 +26,86 @@ function Get-WslSectionState {
     param(
         [Parameter(Mandatory)][string]$ConfigPath
     )
-    $exists = Test-Path -LiteralPath $ConfigPath
-    $lines = if ($exists) { @(Get-Content -LiteralPath $ConfigPath -Encoding utf8) } else { @() }
-    $keys = @{}
-    $inWsl2 = $false
+    $exists = Test-Path -LiteralPath $ConfigPath -PathType Leaf
+    $rawText = if ($exists) { [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8) } else { '' }
+    $newline = if ($rawText.Contains("`r`n")) { "`r`n" } elseif ($rawText.Contains("`n")) { "`n" } else { [Environment]::NewLine }
+    $hasTrailingNewline = if ($rawText.Length -gt 0) { $rawText.EndsWith("`n") } else { $true }
+    $lines = if ($rawText.Length -eq 0) { @() } else { [regex]::Split($rawText, '\r?\n') }
+    if ($hasTrailingNewline -and $lines.Count -gt 0 -and $lines[-1] -eq '') {
+        $lines = if ($lines.Count -eq 1) { @() } else { $lines[0..($lines.Count - 2)] }
+    }
+    $sections = [hashtable]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $keys = [hashtable]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $activeSection = ''
     foreach ($line in $lines) {
-        if ($line -match '^\s*\[([^\]]+)\]\s*$') {
-            $inWsl2 = ($Matches[1].Trim().ToLowerInvariant() -eq 'wsl2')
+        if ($line -match '^\s*\[([^\]]+)\]\s*(?:[#;].*)?$') {
+            $activeSection = $Matches[1].Trim()
+            if (-not $sections.ContainsKey($activeSection)) {
+                $sections[$activeSection] = [hashtable]::new([System.StringComparer]::OrdinalIgnoreCase)
+            }
             continue
         }
-        if (-not $inWsl2 -or $line -match '^\s*[#;]' -or $line -notmatch '^\s*([^=#;\s]+)\s*=\s*(.*?)\s*$') {
+        if ([string]::IsNullOrWhiteSpace($activeSection) -or $line -match '^\s*[#;]' -or $line -notmatch '^(\s*)([^=#;\s]+)(\s*=\s*)([^#;]*?)(\s*[#;].*)?$') {
             continue
         }
-        $keys[$Matches[1].Trim()] = $Matches[2].Trim()
+        $k = $Matches[2].Trim()
+        $v = $Matches[4].Trim()
+        $sections[$activeSection][$k] = $v
+        $keys[$k] = $v
     }
     return [pscustomobject]@{
-        Exists = $exists
-        Lines  = [string[]]$lines
-        Keys   = $keys
+        Exists             = $exists
+        Lines              = [string[]]$lines
+        Keys               = $keys
+        Sections           = $sections
+        Newline            = $newline
+        HasTrailingNewline = $hasTrailingNewline
     }
+}
+
+function Update-WslTargetSectionLines {
+    param(
+        [AllowEmptyCollection()][string[]]$Lines,
+        [Parameter(Mandatory)][string]$Section,
+        [Parameter(Mandatory)][string]$Key,
+        [Parameter(Mandatory)][string]$Value
+    )
+    $out = [System.Collections.Generic.List[string]]::new()
+    $inTarget = $false
+    $replaced = $false
+    $indent = ''
+    $eqSep = '='
+    $lastContentIdx = -1
+    foreach ($line in $Lines) {
+        if ($line -match '^\s*\[([^\]]+)\]\s*(?:[#;].*)?$') {
+            $inTarget = ($Matches[1].Trim() -ieq $Section)
+            $out.Add($line)
+            if ($inTarget) { $lastContentIdx = $out.Count - 1 }
+            continue
+        }
+        if ($inTarget -and $line -notmatch '^\s*[#;]' -and $line -match '^(\s*)([^=#;\s]+)(\s*=\s*)([^#;]*?)(\s*[#;].*)?$') {
+            $indent = $Matches[1]
+            $eqSep = $Matches[3]
+            if ($Matches[2].Trim() -ieq $Key) {
+                if ($replaced) { continue }
+                $curVal = $Matches[4].Trim()
+                $commentSuffix = if ($null -ne $Matches[5]) { $Matches[5] } else { '' }
+                $newLine = if ($curVal -ceq $Value) { $line } else { "$($Matches[1])$($Matches[2])$($Matches[3])$Value$commentSuffix" }
+                $out.Add($newLine)
+                $lastContentIdx = $out.Count - 1
+                $replaced = $true
+                continue
+            }
+        }
+        $out.Add($line)
+        if ($inTarget -and -not [string]::IsNullOrWhiteSpace($line)) {
+            $lastContentIdx = $out.Count - 1
+        }
+    }
+    if (-not $replaced -and $lastContentIdx -ge 0) {
+        $out.Insert($lastContentIdx + 1, "$indent$Key$eqSep$Value")
+    }
+    return [string[]]$out.ToArray()
 }
 
 function Set-WslSectionKey {
@@ -52,31 +113,43 @@ function Set-WslSectionKey {
     param(
         [AllowEmptyCollection()][string[]]$Lines,
         [Parameter(Mandatory)][string]$Key,
-        [Parameter(Mandatory)][string]$Value
+        [Parameter(Mandatory)][string]$Value,
+        [string]$Section = 'wsl2'
     )
-    $out = [System.Collections.Generic.List[string]]::new()
-    $inWsl2 = $false
-    $replaced = $false
-    $pattern = '^\s*' + [regex]::Escape($Key) + '\s*='
+    $secTrim = $Section.Trim()
+    $hasSection = $false
     foreach ($line in $Lines) {
-        if ($inWsl2 -and -not $replaced -and $line -match '^\s*\[([^\]]+)\]\s*$') {
-            $out.Add("$Key=$Value")
-            $replaced = $true
+        if ($line -match '^\s*\[([^\]]+)\]\s*(?:[#;].*)?$' -and ($Matches[1].Trim() -ieq $secTrim)) {
+            $hasSection = $true
+            break
         }
-        if ($line -match '^\s*\[([^\]]+)\]\s*$') {
-            $inWsl2 = ($Matches[1].Trim().ToLowerInvariant() -eq 'wsl2')
-        }
-        if ($inWsl2 -and $line -match $pattern) {
-            $out.Add("$Key=$Value")
-            $replaced = $true
-            continue
-        }
-        $out.Add($line)
     }
-    if (-not $replaced) {
-        $out.Add("$Key=$Value")
+    if ($hasSection) {
+        return Update-WslTargetSectionLines -Lines $Lines -Section $secTrim -Key $Key -Value $Value
     }
+    $out = [System.Collections.Generic.List[string]]::new()
+    if ($null -ne $Lines -and $Lines.Count -gt 0) {
+        $out.AddRange([string[]]$Lines)
+        if (-not [string]::IsNullOrWhiteSpace($out[$out.Count - 1])) {
+            $out.Add('')
+        }
+    }
+    $out.Add("[$secTrim]")
+    $out.Add("$Key=$Value")
     return [string[]]$out.ToArray()
+}
+
+function Get-WslSectionKeyValue {
+    param([pscustomobject]$State, [string]$Section, [string]$Key, [string]$DefaultValue)
+    if ($State.Sections.ContainsKey($Section) -and $State.Sections[$Section].ContainsKey($Key)) {
+        return [string]$State.Sections[$Section][$Key]
+    }
+    return $DefaultValue
+}
+
+function Test-WslSectionKeyExact {
+    param([pscustomobject]$State, [string]$Section, [string]$Key, [string]$ExpectedValue)
+    return ($State.Sections.ContainsKey($Section) -and $State.Sections[$Section].ContainsKey($Key) -and ($State.Sections[$Section][$Key] -ceq $ExpectedValue))
 }
 
 function Confirm-WslConfig {
@@ -86,34 +159,42 @@ function Confirm-WslConfig {
         [scriptblock]$PromptReader = $null
     )
     $state = Get-WslSectionState -ConfigPath $ConfigPath
-    $curNet = if ($state.Keys.ContainsKey('networkingMode')) { $state.Keys['networkingMode'] } else { 'mirrored' }
-    $curLoop = if ($state.Keys.ContainsKey('hostAddressLoopback')) { $state.Keys['hostAddressLoopback'] } else { 'true' }
-    $curIdle = if ($state.Keys.ContainsKey('vmIdleTimeout')) { $state.Keys['vmIdleTimeout'] } else { '-1' }
+    $curInst = Get-WslSectionKeyValue -State $state -Section 'general' -Key 'instanceIdleTimeout' -DefaultValue '-1'
+    $curNet = Get-WslSectionKeyValue -State $state -Section 'wsl2' -Key 'networkingMode' -DefaultValue 'mirrored'
+    $curLoop = Get-WslSectionKeyValue -State $state -Section 'wsl2' -Key 'hostAddressLoopback' -DefaultValue 'true'
+    $curIdle = Get-WslSectionKeyValue -State $state -Section 'wsl2' -Key 'vmIdleTimeout' -DefaultValue '-1'
+    $instVal = Read-SandalConfigValue -Key 'instanceIdleTimeout' -CurrentValue $curInst -PromptReader $PromptReader
     $netVal = Read-SandalConfigValue -Key 'networkingMode' -CurrentValue $curNet -PromptReader $PromptReader
     $loopVal = Read-SandalConfigValue -Key 'hostAddressLoopback' -CurrentValue $curLoop -PromptReader $PromptReader
     $idleVal = Read-SandalConfigValue -Key 'vmIdleTimeout' -CurrentValue $curIdle -PromptReader $PromptReader
-    $hadNet = $state.Keys.ContainsKey('networkingMode') -and ($state.Keys['networkingMode'] -ceq $netVal)
-    $hadLoop = $state.Keys.ContainsKey('hostAddressLoopback') -and ($state.Keys['hostAddressLoopback'] -ceq $loopVal)
-    $hadIdle = $state.Keys.ContainsKey('vmIdleTimeout') -and ($state.Keys['vmIdleTimeout'] -ceq $idleVal)
-    $changed = (-not $state.Exists) -or (-not $hadNet) -or (-not $hadLoop) -or (-not $hadIdle)
-    if ($changed -and $PSCmdlet.ShouldProcess($ConfigPath, 'Merge [wsl2] configuration')) {
+    $specs = @(
+        @{ Section = 'general'; Key = 'instanceIdleTimeout'; Value = $instVal; Reason = 'disable WSL2 distro idle shutdown' },
+        @{ Section = 'wsl2';    Key = 'networkingMode';      Value = $netVal;  Reason = 'enable WSL2 mirrored localhost networking' },
+        @{ Section = 'wsl2';    Key = 'hostAddressLoopback'; Value = $loopVal; Reason = 'enable host-to-container loopback routing' },
+        @{ Section = 'wsl2';    Key = 'vmIdleTimeout';       Value = $idleVal; Reason = 'disable WSL2 utility VM idle shutdown' }
+    )
+    $pending = @($specs | Where-Object { -not (Test-WslSectionKeyExact -State $state -Section $_.Section -Key $_.Key -ExpectedValue $_.Value) })
+    $changed = (-not $state.Exists) -or ($pending.Count -gt 0)
+    if (-not $changed) {
+        Write-Information "INFO: WSL2 config ($ConfigPath) already has [general] instanceIdleTimeout=$instVal and [wsl2] networkingMode=$netVal, hostAddressLoopback=$loopVal, vmIdleTimeout=$idleVal; keeping existing file unchanged." -InformationAction Continue
+    } elseif ($PSCmdlet.ShouldProcess($ConfigPath, 'Merge [general] and [wsl2] configuration')) {
         $lines = $state.Lines
-        if (-not ($lines | Where-Object { $_ -match '^\s*\[wsl2\]\s*$' })) {
-            $lines = @($lines) + @('[wsl2]')
+        foreach ($item in $pending) {
+            Write-Information "INFO: Configuring $ConfigPath -> [$($item.Section)] $($item.Key)=$($item.Value) ($($item.Reason))" -InformationAction Continue
+            $lines = Set-WslSectionKey -Lines $lines -Section $item.Section -Key $item.Key -Value $item.Value
         }
-        $lines = Set-WslSectionKey -Lines $lines -Key 'networkingMode' -Value $netVal
-        $lines = Set-WslSectionKey -Lines $lines -Key 'hostAddressLoopback' -Value $loopVal
-        $lines = Set-WslSectionKey -Lines $lines -Key 'vmIdleTimeout' -Value $idleVal
         $parentDir = Split-Path -Path $ConfigPath -Parent
         if (-not [string]::IsNullOrWhiteSpace($parentDir) -and -not (Test-Path -LiteralPath $parentDir)) {
             $null = New-Item -ItemType Directory -Path $parentDir -Force
         }
+        $body = ($lines -join $state.Newline) + $(if ($state.HasTrailingNewline) { $state.Newline } else { '' })
         $tmpPath = "$ConfigPath.tmp.$PID"
-        Set-Content -LiteralPath $tmpPath -Value $lines -Encoding utf8
+        [System.IO.File]::WriteAllText($tmpPath, $body, [System.Text.UTF8Encoding]::new($false))
         Move-Item -LiteralPath $tmpPath -Destination $ConfigPath -Force
     }
     return [pscustomobject]@{
         Changed             = [bool]$changed
+        InstanceIdleTimeout = [string]$instVal
         NetworkingMode      = [string]$netVal
         HostAddressLoopback = [string]$loopVal
         VmIdleTimeout       = [string]$idleVal
