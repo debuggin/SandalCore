@@ -96,8 +96,8 @@ if (-not $opts.DryRun) {
         if (-not (Test-Path -LiteralPath $launcherExe -PathType Leaf) -and (Test-Path -LiteralPath $launcherCsproj -PathType Leaf)) {
             $dotnetCmd = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($dotnetCmd) {
-                $null = & $dotnetCmd.Source publish $launcherCsproj -c Release -o (Join-Path $rootPath 'dist/launcher') --nologo 2>&1
-                $null = & $dotnetCmd.Source publish $launcherCsproj -c Release -o $distRelDir --nologo 2>&1
+                $null = & $dotnetCmd.Source publish $launcherCsproj -c Release -o (Join-Path $rootPath 'dist/launcher') -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
+                $null = & $dotnetCmd.Source publish $launcherCsproj -c Release -o $distRelDir -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
             }
         }
         $gatewayExe = Join-Path $distSvcDir "gateway$exeExt"

@@ -261,10 +261,10 @@ endif()
 foreach(t IN LISTS SANDAL_ALL_CPP_TEST_TARGETS)
     if(TARGET ${t})
         set_target_properties(${t} PROPERTIES
-            RUNTIME_OUTPUT_DIRECTORY_DEBUG          "${AOC_DIST_ROOT}/tests/Debug"
-            RUNTIME_OUTPUT_DIRECTORY_RELEASE        "${AOC_DIST_ROOT}/tests/Release"
-            RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${AOC_DIST_ROOT}/tests/RelWithDebInfo"
-            RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     "${AOC_DIST_ROOT}/tests/MinSizeRel"
+            RUNTIME_OUTPUT_DIRECTORY_DEBUG          "${SANDAL_REPO_ROOT}/build/tests/Debug"
+            RUNTIME_OUTPUT_DIRECTORY_RELEASE        "${SANDAL_REPO_ROOT}/build/tests/Release"
+            RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${SANDAL_REPO_ROOT}/build/tests/RelWithDebInfo"
+            RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     "${SANDAL_REPO_ROOT}/build/tests/MinSizeRel"
         )
     endif()
 endforeach()

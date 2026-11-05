@@ -81,7 +81,7 @@ if (-not $opts.DryRun) {
     try {
         $normFilter = if ([string]::IsNullOrWhiteSpace($opts.Filter)) { '' } else { $opts.Filter.Trim().ToLowerInvariant() }
         if ($normFilter -in @('', 'cpp')) {
-            $testsDir = Join-Path (Join-Path $rootPath 'dist/tests') $opts.Config
+            $testsDir = Join-Path (Join-Path $rootPath 'build/tests') $opts.Config
             $testFilter = "test_*$exeExt"
             $hasBuiltTests = [bool](@(Get-ChildItem -Path $testsDir -Filter $testFilter -File -ErrorAction SilentlyContinue | Where-Object {
                 $IsWindows -or [string]::IsNullOrEmpty($_.Extension)

@@ -171,6 +171,19 @@ function Test-SandalInTreeBuildArtifacts {
             $Findings.Add("NoTestBinariesInDistRelease: forbidden test/fuzz binary in dist/Release: $($exe.Name)")
         }
     }
+    if (Test-Path -LiteralPath (Join-Path $RepoRoot 'dist\tests') -PathType Container) {
+        $Findings.Add('NoTestBinariesInDist: forbidden test directory in dist: dist/tests')
+    }
+    foreach ($sub in @('Release', 'Debug', 'launcher')) {
+        $subDir = Join-Path $RepoRoot "dist\$sub"
+        if (-not (Test-Path -LiteralPath $subDir -PathType Container)) { continue }
+        foreach ($pdb in @(Get-ChildItem -LiteralPath $subDir -Filter '*.pdb' -File -Force -ErrorAction SilentlyContinue)) {
+            $Findings.Add("NoPdbInDist: forbidden debug symbol file in dist: dist/$sub/$($pdb.Name)")
+        }
+    }
+    if (Test-Path -LiteralPath (Join-Path $RepoRoot 'deploy\docker-compose.yml') -PathType Leaf) {
+        $Findings.Add('NoLegacyComposeInDeploy: forbidden legacy docker-compose.yml in deploy/')
+    }
 }
 
 function Test-SandalRootDirectoryHierarchy {

@@ -210,7 +210,7 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                 if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo 'dist\launcher') -PathType Container)) {
                     throw 'Expected dist/launcher directory to be created by Sync-SandalDistStage'
                 }
-                foreach ($launcherScript in @('dist\launch_launcher.bat', 'dist\launch_launcher.ps1')) {
+                foreach ($launcherScript in @('dist\launch_launcher.bat', 'dist\launch_launcher.ps1', 'dist\start_server.ps1', 'dist\stop_server.ps1')) {
                     if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo $launcherScript) -PathType Leaf)) {
                         throw "Expected $launcherScript to be materialized by Sync-SandalDistStage"
                     }
@@ -218,14 +218,20 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                 $mockLauncherOut = Join-Path $tmpRepo 'build\dotnet\bin\SandalLauncher\Release\net8.0'
                 $null = New-Item -ItemType Directory -Path $mockLauncherOut -Force
                 [System.IO.File]::WriteAllText((Join-Path $mockLauncherOut 'SandalLauncher.exe'), 'MZ-mock')
+                [System.IO.File]::WriteAllText((Join-Path $mockLauncherOut 'SandalLauncher.pdb'), 'PDB-mock')
                 $null = Sync-SandalDistStage -RepoRoot $tmpRepo -Config 'Release'
                 foreach ($stagedLauncher in @('dist\launcher\SandalLauncher.exe', 'dist\Release\SandalLauncher.exe')) {
                     if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo $stagedLauncher) -PathType Leaf)) {
                         throw "Expected $stagedLauncher to be synced from build/dotnet/bin by Sync-SandalDistStage"
                     }
                 }
-                if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo 'deploy\compose.yml') -PathType Leaf)) {
-                    throw 'Expected src/deploy/compose.yml to be materialized to deploy/compose.yml'
+                if (Test-Path -LiteralPath (Join-Path $tmpRepo 'dist\launcher\SandalLauncher.pdb')) {
+                    throw 'Expected .pdb files to be excluded from dist/launcher'
+                }
+                foreach ($deployItem in @('deploy\compose.yml', 'deploy\up.ps1', 'deploy\down.ps1', 'deploy\content', 'deploy\certs', 'deploy\nav', 'deploy\config')) {
+                    if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo $deployItem))) {
+                        throw "Expected $deployItem to be materialized by Sync-SandalDeployStage"
+                    }
                 }
                 if (Test-Path -LiteralPath (Join-Path $tmpRepo '.env')) {
                     throw 'Expected 0 .env file in repo root'

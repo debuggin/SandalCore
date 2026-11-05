@@ -102,7 +102,7 @@ function Copy-SandalConfigStage {
     if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) { return }
     $null = New-Item -ItemType Directory -Path $DestDir -Force
     foreach ($item in @(Get-ChildItem -LiteralPath $SourceDir -Recurse -File)) {
-        if ($item.Name -like '*.local.json' -or $item.Name -eq 'local.json') { continue }
+        if ($item.Name -like '*.local.json' -or $item.Name -eq 'local.json' -or $item.Name -like '*.example' -or $item.Extension -ieq '.md') { continue }
         $rel = [System.IO.Path]::GetRelativePath($SourceDir, $item.FullName)
         $target = Join-Path $DestDir $rel
         $parent = Split-Path -Parent $target
@@ -118,6 +118,53 @@ function Copy-SandalSqlFiles {
     foreach ($sql in @(Get-ChildItem -LiteralPath $SourceDir -Filter '*.sql' -File)) {
         Copy-Item -LiteralPath $sql.FullName -Destination (Join-Path $DestDir $sql.Name) -Force
     }
+}
+
+function Write-SandalDistServerScripts {
+    param([Parameter(Mandatory)][string]$DistDir)
+    $startLines = @(
+        '#Requires -Version 7.2',
+        'param([switch]$DryRun)',
+        'Set-StrictMode -Version Latest',
+        '$ErrorActionPreference = ''Stop''',
+        '$distRoot = $PSScriptRoot',
+        '$svcDir = Join-Path $distRoot ''services''',
+        '$relDir = Join-Path $distRoot ''Release''',
+        '$logsDir = Join-Path $distRoot ''logs''',
+        '$contentDb = if ($env:AOC_CONTENT_DB) { $env:AOC_CONTENT_DB } else { Join-Path $distRoot ''content\content.db'' }',
+        '$tokenFile = Join-Path $svcDir ''service.token''',
+        '$exeExt = if ($IsWindows) { ''.exe'' } else { '''' }',
+        'if (-not $DryRun) {',
+        '    $null = New-Item -ItemType Directory -Path $svcDir, $logsDir -Force',
+        '    if (-not (Test-Path -LiteralPath $tokenFile -PathType Leaf)) {',
+        '        $bytes = [byte[]]::new(32); [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)',
+        '        [System.IO.File]::WriteAllText($tokenFile, ([System.Convert]::ToHexString($bytes).ToLowerInvariant()))',
+        '    }',
+        '    $env:AOC_SERVICE_TOKEN = (Get-Content -LiteralPath $tokenFile -Raw).Trim()',
+        '}',
+        '$names = @(''auth'', ''character'', ''citynode'', ''quests'', ''mesh'', ''gateway'', ''meshgw'', ''admin'', ''tether_server'', ''worldd'')',
+        'foreach ($name in $names) {',
+        '    $exe = if ($name -in @(''tether_server'', ''worldd'')) { Join-Path $relDir "$name$exeExt" } else { Join-Path $svcDir "$name$exeExt" }',
+        '    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }',
+        '    $argList = if ($name -in @(''worldd'', ''character'') -and (Test-Path -LiteralPath $contentDb -PathType Leaf)) { @(''--content-db'', $contentDb) } else { @() }',
+        '    if ($DryRun) { Write-Output "DRYRUN start $exe $($argList -join '' '')"; continue }',
+        '    $outLog = Join-Path $logsDir "$name.out.log"; $errLog = Join-Path $logsDir "$name.log"',
+        '    $null = Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory $distRoot -RedirectStandardOutput $outLog -RedirectStandardError $errLog -WindowStyle Hidden -PassThru',
+        '}'
+    )
+    [System.IO.File]::WriteAllText((Join-Path $DistDir 'start_server.ps1'), (($startLines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+    $stopLines = @(
+        '#Requires -Version 7.2',
+        'param([switch]$DryRun)',
+        'Set-StrictMode -Version Latest',
+        '$ErrorActionPreference = ''Stop''',
+        '$distRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)',
+        '$names = @(''worldd'', ''world'', ''tether_server'', ''tether'', ''gateway'', ''meshgw'', ''admin'', ''mesh'', ''quests'', ''citynode'', ''character'', ''auth'')',
+        '$procs = @(Get-Process -Name $names -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($distRoot, [System.StringComparison]::OrdinalIgnoreCase) })',
+        'if ($DryRun) { Write-Output "DRYRUN stop $($procs.Count) process(es) under $distRoot"; exit 0 }',
+        'foreach ($p in $procs) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }'
+    )
+    [System.IO.File]::WriteAllText((Join-Path $DistDir 'stop_server.ps1'), (($stopLines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
 }
 
 function Write-SandalLauncherScripts {
@@ -157,6 +204,7 @@ function Write-SandalLauncherScripts {
         'exit 1'
     )
     [System.IO.File]::WriteAllText((Join-Path $DistDir 'launch_launcher.ps1'), (($ps1Lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+    Write-SandalDistServerScripts -DistDir $DistDir
 }
 
 function Sync-SandalLauncherStage {
@@ -174,16 +222,22 @@ function Sync-SandalLauncherStage {
     $buildOut = Join-Path $RepoRoot "build\dotnet\bin\SandalLauncher\$Config\net8.0"
     if (-not (Test-Path -LiteralPath $buildOut -PathType Container)) { return }
     $srcBin = Join-Path $buildOut 'SandalLauncher.exe'
-    if (-not (Test-Path -LiteralPath $srcBin -PathType Leaf)) {
-        $srcBin = Join-Path $buildOut 'SandalLauncher.dll'
-    }
+    if (-not (Test-Path -LiteralPath $srcBin -PathType Leaf)) { $srcBin = Join-Path $buildOut 'SandalLauncher.dll' }
     if (-not (Test-Path -LiteralPath $srcBin -PathType Leaf)) { return }
     $launcherDir = Join-Path $DistDir 'launcher'
     $null = New-Item -ItemType Directory -Path $launcherDir, $configDir -Force
     $destBin = Join-Path $launcherDir (Split-Path $srcBin -Leaf)
     if ((-not (Test-Path -LiteralPath $destBin -PathType Leaf)) -or ((Get-Item -LiteralPath $srcBin).LastWriteTimeUtc -gt (Get-Item -LiteralPath $destBin).LastWriteTimeUtc)) {
-        Copy-Item -Path (Join-Path $buildOut '*') -Destination $launcherDir -Recurse -Force
-        Copy-Item -Path (Join-Path $buildOut '*') -Destination $configDir -Recurse -Force
+        foreach ($f in @(Get-ChildItem -LiteralPath $buildOut -Recurse -File -Force)) {
+            if ($f.Extension -in @('.pdb', '.xml') -or $f.Name -like '*.deps.json') { continue }
+            $rel = [System.IO.Path]::GetRelativePath($buildOut, $f.FullName)
+            foreach ($destRoot in @($launcherDir, $configDir)) {
+                $destFile = Join-Path $destRoot $rel
+                $destParent = Split-Path -Parent $destFile
+                if ($destParent -and -not (Test-Path -LiteralPath $destParent)) { $null = New-Item -ItemType Directory -Path $destParent -Force }
+                Copy-Item -LiteralPath $f.FullName -Destination $destFile -Force
+            }
+        }
     }
 }
 
@@ -216,14 +270,81 @@ function Sync-SandalDistStage {
     return [pscustomobject]@{ DistDir = $distDir; Config = $Config }
 }
 
+function Sync-SandalDeployRuntimeDirs {
+    param([Parameter(Mandatory)][string]$RepoRoot, [Parameter(Mandatory)][string]$DeployDir)
+    $distDir = Join-Path $RepoRoot 'dist'
+    foreach ($sub in @('content', 'certs', 'nav', 'config')) {
+        $null = New-Item -ItemType Directory -Path (Join-Path $DeployDir $sub) -Force
+    }
+    Copy-SandalConfigStage -SourceDir (Join-Path $RepoRoot 'src\config') -DestDir (Join-Path $DeployDir 'config')
+    foreach ($sub in @('certs', 'nav')) {
+        $srcSub = Join-Path $distDir $sub
+        if (-not (Test-Path -LiteralPath $srcSub -PathType Container)) { continue }
+        foreach ($f in @(Get-ChildItem -LiteralPath $srcSub -Recurse -File -Force)) {
+            $rel = [System.IO.Path]::GetRelativePath($srcSub, $f.FullName)
+            $dst = Join-Path $DeployDir $sub $rel
+            $parent = Split-Path -Parent $dst
+            if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
+            Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
+        }
+    }
+    $distContent = Join-Path $distDir 'content'
+    $deployContent = Join-Path $DeployDir 'content'
+    if (-not (Test-Path -LiteralPath $distContent -PathType Container)) { return }
+    foreach ($f in @(Get-ChildItem -LiteralPath $distContent -File -Force | Where-Object { $_.Extension -in @('.tsv', '.usmap', '.db') -or $_.Name -eq 'area_nav.bin' })) {
+        $dst = Join-Path $deployContent $f.Name
+        if ((Test-Path -LiteralPath $dst -PathType Leaf) -and ((Get-Item -LiteralPath $dst).Length -eq $f.Length)) { continue }
+        if (Test-Path -LiteralPath $dst -PathType Leaf) { Remove-Item -LiteralPath $dst -Force }
+        try { $null = New-Item -ItemType HardLink -Path $dst -Target $f.FullName -ErrorAction Stop }
+        catch { Copy-Item -LiteralPath $f.FullName -Destination $dst -Force }
+    }
+}
+
+function Write-SandalDeployScripts {
+    param([Parameter(Mandatory)][string]$DeployDir)
+    $upLines = @(
+        '#Requires -Version 7.2',
+        'param([string]$Profile = ''default'', [switch]$Detach, [switch]$DryRun)',
+        'Set-StrictMode -Version Latest',
+        '$ErrorActionPreference = ''Stop''',
+        '$composeFile = Join-Path $PSScriptRoot ''compose.yml''',
+        '$envFile = Join-Path $PSScriptRoot ''.env''',
+        '$cmdArgs = [System.Collections.Generic.List[string]]::new()',
+        '$cmdArgs.AddRange([string[]]@(''compose'', ''-f'', $composeFile, ''--env-file'', $envFile))',
+        'if ($Profile -ne ''default'') { $cmdArgs.AddRange([string[]]@(''--profile'', $Profile)) }',
+        '$cmdArgs.Add(''up'')',
+        'if ($Detach) { $cmdArgs.AddRange([string[]]@(''-d'', ''--wait'')) }',
+        'if ($DryRun) { Write-Output ("docker " + ($cmdArgs -join '' '')); exit 0 }',
+        'Push-Location $PSScriptRoot; try { & docker @cmdArgs; exit $LASTEXITCODE } finally { Pop-Location }'
+    )
+    [System.IO.File]::WriteAllText((Join-Path $DeployDir 'up.ps1'), (($upLines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+    $downLines = @(
+        '#Requires -Version 7.2',
+        'param([switch]$Volumes, [switch]$DryRun)',
+        'Set-StrictMode -Version Latest',
+        '$ErrorActionPreference = ''Stop''',
+        '$composeFile = Join-Path $PSScriptRoot ''compose.yml''',
+        '$envFile = Join-Path $PSScriptRoot ''.env''',
+        '$cmdArgs = [System.Collections.Generic.List[string]]::new()',
+        '$cmdArgs.AddRange([string[]]@(''compose'', ''-f'', $composeFile, ''--env-file'', $envFile, ''down'', ''--remove-orphans''))',
+        'if ($Volumes) { $cmdArgs.Add(''-v'') }',
+        'if ($DryRun) { Write-Output ("docker " + ($cmdArgs -join '' '')); exit 0 }',
+        'Push-Location $PSScriptRoot; try { & docker @cmdArgs; exit $LASTEXITCODE } finally { Pop-Location }'
+    )
+    [System.IO.File]::WriteAllText((Join-Path $DeployDir 'down.ps1'), (($downLines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+}
+
 function Sync-SandalDeployStage {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$RepoRoot)
     $srcDeploy = Join-Path $RepoRoot 'src\deploy'
     $destDeploy = Join-Path $RepoRoot 'deploy'
     $null = New-Item -ItemType Directory -Path $destDeploy -Force
+    $legacyCompose = Join-Path $destDeploy 'docker-compose.yml'
+    if (Test-Path -LiteralPath $legacyCompose -PathType Leaf) { Remove-Item -LiteralPath $legacyCompose -Force }
     if (Test-Path -LiteralPath $srcDeploy -PathType Container) {
         foreach ($item in @(Get-ChildItem -LiteralPath $srcDeploy -Recurse -File -Force)) {
+            if ($item.Name -ieq 'docker-compose.yml') { continue }
             $rel = [System.IO.Path]::GetRelativePath($srcDeploy, $item.FullName)
             $target = Join-Path $destDeploy $rel
             $parent = Split-Path -Parent $target
@@ -231,13 +352,14 @@ function Sync-SandalDeployStage {
             Copy-Item -LiteralPath $item.FullName -Destination $target -Force
         }
     }
-    $dockerIgnorePath = Join-Path $destDeploy '.dockerignore'
     $dockerDir = Join-Path $destDeploy 'docker'
-    if ((Test-Path -LiteralPath $dockerIgnorePath -PathType Leaf) -and (Test-Path -LiteralPath $dockerDir -PathType Container)) {
-        foreach ($df in @(Get-ChildItem -LiteralPath $dockerDir -Filter '*.Dockerfile' -File -Force)) {
-            Copy-Item -LiteralPath $dockerIgnorePath -Destination "$($df.FullName).dockerignore" -Force
+    if (Test-Path -LiteralPath $dockerDir -PathType Container) {
+        foreach ($dupIgnore in @(Get-ChildItem -LiteralPath $dockerDir -Filter '*.Dockerfile.dockerignore' -File -Force -ErrorAction SilentlyContinue)) {
+            Remove-Item -LiteralPath $dupIgnore.FullName -Force
         }
     }
+    Sync-SandalDeployRuntimeDirs -RepoRoot $RepoRoot -DeployDir $destDeploy
+    Write-SandalDeployScripts -DeployDir $destDeploy
     $envPath = Join-Path $destDeploy '.env'
     $examplePath = Join-Path $RepoRoot 'src\config\sandal.env.example'
     $envInfo = Initialize-SandalEnv -EnvPath $envPath -ExamplePath $examplePath

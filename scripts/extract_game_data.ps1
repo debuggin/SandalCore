@@ -37,7 +37,7 @@
   packages, so it needs the network once. A full run takes about 10 minutes on a fast PC (the longest step is the map read for the navigation mesh) and up to
   4 GB of memory for any one program; the first build of the C++ libraries (vcpkg) comes on top and can take a long time.
 
-  Every step is skipped when what it reads is unchanged since the last run (a stamp per step in dist\content\.extract), so scripts\build.ps1 and the launchers can call
+  Every step is skipped when what it reads is unchanged since the last run (a stamp per step in build\.extract), so scripts\build.ps1 and the launchers can call
   this every time. The navigation mesh step, the longest, reads the map, the towns' floors and buildings, the Riverlands' rectangles and where the five towns' nodes stand
   in content.db: it runs again when one of those changes, not when other game numbers do. The supported client build is the one of 2026-01-29 (AOCClient-Win64-Shipping.exe
   235,606,624 bytes, CacheDB.dbc 144,085,052 bytes); with another build the script warns and goes on.
@@ -76,7 +76,7 @@ $repoRoot  = Split-Path $PSScriptRoot -Parent
 $env:PYTHONPYCACHEPREFIX = Join-Path $repoRoot 'build\pycache'
 $distDir   = Join-Path $repoRoot 'dist'
 $outDir    = Join-Path $distDir 'content'
-$stampDir  = Join-Path $outDir '.extract'
+$stampDir  = Join-Path $repoRoot 'build' '.extract'
 $toolsDir  = Join-Path $distDir 'tools'
 $usmapSrc  = Join-Path $repoRoot 'src\config\layouts\aoc.usmap'
 $mapcDll         = Join-Path $repoRoot 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll'

@@ -89,7 +89,7 @@ function Build {
     New-Item -ItemType Directory -Force $out | Out-Null
     Push-Location $svc
     try {
-        foreach ($name in 'auth', 'character', 'citynode', 'nodectl', 'quests', 'questctl', 'worldctl', 'charimport', 'mesh', 'gateway') {
+        foreach ($name in 'auth', 'character', 'citynode', 'nodectl', 'quests', 'questctl', 'worldctl', 'charimport', 'mesh', 'gateway', 'meshgw', 'admin') {
             $pkg = if ($name -eq 'quests') { './cmd/quest' } else { "./cmd/$name" }
             & go build -o (Join-Path $out "$name$exeExt") $pkg
             if ($LASTEXITCODE -ne 0) { throw "go build $name failed" }

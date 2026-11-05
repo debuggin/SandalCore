@@ -119,7 +119,7 @@ services:
       AOC_CHARACTER_GRPC_ADDR: ":${CHARACTER_GRPC_PORT:-50053}"
       AOC_CHARACTER_GRPC_BIND_ADDR: ":${CHARACTER_GRPC_PORT:-50053}"
     volumes:
-      - dist_content:/app/dist/content:ro
+      - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -295,8 +295,8 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
     volumes:
-      - dist_content:/app/dist/content:ro
-      - dist_certs:/app/certs:ro
+      - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
+      - ${AOC_DIST_CERTS_DIR:-./certs}:/app/certs:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -429,8 +429,8 @@ services:
       TETHER_ADMIN_PORT: ${TETHER_ADMIN_PORT:-50055}
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
     volumes:
-      - dist_content:/app/content:ro
-      - dist_certs:/app/certs:ro
+      - ${AOC_DIST_CONTENT_DIR:-./content}:/app/content:ro
+      - ${AOC_DIST_CERTS_DIR:-./certs}:/app/certs:ro
     depends_on:
       gateway:
         condition: service_healthy
@@ -481,9 +481,9 @@ services:
     ports:
       - "127.0.0.1:${WORLDD_UDP_PORT:-7777}:7777/udp"
     volumes:
-      - dist_content:/app/content:ro
-      - dist_nav:/app/nav:ro
-      - dist_config:/app/config:ro
+      - ${AOC_DIST_CONTENT_DIR:-./content}:/app/content:ro
+      - ${AOC_DIST_NAV_DIR:-./nav}:/app/nav:ro
+      - ${AOC_DIST_CONFIG_DIR:-./config}:/app/config:ro
     depends_on:
       mesh:
         condition: service_healthy
@@ -571,27 +571,3 @@ networks:
 
 volumes:
   pgdata:
-  dist_content:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${AOC_DIST_CONTENT_DIR:-./content}
-  dist_certs:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${AOC_DIST_CERTS_DIR:-./certs}
-  dist_nav:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${AOC_DIST_NAV_DIR:-./nav}
-  dist_config:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${AOC_DIST_CONFIG_DIR:-./config}

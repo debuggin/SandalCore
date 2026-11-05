@@ -38,7 +38,7 @@ $ErrorActionPreference = 'Stop'
 if ($SaveBaseline -and $CompareTo) { throw "use -SaveBaseline or -CompareTo, not both" }
 $root     = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $dist     = Join-Path $root 'dist' $Config
-$testDist = Join-Path $root 'dist' 'tests' $Config
+$testDist = Join-Path $root 'build' 'tests' $Config
 $pathSep  = [System.IO.Path]::PathSeparator
 # ~ CoA :: C Y B ~
 

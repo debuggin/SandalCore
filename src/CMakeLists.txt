@@ -37,6 +37,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG          "${AOC_DIST_ROOT}/Debug")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE        "${AOC_DIST_ROOT}/Release")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${AOC_DIST_ROOT}/RelWithDebInfo")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     "${AOC_DIST_ROOT}/MinSizeRel")
+set(CMAKE_PDB_OUTPUT_DIRECTORY                    "${CMAKE_BINARY_DIR}/pdb")
+set(CMAKE_PDB_OUTPUT_DIRECTORY_DEBUG              "${CMAKE_BINARY_DIR}/pdb/Debug")
+set(CMAKE_PDB_OUTPUT_DIRECTORY_RELEASE            "${CMAKE_BINARY_DIR}/pdb/Release")
+set(CMAKE_PDB_OUTPUT_DIRECTORY_RELWITHDEBINFO     "${CMAKE_BINARY_DIR}/pdb/RelWithDebInfo")
+set(CMAKE_PDB_OUTPUT_DIRECTORY_MINSIZEREL         "${CMAKE_BINARY_DIR}/pdb/MinSizeRel")
+set(CMAKE_COMPILE_PDB_OUTPUT_DIRECTORY            "${CMAKE_BINARY_DIR}/pdb")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY                "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY                "${CMAKE_BINARY_DIR}/lib")
 message(STATUS "AshesOfCreation dist/ root: ${AOC_DIST_ROOT}")
@@ -153,9 +159,9 @@ if(WIN32)
 endif()
 
 add_custom_target(LauncherBuild ALL
-    COMMAND dotnet publish "${CMAKE_CURRENT_SOURCE_DIR}/clients/launcher/SandalLauncher.csproj" -c $<CONFIG> -o "${AOC_DIST_ROOT}/$<CONFIG>" --nologo
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${AOC_DIST_ROOT}/launcher"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${AOC_DIST_ROOT}/$<CONFIG>" "${AOC_DIST_ROOT}/launcher"
+    COMMAND dotnet publish "${CMAKE_CURRENT_SOURCE_DIR}/clients/launcher/SandalLauncher.csproj" -c $<CONFIG> -o "${AOC_DIST_ROOT}/launcher" -p:DebugType=None -p:DebugSymbols=false --nologo
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${AOC_DIST_ROOT}/$<CONFIG>"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${AOC_DIST_ROOT}/launcher" "${AOC_DIST_ROOT}/$<CONFIG>"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     COMMENT "Publishing SandalLauncher (.NET 8 Avalonia) to dist/$<CONFIG> and dist/launcher..."
     VERBATIM

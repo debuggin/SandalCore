@@ -68,12 +68,6 @@ if (-not $opts.DryRun) {
     $destDockerIgnore = Join-Path $deployDir '.dockerignore'
     if (Test-Path -LiteralPath $srcDockerIgnore -PathType Leaf) {
         Copy-Item -LiteralPath $srcDockerIgnore -Destination $destDockerIgnore -Force
-        $dockerDir = Join-Path $deployDir 'docker'
-        if (Test-Path -LiteralPath $dockerDir -PathType Container) {
-            foreach ($df in @(Get-ChildItem -LiteralPath $dockerDir -Filter '*.Dockerfile' -File -Force)) {
-                Copy-Item -LiteralPath $destDockerIgnore -Destination "$($df.FullName).dockerignore" -Force
-            }
-        }
     }
     $serverCrt = Join-Path $certsDir 'server.crt'
     $certsScript = Join-Path $rootPath 'scripts\sandal\certs.ps1'

@@ -214,7 +214,7 @@ Describe 'Test-SandalRootDirectoryHierarchy' {
         }
     }
 
-    It 'catches in-tree tools/launcher bin/obj and test_/fuzz_ binaries in dist/Release' {
+    It 'catches in-tree tools/launcher bin/obj, test_/fuzz_ binaries, dist/tests, .pdb files in dist, and legacy deploy/docker-compose.yml' {
         $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-hierarchy-bin-' + [guid]::NewGuid().ToString('N'))
         try {
             $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'tools\foo\bin') -Force
@@ -223,15 +223,22 @@ Describe 'Test-SandalRootDirectoryHierarchy' {
             $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'src\clients\bar\obj') -Force
             $distRel = Join-Path $tmpRoot 'dist\Release'
             $null = New-Item -ItemType Directory -Path $distRel -Force
+            $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'dist\tests') -Force
+            $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'deploy') -Force
             Set-Content -LiteralPath (Join-Path $distRel 'test_foo.exe') -Value 'MZ' -Encoding utf8
             Set-Content -LiteralPath (Join-Path $distRel 'fuzz_bar.exe') -Value 'MZ' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $distRel 'world.pdb') -Value 'PDB' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'deploy\docker-compose.yml') -Value 'version: 3' -Encoding utf8
             $findings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot
             $joined = $findings -join "`n"
             foreach ($expectedPattern in @(
                 'NoInTreeDotnetBinObj:.*(?:src/)?tools/foo/bin',
                 'NoInTreeDotnetBinObj:.*(?:src/clients|launcher)/bar/obj',
                 'NoTestBinariesInDistRelease:.*test_foo\.exe',
-                'NoTestBinariesInDistRelease:.*fuzz_bar\.exe'
+                'NoTestBinariesInDistRelease:.*fuzz_bar\.exe',
+                'NoTestBinariesInDist:.*dist/tests',
+                'NoPdbInDist:.*dist/Release/world\.pdb',
+                'NoLegacyComposeInDeploy:.*deploy/'
             )) {
                 if ($joined -notmatch $expectedPattern) {
                     throw "Expected findings to match '$expectedPattern', got: $joined"
