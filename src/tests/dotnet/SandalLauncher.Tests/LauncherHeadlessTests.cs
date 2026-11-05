@@ -58,7 +58,7 @@ public sealed class LauncherHeadlessTests
             Assert.Throws<InvalidDataException>(() => ProfileStoreService.ValidateProfile(
                 new LauncherProfile { Id = "bad", DisplayName = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" }));
         }
-        finally { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); }
+        finally { DeleteTempDirWithRetry(tempDir); }
     }
 
     [Fact]
@@ -101,7 +101,7 @@ public sealed class LauncherHeadlessTests
             Assert.Contains("-LauncherTetherPort=29000", startInfo.ArgumentList);
             Assert.Contains(pipeServer.CliArgument, startInfo.ArgumentList);
         }
-        finally { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); }
+        finally { DeleteTempDirWithRetry(tempDir); }
     }
 
     [Fact]
@@ -160,10 +160,7 @@ public sealed class LauncherHeadlessTests
             Assert.DoesNotContain("hunter2", scrubbed);
             Assert.Contains("[REDACTED]", scrubbed);
         }
-        finally
-        {
-            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true);
-        }
+        finally { DeleteTempDirWithRetry(tempDir); }
     }
 
     [Fact]
@@ -250,34 +247,42 @@ public sealed class LauncherHeadlessTests
 
         byte[] retransmit = await SendTetherHeaderOnlyAsync(udp, ep, tether, 2, MsgId.AskWindow, 42u, 9L, 0L);
         Assert.True(LocalTetherListener.TryParseHeader(retransmit, out ArqHeader rHdr) && rHdr.MsgId == MsgId.Data && rHdr.SequenceNumber == 0L);
-        byte[] tellWin = await SendTetherHeaderOnlyAsync(udp, ep, tether, 2, MsgId.AskWindow, 42u, 9L, 99L);
-        Assert.True(LocalTetherListener.TryParseHeader(tellWin, out ArqHeader twHdr) && twHdr.MsgId == MsgId.TellWindow);
+        byte[] tellWin = await SendTetherHeaderOnlyAsync(udp, ep, tether, 2, MsgId.AskWindow, 42u, 0L, 99L);
+        Assert.True(LocalTetherListener.TryParseHeader(tellWin, out ArqHeader twHdr) && twHdr.MsgId == MsgId.TellWindow && twHdr.NextExpectedRecvSeq == 10L);
+
+        _ = await SendTetherHeaderOnlyAsync(udp, ep, tether, 2, MsgId.Connect, 77u, 0L, 0L);
+        _ = await SendTetherDataAndReadReplyAsync(udp, ep, tether, 77u, 1L, "request_open_session");
+        byte[] keepAlive = await SendTetherHeaderOnlyAsync(udp, ep, tether, 2, MsgId.AskWindow, 77u, 0L, 1L);
+        Assert.True(LocalTetherListener.TryParseHeader(keepAlive, out ArqHeader kaHdr) && kaHdr.MsgId == MsgId.TellWindow);
+        Assert.NotEqual(1L, kaHdr.NextExpectedRecvSeq);
+        Assert.Equal(2L, kaHdr.NextExpectedRecvSeq);
     }
 
     [Fact]
     public void SandalConfigAndProfileStore_NormalizesIcsPort50061SingleLocalDevServerAndTlsEnvVars()
     {
-        Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint(null));
-        Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint("127.0.0.1:8444"));
-        Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint("gateway:50061"));
-        Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint("0.0.0.0:50061"));
-
         string tempDir = Path.Combine(Path.GetTempPath(), $"sandal-28c-cfg-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
         try
         {
+            Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint(null, tempDir));
+            Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint("127.0.0.1:8444", tempDir));
+            Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint("gateway:50061", tempDir));
+            Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint("0.0.0.0:50061", tempDir));
+
+            string expectedWorkspaceIcs = $"{SandalConfigLoader.ResolveLocalIcsHost()}:50061";
             var store = new ProfileStoreService(Path.Combine(tempDir, "LauncherProfiles.json"));
             var defaults = store.CreateDefaultProfiles();
             Assert.Single(defaults);
             Assert.Equal("local-dev", defaults[0].Id);
-            Assert.Equal("127.0.0.1:50061", defaults[0].GatewayIcsAddr);
+            Assert.Equal(expectedWorkspaceIcs, defaults[0].GatewayIcsAddr);
 
             string legacyJson = "{\"schemaVersion\":1,\"activeProfileId\":\"local-dev\",\"profiles\":[{\"id\":\"local-dev\",\"displayName\":\"Local\",\"gatewayHttpAddr\":\"127.0.0.1:8080\",\"gatewayIcsAddr\":\"127.0.0.1:8444\",\"gatewayGrpcAddr\":\"127.0.0.1:50050\",\"adminHttpAddr\":\"127.0.0.1:8090\"},{\"id\":\"docker-single\",\"displayName\":\"Docker\",\"gatewayHttpAddr\":\"127.0.0.1:8080\",\"gatewayIcsAddr\":\"gateway:50061\",\"gatewayGrpcAddr\":\"127.0.0.1:50050\",\"adminHttpAddr\":\"127.0.0.1:8090\"}]}";
             File.WriteAllText(store.StoreFilePath, legacyJson, Encoding.UTF8);
             var servers = store.LoadServerProfiles();
             Assert.Single(servers);
             Assert.Equal("local-dev", servers[0].Id);
-            Assert.Equal("127.0.0.1:50061", servers[0].GatewayIcsAddr);
+            Assert.Equal(expectedWorkspaceIcs, servers[0].GatewayIcsAddr);
 
             string caFile = Path.Combine(tempDir, "ca.crt");
             File.WriteAllText(caFile, "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----");
@@ -286,7 +291,49 @@ public sealed class LauncherHeadlessTests
             Assert.Equal(Path.GetFullPath(caFile), psi.Environment["SSL_CERT_FILE"]);
             Assert.Equal(Path.GetFullPath(caFile), psi.Environment["GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"]);
         }
-        finally { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); }
+        finally { DeleteTempDirWithRetry(tempDir); }
+    }
+
+    [Fact]
+    public void SandalConfigLoader_WildcardCertDnsResolution_MapsDomainToLocalhostSubdomainAndIgnoresDevLocalhost()
+    {
+        Assert.Equal("localhost.example.test", SandalConfigLoader.NormalizeCertDnsCandidate("*.example.test"));
+        Assert.Null(SandalConfigLoader.NormalizeCertDnsCandidate("*.dev.localhost"));
+        Assert.Null(SandalConfigLoader.NormalizeCertDnsCandidate("*.dev.internal"));
+        Assert.Null(SandalConfigLoader.NormalizeCertDnsCandidate("host.docker.internal"));
+        Assert.Null(SandalConfigLoader.NormalizeCertDnsCandidate("host.containers.internal"));
+
+        string tempDir = Path.Combine(Path.GetTempPath(), $"sandal-wildcard-cert-{Guid.NewGuid():N}");
+        string certsDir = Path.Combine(tempDir, "dist", "certs");
+        Directory.CreateDirectory(certsDir);
+        try
+        {
+            string pemPath = Path.Combine(certsDir, "server.pem");
+            WriteSelfSignedWildcardPem(pemPath, "*.example.test");
+            Assert.Equal("localhost.example.test", SandalConfigLoader.TryExtractCertDnsHost(pemPath));
+            Assert.Equal("localhost.example.test", SandalConfigLoader.ResolveLocalIcsHost(tempDir));
+            Assert.Equal("localhost.example.test:50061", SandalConfigLoader.NormalizeIcsEndpoint("127.0.0.1:50061", tempDir));
+
+            string devLocalPem = Path.Combine(certsDir, "devlocal.pem");
+            WriteSelfSignedWildcardPem(devLocalPem, "*.dev.localhost");
+            Assert.Null(SandalConfigLoader.TryExtractCertDnsHost(devLocalPem));
+        }
+        finally { DeleteTempDirWithRetry(tempDir); }
+    }
+
+    private static void WriteSelfSignedWildcardPem(string pemPath, string wildcardDns)
+    {
+        using var rsa = System.Security.Cryptography.RSA.Create(2048);
+        var req = new System.Security.Cryptography.X509Certificates.CertificateRequest(
+            $"CN={wildcardDns}",
+            rsa,
+            System.Security.Cryptography.HashAlgorithmName.SHA256,
+            System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+        var san = new System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder();
+        san.AddDnsName(wildcardDns);
+        req.CertificateExtensions.Add(san.Build());
+        using var cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-5), DateTimeOffset.UtcNow.AddDays(1));
+        File.WriteAllText(pemPath, cert.ExportCertificatePem(), Encoding.ASCII);
     }
 
     [Fact]
@@ -334,7 +381,24 @@ public sealed class LauncherHeadlessTests
             Assert.False(vm.IsAshesProcessRunning);
             Assert.Equal("Login error: invalid username or password.", vm.StatusBannerMessage);
         }
-        finally { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); }
+        finally { DeleteTempDirWithRetry(tempDir); }
+    }
+
+    private static void DeleteTempDirWithRetry(string path)
+    {
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            if (!Directory.Exists(path)) return;
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 9)
+            {
+                Thread.Sleep(25); // allow-sleep: wait for async atomic-rename file handle release on Windows
+            }
+        }
     }
 
     private static async Task<byte[]> SendTetherHeaderOnlyAsync(

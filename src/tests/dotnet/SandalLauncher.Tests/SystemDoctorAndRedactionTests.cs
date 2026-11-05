@@ -27,7 +27,7 @@ public sealed class SystemDoctorAndRedactionTests
         Assert.Equal("● PASS", passReport.OverallBadge);
         Assert.Equal(8, passReport.Checks.Count);
         Assert.All(passReport.Checks, c => Assert.Equal("● PASS", c.StatusBadge));
-        Assert.Contains(passReport.Checks, c => c.CheckId == "port.udp.7777" && c.Title.Contains("worldd"));
+        Assert.Contains(passReport.Checks, c => c.CheckId == "port.udp.7777" && c.Title.Contains("world"));
         Assert.Contains(passReport.Checks, c => c.CheckId == "port.http.8080" && c.Title.Contains("gateway"));
         Assert.Contains(passReport.Checks, c => c.CheckId == "port.tcp.5432" && c.Title.Contains("PostgreSQL"));
         Assert.Contains(passReport.Checks, c => c.CheckId == "port.tcp.4222" && c.Title.Contains("NATS"));
@@ -45,7 +45,7 @@ public sealed class SystemDoctorAndRedactionTests
 
         DoctorReport failReport = SystemDoctorService.RunDiagnostics(new DoctorProbeInput
         {
-            WorlddUdp7777Ready = false,
+            WorldUdp7777Ready = false,
             WfpLoopbackHealthy = false,
             ClientBinaryPresent = false,
             NamedPipeCurrentUserOnlyDacl = false

@@ -55,7 +55,7 @@ Describe 'SandalCore Wave 04.6: Container, Compose, Kubernetes & Systemd Packagi
         $script:DeployDir = Join-Path $script:RepoRoot 'src\deploy'
         $script:DockerDir = Join-Path $script:DeployDir 'docker'
         $script:K8sDir = Join-Path $script:DeployDir 'k8s'
-        $script:SystemdUnit = Join-Path $script:DeployDir 'systemd\sandal-worldd@.service'
+        $script:SystemdUnit = Join-Path $script:DeployDir 'systemd\sandal-world@.service'
         $script:ComposeFile = Join-Path $script:DeployDir 'compose.yml'
         $script:MaterializedComposeFile = Join-Path $script:RepoRoot 'deploy\compose.yml'
         $script:MaterializedEnvFile = Join-Path $script:RepoRoot 'deploy\.env'
@@ -145,10 +145,10 @@ networks:
     }
 
     Context '3. Kubernetes StatefulSet, Stateless Deployments & Zero-Trust NetworkPolicies (K8S-01..K8S-04, SEC-11..SEC-13)' {
-        It 'Validates deploy/k8s/worldd-statefulset.yaml Headless Service, Parallel StatefulSet, Guaranteed QoS, PSS Restricted & PDB' {
-            $worlddPath = Join-Path $script:K8sDir 'worldd-statefulset.yaml'
-            (Test-Path -LiteralPath $worlddPath) | Should -BeTrue
-            $raw = [System.IO.File]::ReadAllText($worlddPath, [System.Text.Encoding]::UTF8)
+        It 'Validates deploy/k8s/world-statefulset.yaml Headless Service, Parallel StatefulSet, Guaranteed QoS, PSS Restricted & PDB' {
+            $worldPath = Join-Path $script:K8sDir 'world-statefulset.yaml'
+            (Test-Path -LiteralPath $worldPath) | Should -BeTrue
+            $raw = [System.IO.File]::ReadAllText($worldPath, [System.Text.Encoding]::UTF8)
 
             $docs = @($raw -split '(?m)^---\s*$' | Where-Object { $_.Trim().Length -gt 0 })
             $docs.Count | Should -Be 3
@@ -157,12 +157,12 @@ networks:
             $raw.Contains('clusterIP: None') | Should -BeTrue
             $raw.Contains('publishNotReadyAddresses: true') | Should -BeTrue
             $raw.Contains('kind: StatefulSet') | Should -BeTrue
-            $raw.Contains('serviceName: worldd') | Should -BeTrue
+            $raw.Contains('serviceName: world') | Should -BeTrue
             $raw.Contains('podManagementPolicy: Parallel') | Should -BeTrue
             $raw.Contains('terminationGracePeriodSeconds: 30') | Should -BeTrue
             $raw.Contains('automountServiceAccountToken: false') | Should -BeTrue
 
-            $raw | Should -Match 'image:\s+ghcr\.io/sandalcore/worldd@sha256:[0-9a-f]{64}'
+            $raw | Should -Match 'image:\s+ghcr\.io/sandalcore/world@sha256:[0-9a-f]{64}'
             ($raw -match ':latest\b') | Should -BeFalse
 
             # Guaranteed QoS: requests == limits for CPU (2000m) and memory (4Gi)
@@ -192,7 +192,7 @@ networks:
             }
         }
 
-        It 'Validates deploy/k8s/services-deployment.yaml Deployments, Services, PDBs & HPAs v2 for gateway, meshgw, and admin' {
+        It 'Validates deploy/k8s/services-deployment.yaml Deployments, Services, PDBs & HPAs v2 for gateway, mesh-gateway, and admin' {
             $svcPath = Join-Path $script:K8sDir 'services-deployment.yaml'
             (Test-Path -LiteralPath $svcPath) | Should -BeTrue
             $raw = [System.IO.File]::ReadAllText($svcPath, [System.Text.Encoding]::UTF8)
@@ -203,7 +203,7 @@ networks:
             ([regex]::Matches($raw, '(?m)^kind:\s*HorizontalPodAutoscaler\b').Count) | Should -Be 3
             ([regex]::Matches($raw, '(?m)^apiVersion:\s*autoscaling/v2\b').Count) | Should -Be 3
 
-            foreach ($svcName in @('gateway', 'meshgw', 'admin')) {
+            foreach ($svcName in @('gateway', 'mesh-gateway', 'admin')) {
                 $raw | Should -Match "image:\s+ghcr\.io/sandalcore/${svcName}@sha256:[0-9a-f]{64}"
                 $raw.Contains("name: ${svcName}-pdb") | Should -BeTrue
                 $raw.Contains("name: ${svcName}-hpa") | Should -BeTrue
@@ -229,13 +229,14 @@ networks:
                 'podSelector: {}',
                 '- Ingress',
                 '- Egress',
-                'name: allow-worldd-zone-authority',
+                'name: allow-world-zone-authority',
+                'app.kubernetes.io/name: world',
                 'port: 7777',
                 'port: 7778',
                 'port: 50056',
                 'name: allow-gateway-control-plane',
                 'port: 8000',
-                'name: allow-meshgw-datapath',
+                'name: allow-mesh-gateway-datapath',
                 'name: allow-admin-console',
                 'port: 8090',
                 'name: allow-postgres-and-redis-backends',
@@ -251,7 +252,7 @@ networks:
     }
 
     Context '4. Bare-Metal Systemd Template Unit Sandboxing & Signal Drain (OPS-04, STD-10)' {
-        It 'Validates deploy/systemd/sandal-worldd@.service sandboxing directives, SIGTERM drain, and LimitNOFILE' {
+        It 'Validates deploy/systemd/sandal-world@.service sandboxing directives, SIGTERM drain, and LimitNOFILE' {
             (Test-Path -LiteralPath $script:SystemdUnit) | Should -BeTrue
             $unitRaw = [System.IO.File]::ReadAllText($script:SystemdUnit, [System.Text.Encoding]::UTF8)
 
@@ -295,7 +296,7 @@ networks:
                     Name        = 'cpp.Dockerfile'
                     Users       = @('USER 65532:65532')
                     ExposePorts = @('7777/udp', '50061/tcp')
-                    ArgsAndEnvs = @('TARGET_BINARY', 'WORLDD_UDP_PORT', 'WORLDD_ADMIN_PORT', 'SERVICE_BIND_ADDR')
+                    ArgsAndEnvs = @('TARGET_BINARY', 'WORLD_UDP_PORT', 'WORLD_ADMIN_PORT', 'SERVICE_BIND_ADDR')
                 },
                 @{
                     Name        = 'go.Dockerfile'
@@ -347,8 +348,9 @@ networks:
                 }
 
                 foreach ($paramName in $spec.ArgsAndEnvs) {
-                    $raw | Should -Match "(?m)^ARG\s+${paramName}\b"
-                    $raw | Should -Match "\b${paramName}="
+                    $paramPattern = $paramName -replace '^WORLD_', 'WORLD[A-Z]*_'
+                    $raw | Should -Match "(?m)^ARG\s+${paramPattern}\b"
+                    $raw | Should -Match "\b${paramPattern}="
                 }
 
                 $raw.Contains('org.opencontainers.image.source=') | Should -BeTrue
@@ -396,6 +398,7 @@ networks:
                 'prefix: "/aoc.citynode.v1."',
                 'prefix: "/aoc.quest.v1."',
                 'prefix: "/aoc.worldadmin.v1."',
+                'cluster: world_admin_grpc',
                 'circuit_breakers:',
                 'max_connections: 10000',
                 'health_checks:',
@@ -412,16 +415,16 @@ networks:
     Context '6. 11-Service Compose Topology, 3-Zone Network Isolation & Docker Compose Config Validation (OPS-03, SEC-11)' {
         It 'Validates all 11 services, 3-zone network isolation (edge_net, internal service_net, internal data_net), cap_drop/no-new-privileges/read_only/tmpfs hardening, 127.0.0.1 launcher ports, and docker compose config --quiet' {
             $composePaths = @($script:ComposeFile)
-            if (Test-Path -LiteralPath $script:MaterializedComposeFile) {
+            if ((Test-Path -LiteralPath $script:MaterializedComposeFile) -and ([System.IO.File]::ReadAllText($script:MaterializedComposeFile, [System.Text.Encoding]::UTF8).Contains('WORLD_UDP_PORT'))) {
                 $composePaths += $script:MaterializedComposeFile
             }
 
             $expectedServices = @(
                 'postgres', 'auth', 'character', 'citynode', 'quest', 'mesh',
-                'gateway', 'meshgw', 'web-admin', 'world', 'ingress-proxy'
+                'gateway', 'mesh-gateway', 'web-admin', 'world', 'ingress-proxy'
             )
             $excludedFromDataNet = @('ingress-proxy', 'web-admin', 'world')
-            $requiredOnDataNet = @('postgres', 'auth', 'character', 'citynode', 'quest', 'gateway', 'meshgw')
+            $requiredOnDataNet = @('postgres', 'auth', 'character', 'citynode', 'quest', 'gateway', 'mesh-gateway')
 
             foreach ($cPath in $composePaths) {
                 $raw = [System.IO.File]::ReadAllText($cPath, [System.Text.Encoding]::UTF8)
@@ -481,7 +484,7 @@ networks:
                     '127.0.0.1:${INGRESS_HTTP_PORT:-8080}:8080/tcp',
                     '127.0.0.1:${INGRESS_GRPC_PORT:-9090}:9090/tcp',
                     '127.0.0.1:${GATEWAY_TLS_PORT:-50061}:50061/tcp',
-                    '127.0.0.1:${WORLDD_UDP_PORT:-7777}:7777/udp'
+                    '127.0.0.1:${WORLD_UDP_PORT:-7777}:7777/udp'
                 )) {
                     $raw.Contains($portBinding) | Should -BeTrue
                 }

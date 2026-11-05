@@ -258,7 +258,7 @@ public static class SandalCoreLockContentionHelper {
                 Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\hotfixes\010_hotfix.sql') -Value 'UPDATE nodes SET level = 3;' -Encoding utf8
                 Set-Content -LiteralPath (Join-Path $tmpRepo 'src\deploy\postgres\init\000_init.sql') -Value 'CREATE EXTENSION pgcrypto;' -Encoding utf8
                 Set-Content -LiteralPath (Join-Path $tmpRepo 'src\deploy\compose.yml') -Value 'name: sandalcore' -Encoding utf8
-                Set-Content -LiteralPath (Join-Path $tmpRepo 'src\deploy\k8s\worldd-statefulset.yaml') -Value 'kind: StatefulSet' -Encoding utf8
+                Set-Content -LiteralPath (Join-Path $tmpRepo 'src\deploy\k8s\world-statefulset.yaml') -Value 'kind: StatefulSet' -Encoding utf8
                 Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\sandal.env.example') -Value "AOC_ENV=dev`nPOSTGRES_PASSWORD=CHANGE_ME_DB`nAOC_SERVICE_TOKEN=CHANGE_ME_TOKEN`nSANDAL_SECRET_KEY=" -Encoding utf8
 
                 $distRes = Sync-SandalDistStage -RepoRoot $tmpRepo -Config 'Release'
@@ -295,7 +295,7 @@ public static class SandalCoreLockContentionHelper {
                 if ($deployRes.DeployDir -ne (Join-Path $tmpRepo 'deploy') -or $deployRes.EnvPath -ne (Join-Path $tmpRepo 'deploy\.env')) {
                     throw "Unexpected Sync-SandalDeployStage result: $($deployRes | ConvertTo-Json -Compress)"
                 }
-                foreach ($expectedDeployRel in @('deploy\compose.yml', 'deploy\k8s\worldd-statefulset.yaml', 'deploy\.env')) {
+                foreach ($expectedDeployRel in @('deploy\compose.yml', 'deploy\k8s\world-statefulset.yaml', 'deploy\.env')) {
                     if (-not (Test-Path -LiteralPath (Join-Path $tmpRepo $expectedDeployRel) -PathType Leaf)) {
                         throw "Expected Sync-SandalDeployStage to materialize '$expectedDeployRel'"
                     }

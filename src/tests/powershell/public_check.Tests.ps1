@@ -121,7 +121,7 @@ Describe 'SandalCore Public Hygiene Check, Heavy Lock & Nav Stamp Decoupling' {
     }
 
     Context 'extract_game_data.ps1 Get-CodeNav CMakeLists Decoupling (SC-02)' {
-        It 'ensures Get-CodeNav does not include CMakeLists.txt or server\worldd\CMakeLists.txt' {
+        It 'ensures Get-CodeNav does not include CMakeLists.txt or src\server\world\CMakeLists.txt' {
             $content = Get-Content -LiteralPath $script:ExtractGameDataScript -Raw
             $match = [regex]::Match($content, '(?m)^\s*function\s+Get-CodeNav\s*\{[^\r\n]+\}')
             if (-not $match.Success) {
@@ -131,7 +131,7 @@ Describe 'SandalCore Public Hygiene Check, Heavy Lock & Nav Stamp Decoupling' {
             if ($line -match 'CMakeLists\.txt') {
                 throw "Expected Get-CodeNav not to reference CMakeLists.txt, but found: $line"
             }
-            if ($line -notmatch '(?:server\\worldd\\nav|libs[\\/]aocnav)' -or $line -notmatch 'third_party[\\/]recastnavigation' -or $line -notmatch 'vcpkg\.json') {
+            if ($line -notmatch '(?:server\\world\\nav|libs[\\/]aocnav)' -or $line -notmatch 'third_party[\\/]recastnavigation' -or $line -notmatch 'vcpkg\.json') {
                 throw "Expected Get-CodeNav to retain nav, recastnavigation, and vcpkg.json inputs, got: $line"
             }
         }
