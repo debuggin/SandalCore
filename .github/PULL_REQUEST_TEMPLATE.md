@@ -10,8 +10,9 @@
 ## Verification & Testing
 <!-- Describe how you verified these changes. Include test commands and output summary. -->
 - [ ] Go tests: `cd src/server/services && go test ./...`
-- [ ] C++ build and tests: `powershell -File scripts/run_tests.ps1`
-- [ ] Python/script syntax: verified clean execution
+- [ ] Stack verification & unit tests: `pwsh -File sandal.ps1 test`
+- [ ] Functional API & play-flow tests: `pwsh -File scripts/test_functional_apis.ps1`
+- [ ] PowerShell script syntax: verified clean execution
 
 ## Checklist
 - [ ] My code adheres to the project guidelines in [CONTRIBUTING.md](../docs/CONTRIBUTING.md).

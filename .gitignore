@@ -269,7 +269,7 @@ orleans.codegen.cs
 # =============================================================================
 # 4. GO, RUST & POWERSHELL
 # =============================================================================
-# --- Go (WHY: /vendor/ is root-anchored to preserve tracked server/worldd/vendor/) ---
+# --- Go (WHY: /vendor/ is root-anchored to preserve tracked src/server/world/vendor/) ---
 /vendor/
 *.out
 *.test

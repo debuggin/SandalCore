@@ -5,15 +5,18 @@
 * text=auto eol=lf
 
 # --- Agent Harness & Customization Bundles ---
-# Agent Harness & Customization Bundles
 .agents/** text eol=lf
 
 # =============================================================================
 # 2. POLYGLOT SOURCE CODE & SEMANTIC DIFF DRIVERS
 # =============================================================================
-# --- C / C++ ---
+# --- C / C++ / Assembly / CMake ---
+*.S text eol=lf
+*.asm text eol=lf
 *.c text eol=lf diff=cpp
 *.cc text eol=lf diff=cpp
+*.cmake text eol=lf
+*.cmake.in text eol=lf
 *.cpp text eol=lf diff=cpp
 *.cppm text eol=lf diff=cpp
 *.cxx text eol=lf diff=cpp
@@ -26,34 +29,44 @@
 *.inl text eol=lf diff=cpp
 *.ipp text eol=lf diff=cpp
 *.ixx text eol=lf diff=cpp
+*.s text eol=lf
+CMakeLists.txt text eol=lf
 
 # --- C# / .NET / Avalonia ---
 *.axaml text eol=lf
+*.config text eol=lf
 *.cs text eol=lf diff=csharp
 *.csproj text eol=lf
 *.csx text eol=lf diff=csharp
 *.nuspec text eol=lf
 *.props text eol=lf
 *.resx text eol=lf
+*.sln text eol=lf
+*.slnx text eol=lf
 *.targets text eol=lf
 *.xaml text eol=lf
 
-# --- Python ---
-*.pxd text eol=lf diff=python
-*.py text eol=lf diff=python
-*.pyi text eol=lf diff=python
-*.pyx text eol=lf diff=python
+# --- Go (WHY: enforce LF so Windows core.autocrlf never triggers gofmt diffs) ---
+*.go text eol=lf diff=golang
+go.mod text eol=lf
+go.sum text eol=lf
+go.work text eol=lf
+go.work.sum text eol=lf
 
-# --- Rust ---
-*.rs text eol=lf diff=rust
-Cargo.lock text eol=lf
-Cargo.toml text eol=lf
-rust-toolchain.toml text eol=lf
+# --- PowerShell & POSIX Shell ---
+*.bash text eol=lf
+*.ps1 text eol=lf
+*.ps1xml text eol=lf
+*.psd1 text eol=lf
+*.psm1 text eol=lf
+*.sh text eol=lf
+*.zsh text eol=lf
 
 # --- Node.js / TypeScript / Web ---
 *.cjs text eol=lf
 *.css text eol=lf
 *.cts text eol=lf
+*.htm text eol=lf
 *.html text eol=lf
 *.js text eol=lf
 *.jsx text eol=lf
@@ -64,95 +77,101 @@ rust-toolchain.toml text eol=lf
 *.ts text eol=lf
 *.tsx text eol=lf
 
-# --- CMake, SQL, Data, Configs & Documentation ---
-*.cmake text eol=lf
-*.cmake.in text eol=lf
-*.csv text eol=lf
-*.hex text eol=lf
+# --- Python & Rust ---
+*.pxd text eol=lf diff=python
+*.py text eol=lf diff=python
+*.pyi text eol=lf diff=python
+*.pyx text eol=lf diff=python
+*.rs text eol=lf diff=rust
+Cargo.lock text eol=lf
+Cargo.toml text eol=lf
+rust-toolchain.toml text eol=lf
+
+# =============================================================================
+# 3. SCHEMAS, PROTOCOLS, SQL, SHADERS, CONFIGS, DOCS & REPO METADATA (LF)
+# =============================================================================
+# --- Schemas, Protocols, SQL, Shaders & Configs ---
+*.cfg text eol=lf
+*.comp text eol=lf
+*.conf text eol=lf
+*.env text eol=lf
+*.example text eol=lf
+*.fbs text eol=lf
+*.frag text eol=lf
+*.glsl text eol=lf
+*.hlsl text eol=lf
+*.ini text eol=lf
 *.json text eol=lf
+*.jsonc text eol=lf
 *.jsonl text eol=lf
-*.md text eol=lf diff=markdown
-*.sha256 text eol=lf
+*.proto text eol=lf
+*.service text eol=lf
 *.sql text eol=lf
 *.toml text eol=lf
-*.tsv text eol=lf
-*.txt text eol=lf
+*.usf text eol=lf
+*.ush text eol=lf
+*.vert text eol=lf
 *.xml text eol=lf
+*.xsd text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
-CMakeLists.txt text eol=lf
-LICENSE text eol=lf
-NOTICE text eol=lf
-
-# =============================================================================
-# 3. STRICT LF TEXT FILES (GO, PROTOCOLS, SHELL, CONTAINERS & DOTFILES)
-# =============================================================================
-# --- Go (WHY: enforce LF so Windows core.autocrlf never triggers gofmt diffs) ---
-*.go text eol=lf diff=golang
-go.mod text eol=lf
-go.sum text eol=lf
-go.work text eol=lf
-go.work.sum text eol=lf
-
-# --- Protobuf, FlatBuffers & Buf ---
-*.fbs text eol=lf
-*.proto text eol=lf
 buf.gen.yaml text eol=lf
 buf.lock text eol=lf
 buf.yaml text eol=lf
 
-# --- POSIX Shell, Make & Containers ---
-*.bash text eol=lf
+# --- Docs, Data Tables, Hex Fixtures & ASCII PEM/Keys ---
+*.crt text eol=lf
+*.csv text eol=lf
+*.hex text eol=lf
+*.key text eol=lf
+*.md text eol=lf diff=markdown
+*.pem text eol=lf
+*.pub text eol=lf
+*.sha256 text eol=lf
+*.tsv text eol=lf
+*.txt text eol=lf
+
+# --- Containers, Build Files & Repository Metadata ---
+*.Dockerfile text eol=lf
 *.dockerfile text eol=lf
-*.sh text eol=lf
-*.zsh text eol=lf
 .dockerignore text eol=lf
+.editorconfig text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.graphifyignore text eol=lf
 Dockerfile text eol=lf
 Dockerfile.* text eol=lf
 GNUmakefile text eol=lf
 Justfile text eol=lf
+LICENSE text eol=lf
 Makefile text eol=lf
-
-# --- Repository Dotfiles ---
+NOTICE text eol=lf
 src/.editorconfig text eol=lf
-.gitattributes text eol=lf
-.gitignore text eol=lf
-.graphifyignore text eol=lf
 
 # =============================================================================
-# 4. SCRIPTS & VISUAL STUDIO FILES
+# 4. WINDOWS BATCH ENTRYPOINTS & LEGACY VISUAL STUDIO C++ PROJECTS (CRLF)
 # =============================================================================
-# --- Scripts (PowerShell LF; Legacy Windows Batch CRLF) ---
-# Scripts
+# --- Windows Batch Entrypoints (start.bat, stop.bat, build.bat, scripts/ensure_pwsh.bat) ---
 *.bat text eol=crlf
 *.cmd text eol=crlf
-*.ps1 text eol=lf
-*.ps1xml text eol=lf
-*.psd1 text eol=lf
-*.psm1 text eol=lf
 
-# --- Visual Studio Solutions & C++ Projects ---
-*.sln text eol=crlf
-*.slnx text eol=crlf
+# --- Legacy Visual Studio C++ Projects ---
 *.vcxproj text eol=crlf
 *.vcxproj.filters text eol=crlf
 *.vcxproj.user text eol=crlf
 
 # =============================================================================
-# 5. BINARY ARTIFACTS, CERTIFICATES, ARCHIVES & GAME ASSETS
+# 5. BINARY ARTIFACTS, ARCHIVES, IMAGES, FONTS & GAME ASSETS
 # =============================================================================
-# --- PKI Certificates & Private Keys ---
+# --- Binary DER/PKCS#12 Certificates ---
 *.cer binary
 *.crl binary
-*.crt binary
 *.der binary
-*.key binary
 *.p12 binary
-*.pem binary
 *.pfx binary
 *.srl binary
 
-# --- Executables, Libraries, Symbols & Dumps ---
+# --- Executables, Libraries, Symbols, SPIR-V & Packet Captures ---
 *.a binary
 *.bin binary
 *.dll binary
@@ -172,10 +191,12 @@ src/.editorconfig text eol=lf
 *.pcapng binary
 *.pdb binary
 *.so binary
+*.spv binary
 
-# --- Engine, Game Assets & Databases ---
+# --- Engine, Game Assets, Navigation Meshes & Databases ---
 *.adt binary
 *.anim binary
+*.aocnav binary
 *.blp binary
 *.bone binary
 *.db binary
@@ -200,6 +221,7 @@ src/.editorconfig text eol=lf
 
 # --- Archives, Documents, Images & Fonts ---
 *.7z binary
+*.bmp binary
 *.gif binary
 *.gz binary
 *.ico binary
@@ -222,14 +244,14 @@ src/.editorconfig text eol=lf
 # 6. EXACT BYTE-PRESERVED REGRESSION FIXTURES
 # =============================================================================
 # --- WHY: Must appear after *.txt text so exact byte comparison is preserved ---
-fixtures/test-baseline.txt -text
+src/tests/fixtures/test-baseline.txt -text
 
 # =============================================================================
 # 7. GITHUB LINGUIST VENDORED & GENERATED OVERRIDES
 # =============================================================================
 # --- Vendored third-party vs. first-party domain overrides (last-match-wins) ---
-server/worldd/vendor/** linguist-vendored=false
-third_party/** linguist-vendored=true
+src/server/world/vendor/** linguist-vendored=false
+src/third_party/** linguist-vendored=true
 
 # --- Generated protocol, schema & designer code ---
 *.designer.cs linguist-generated=true
@@ -240,5 +262,7 @@ third_party/** linguist-vendored=true
 *.pb.h linguist-generated=true
 *_gen.go linguist-generated=true text eol=lf
 *_grpc.pb.go linguist-generated=true text eol=lf
-libs/aocnet/protocol/schema/generated/** linguist-generated=true
-services/gen/** linguist-generated=true text eol=lf
+build/gen/** linguist-generated=true text eol=lf
+src/libs/aocnet/protocol/schema/generated/** linguist-generated=true
+src/libs/aocproto/proto/** text eol=lf
+src/server/services/gen/** linguist-generated=true text eol=lf
