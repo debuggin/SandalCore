@@ -64,7 +64,7 @@ uint64_t fresh_seed();
 struct Config {
     NodeBoard::Config board;
     bool              quality_literal = false;
-    uint64_t          seed = 0x6A7E5EEDull;   // the default repeats the same rolls on every start (the tests rely on it); worldd passes fresh_seed() unless --gather-seed is given
+    uint64_t          seed = 0x6A7E5EEDull;   // the default repeats the same rolls on every start (the tests rely on it); world passes fresh_seed() unless --gather-seed is given
 };
 
 /// What a harvest gave.

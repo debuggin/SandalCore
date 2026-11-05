@@ -62,9 +62,9 @@ public:
 /// A HitPort over a CombatWorld for one player.
 ///
 /// Two clocks meet here [E1 stage 3 fix 2]: the player's ability runtime counts seconds from its own start (the session's join), the combat world and
-/// the aftermath are ticked with the server's world time (seconds since worldd started, PlayerWorld::tick_world).  `clock_offset` is the world time at the
+/// the aftermath are ticked with the server's world time (seconds since world started, PlayerWorld::tick_world).  `clock_offset` is the world time at the
 /// runtime's zero (the join's world time): every `now` the runtime passes is translated before it reaches the world, so a death's time, a shield's end and
-/// the player's in-combat window are on the clock the world is ticked with.  Without it (the user's run of 2026-10-06, worldd 102 s old at the join) every
+/// the player's in-combat window are on the clock the world is ticked with.  Without it (the user's run of 2026-10-06, world 102 s old at the join) every
 /// corpse closed and every spawn point refilled at the very next world tick: no death animation, an NPC "respawning in place".
 class WorldHitPort final : public HitPort {
 public:

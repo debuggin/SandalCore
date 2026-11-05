@@ -4,7 +4,7 @@
 // ============================================================================
 //  crafting/station.h  (crafting, step 0: "the stations stand and open")
 //
-//  What worldd knows of a crafting or processing station that is not in the actor (world/actor_registry.h, StationInfo): how close a player must be for the window to open,
+//  What world knows of a crafting or processing station that is not in the actor (world/actor_registry.h, StationInfo): how close a player must be for the window to open,
 //  and the service tax the window is sent.
 //
 //  The window.  The client opens it from its own copy of the station's Blueprint and design data: the recipes of the station's sets, the prices, the player's certification and bags.  The
@@ -15,7 +15,7 @@
 //  price, the owning node keeping all of it; a station with no tag or a tag the table does not hold gets the root row's numbers.  Both flags are set, as in every window the retail
 //  server opened.
 //
-//  The key (crafting, step 1).  A job is saved with the station it is at and must find it again after worldd restarts.  A station is made from a point of the world's data, and the point's
+//  The key (crafting, step 1).  A job is saved with the station it is at and must find it again after world restarts.  A station is made from a point of the world's data, and the point's
 //  seed (a hash of the point's instance, set, placement and key: the data's, never the actor's id, which depends on the order the actors were made in) is the same on every start.  The
 //  station's key is that seed in 16 hex digits, and the four words of its StationGuid (what the window and the player's list of active stations name it by) are made from the same seed,
 //  so the key and the GUID are one identity.

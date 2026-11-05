@@ -150,9 +150,9 @@ void CityNodeFeed::run() {
             ++warnings_;
             warned = true;
             if (got_snapshot) {
-                spdlog::warn("[nodes] the citynode stream at {} ended ({}): worldd keeps the levels it has and calls again", options_.address, status.error_message());
+                spdlog::warn("[nodes] the citynode stream at {} ended ({}): world keeps the levels it has and calls again", options_.address, status.error_message());
             } else {
-                spdlog::warn("[nodes] citynode at {} is not reachable ({}): worldd runs with the levels of the {} ({}) and keeps retrying",
+                spdlog::warn("[nodes] citynode at {} is not reachable ({}): world runs with the levels of the {} ({}) and keeps retrying",
                              options_.address, status.error_message().empty() ? "the stream did not start" : status.error_message(),
                              world::level_source_name(nodes_.source()), nodes_.describe_levels());
             }

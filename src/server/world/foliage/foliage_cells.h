@@ -49,7 +49,7 @@ class FoliageCells {
 public:
     using Minter = std::function<protocol::emit::FIntrepidNetworkGUID()>;
 
-    /// `registry` and `map` must outlive it.  `mint` gives the actors' and components' NetGUIDs (worldd's allocator).
+    /// `registry` and `map` must outlive it.  `mint` gives the actors' and components' NetGUIDs (world's allocator).
     FoliageCells(world::ActorRegistry& registry, const FoliageMap& map, Minter mint);
 
     /// The store's clock, in seconds: what the changes that follow are stamped with (the Empty instances of a first look are listed as 3 or 11 by their age).

@@ -237,7 +237,7 @@ namespace {
 const content::CraftRecipe* recipe_named(const content::CraftRecipeData* data, const std::string& text, GmRecipeResult& out) {
     if (!data) {
         out.status = GmStatus::FailedPrecondition;
-        out.message = "worldd has no recipes (an older content.db)";
+        out.message = "world has no recipes (an older content.db)";
         return nullptr;
     }
     if (text.empty()) {
@@ -424,7 +424,7 @@ GmItemGrant GmTravel::give_item(const std::string& character, const std::string&
     const content::ContentDb* db = world_.content();
     if (!db) {
         out.status = GmStatus::FailedPrecondition;
-        out.message = "worldd has no content.db to look the item up in";
+        out.message = "world has no content.db to look the item up in";
         return out;
     }
     // an item is named by its record name (case does not count) or by its Guid
@@ -635,7 +635,7 @@ GmNpcResult GmTravel::reset_npc(uint64_t id, const std::string& by) {
     if (npc_is_dead(world_, id)) return refused(out, GmStatus::FailedPrecondition, out.name + " is dead: respawn it instead");
     npc::NpcWorld* npcs = world_.npcs();
     nav::Vec3 ground_home, ai_home;
-    if (!npcs || !npcs->spawn_point(id, &ground_home, &ai_home)) return refused(out, GmStatus::FailedPrecondition, out.name + " has no walking life in the world to reset (worldd has no ground for it)");
+    if (!npcs || !npcs->spawn_point(id, &ground_home, &ai_home)) return refused(out, GmStatus::FailedPrecondition, out.name + " has no walking life in the world to reset (world has no ground for it)");
     const double now = world_.world_clock();
     // its leash centre is its spawn point again
     a->npc.home_x = ai_home.x;
@@ -694,7 +694,7 @@ GmNpcResult GmTravel::despawn_npc(uint64_t id, const std::string& by) {
     out.respawn_in_seconds = secs;
     std::string m = out.name + " was taken out of the world";
     if (secs > 0) m += "; its spawn point makes it again in " + seconds_of(secs);
-    else if (info.spawn_ref == 0) m += "; it has no spawn point, so it stays gone until worldd restarts";
+    else if (info.spawn_ref == 0) m += "; it has no spawn point, so it stays gone until world restarts";
     else m += "; its spawn point does not make it again (its respawn rule is " + (info.respawn_rule.empty() ? std::string("off") : info.respawn_rule) + ")";
     out.message = m;
     spdlog::info("[npc] {}: despawned {} (actor {}) at {}: {}", by, log_text(out.name), id, metres_at(out.position.x, out.position.y), log_text(out.message));
@@ -709,7 +709,7 @@ GmNpcResult GmTravel::move_npc(uint64_t id, double x, double y, double z, bool h
     if (npc_is_dead(world_, id)) return refused(out, GmStatus::FailedPrecondition, out.name + " is dead: respawn it instead");
     if (!std::isfinite(x) || !std::isfinite(y) || (has_z && !std::isfinite(z))) return refused(out, GmStatus::InvalidArgument, "the point is not a finite number");
     npc::NpcWorld* npcs = world_.npcs();
-    if (!npcs || !npcs->has(id)) return refused(out, GmStatus::FailedPrecondition, out.name + " has no walking life in the world to move (worldd has no ground for it)");
+    if (!npcs || !npcs->has(id)) return refused(out, GmStatus::FailedPrecondition, out.name + " has no walking life in the world to move (world has no ground for it)");
     double use_z = z;
     if (!has_z) {
         if (const auto town = world_.town_ground_at(x, y)) use_z = town->z;   // inside a town's bowl the floor is the town's, not the pit's

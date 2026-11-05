@@ -114,12 +114,12 @@ struct RollContext {
     double  player_level = 1;         // GetPlayerLevel (the decay)
     double  narrative_level = 0;      // GetNarrativeContentLevel: the level of the quest whose reward is rolled (0: the reward belongs to no quest)
     /// Multiplies the chance of every RollEachByPercent element (the draw is `rand < min(1, percent x chance_mult)`); never a quantity, a weight or a predicate.  1: the data's own odds
-    /// (worldd --loot-chance-mult / AOC_LOOT_CHANCE_MULT; the user's test of 2026-10-10 found drops too rare).
+    /// (world --loot-chance-mult / AOC_LOOT_CHANCE_MULT; the user's test of 2026-10-10 found drops too rare).
     double  chance_mult = 1.0;
     /// Item rarities, step 1 (a kill, never a harvest): the test boost.  Multiplies the weight of every outcome above Common in the quality roll of a reward line's variation (a gear or a resource
     /// drop): a roll that comes out Common is thrown back with the chance 1 - 1 / rarity_boost and drawn again, so each better outcome is that many times as likely against Common and their
     /// odds among themselves stay the data's.  Never a quantity, a percentage or which Glint tier drops.  1: the data's own odds, the formula runs once and nothing else is drawn
-    /// (worldd --loot-rarity-boost / AOC_LOOT_RARITY_BOOST).
+    /// (world --loot-rarity-boost / AOC_LOOT_RARITY_BOOST).
     double  rarity_boost = 1.0;
     stats::SplitMix* rng = nullptr;
     /// Nodes 1, stage 1: where the kill is.  The node reads of the tables' expressions (GetNodeBiome, GetCurrentNode, GetNodeRecord, Node_GetLevel ...) are

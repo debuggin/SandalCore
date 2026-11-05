@@ -157,7 +157,7 @@ public:
     virtual std::optional<ItemInfo> info(int64_t record) const = 0;
 };
 
-/// The catalog worldd runs: content.db's item, item_equip_slot and resource_bag.  A query that fails reads as "unknown" and is logged once.  What it found is kept (a grant asks about
+/// The catalog world runs: content.db's item, item_equip_slot and resource_bag.  A query that fails reads as "unknown" and is logged once.  What it found is kept (a grant asks about
 /// every item of a container): a record is read from the file once per catalog.
 class ContentItemCatalog : public ItemCatalog {
 public:

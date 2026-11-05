@@ -167,7 +167,7 @@ ClaimTargetResult validate_claim_target(const repl::ProcessingRequest &req, cons
         return out;
     const content::CraftRecipeData *recipes = ctx.world->craft_recipes();
     if (!recipes)
-        return fail_claim_target("worldd has no recipes (an older content.db)");
+        return fail_claim_target("world has no recipes (an older content.db)");
     out.job_guid = items::guid_hex(req.state.job);
     const svc::ProcessingJob *found = crafting::find_job(*ctx.jobs, out.key, out.job_guid);
     if (!found)

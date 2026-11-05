@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  server/worldd/tests/capture_rogue_dash.h
+//  server/world/tests/capture_rogue_dash.h
 //
 //  The ServerMovePacked moves of a retail Rogue's Dodge dash: the capture character/movement/dodge/
 //  aoc_rogue_dodge_with_advantage_20260204_075620 (a Rogue, Dodge AnimationIndex 2, input (0, 1); from the

@@ -112,7 +112,7 @@ const std::string* find_meta_value(const std::map<std::string, std::string>& met
 bool validate_meta_version(const std::string& path, const std::map<std::string, std::string>& meta, ContentMeta& out, std::string& error) {
     const std::string* version = find_meta_value(meta, "schema_version");
     if (!version || *version != std::to_string(kSchemaVersion)) {
-        error = path + " has schema_version " + (version ? "'" + *version + "'" : std::string("(none)")) + ", this worldd reads " +
+        error = path + " has schema_version " + (version ? "'" + *version + "'" : std::string("(none)")) + ", this world reads " +
                 std::to_string(kSchemaVersion);
         return false;
     }
@@ -129,7 +129,7 @@ bool validate_meta_version(const std::string& path, const std::map<std::string, 
         return false;
     }
     if (v < kMinContentcVersion) {
-        error = path + " was built by contentc version " + *contentc + ", this worldd reads version " +
+        error = path + " was built by contentc version " + *contentc + ", this world reads version " +
                 std::to_string(kMinContentcVersion) +
                 " or later (the city nodes, contentc version 12): rebuild it with this checkout's contentc: cd services && go run ./cmd/contentc";
         return false;
@@ -153,7 +153,7 @@ bool validate_required_tables(sqlite3* db, const std::string& path, std::string&
     for (const char* sql : sqls) {
         Stmt q(db, sql);
         if (!q.ok()) {
-            error = path + " does not have the tables this worldd reads: " + db_message(db) +
+            error = path + " does not have the tables this world reads: " + db_message(db) +
                     " (rebuild it with this checkout's contentc: cd services && go run ./cmd/contentc)";
             return false;
         }
@@ -171,7 +171,7 @@ Held held_of(const std::string& s, bool* known) {
 }
 
 bool ability_fail(std::string why, std::string& error) {
-    error = "content.db's ability runtime rows are not what this worldd runs: " + std::move(why) +
+    error = "content.db's ability runtime rows are not what this world runs: " + std::move(why) +
             " (rebuild it with this checkout's contentc: cd services && go run ./cmd/contentc)";
     return false;
 }

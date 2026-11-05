@@ -4,7 +4,7 @@
 // ============================================================================
 //  svc/world_stream_impl.h  (the implementation of svc/world_stream.h)
 //
-//  A header of its own so that worldd's CMake file did not have to change: include it from exactly ONE .cpp (svc/world_admin.cpp does).  Its functions are defined here and are not
+//  A header of its own so that world's CMake file did not have to change: include it from exactly ONE .cpp (svc/world_admin.cpp does).  Its functions are defined here and are not
 //  inline, so a second include would not link.  The snapshot, the cursor and the request checks are world/map_stream.h's.
 // ============================================================================
 #pragma once
@@ -198,7 +198,7 @@ struct WorldStreamServer::Impl final : wsv1::WorldStreamService::Service {
     template <class F>
     grpc::Status on_net_thread(F&& f) {
         if (!queue.run(std::forward<F>(f), options.call_timeout)) {
-            return grpc::Status(grpc::StatusCode::UNAVAILABLE, "worldd's network thread did not take the call in time (is worldd stopping?)");
+            return grpc::Status(grpc::StatusCode::UNAVAILABLE, "world's network thread did not take the call in time (is world stopping?)");
         }
         return grpc::Status::OK;
     }
@@ -646,7 +646,7 @@ bool WorldStreamServer::start(std::string* error) {
     server_ = builder.BuildAndStart();
     if (!server_ || port == 0) {
         server_.reset();
-        if (error) *error = "cannot listen on " + impl_->options.address + " (is another worldd running? set AOC_WORLD_STREAM_ADDR)";
+        if (error) *error = "cannot listen on " + impl_->options.address + " (is another world running? set AOC_WORLD_STREAM_ADDR)";
         return false;
     }
     port_ = port;

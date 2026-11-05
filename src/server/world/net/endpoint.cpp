@@ -184,7 +184,7 @@ void Endpoint::on_handshake(const Address& from, const uint8_t* data, size_t len
     if (carried) {
         spdlog::info("[endpoint] {} connected again for character {}: its login goes on", from.to_string(), character_id);
     } else if (no_content) {
-        spdlog::warn("[endpoint] {} connected for character {}: refused, worldd has no content.db ({})", from.to_string(), character_id, cfg_.players->content_problem());
+        spdlog::warn("[endpoint] {} connected for character {}: refused, world has no content.db ({})", from.to_string(), character_id, cfg_.players->content_problem());
     } else {
         spdlog::info("[endpoint] {} connected for character {}", from.to_string(), character_id);
         logins_.submit(session.id, session.request);

@@ -4,7 +4,7 @@
 // ============================================================================
 //  login/login_service.h
 //
-//  A client's login on worldd (architecture spec §4 step 5): the character
+//  A client's login on world (architecture spec §4 step 5): the character
 //  id and join ticket from its handshake are redeemed with the gateway,
 //  then the character is loaded from the character service.
 //

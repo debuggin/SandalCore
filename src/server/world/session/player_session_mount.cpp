@@ -61,7 +61,7 @@ void PlayerSession::on_summon_trigger(Connection& conn, int32_t client_instance,
         if (pending_ends_.size() < 64) pending_ends_.push_back(client_instance);   // the client's own instance of the cast is ended
         flush_abilities(conn);
     };
-    if (!mounts_) return ignore("worldd has no mounts");
+    if (!mounts_) return ignore("world has no mounts");
     const auto container = container_of_location(static_cast<uint8_t>(location));
     if (!container || *container != svc::ItemContainer::Backpack || slot < 0) return ignore("the call names no item of the bag");
     const svc::InventoryItem* item = inventory_.at(*container, slot);
@@ -242,7 +242,7 @@ void PlayerSession::on_mount_interact(Connection& conn, const world::WorldActor&
         ++mount_refused_;
         spdlog::log(level_for(ride_logged_, kLoggedMounts), "[session] {}: getting on the mount is refused: {}", name(), why);
     };
-    if (!mounts_ || !registry_ || !view_) return refuse("worldd has no mounts");
+    if (!mounts_ || !registry_ || !view_) return refuse("world has no mounts");
     if (a.owner == 0 || a.owner != static_cast<uint64_t>(pb_.setup().player_id)) return refuse("it is not this player's mount");
     if (mounts_->actor_id() != a.id) return refuse("it is not the mount the player has out");
     if (mounts_->phase() != MountController::Phase::Out) return refuse("the mount is not ready (it is being summoned, dissolves or died)");

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  fake_client.h: the client's side of a connection, for worldd's tests.
+//  fake_client.h: the client's side of a connection, for world's tests.
 //
 //  Builds client data packets (its own packet sequence and acks, reliable
 //  channel-0 bunches, bunches on actor channels) with libaocnet, and reads the

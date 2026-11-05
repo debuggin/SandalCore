@@ -84,7 +84,7 @@ struct ResolvedMod {
     double  value = 0;      // the formula's value: a loss is negative
 };
 
-/// The number a session's own dice (its abilities' hit, block and critical rolls, RandDouble) start from.  `world_seed` is the one number the whole run starts from (worldd draws a new one on
+/// The number a session's own dice (its abilities' hit, block and critical rolls, RandDouble) start from.  `world_seed` is the one number the whole run starts from (world draws a new one on
 /// every start unless --combat-seed names it); 0, a test's world, keeps the plain function of the player id.  A player id is never used twice in a run, so a new login rolls a new sequence too.
 inline uint64_t session_dice_seed(uint64_t world_seed, uint64_t player_id) {
     const uint64_t base = player_id * 7919u + 1u;

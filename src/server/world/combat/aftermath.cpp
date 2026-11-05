@@ -54,7 +54,7 @@ std::string format_looter_note(const DeathEvent& d, double max_level, const Afte
     std::string looter_note = ", looter level " + std::to_string(static_cast<int>(std::lround(max_level))) + " (" + std::to_string(gap) + " level" + (gap == 1 ? "" : "s") + " apart: Loot_Falloff " +
                   (gap >= 10 ? "0, no gear, recipe or Glint loot" : "1") + ")" + (cfg.loot_chance_mult != 1.0 ? ", loot chances x" + std::to_string(cfg.loot_chance_mult).substr(0, 5) : std::string());
     if (d.gm) looter_note = ", a game master's kill, rolled as for a player of the creature's own level" + (cfg.loot_chance_mult != 1.0 ? ", loot chances x" + std::to_string(cfg.loot_chance_mult).substr(0, 5) : std::string());
-    if (cfg.loot_rarity_boost != 1.0) {   // the test boost of the rarity rolls (worldd --loot-rarity-boost): said on every kill's line
+    if (cfg.loot_rarity_boost != 1.0) {   // the test boost of the rarity rolls (world --loot-rarity-boost): said on every kill's line
         char boost[32];
         std::snprintf(boost, sizeof boost, "%g", cfg.loot_rarity_boost);
         looter_note += std::string(", rarity odds x") + boost + " (test boost)";

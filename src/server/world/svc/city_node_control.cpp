@@ -115,7 +115,7 @@ void GrpcNodeControl::run() {
         {
             std::unique_lock<std::mutex> lock(mu_);
             cv_.wait(lock, [this] { return stop_ || !queue_.empty(); });
-            if (stop_) return;   // worldd is stopping: what is still queued is dropped, not waited for
+            if (stop_) return;   // world is stopping: what is still queued is dropped, not waited for
             job = std::move(queue_.front());
             queue_.pop_front();
             busy_ = true;

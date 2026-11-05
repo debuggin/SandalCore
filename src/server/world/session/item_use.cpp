@@ -173,7 +173,7 @@ Plan plan_use(const content::ContentDb& db, int64_t item_record, const Context& 
         }
         if (action->response_type == "SetCertificationLevel") {
             if (!ctx.professions || !work.valid()) {
-                return refuse("the action response " + action->name + " changes a profession's certification, and worldd has no profession tables (content.db is older than contentc 13?)");
+                return refuse("the action response " + action->name + " changes a profession's certification, and world has no profession tables (content.db is older than contentc 13?)");
             }
             const professions::CertAction* cert = ctx.professions->action(action->guid);
             const professions::Profession* prof = cert ? ctx.professions->find(cert->profession) : nullptr;
@@ -253,13 +253,13 @@ Plan plan_use(const content::ContentDb& db, int64_t item_record, const Context& 
                         continue;
                     }
                     if (!ctx.professions || !work.valid()) {
-                        return refuse("the Profession experience reward of " + table->name + " needs the professions, and worldd has no profession tables (content.db is older than contentc 13?)");
+                        return refuse("the Profession experience reward of " + table->name + " needs the professions, and world has no profession tables (content.db is older than contentc 13?)");
                     }
                     const std::string named = professions::profession_named_in(x.expression);
                     const professions::Profession* prof = ctx.professions->named(named);
                     if (!prof) return refuse("the Profession experience reward of " + table->name + " names '" + named + "', which is no profession");
                     if (!ctx.profession_xp) {
-                        return refuse("worldd has no expression runtime: the profession XP of " + table->name + " cannot be computed");
+                        return refuse("world has no expression runtime: the profession XP of " + table->name + " cannot be computed");
                     }
                     std::string why;
                     const auto value = ctx.profession_xp(x.expr, work.levels_by_name(), why);
@@ -297,7 +297,7 @@ Plan plan_use(const content::ContentDb& db, int64_t item_record, const Context& 
                     plan.notes.push_back("the Adventuring experience reward of " + table->name + " is not the level scrolls' formula: not granted");
                     continue;
                 }
-                if (!ctx.curve) return refuse("worldd has no Adventuring level curve: the XP of " + table->name + " cannot be computed");
+                if (!ctx.curve) return refuse("world has no Adventuring level curve: the XP of " + table->name + " cannot be computed");
                 const auto xp = leveling::scroll_xp(*ctx.curve, x.target_level, ctx.progress, ctx.xp_add_mult, x.margin);
                 if (!xp) return refuse("the level " + std::to_string(x.target_level) + " of " + table->name + " is not on the Adventuring curve");
                 plan.adventuring_xp += *xp;

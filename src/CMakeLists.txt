@@ -91,7 +91,6 @@ add_subdirectory(tools/navbuild)
 
 # ── world: the C++ world server (plan A4) ──────────────────────────────────
 add_subdirectory(server/world)
-add_custom_target(worldd DEPENDS world)
 
 # ── Launcher GUI application ─────────────────────────────────────────────────
 # Self-contained Win32 GUI.  Reads config\paths.json for the game exe path
@@ -131,7 +130,7 @@ add_custom_target(LauncherBuild ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory "${AOC_DIST_ROOT}/$<CONFIG>"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${AOC_DIST_ROOT}/launcher" "${AOC_DIST_ROOT}/$<CONFIG>"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-    COMMENT "Publishing SandalLauncher (.NET 8 Avalonia) to dist/$<CONFIG> and dist/launcher..."
+    COMMENT "Publishing SandalLauncher (.NET 10 Avalonia) to dist/$<CONFIG> and dist/launcher..."
     VERBATIM
 )
 add_custom_target(SandalLauncher DEPENDS LauncherBuild)

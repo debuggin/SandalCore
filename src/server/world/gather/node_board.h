@@ -4,7 +4,7 @@
 // ============================================================================
 //  gather/node_board.h  (Gathering stage 2, part "Harvesting")
 //
-//  The state of the world's resource nodes, shared by every player and kept for the worldd run (the user's decision, spec section 1: a restart resets the nodes):
+//  The state of the world's resource nodes, shared by every player and kept for the world run (the user's decision, spec section 1: a restart resets the nodes):
 //
 //      Available --begin--> Channeling(player, start, length) --complete--> Gathered(until) --time--> Available
 //                                     \--cancel--> Available
@@ -21,7 +21,7 @@
 //  heartbeat every 67 ms whose counter goes up by 2, no bGathered).  A corpse that was hunted stays Gathered until it is removed from the world, which forgets it.
 //
 //  The respawn time is the data's: the actor def's OverrideRespawnDuration when it is more than 0, else the foliage data's EmptyDuration (the seasonal def is ignored), times
-//  `respawn_mult` (worldd --gather-respawn-mult / AOC_GATHER_RESPAWN_MULT; 1: the data's own), at least one second.
+//  `respawn_mult` (world --gather-respawn-mult / AOC_GATHER_RESPAWN_MULT; 1: the data's own), at least one second.
 // ============================================================================
 #pragma once
 

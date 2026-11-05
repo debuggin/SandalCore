@@ -173,7 +173,7 @@ bool PlayerSession::gm_rpc_admitted(const char* rpc_name, const std::string& par
     ++gm_rpcs_;
     const bool on = world_ && world_->gm_commands();
     spdlog::log(level_for(gm_logged_, 100), "[gm] {}: the client sent {} ({}): {}", name(), rpc_name, log_text(params),
-                on ? "answering" : "refused: GM commands are off (worldd --gm-commands, or AOC_GM_COMMANDS=1)");
+                on ? "answering" : "refused: GM commands are off (world --gm-commands, or AOC_GM_COMMANDS=1)");
     if (!on) return false;
     return gm_budget_.take(now);
 }
@@ -198,7 +198,7 @@ void PlayerSession::on_gm_teleport_key(Connection& conn, const repl::ClientRpc& 
     const world::Places places = world_->places();
     const world::Place* place = places.find(key);
     if (!place) {
-        spdlog::warn("[gm] {}: ServerTeleport \"{}\": worldd knows no such place (the city nodes and \"login\"; worldctl places lists them)", name(), log_text(key));
+        spdlog::warn("[gm] {}: ServerTeleport \"{}\": world knows no such place (the city nodes and \"login\"; worldctl places lists them)", name(), log_text(key));
         return;
     }
     const GmMoveResult r = gm_teleport(conn, place->x, place->y, world_->place_height(*place), now, "ServerTeleport");
@@ -300,7 +300,7 @@ void PlayerSession::run_nodes(Connection& conn) {
     const auto unknown = [this](int64_t node, const char* what) {
         if (node_unknown_logged_) return;
         node_unknown_logged_ = true;
-        spdlog::warn("[nodes] {}: the client asked {} for node {}, which worldd does not know: not answered (further ones are not logged)", name(), what, node);
+        spdlog::warn("[nodes] {}: the client asked {} for node {}, which world does not know: not answered (further ones are not logged)", name(), what, node);
     };
     while (!siege_wait_.empty() && has_room()) {
         const int64_t node = siege_wait_.front();
@@ -339,7 +339,7 @@ void PlayerSession::SessionInternal::handle_gm_node_clock_rpc(PlayerSession& s, 
     world::NodeControl* control = s.world_ ? s.world_->node_control() : nullptr;
     const std::string by = rpc_name + " by " + s.name();
     const auto admitted = [&](const std::string& shown) { return s.gm_rpc_admitted(rpc_name.c_str(), shown, now) && rpc.call.decoded; };
-    const auto unavailable = [&] { spdlog::warn("[gm] {}: {}: the node service is unavailable (worldd runs without a citynode connection)", s.name(), rpc_name); };
+    const auto unavailable = [&] { spdlog::warn("[gm] {}: {}: the node service is unavailable (world runs without a citynode connection)", s.name(), rpc_name); };
     if (rpc_name == "ServerGMWhatTimeIsIt") {
         if (!admitted(params)) return;
         if (!control) return unavailable();
@@ -377,7 +377,7 @@ void PlayerSession::on_gm_node_rpc(const repl::ClientRpc& rpc, Clock::time_point
     world::NodeControl* control = world_ ? world_->node_control() : nullptr;
     const std::string by = rpc_name + " by " + name();
     const auto admitted = [&](const std::string& shown) { return gm_rpc_admitted(rpc_name.c_str(), shown, now) && rpc.call.decoded; };
-    const auto unavailable = [&] { spdlog::warn("[gm] {}: {}: the node service is unavailable (worldd runs without a citynode connection)", name(), rpc_name); };
+    const auto unavailable = [&] { spdlog::warn("[gm] {}: {}: the node service is unavailable (world runs without a citynode connection)", name(), rpc_name); };
     if (rpc_name == "ServerSetNodeLevel") {
         const auto g = repl::parse_gm_set_node_level(rpc.call);
         const std::string shown = g ? "InNode=\"" + g->node.substr(0, 80) + "\" InLevel=" + std::to_string(g->level) + " InCulture=" + std::to_string(g->culture) +

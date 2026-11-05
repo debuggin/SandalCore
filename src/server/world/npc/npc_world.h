@@ -42,7 +42,7 @@
 //  (the place, the facing, no velocity) at every update after the end of a Snap or a Fury, the first 0.03 to 0.2 s after it, and so does this one, for `settle_seconds` or until the creature walks or
 //  a montage takes it again.
 //
-//  Without a navmesh (the file is missing or broken) there is no NpcWorld to build: NPCs keep standing where the loader put them, and worldd's log
+//  Without a navmesh (the file is missing or broken) there is no NpcWorld to build: NPCs keep standing where the loader put them, and world's log
 //  says so once.
 // ============================================================================
 #pragma once

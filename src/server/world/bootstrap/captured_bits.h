@@ -7,7 +7,7 @@
 //  The two small types the generated captured_*.h headers use for what the
 //  original server sent as bits: a hex string (bits LSB-first, the first `bits`
 //  count) and a NetGUID.  The headers are written by tools/capture/
-//  worldd_bootstrap.py; this one is by hand.
+//  world_bootstrap.py; this one is by hand.
 // ============================================================================
 #pragma once
 

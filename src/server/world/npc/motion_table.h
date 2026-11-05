@@ -14,7 +14,7 @@
 //                       material it overrides is the engine's placeholder and whether it is hidden: the spawn filter's "no valid visuals"
 //    fights             (columns 18 to 21) the stat initializer lists its StatsComponent names, the StatDistribution weights, the elite ranks and the reward tables
 //
-//  A Blueprint with no line is not a pawn (a prop, a banner, a tent): worldd cannot open it as an NPC.
+//  A Blueprint with no line is not a pawn (a prop, a banner, a tent): world cannot open it as an NPC.
 //
 //  An NPC's origin is its capsule's centre: it stands one half height (times the actor's scale) above its ground.  In the retail captures a wolf and
 //  a bear stand 96 cm above the ground (Blueprint 88, scale 1.09), a Rabid 62 to 66 (Blueprint 66), a Bonebinder 144 (Blueprint 88, scale 1.64), a

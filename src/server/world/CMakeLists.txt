@@ -307,8 +307,8 @@ add_library(world_core STATIC
     npc/npc_world.cpp
     npc/npc_world.h
     npc/npc_world_orders.cpp
-    worldd_loop.cpp
-    worldd_loop.h
+    world_loop.cpp
+    world_loop.h
 )
 target_include_directories(world_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/../gen/world")
 target_link_libraries(world_core PUBLIC
@@ -340,14 +340,8 @@ target_link_libraries(world PRIVATE world_core CLI11::CLI11)
 set_target_properties(world PROPERTIES FOLDER "Servers")
 
 # ── tests: plain executables that print [ok ]/[FAIL], like libaocnet's ──────
-set(WORLD_LEGACY_TAG "d")
 function(world_resolve_test_src out_var rel_dir name)
-    set(candidate "${rel_dir}/${name}.cpp")
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${candidate}")
-        string(REGEX REPLACE "^test_world_" "test_world${WORLD_LEGACY_TAG}_" legacy_name "${name}")
-        set(candidate "${rel_dir}/${legacy_name}.cpp")
-    endif()
-    set(${out_var} "${candidate}" PARENT_SCOPE)
+    set(${out_var} "${rel_dir}/${name}.cpp" PARENT_SCOPE)
 endfunction()
 
 function(world_add_test name)
@@ -368,6 +362,8 @@ function(world_add_test name)
     set_target_properties(${name} PROPERTIES FOLDER "Tests/world")
     target_compile_options(${name} PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 endfunction()
+
+world_add_test(test_world_live_e2e tests/test_world_live_e2e.cpp)
 
 if(AOC_BUILD_TESTS)
 foreach(t
@@ -404,42 +400,42 @@ foreach(t
 )
     world_add_test(${t})
 endforeach()
-target_sources(test_world_ability_session PRIVATE tests/test_worldd_ability_session_pets.cpp)
+target_sources(test_world_ability_session PRIVATE tests/test_world_ability_session_pets.cpp)
 target_sources(test_world_actor_view PRIVATE
-    tests/test_worldd_actor_view_players.cpp
-    tests/test_worldd_actor_view_shared.cpp
-    tests/test_worldd_actor_view_threads.cpp
+    tests/test_world_actor_view_players.cpp
+    tests/test_world_actor_view_shared.cpp
+    tests/test_world_actor_view_threads.cpp
 )
 target_sources(test_world_area_session PRIVATE
-    tests/test_worldd_area_dialogue.cpp
-    tests/test_worldd_quest_offer_lifecycle.cpp
-    tests/test_worldd_quest_progression_handin.cpp
+    tests/test_world_area_dialogue.cpp
+    tests/test_world_quest_offer_lifecycle.cpp
+    tests/test_world_quest_progression_handin.cpp
 )
-target_sources(test_world_bootstrap PRIVATE tests/test_worldd_bootstrap_sequence.cpp)
-target_sources(test_world_character_setup PRIVATE tests/test_worldd_character_setup_stats.cpp)
-target_sources(test_world_endpoint PRIVATE tests/test_worldd_endpoint_tick.cpp)
-target_sources(test_world_items PRIVATE tests/test_worldd_items_equip.cpp)
+target_sources(test_world_bootstrap PRIVATE tests/test_world_bootstrap_sequence.cpp)
+target_sources(test_world_character_setup PRIVATE tests/test_world_character_setup_stats.cpp)
+target_sources(test_world_endpoint PRIVATE tests/test_world_endpoint_tick.cpp)
+target_sources(test_world_items PRIVATE tests/test_world_items_equip.cpp)
 target_sources(test_world_movement PRIVATE
-    tests/test_worldd_movement_saver.cpp
-    tests/test_worldd_movement_presence.cpp
-    tests/test_worldd_movement_based.cpp
+    tests/test_world_movement_saver.cpp
+    tests/test_world_movement_presence.cpp
+    tests/test_world_movement_based.cpp
 )
-target_sources(test_world_nav_window PRIVATE tests/test_worldd_nav_window_npcs.cpp)
+target_sources(test_world_nav_window PRIVATE tests/test_world_nav_window_npcs.cpp)
 target_sources(test_world_session PRIVATE
-    tests/test_worldd_session_relog.cpp
-    tests/test_worldd_session_lifecycle.cpp
+    tests/test_world_session_relog.cpp
+    tests/test_world_session_lifecycle.cpp
 )
-target_sources(test_world_talents PRIVATE tests/test_worldd_talents_retail.cpp)
-world_add_test(test_world_abilities_cooldowns tests/test_worldd_abilities_cooldowns.cpp)
-world_add_test(test_world_abilities_retail tests/test_worldd_abilities_retail.cpp)
-world_add_test(test_world_items_bootstrap tests/test_worldd_items_bootstrap.cpp)
-world_add_test(test_world_items_fuzz tests/test_worldd_items_fuzz.cpp)
+target_sources(test_world_talents PRIVATE tests/test_world_talents_retail.cpp)
+world_add_test(test_world_abilities_cooldowns tests/test_world_abilities_cooldowns.cpp)
+world_add_test(test_world_abilities_retail tests/test_world_abilities_retail.cpp)
+world_add_test(test_world_items_bootstrap tests/test_world_items_bootstrap.cpp)
+world_add_test(test_world_items_fuzz tests/test_world_items_fuzz.cpp)
 # Gathering stage 2: the session tests of the professions and the GM artisan scrolls run on the real content.db of the working tree (they skip without it)
-world_add_test(test_world_items_session_persistence tests/test_worldd_items_session_persistence.cpp)
-world_add_test(test_world_items_session_stats tests/test_worldd_items_session_stats.cpp)
-world_add_test(test_world_items_session_scrolls tests/test_worldd_items_session_scrolls.cpp)
-world_add_test(test_world_items_session_talents tests/test_worldd_items_session_talents.cpp)
-world_add_test(test_world_items_session_weapons_resources tests/test_worldd_items_session_weapons_resources.cpp)
+world_add_test(test_world_items_session_persistence tests/test_world_items_session_persistence.cpp)
+world_add_test(test_world_items_session_stats tests/test_world_items_session_stats.cpp)
+world_add_test(test_world_items_session_scrolls tests/test_world_items_session_scrolls.cpp)
+world_add_test(test_world_items_session_talents tests/test_world_items_session_talents.cpp)
+world_add_test(test_world_items_session_weapons_resources tests/test_world_items_session_weapons_resources.cpp)
 foreach(t
     test_world_items_session
     test_world_items_session_persistence
@@ -462,19 +458,19 @@ set_target_properties(test_world_ability_content PROPERTIES FOLDER "Tests/world"
 
 # the living area (plan E1) on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
 world_add_test(test_world_area)
-target_sources(test_world_area PRIVATE tests/test_worldd_area_vendors_ground.cpp)
+target_sources(test_world_area PRIVATE tests/test_world_area_vendors_ground.cpp)
 target_compile_definitions(test_world_area PRIVATE
     AREA_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
 
 # the harvest of the resource nodes (Gathering stage 2, "Harvesting"): the node state, the wire against the retail capture, the requirements and the rolls, on the real content.db of the working tree
 world_add_test(test_world_gather)
-target_sources(test_world_gather PRIVATE tests/test_worldd_gather_rolls.cpp)
+target_sources(test_world_gather PRIVATE tests/test_world_gather_rolls.cpp)
 target_compile_definitions(test_world_gather PRIVATE
     GATHER_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
 world_add_test(test_world_gather_session)
 target_compile_definitions(test_world_gather_session PRIVATE
     GATHER_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
-world_add_test(test_world_gather_session_bag tests/test_worldd_gather_session_bag.cpp)
+world_add_test(test_world_gather_session_bag tests/test_world_gather_session_bag.cpp)
 target_compile_definitions(test_world_gather_session_bag PRIVATE
     GATHER_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
 
@@ -486,37 +482,37 @@ target_compile_definitions(test_world_resource PRIVATE
 
 # Foliage gathering (Gathering stage 3): the map, the store with a fake clock, the cells' state actors and the foliage tables of the real content.db and region_foliage.tsv of the working tree
 world_add_test(test_world_foliage)
-target_sources(test_world_foliage PRIVATE tests/test_worldd_foliage_cells.cpp)
+target_sources(test_world_foliage PRIVATE tests/test_world_foliage_cells.cpp)
 target_compile_definitions(test_world_foliage PRIVATE
     FOLIAGE_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     FOLIAGE_TSV_PATH="${AOC_DIST_ROOT}/content/region_foliage.tsv")
 
 world_add_test(test_world_foliage_session)
-target_sources(test_world_foliage_session PRIVATE tests/test_worldd_foliage_session_wire.cpp)
+target_sources(test_world_foliage_session PRIVATE tests/test_world_foliage_session_wire.cpp)
 target_compile_definitions(test_world_foliage_session PRIVATE
     GATHER_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     FOLIAGE_TSV_PATH="${AOC_DIST_ROOT}/content/region_foliage.tsv")
-world_add_test(test_world_foliage_session_world tests/test_worldd_foliage_session_world.cpp)
+world_add_test(test_world_foliage_session_world tests/test_world_foliage_session_world.cpp)
 target_compile_definitions(test_world_foliage_session_world PRIVATE
     GATHER_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     FOLIAGE_TSV_PATH="${AOC_DIST_ROOT}/content/region_foliage.tsv")
 
 # Hunting (Gathering stage 3): the huntable creature's template, the 53 hunting interactions and their rewards, and the corpse's wire against the retail capture, on the real content.db of the working tree
 world_add_test(test_world_hunting)
-target_sources(test_world_hunting PRIVATE tests/test_worldd_hunting_corpse.cpp)
+target_sources(test_world_hunting PRIVATE tests/test_world_hunting_corpse.cpp)
 target_compile_definitions(test_world_hunting PRIVATE
     HUNT_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     NPC_MOTION_PATH="${AOC_DIST_ROOT}/content/npc_motion.tsv")
 
 world_add_test(test_world_hunting_session)
-target_sources(test_world_hunting_session PRIVATE tests/test_worldd_hunting_session_refusals.cpp)
+target_sources(test_world_hunting_session PRIVATE tests/test_world_hunting_session_refusals.cpp)
 target_compile_definitions(test_world_hunting_session PRIVATE
     GATHER_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     NPC_MOTION_PATH="${AOC_DIST_ROOT}/content/npc_motion.tsv")
 
 # the professions and the GM artisan items (Gathering stage 2): the rules on a small book and the 67 scrolls on the real content.db of the working tree
 world_add_test(test_world_professions)
-target_sources(test_world_professions PRIVATE tests/test_worldd_professions_artisan.cpp)
+target_sources(test_world_professions PRIVATE tests/test_world_professions_artisan.cpp)
 target_compile_definitions(test_world_professions PRIVATE
     PROFESSIONS_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
 
@@ -535,13 +531,13 @@ target_compile_definitions(test_world_region_load PRIVATE
 
 # the mounts (the mounts milestone, stage 2): the mount actor, its controller and the session on the real content.db of the working tree
 world_add_test(test_world_mounts)
-target_sources(test_world_mounts PRIVATE tests/test_worldd_mounts_summon.cpp)
+target_sources(test_world_mounts PRIVATE tests/test_world_mounts_summon.cpp)
 target_compile_definitions(test_world_mounts PRIVATE
     MOUNT_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     MOUNT_SPEEDS_PATH="${AOC_DIST_ROOT}/content/mount_speeds.tsv"
     MOUNT_RIDERS_PATH="${AOC_DIST_ROOT}/content/mount_riders.tsv")
 world_add_test(test_world_mounts_session)
-target_sources(test_world_mounts_session PRIVATE tests/test_worldd_mounts_session_goldens.cpp)
+target_sources(test_world_mounts_session PRIVATE tests/test_world_mounts_session_goldens.cpp)
 target_compile_definitions(test_world_mounts_session PRIVATE
     MOUNT_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     MOUNT_RIDERS_PATH="${AOC_DIST_ROOT}/content/mount_riders.tsv")
@@ -550,8 +546,8 @@ target_compile_definitions(test_world_mounts_fly PRIVATE
     MOUNT_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     MOUNT_SPEEDS_PATH="${AOC_DIST_ROOT}/content/mount_speeds.tsv")
 world_add_test(test_world_mounts_ride)
-world_add_test(test_world_mounts_ride_combat tests/test_worldd_mounts_ride_combat.cpp)
-world_add_test(test_world_mounts_ride_flight_water tests/test_worldd_mounts_ride_flight_water.cpp)
+world_add_test(test_world_mounts_ride_combat tests/test_world_mounts_ride_combat.cpp)
+world_add_test(test_world_mounts_ride_flight_water tests/test_world_mounts_ride_flight_water.cpp)
 foreach(t
     test_world_mounts_ride
     test_world_mounts_ride_combat
@@ -569,7 +565,7 @@ world_add_test(test_world_gm_travel)
 target_compile_definitions(test_world_gm_travel PRIVATE
     MOUNT_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     MOUNT_SPEEDS_PATH="${AOC_DIST_ROOT}/content/mount_speeds.tsv")
-world_add_test(test_world_gm_travel_admin tests/test_worldd_gm_travel_admin.cpp)
+world_add_test(test_world_gm_travel_admin tests/test_world_gm_travel_admin.cpp)
 target_compile_definitions(test_world_gm_travel_admin PRIVATE
     MOUNT_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     MOUNT_SPEEDS_PATH="${AOC_DIST_ROOT}/content/mount_speeds.tsv")
@@ -584,7 +580,7 @@ target_compile_definitions(test_world_city_nodes PRIVATE
 # the nodes the client is told of (Nodes 1, stage 2): the maps, summaries and sieges of the registry's levels against the retail capture's, the session's answers (their order, the
 # live update, the GM console) and the GM control over gRPC against an in-process fake of the node service
 world_add_test(test_world_node_state)
-target_sources(test_world_node_state PRIVATE tests/test_worldd_node_state_control.cpp)
+target_sources(test_world_node_state PRIVATE tests/test_world_node_state_control.cpp)
 target_compile_definitions(test_world_node_state PRIVATE
     NODES_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/config/seeds/citynode_seed.json"
@@ -597,7 +593,7 @@ world_add_test(test_world_node_layout)
 target_compile_definitions(test_world_node_layout PRIVATE
     NODES_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/config/seeds/citynode_seed.json")
-world_add_test(test_world_node_layout_view tests/test_worldd_node_layout_view.cpp)
+world_add_test(test_world_node_layout_view tests/test_world_node_layout_view.cpp)
 target_compile_definitions(test_world_node_layout_view PRIVATE
     NODES_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     NODES_SEED_PATH="${PROJECT_SOURCE_DIR}/config/seeds/citynode_seed.json")
@@ -605,8 +601,8 @@ target_compile_definitions(test_world_node_layout_view PRIVATE
 # the towns' people (Nodes 1, stage 3b): the selection of each node's NPCs at each level against the Python oracle's golden counts (tests/node_pop_golden.h), the live manager (a level change
 # spawns and despawns the right sets, a respawn follows the level, the ground's pending rules), the any-of siege rule and the roads by node level, on the real content.db
 world_add_test(test_world_node_pop)
-world_add_test(test_world_node_pop_roads tests/test_worldd_node_pop_roads.cpp)
-world_add_test(test_world_node_pop_buildings tests/test_worldd_node_pop_buildings.cpp)
+world_add_test(test_world_node_pop_roads tests/test_world_node_pop_roads.cpp)
+world_add_test(test_world_node_pop_buildings tests/test_world_node_pop_buildings.cpp)
 foreach(t
     test_world_node_pop
     test_world_node_pop_roads
@@ -635,13 +631,13 @@ target_compile_definitions(test_world_spawn_filter PRIVATE
 # the combat core (plan E1, stage 3): NPC stats, damage and the hit rules on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
 world_add_test(test_world_combat)
 target_sources(test_world_combat PRIVATE
-    tests/test_worldd_combat_burn.cpp
-    tests/test_worldd_combat_cast_grem.cpp
-    tests/test_worldd_combat_dots.cpp
-    tests/test_worldd_combat_gates.cpp
-    tests/test_worldd_combat_lunge_chase.cpp
-    tests/test_worldd_combat_projectiles.cpp
-    tests/test_worldd_combat_generic.cpp
+    tests/test_world_combat_burn.cpp
+    tests/test_world_combat_cast_grem.cpp
+    tests/test_world_combat_dots.cpp
+    tests/test_world_combat_gates.cpp
+    tests/test_world_combat_lunge_chase.cpp
+    tests/test_world_combat_projectiles.cpp
+    tests/test_world_combat_generic.cpp
 )
 target_compile_definitions(test_world_combat PRIVATE
     ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
@@ -661,10 +657,10 @@ target_compile_definitions(test_world_rewards PRIVATE
 
 # the generic ability runtime (plan D2) on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
 world_add_test(test_world_ability_pipeline)
-target_sources(test_world_ability_pipeline PRIVATE tests/test_worldd_ability_pipeline_costs.cpp)
+target_sources(test_world_ability_pipeline PRIVATE tests/test_world_ability_pipeline_costs.cpp)
 target_compile_definitions(test_world_ability_pipeline PRIVATE
     ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
-world_add_test(test_world_ability_pipeline_chains tests/test_worldd_ability_pipeline_chains.cpp)
+world_add_test(test_world_ability_pipeline_chains tests/test_world_ability_pipeline_chains.cpp)
 target_compile_definitions(test_world_ability_pipeline_chains PRIVATE
     ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
 world_add_test(test_world_ability_retail)
@@ -680,17 +676,17 @@ target_compile_definitions(test_world_tooltips PRIVATE
 # the class abilities that need another actor against the retail captures, on a creature of the world (plan E1, stage 3, part 2)
 world_add_test(test_world_ability_npc)
 target_sources(test_world_ability_npc PRIVATE
-    tests/test_worldd_ability_npc_pets.cpp
-    tests/test_worldd_ability_npc_pets_cmds.cpp
+    tests/test_world_ability_npc_pets.cpp
+    tests/test_world_ability_npc_pets_cmds.cpp
 )
 target_compile_definitions(test_world_ability_npc PRIVATE
     ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     NPC_MOTION_PATH="${AOC_DIST_ROOT}/content/npc_motion.tsv")
-world_add_test(test_world_ability_session_endpoint tests/test_worldd_ability_session_endpoint.cpp)
-world_add_test(test_world_ability_session_casts tests/test_worldd_ability_session_casts.cpp)
-world_add_test(test_world_ability_session_combat tests/test_worldd_ability_session_combat.cpp)
-world_add_test(test_world_ability_session_targets tests/test_worldd_ability_session_targets.cpp)
-world_add_test(test_world_ability_session_death_loot tests/test_worldd_ability_session_death_loot.cpp)
+world_add_test(test_world_ability_session_endpoint tests/test_world_ability_session_endpoint.cpp)
+world_add_test(test_world_ability_session_casts tests/test_world_ability_session_casts.cpp)
+world_add_test(test_world_ability_session_combat tests/test_world_ability_session_combat.cpp)
+world_add_test(test_world_ability_session_targets tests/test_world_ability_session_targets.cpp)
+world_add_test(test_world_ability_session_death_loot tests/test_world_ability_session_death_loot.cpp)
 foreach(t
     test_world_ability_session
     test_world_ability_session_endpoint
@@ -704,9 +700,7 @@ foreach(t
         NPC_MOTION_PATH="${AOC_DIST_ROOT}/content/npc_motion.tsv")
 endforeach()
 
-world_add_test(test_worldd_talents tests/test_worldd_talents.cpp)
-target_sources(test_worldd_talents PRIVATE tests/test_worldd_talents_retail.cpp)
-world_add_test(test_tooltip_render tests/test_worldd_tooltips.cpp)
+world_add_test(test_tooltip_render tests/test_world_tooltips.cpp)
 target_compile_definitions(test_tooltip_render PRIVATE
     ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
 endif()

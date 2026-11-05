@@ -22,7 +22,7 @@
 //
 //  A route's waypoints are already placed (contentc's `waypoints` are the route component's transform applied to its `points`: 911 of the 915
 //  routes that carry both say so, and the retail NPCs of the captures walk them as they are, to 30 to 63 cm).  A route placed by a city node is
-//  relative to the node's record: a town person's is placed there (place_node_route); one placed by an encounter is relative to something worldd does not place, and a Patrol instance with no route or with
+//  relative to the node's record: a town person's is placed there (place_node_route); one placed by an encounter is relative to something world does not place, and a Patrol instance with no route or with
 //  fewer than two waypoints (the 17 of the area: bandit-attack wolves, ravens, a guard) wanders like the others.  A Stationary instance stands: the
 //  retail NPCs of those stand too (215 observed epochs of Stationary instances, 15 moved, all scripted).
 // ============================================================================

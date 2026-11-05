@@ -388,7 +388,7 @@ const svc::InventoryItem* validate_tier_up_slot_and_use(const items::Inventory& 
     return nullptr;
   }
   if (!db) {
-    why_out = "worldd has no content.db to read the item's use from";
+    why_out = "world has no content.db to read the item's use from";
     return nullptr;
   }
   std::string error;
@@ -542,7 +542,7 @@ void PlayerSession::on_item_activated(Connection& conn, const repl::ItemUse& use
     refuse_item_request(conn, "ServerItemUsed (a use)", why, now);
   };
   const content::ContentDb* db = world_ ? world_->content() : nullptr;
-  if (!db) return refuse("worldd has no content.db to read the item's actions from");
+  if (!db) return refuse("world has no content.db to read the item's actions from");
   const use::Context ctx = build_use_context(*world_, class_id_, progress_, {xp_add_mult(), stats_}, {professions_, bootstrap::worn_items_of(inventory_)});
   const use::Plan plan = use::plan_use(*db, item.item_record_id, ctx);
   if (!plan.ok) return refuse(plan.refusal);
@@ -601,7 +601,7 @@ void PlayerSession::on_item_used(Connection& conn, const repl::ClientRpc& rpc, C
   const auto use = repl::parse_item_used(rpc.call);
   if (!use) return log_unreadable_item_rpc(item_unreadable_logged_, name(), "ServerItemUsed", rpc.call.param_bits);
   if (!within_budget(item_budget_, "ServerItemUsed", now) || !room_for(8)) return;
-  if (!catalog_) return refuse_item_request(conn, "ServerItemUsed", "worldd has no item catalog", now);
+  if (!catalog_) return refuse_item_request(conn, "ServerItemUsed", "world has no item catalog", now);
   const auto storage = container_of_location(use->storage);
   if (!storage) {
     if (const auto bag = material_bag_of_location(use->storage)) return on_tier_up(conn, *use, *bag, now);
@@ -687,7 +687,7 @@ void PlayerSession::on_tier_up(Connection& conn, const repl::ItemUse& use, svc::
   const svc::InventoryItem* held = validate_tier_up_slot_and_use(inventory_, db, container, use, why);
   if (!held) return refuse(why);
   const items::CurrencyTable* currencies = world_->currencies();
-  if (!currencies) return refuse("worldd has no currency tiers (rebuild content.db with this checkout's contentc): no stack changes kind");
+  if (!currencies) return refuse("world has no currency tiers (rebuild content.db with this checkout's contentc): no stack changes kind");
   const items::CurrencyKind* kind = currencies->kind_of(held->item_record_id);
   const items::CurrencyKind* next = currencies->next_of(held->item_record_id);
   if (!kind) return refuse("item record " + std::to_string(held->item_record_id) + " is no kind of a currency");
@@ -765,7 +765,7 @@ void PlayerSession::on_combat_settings(Connection& conn, const repl::ClientRpc& 
       held.push_back(it->second);
     }
   }
-  if (paths.empty()) { spdlog::log(level_for(combat_empty_logged_), "[session] {}: the client's combat settings carry no value worldd can echo", name()); return; }
+  if (paths.empty()) { spdlog::log(level_for(combat_empty_logged_), "[session] {}: the client's combat settings carry no value world can echo", name()); return; }
   if (!within_budget(combat_budget_, "ServerUpdateAccountCombatSettings", now) || !room_for(1)) return;
   spdlog::log(level_for(combat_logged_), "[session] {}: the client's combat settings: echoing {} of the {} values", name(), paths.size(), rpc.call.rpc ? rpc.call.rpc->commands.size() : 0);
   queue("combat settings echo", [paths = std::move(paths), held = std::move(held)](bootstrap::PlayerBootstrap& pb) {
@@ -789,7 +789,7 @@ void PlayerSession::on_storage_request(Connection& conn, const repl::ClientRpc& 
       else kind = bootstrap::resource_kind(static_cast<int>(*resolved) - static_cast<int>(svc::ItemContainer::Resource0));
     }
   }
-  if (!kind) { spdlog::debug("[session] {}: ServerRequestStorageData names a container worldd has no payload for", name()); return; }
+  if (!kind) { spdlog::debug("[session] {}: ServerRequestStorageData names a container world has no payload for", name()); return; }
   if (!within_budget(storage_budget_, "ServerRequestStorageData", now) || !room_for(1)) return;
   const bootstrap::StorageKind k = *kind;
   queue("ClientReceiveStoragePayload", [k](bootstrap::PlayerBootstrap& pb) { return pb.storage_payload(k, Role::Pawn); }, conn);

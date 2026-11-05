@@ -141,7 +141,7 @@ void PlayerWorld::check_ground_covers_area() const {
     sample_area_points(*nav_, area_, sampled, outside);
     if (area_.region && !nav_->has_region()) {
         spdlog::error("[nav] the ground file is a FLAT file (E1's 1 km circle), but the area is the Riverlands: most NPCs have no ground and stand where the data puts them; copy the Riverlands' "
-                      "area_nav.bin, area_geom.bin, roads.tsv and roads_raw.tsv into dist/content (E1's flat ones belong in dist/content/e1/), or run worldd with --area-radius 1000 for E1's circle");
+                      "area_nav.bin, area_geom.bin, roads.tsv and roads_raw.tsv into dist/content (E1's flat ones belong in dist/content/e1/), or run world with --area-radius 1000 for E1's circle");
     }
     if (outside == 0) {
         spdlog::info("[nav] the ground's footprint holds the whole area ({} points sampled)", sampled);

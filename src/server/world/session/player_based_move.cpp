@@ -136,7 +136,7 @@ bool PlayerSession::stand_on_bases(repl::MovePacked& packed) {
 
         if (based_held_run_ > kBasedHeldCap) {
             const GoodPosition& g = checker_.good();
-            spdlog::log(level_for(moves_based_cut_), "[session] {}: {} moves in a row on movement bases worldd can neither place nor follow: put back at ({:.1f}, {:.1f}, {:.1f}) cm",
+            spdlog::log(level_for(moves_based_cut_), "[session] {}: {} moves in a row on movement bases world can neither place nor follow: put back at ({:.1f}, {:.1f}, {:.1f}) cm",
                         name(), based_held_run_, g.x, g.y, g.z);
             based_fix_ = pending_fix_ = std::isfinite(packed.new_move.time_stamp) ? packed.new_move.time_stamp : 0.0f;
             held_move_ack_.reset();

@@ -50,7 +50,7 @@ public:
     };
     using Minter = std::function<protocol::emit::FIntrepidNetworkGUID()>;
 
-    /// All four must outlive the scenery.  `mint` gives the actors' NetGUIDs (worldd's allocator).
+    /// All four must outlive the scenery.  `mint` gives the actors' NetGUIDs (world's allocator).
     NodeScenery(ActorRegistry& registry, const CityNodes& nodes, const NodeWire& wire, const NodeLayoutData& data, Minter mint, Config config);
 
     /// Makes the replicator of every node that has items at its level now.  Returns how many; each is logged.  Once.

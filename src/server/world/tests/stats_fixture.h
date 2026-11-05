@@ -2,15 +2,15 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  server/worldd/tests/stats_fixture.h
+//  server/world/tests/stats_fixture.h
 //
-//  The shared stat corpus (stats/testdata/corpus.txt, written by services/internal/statprog) as worldd's tests need it (plan B3):
+//  The shared stat corpus (stats/testdata/corpus.txt, written by services/internal/statprog) as world's tests need it (plan B3):
 //    - the bundle "main", the real stat program (format version 2: the stat graph and the ability expressions), which the content.db fixture stores in stat_program, so a PlayerWorld on
 //      the fixture runs the real formulas;
 //    - the cases made from gear (the starting kits, the captured Bard and the retail Ranger): the class and level, the worn items
 //      (record, quality, slot name), the mods and tags Go made of them, and the digest of every stat the engine gave, so that what
-//      worldd computes from the items can be compared with Go's.
-//  STATS_CORPUS_PATH is defined by CMake for every worldd test.
+//      world computes from the items can be compared with Go's.
+//  STATS_CORPUS_PATH is defined by CMake for every world test.
 // ============================================================================
 #pragma once
 

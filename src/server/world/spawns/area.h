@@ -4,12 +4,12 @@
 // ============================================================================
 //  spawns/area.h  (plan E1, stage 1; G1, stage 1, Part B)
 //
-//  The area worldd fills with actors.  It is one of two shapes:
+//  The area world fills with actors.  It is one of two shapes:
 //
-//    the Riverlands   (G1 stage 1: `AreaConfig::riverlands()`, worldd's default) the 12 zones of influence whose biome is Riverlands, 49.12 km^2 as 401 exact
+//    the Riverlands   (G1 stage 1: `AreaConfig::riverlands()`, world's default) the 12 zones of influence whose biome is Riverlands, 49.12 km^2 as 401 exact
 //                     rectangles (spawns/region_data.h, the lookup in spawns/region_index.h).  Every point also has a zone of influence (ZOI), the guid of the
 //                     record that owns its cell: the spawn filter's zone names (11 PopulationFilters name Aela, Winstead or NewAela) are answered by it.
-//    a circle         (E1's: `AreaConfig{}`, and worldd's `--area-radius METRES` > 0) a disc around the login spot, 1 km by default.  It has no zones: a point's
+//    a circle         (E1's: `AreaConfig{}`, and world's `--area-radius METRES` > 0) a disc around the login spot, 1 km by default.  It has no zones: a point's
 //                     ZOI is 0 ("none") and a filter that names a zone does not spawn there, exactly as in E1, so E1's golden numbers stay E1's.
 //
 //  `--area-radius` / `AOC_AREA_RADIUS_M`: -1 (the default) the Riverlands, 0 no other actors, > 0 the circle of that radius.  This is the one place the area's

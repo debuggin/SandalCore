@@ -211,7 +211,7 @@ vendor::PurchasePlan plan_gm_vendor_purchase(const PlayerWorld *world, int64_t v
                                              const repl::VendorPurchaseCart &cart, size_t free_slots) {
   const content::ContentDb *db = world ? world->content() : nullptr;
   const vendor::GmVendors *gm = world ? world->gm_vendors() : nullptr;
-  if (!db || !gm) return {false, "worldd has no GM vendors", {}, {}};
+  if (!db || !gm) return {false, "world has no GM vendors", {}, {}};
   const vendor::GmVendor *def = gm->find(vendor_def);
   if (!def) return {false, "the open window's vendor def is unknown", {}, {}};
   return gm->plan_purchase(*db, *def, cart, free_slots);
@@ -335,7 +335,7 @@ bool PlayerSession::open_talk_shop(Connection &conn, const world::WorldActor &np
                 why);
     return false;
   };
-  if (!shops || !shops->def(def) || !shops->is_open(def)) return refuse("worldd opens no such shop yet");
+  if (!shops || !shops->def(def) || !shops->is_open(def)) return refuse("world opens no such shop yet");
   if (!book || book->vendor_defs(npc.npc.dialogue_root).count(def) == 0)
     return refuse("the conversation of " + npc.npc.name + " opens no such shop");
   const GoodPosition at = checker_.good();
@@ -501,7 +501,7 @@ void PlayerSession::buy_from_town_shop(Connection &conn, const repl::VendorPurch
   };
   const vendor::TownShops *shops = world_ ? world_->town_shops() : nullptr;
   const content::ContentDb *db = world_ ? world_->content() : nullptr;
-  if (!shops || !db) return refuse("worldd has no town shops");
+  if (!shops || !db) return refuse("world has no town shops");
   const vendor::ShopFacts facts =
       shop_facts_for(world_->city_nodes(), checker_.good(), registry_ ? registry_->find(vendor_actor_) : nullptr);
   const vendor::TownShops::Quote quote = quote_town_shop(*shops, vendor_def_, cart, facts, name());
@@ -613,7 +613,7 @@ void PlayerSession::sell_to_town_shop(Connection &conn, const repl::VendorTransa
   };
   const vendor::TownShops *shops = world_ ? world_->town_shops() : nullptr;
   const content::ContentDb *db = world_ ? world_->content() : nullptr;
-  if (!shops || !db) return refuse("worldd has no town shops");
+  if (!shops || !db) return refuse("world has no town shops");
   const SalePlan plan = plan_town_shop_sale(inventory_, *db, *shops, cart, {vendor_def_, progress_.level});
   if (!plan.ok) return refuse(plan.refusal);
   if (plan.total > wallet_.room()) {
@@ -670,7 +670,7 @@ void PlayerSession::repair_at_town_shop(Connection &conn, const repl::VendorTran
   };
   const vendor::TownShops *shops = world_ ? world_->town_shops() : nullptr;
   const content::ContentDb *db = world_ ? world_->content() : nullptr;
-  if (!shops || !db) return refuse("worldd has no town shops");
+  if (!shops || !db) return refuse("world has no town shops");
   const RepairPlan plan = plan_town_shop_repair(inventory_, *db, *shops, cart, {vendor_def_, progress_.level});
   if (!plan.ok) return refuse(plan.refusal);
   if (!wallet_.can_pay(plan.total)) {

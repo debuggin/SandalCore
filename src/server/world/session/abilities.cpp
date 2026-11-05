@@ -23,7 +23,7 @@ using content::EffectRule;
 const char* refusal_name(Refusal r) {
     switch (r) {
         case Refusal::None: return "none";
-        case Refusal::NotEnabled: return "not an ability worldd runs";
+        case Refusal::NotEnabled: return "not an ability world runs";
         case Refusal::Stamina: return "not enough Stamina";
         case Refusal::Cooldown: return "in cooldown";
         case Refusal::InCombat: return "in combat";
@@ -354,7 +354,7 @@ Refusal AbilityRuntime::trigger(int64_t ability_guid, int32_t client_instance_id
     advance(now);
     const AbilityRule* r = rules_.ability(ability_guid);
     if (!r) {
-        refuse(client_instance_id, Refusal::NotEnabled, now_, "an ability worldd does not run");
+        refuse(client_instance_id, Refusal::NotEnabled, now_, "an ability world does not run");
         return Refusal::NotEnabled;
     }
     // An instance that is running is not started twice, and not ended either: ClientEndAbility(id) would end the real one.

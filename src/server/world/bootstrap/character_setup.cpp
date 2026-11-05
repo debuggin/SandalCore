@@ -505,7 +505,7 @@ CharacterSetupResult build_player_setup(const svc::Character& ch, const content:
     PlayerSetup s;
     if (!validate_character_identity(ch, content, s, out)) return out;
     if (!stat_context.bundle || !stat_context.gear) {
-        out.error = "worldd has no stat program: the character's stats cannot be computed";
+        out.error = "world has no stat program: the character's stats cannot be computed";
         return out;
     }
     s.known_abilities = captured_bard_known_abilities();

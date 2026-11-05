@@ -4,7 +4,7 @@
 // ============================================================================
 //  svc/services.h
 //
-//  What worldd asks the platform services (architecture spec §2): redeem a
+//  What world asks the platform services (architecture spec §2): redeem a
 //  join ticket (gateway), load a character (character), register and send
 //  heartbeats (mesh).  Interfaces, so the login flow and the endpoint can be
 //  tested with fakes; svc/grpc_services.h implements them over gRPC.
@@ -19,7 +19,7 @@
 
 namespace aoc { namespace worldd { namespace svc {
 
-/// How a call ended, from worldd's point of view.
+/// How a call ended, from world's point of view.
 enum class CallStatus {
     Ok,
     Refused,      // the service said no (PermissionDenied, InvalidArgument)
@@ -255,10 +255,10 @@ struct Character {
     std::vector<TreeRanks>     skill_ranks;
     std::vector<ActionbarSlot> action_bar;
     /// Gathering stage 2: the character's 22 professions in guid order (with the items): a profession the service has no row for is Novice, level 1, no XP,
-    /// so a service of this version always sends 22; an older fake may send none, which worldd reads the same way.
+    /// so a service of this version always sends 22; an older fake may send none, which world reads the same way.
     std::vector<ProfessionState> professions;
     /// The vendors milestone, step 0: the character's money (with the items). The service gives a character with no wallet the start purse when it reads it, so a service of this
-    /// version always sends a Copper entry; an older fake sends none, which worldd reads as an empty purse.
+    /// version always sends a Copper entry; an older fake sends none, which world reads as an empty purse.
     std::vector<WalletEntry> wallet;
     /// Crafting, step 1: the character's processing jobs, in the order they were queued (with the items). A service of an older version sends none.
     std::vector<ProcessingJob> processing_jobs;
@@ -344,7 +344,7 @@ public:
     /// leaves last_region and level unchanged (they are not sent). Refused: a position the store rejects (not
     /// finite); NotFound: no such character.
     virtual CallStatus save_position(const std::string& id, const Position& position) = 0;
-    /// Plan B2: SaveInventory, which replaces all of the character's items with `items` (the latest save wins; worldd is the
+    /// Plan B2: SaveInventory, which replaces all of the character's items with `items` (the latest save wins; world is the
     /// only writer while the character plays). Refused: items the service's rules refuse (a slot outside its storage, two items in
     /// a slot, a quantity out of range ...) or none at all; NotFound: no such character. A fake that does not care leaves the default.
     virtual CallStatus save_inventory(const std::string& id, const std::vector<InventoryItem>& items) {

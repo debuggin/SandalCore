@@ -482,7 +482,7 @@ void CombatWorld::kill(Npc& n, uint64_t killer, double now, bool gm) {
 bool CombatWorld::gm_kill(uint64_t actor_id, double now, std::string& why) {
     Npc* n = combatant(actor_id);
     if (!n) {
-        why = "worldd has no combat stats for this creature";
+        why = "world has no combat stats for this creature";
         return false;
     }
     if (n->dead) {

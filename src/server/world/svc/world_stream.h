@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  svc/world_stream.h  (the world stream: worldd's read-only view of the world for admin tools)
+//  svc/world_stream.h  (the world stream: world's read-only view of the world for admin tools)
 //
 //  WorldStreamService (proto/internal/aoc/worldadmin/v1), served on AOC_WORLD_STREAM_ADDR (default 127.0.0.1:50057) by a gRPC server of its own, beside the admin API
 //  (svc/world_admin.h): a stream that holds a thread cannot starve the admin calls.  services/cmd/worldctl `watch` is the reference consumer.
@@ -10,7 +10,7 @@
 //    * Calls carry the service token ("authorization: Bearer <token>", svc/service_token.h), as every internal call does; without it (or with another) the call is refused with
 //      Unauthenticated and nothing else happens.  The comparison does not stop at the first different byte; the token is never logged.
 //    * Publishing.  The network thread calls publish() in every pass of its loop; five times a second it copies a compact snapshot of the world (world/map_stream.h) into a double
-//      buffer and wakes the streams.  A stream's gRPC thread works out what its subscriber is owed from the newest snapshot (world::mapstream::Cursor) and writes it.  worldd never
+//      buffer and wakes the streams.  A stream's gRPC thread works out what its subscriber is owed from the newest snapshot (world::mapstream::Cursor) and writes it.  world never
 //      waits for a subscriber: a thread blocked in a write holds only itself, and at most Options::max_subscribers streams are open.
 //    * Inspect and Search read the live world, so they are put on the AdminQueue and run on the network thread, between two ticks, like an admin call.  GetStatus reads the newest
 //      snapshot and takes no hop.

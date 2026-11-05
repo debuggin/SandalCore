@@ -4,20 +4,20 @@
 // ============================================================================
 //  bootstrap/ability_replication.h
 //
-//  What worldd's ability runtime (session/abilities.h, plan A7) changes on the pawn, as plain data, and what
+//  What world's ability runtime (session/abilities.h, plan A7) changes on the pawn, as plain data, and what
 //  PlayerBootstrap::apply_ability_change() makes of it: the Stamina and regeneration stat deltas of the
 //  StatsComponent (StatRepInt32Owner items), its CurrentEffects items, and the AbilityComponent's
 //  ReplicatedActiveAbilities and Cooldowns items.  Pure data: no sockets, no Connection, no clock.
 //
 //  Evidence for each form (spec section 7; research 2026-10-01, `scratchpad/a7/evidence.md`):
 //    * The original server answered one ability in `replay_data.bin`: General_Rest (pkt#8175-8320), 6 packets whose
-//      items test_worldd_abilities compares bit for bit: an active-ability item, an effect item and two stat deltas,
+//      items test_world_abilities compares bit for bit: an active-ability item, an effect item and two stat deltas,
 //      then the instance replaced by a second one, the effect added again, the montage jumped to its end section and
 //      the effect removed.  Those packets are the reference for every item below.
 //    * Items go out as FFastArraySerializer deltas (libs/aocnet/protocol/repl/fast_array.h): an item is added with the
 //      next ReplicationID, changed in place, or removed (the original moves the array key by two for a removal).
 //    * The retail server's replies to Sprint and Dodge (retail captures, research 2026-10-02: 100 Sprint and 31 Dodge replies
-//      in 67 and 16 captures; the settled numbers in the worldd README) are the reference for the rest: a Sprint's reply is one
+//      in 67 and 16 captures; the settled numbers in the world README) are the reference for the rest: a Sprint's reply is one
 //      packet with the ability item (MontageGroup "Sprint"), the MoveSpeedMult stat of the EveryoneProxy array (1.0 + 0.2) and
 //      the infinite Sprint effect (TickTime 1.0), a Dodge's has the Cooldowns item {AbilityGuid, bCooldownTriggered 1,
 //      InitialCooldown 0.65, start and end on the synchronized clock, Charges 1}, its ability item (the montage by the
@@ -74,7 +74,7 @@ struct ActiveAbilityItem {
     /// E1 stage 3 fix 2: the actor each target object belongs to, in the same order (the update exports the component as that actor's
     /// "CollisionCylinder" so the client can resolve the item's Targets: its homing projectile flies at it and its hit reaction plays)
     std::vector<protocol::emit::FIntrepidNetworkGUID> target_actors;
-    std::string montage_path;             // the soft path of the montage ("" or one worldd has no export for: Montage unset)
+    std::string montage_path;             // the soft path of the montage ("" or one world has no export for: Montage unset)
     uint64_t    montage_guid = 0;         // plan D2: the montage's static NetGUID where a capture names it and montage_for(path) does not know it (0: none)
     std::string montage_group = "DefaultGroup";   // MontageGroup: the Rest's and the Dodge's are "DefaultGroup", the Sprint's "Sprint"
     float       play_rate = 1.0f;         // PlayRate: the character's animation speed for an ability whose speed stat is known (other clients play the montage at it), else 1

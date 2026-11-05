@@ -79,7 +79,7 @@ namespace aoc::worldd {
 /// Why a Sprint, Dodge or Rest was not started.
 enum class Refusal : uint8_t {
     None,
-    NotEnabled,   // an ability worldd does not run (any combat ability): answered with ClientEndAbility
+    NotEnabled,   // an ability world does not run (any combat ability): answered with ClientEndAbility
     Stamina,      // less Stamina than the ability needs
     Cooldown,     // the Dodge's cooldown has not ended
     InCombat,     // Rest, in combat
@@ -132,7 +132,7 @@ struct TriggerInfo {
 
 class AbilityRuntime {
 public:
-    // ---- numbers that are not content.db's, each with its evidence (the worldd README, "Settled numbers") -------------
+    // ---- numbers that are not content.db's, each with its evidence (the world README, "Settled numbers") -------------
 
     /// How long after the Rest ability item the Rest effect is added: the sit-down. The capture shows 1.774 s (pkt#8175 ->
     /// #8228) and 2.037 s (pkt#8240 -> #8301); the montage's section times are not in any export (the .uasset has no
@@ -218,7 +218,7 @@ public:
 
     const content::AbilityRules& rules() const { return rules_; }
 
-    /// Whether worldd runs the ability (Sprint, Dodge, Rest).
+    /// Whether world runs the ability (Sprint, Dodge, Rest).
     bool enabled(int64_t ability_guid) const { return rules_.ability(ability_guid) != nullptr; }
 
     /// ServerTriggerAbility. The events say what happened; a refusal also queues ClientEndAbility(client_instance_id)

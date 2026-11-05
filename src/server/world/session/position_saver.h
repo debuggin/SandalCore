@@ -8,7 +8,7 @@
 //  SaveCharacterState and SaveInventory calls, off the network thread.
 //
 //  PositionSink is what a PlayerSession hands a position or an inventory to: save() and save_inventory() return at once and
-//  never touch the network.  CharacterSaver is the sink worldd runs: one worker thread with a bounded queue that calls
+//  never touch the network.  CharacterSaver is the sink world runs: one worker thread with a bounded queue that calls
 //  CharacterApi::save_position and save_inventory.  Latest wins: the queue holds at most one entry per character, with at most one
 //  position and one inventory in it (one saved while an older one waits replaces it, in the older one's place), so a client that
 //  moves for an hour costs one call per interval however slow the service is, and a service that is down for a minute does not
@@ -19,7 +19,7 @@
 //
 //  Shutdown: flush(max_wait) waits until everything queued is saved or the time is up and says which; the destructor flushes
 //  briefly, then abandons what is left (logged) and joins the worker, which finishes the call it is in (CharacterApi's own deadline
-//  bounds it: 2 s for GrpcServices::save_position and save_inventory).  worldd's main sets destructor_wait to 0 and flushes once
+//  bounds it: 2 s for GrpcServices::save_position and save_inventory).  world's main sets destructor_wait to 0 and flushes once
 //  itself (5 s), so its worst case from the signal is 0.5 s (the clients are told) + 5 s + 2 s = 7.5 s (a character's position and
 //  inventory are two calls, so the call in flight at the end may be the second of two: the bound is the same, the flush waits for
 //  both).  The network thread only ever queues: it is never in this path.

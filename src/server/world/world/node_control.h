@@ -12,7 +12,7 @@
 //    ServerGMWhatTimeIsIt()                                                     ->  GetClock (the answer goes to the log)
 //    ServerGMFastForwardRealTime(FastForwardDuration)                           ->  AdvanceClock
 //
-//  The session calls these on worldd's network thread, so an implementation never blocks it (svc/city_node_control.h queues the calls to a worker).  Nothing is returned:
+//  The session calls these on world's network thread, so an implementation never blocks it (svc/city_node_control.h queues the calls to a worker).  Nothing is returned:
 //  a change comes back through the registry's own feed (svc/city_node_feed.h), which updates every client's GameState, and a read answers in the log ("[gm] ...").
 //  `by` names who asked ("ServerSetNodeLevel by Cyb") for those lines.
 // ============================================================================

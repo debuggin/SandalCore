@@ -139,7 +139,7 @@ inline int64_t taxed_unit(int64_t unit, const protocol::repl::StationTax& tax, i
     return static_cast<int64_t>(std::floor(currency == items::kGlintTier ? v : v + 0.5));
 }
 
-/// A recipe's price for one unit before the tax: the currency's tier and the amount; `ok` is false when the cost is unreadable or in a currency worldd cannot take (money, Glint and the node
+/// A recipe's price for one unit before the tax: the currency's tier and the amount; `ok` is false when the cost is unreadable or in a currency world cannot take (money, Glint and the node
 /// currency are taken).
 struct UnitCost {
     bool    ok = false;
@@ -252,7 +252,7 @@ inline Plan plan_start(const protocol::repl::StartCraft& req, const StartFacts& 
         plan.refusal = std::move(why);
         return plan;
     };
-    if (!f.recipes || !f.station || !f.inventory) return refuse("worldd has no recipes or no station definition");
+    if (!f.recipes || !f.station || !f.inventory) return refuse("world has no recipes or no station definition");
     if (f.quick) {
         if (f.station->processing) return refuse(f.station->name + " is a processing station: a start there is a job");
         if (!serves_quick_make(*f.station)) return refuse(f.station->name + " makes nothing yet (the stations of gathering tools and the event stations are not served)");
@@ -449,7 +449,7 @@ inline Plan plan_start(const protocol::repl::StartCraft& req, const StartFacts& 
     }
 
     const UnitCost unit = recipe_unit_cost(data, *r);
-    if (!unit.ok) return refuse(r->name + " is paid in a currency worldd cannot take yet");
+    if (!unit.ok) return refuse(r->name + " is paid in a currency world cannot take yet");
     if (unit.tier != items::kMoneyTier && !f.quick) return refuse(r->name + " is not paid in money, and a job takes only money");
     plan.currency = unit.tier;
     plan.unit_cost = unit.value;

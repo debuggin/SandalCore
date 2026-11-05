@@ -7,12 +7,12 @@
 //  NOTE: the floor of the five bowls is now the layout's own platform (world/town_platform.h, read by mapc town-floors), exact to the centimetre; this
 //  median-lift model answers only for a node whose layout is not read (PlayerWorld::refresh_town_floor leaves a node with a platform out), and is kept as the interim answer for them.
 //
-//  The ground worldd bakes (dist/content/area_nav.bin, the client's own landscape) lies about 50.6 m BELOW the floor of the five city nodes' towns (Winstead, Joeva, New Aela, Halcyon,
+//  The ground world bakes (dist/content/area_nav.bin, the client's own landscape) lies about 50.6 m BELOW the floor of the five city nodes' towns (Winstead, Joeva, New Aela, Halcyon,
 //  Miraleth): the landscape under a town is a pit, and the town's level instance stands over it at the height of the land around.  Retail's people stand 50.6 m over the baked terrain (the
 //  median of 500 to 600 NPCs per town; the artisan outposts' are +1 m), so a query of the baked ground in a bowl answers a height 50 m under every player and every NPC there.
 //
 //  This is the small correction for the places that have a PLAYER to put somewhere (a GM teleport, a login, the position saved for a rider in the air).  It is data-driven, from what
-//  worldd already loads: the heights the town's people stand at (the layout's, retail's to 1-168 cm on the 9 anchors the tests hold).
+//  world already loads: the heights the town's people stand at (the layout's, retail's to 1-168 cm on the 9 anchors the tests hold).
 //
 //    a person of a town      one NPC the node's manager made: where it stands (x, y), the baked ground under it (`ground`) and its own height (`z`).  A person stands IN A BOWL when `z`
 //                            is more than kBowlCm over the ground.

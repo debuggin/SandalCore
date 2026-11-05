@@ -7,7 +7,7 @@
 //  "I need a faster way to get around": a GM moves a player to a city node or a point, and sets a character's run speed.  Two doors lead to the same code:
 //
 //    the admin API   proto/internal/aoc/worldadmin/v1 (svc/world_admin.h serves it, services/cmd/worldctl is its command line, the admin app to come reuses it): a call
-//                    arrives on a gRPC thread and is applied on worldd's network thread (svc/world_admin.h's AdminQueue), where GmTravel below runs: no session state is touched
+//                    arrives on a gRPC thread and is applied on world's network thread (svc/world_admin.h's AdminQueue), where GmTravel below runs: no session state is touched
 //                    off-thread.
 //    the client's    ServerTeleportXYZ (rpc 967: X, Y, Z whole cm), ServerTeleport (964: a DestinationLookupKey, an OptionalRadius) and ServerTeleportPlayer (966:
 //    own GM RPCs     CharacterNames, X, Y, Z) on the PlayerController, answered by PlayerSession with the same teleport, ONLY with the GM switch on (--gm-commands /
@@ -74,7 +74,7 @@ static constexpr float kGroundClampSafetyOffset = 0.5f;
     return ValidateAndClampTravelTarget(x, y, z, TravelSafetyBounds{min_z, max_z, 1000000.0f});
 }
 
-/// A client's text for the log: a control character (a newline would start a log line of the player's making) becomes '?'.  Every free string a player sends and worldd logs goes
+/// A client's text for the log: a control character (a newline would start a log line of the player's making) becomes '?'.  Every free string a player sends and world logs goes
 /// through it (Nodes 1 review A, M3).
 inline std::string log_text(std::string s) {
     for (char& c : s) {
@@ -117,7 +117,7 @@ struct GmTeleportRequest {
 struct GmTeleportResult {
     GmStatus    status = GmStatus::Ok;
     std::string message;         // why it was refused
-    std::string character;       // the name worldd has the player under
+    std::string character;       // the name world has the player under
     GmPosition  from, to;
     std::string place;           // the place's name when a place was asked for
     bool        dismounted = false;

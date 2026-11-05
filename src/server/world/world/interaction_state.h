@@ -12,7 +12,7 @@
 //                            fast arrays keyed by input index (only the inputs that have an interaction definition) whose value is a
 //                            GuidToBoolWrapper: the CharacterGuids of the players the interaction is visible / usable for, each true
 //
-//  Retail lists the players near the NPC (the retail captures' vendors list other players' guids); the client only looks for its own.  worldd
+//  Retail lists the players near the NPC (the retail captures' vendors list other players' guids); the client only looks for its own.  world
 //  keeps the registry's actor free of any player (it is shared) and gives each connection its own copy of the maps: the ActorView (session/
 //  actor_view.h) draws every interactable actor with ITS player's guid in both maps (`with_player`) when it opens the actor for that connection and
 //  at every update, so a player never sees another's guid, and nothing is left behind when the session ends (the view's entry goes with it).

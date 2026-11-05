@@ -145,7 +145,7 @@ struct Fixture {
     std::optional<spawns::CapturedData> captured;
 
     Fixture() {
-        dir = cf::make_temp_dir("worldd_area_session_");
+        dir = cf::make_temp_dir("world_area_session_");
         const fs::path db = dir / "content.db";
         if (!cf::make_db(db)) std::exit(2);
         std::string error;

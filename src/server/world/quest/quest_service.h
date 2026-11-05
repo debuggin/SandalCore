@@ -4,7 +4,7 @@
 // ============================================================================
 //  quest/quest_service.h  (quests milestone, slice 1, "take a quest")
 //
-//  worldd's side of the quest service (aoc.quest.v1.QuestService):
+//  world's side of the quest service (aoc.quest.v1.QuestService):
 //
 //    GrpcQuestApi   svc::QuestApi over gRPC, a call carries the service token and a deadline
 //    QuestWorker    a thread that does what must not block the game loop: it saves each character's whole quest log (the latest save of a character wins, a save the service

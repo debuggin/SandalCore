@@ -6,7 +6,7 @@
 //
 //  See npc_looks.h.
 //
-//  Compiled as part of generic_npc.cpp (which includes it at its end): worldd's source list, server/worldd/CMakeLists.txt, is an input of the walking map's stamp in the
+//  Compiled as part of generic_npc.cpp (which includes it at its end): world's source list, server/world/CMakeLists.txt, is an input of the walking map's stamp in the
 //  extractor, so a new source file would make every PC rebuild the map.  The helpers are named look_* so that they cannot meet generic_npc.cpp's.
 // ============================================================================
 #include "spawns/npc_looks.h"

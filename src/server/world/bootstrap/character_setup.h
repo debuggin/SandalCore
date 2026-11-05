@@ -51,7 +51,7 @@
 //  and gender 0-1 are the wire's race and gender, and every race joins.  Tulnar (8) has no player
 //  appearance in the design data and is never created, and an id past the enum is a corrupt record:
 //  both are refused as an unsupported race (login_text::kRaceUnsupported).  The class is looked up
-//  in content.db by its name.  (Until plan B1 the services stored the class in race_id, and worldd
+//  in content.db by its name.  (Until plan B1 the services stored the class in race_id, and world
 //  mapped 2, 7 and 8, the class ids of a Bard, a Tank and a Mage, as "races".)
 //
 //  Customization.  The client's JSON (FJsonObjectConverter of FCharacterCustomizationSaveData):

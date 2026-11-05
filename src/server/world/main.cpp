@@ -2,19 +2,19 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  worldd: the world server (plan A4: the connection layer, plan A5: the native bootstrap)
+//  world: the world server (plan A4: the connection layer, plan A5: the native bootstrap)
 //
 //  Registers with mesh, accepts game clients on UDP, redeems their join
 //  tickets with the gateway and loads their characters, and takes them
 //  through the control channel's login.  After NMT_Join it spawns the player
 //  natively (session/player_session.h): the character's actors go out on actor
 //  channels and the client's requests are answered.  That needs content.db
-//  (--content-db, plan C1's contentc output); without it worldd still starts
+//  (--content-db, plan C1's contentc output); without it world still starts
 //  but refuses every login.  Plan A6: each move is checked and a player's last good
 //  position is saved through the character service on a worker thread (session/
-//  position_saver.h), also when worldd stops.
+//  position_saver.h), also when world stops.
 //
-//      worldd --bind 127.0.0.1:7777 --service-token-file dist/services/service.token
+//      world --bind 127.0.0.1:7777 --service-token-file dist/services/service.token
 // ============================================================================
 #include "login/login_service.h"
 #include "login/login_worker.h"
@@ -40,7 +40,7 @@
 #include "world/node_layout_data.h"
 #include "world/node_scenery.h"
 #include "world/node_wire.h"
-#include "worldd_loop.h"
+#include "world_loop.h"
 #include <CLI/CLI.hpp>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -130,14 +130,14 @@ void register_service_cli_options(CLI::App& app, WorldCliOptions& o) {
     app.add_option("--character", o.character, "character service gRPC address")->envname("AOC_CHAR_GRPC_ADDR");
     app.add_option("--citynode", o.citynode, "citynode service gRPC address (WatchNodes)")->envname("AOC_CITYNODE_GRPC_ADDR")->capture_default_str();
     app.add_option("--citynode-seed", o.citynode_seed,
-                   "the node seed (config/seeds/citynode_seed.json): the levels worldd uses until the citynode service answers, and while it cannot be reached")
+                   "the node seed (config/seeds/citynode_seed.json): the levels world uses until the citynode service answers, and while it cannot be reached")
         ->envname("AOC_CITYNODE_SEED")->capture_default_str();
     app.add_flag("--no-citynode", o.no_citynode, "do not call the citynode service: the nodes stay at the seed's levels")->envname("AOC_NO_CITYNODE");
-    app.add_option("--world-admin", o.world_admin, "the address worldd's admin API (WorldAdminService: list players and places, teleport, run speed; services/cmd/worldctl) listens on; calls need the service token")
+    app.add_option("--world-admin", o.world_admin, "the address world's admin API (WorldAdminService: list players and places, teleport, run speed; services/cmd/worldctl) listens on; calls need the service token")
         ->envname("AOC_WORLD_ADMIN_ADDR")->capture_default_str();
     app.add_flag("--no-world-admin", o.no_world_admin, "do not serve the admin API")->envname("AOC_NO_WORLD_ADMIN");
     app.add_option("--world-stream", o.world_stream,
-                   "the address worldd's world stream (WorldStreamService: the players, NPCs and resource nodes of an area five times a second, inspect, search; services/cmd/worldctl watch) listens on; calls need the service token")
+                   "the address world's world stream (WorldStreamService: the players, NPCs and resource nodes of an area five times a second, inspect, search; services/cmd/worldctl watch) listens on; calls need the service token")
         ->envname("AOC_WORLD_STREAM_ADDR")->capture_default_str();
     app.add_flag("--no-world-stream", o.no_world_stream, "do not serve the world stream")->envname("AOC_NO_WORLD_STREAM");
     app.add_flag("--gm-commands", o.gm_commands,
@@ -338,7 +338,7 @@ bool init_logging_token_and_content(WorldCliOptions& o, std::string& token_out,
     }
     std::vector<spdlog::sink_ptr> sinks{std::make_shared<spdlog::sinks::stderr_color_sink_mt>()};
     if (!o.log_file.empty()) sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(o.log_file, true));
-    auto logger = std::make_shared<spdlog::logger>("worldd", sinks.begin(), sinks.end());
+    auto logger = std::make_shared<spdlog::logger>("world", sinks.begin(), sinks.end());
     logger->flush_on(spdlog::level::info);
     spdlog::set_default_logger(logger);
 
@@ -362,7 +362,7 @@ bool init_logging_token_and_content(WorldCliOptions& o, std::string& token_out,
     } else {
         content_problem = error;
         spdlog::error("content.db {} did not open: {}", o.content_db_path, content_problem);
-        spdlog::error("worldd refuses every login until content.db is built (inputs and flags: services/README.md, \"Content\"); restart worldd after building it");
+        spdlog::error("world refuses every login until content.db is built (inputs and flags: services/README.md, \"Content\"); restart world after building it");
     }
     return true;
 }
@@ -379,7 +379,7 @@ int register_with_mesh(svc::GrpcServices& services, const Address& public_addr, 
         sleep_unless_stopped(backoff);
         backoff = std::min(backoff * 2, std::chrono::milliseconds(5000));
     }
-    if (!g_stop) spdlog::info("worldd {} registered with mesh as server {}", public_addr.to_string(), reg.server_id);
+    if (!g_stop) spdlog::info("world {} registered with mesh as server {}", public_addr.to_string(), reg.server_id);
     return 0;
 }
 
@@ -388,7 +388,7 @@ uint64_t configure_player_world(PlayerWorld& players, const WorldCliOptions& o, 
     players.set_runtime_catalog_loaded(!o.catalog_db_path.empty() && std::filesystem::exists(o.catalog_db_path), 16);
     spdlog::info("[catalog] AOCDB01 schema v{} runtime catalog {}: {}", players.runtime_catalog_schema_version,
                  players.runtime_catalog_loaded ? "loaded" : "fallback (in-process tables)", o.catalog_db_path);
-    if (!players.ready() && players.content()) spdlog::error("worldd refuses every login: {}", players.content_problem());
+    if (!players.ready() && players.content()) spdlog::error("world refuses every login: {}", players.content_problem());
     players.set_movement(o.movement);
     players.set_move_ack_gap(std::chrono::milliseconds(o.move_ack_gap_ms));
     spdlog::info("[movement] {}", o.move_ack_gap_ms > 0
@@ -703,7 +703,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (argv[i] && (std::string_view(argv[i]) == "--healthcheck" || std::string_view(argv[i]) == "-healthcheck")) return 0;
     }
-    CLI::App app{"worldd: the AoC world server"};
+    CLI::App app{"world: the AoC world server"};
     WorldCliOptions o;
     register_service_cli_options(app, o);
     register_area_cli_options(app, o);
@@ -789,7 +789,7 @@ int main(int argc, char** argv) {
     g_stop = true;
     endpoint.kick_all(login_text::kShuttingDown, Clock::now());
     drain_shutdown_window(*socket, endpoint, std::chrono::milliseconds(500));
-    endpoint.finish_players("worldd is stopping");
+    endpoint.finish_players("world is stopping");
     if (!saver.flush(std::chrono::seconds(5))) spdlog::warn("stopping: {} position(s) were not saved in 5 s", saver.queued());
     if (!quest_worker.flush(std::chrono::seconds(5))) spdlog::warn("stopping: a quest log was not saved in 5 s");
     heartbeat.join();

@@ -25,7 +25,7 @@
 //  InteractInfo, BaseCharacterInfo, CombatInfo, Ability, Stats) with the names and checksums retail's open gave them (donor: the Wolf's).  What is
 //  the Blueprint's own comes from the Blueprint (tools/mapc, npc_motion.tsv):
 //
-//    archetype     the Blueprint's path from the data, checksum 0, NetGUIDs of worldd's own (a hash of the path with the static bit set: retail's are
+//    archetype     the Blueprint's path from the data, checksum 0, NetGUIDs of world's own (a hash of the path with the static bit set: retail's are
 //                  such, and none of the captured ones is taken)
 //    alignment     the Blueprint's StartingAlignments, then the creature's own (the instigator record with its CharacterGuid), as retail's open lists them
 //    scale         the Blueprint's DefaultScale (an NPC carries it in SerializeNewActor)
@@ -63,7 +63,7 @@
 //  Huntable creatures (Gathering stage 3, "Hunting"): an asset whose PlayerInteractionDef is one of the Hunting_<kind> defs (GenericConfig::hunting_defs) gets an eighth block, a
 //  UInteractableComponent, as the living Hunting_Raven and Hunting_Spider of the captures have (the retail capture packet 1561, 758 packet 4538, and a Tidesnapper's in 1458): the Raven's own block
 //  with the asset's two ids put in (ComponentDefId = the asset's InteractComponent, InteractionInputData[0].PlayerInteractDefinition = its InteractionDef).  The three captured blocks differ
-//  in those two ids alone, which tools/capture/gen_hunting.py and test_worldd_hunting prove to the bit.  Every other creature keeps its seven blocks.
+//  in those two ids alone, which tools/capture/gen_hunting.py and test_world_hunting prove to the bit.  Every other creature keeps its seven blocks.
 //
 //  A huntable's other blocks are a living huntable's too, not a hostile creature's (the same Pop_Raven instance of the retail capture sends both): its CombatInfo writes bIsDead, bInvulnerable and
 //  bNotTargetable (all 0), its AbilityComponent is empty (it fights nothing), its UNPCInfo carries the CharacterName the nameplate shows (a hostile creature's open has none: the client reads
@@ -75,7 +75,7 @@
 //
 //  Stations (crafting, step 0).  A crafting or processing station is no pawn (it has no line in npc_motion.tsv) and is made the same way from a captured station of the same
 //  native class: the Apprentice station of a processing (or a fast-craft) family is the donor, the Blueprint's path comes from the data, the checksum is 0 and the NetGUIDs are
-//  worldd's own.  What a station's open holds (the actor, its InteractableComponent, NodePlotComponent and MapRegistrationComponentBP) is the same for every Blueprint of the
+//  world's own.  What a station's open holds (the actor, its InteractableComponent, NodePlotComponent and MapRegistrationComponentBP) is the same for every Blueprint of the
 //  family; what is the Blueprint's own (its meshes, its window's recipes) is in the client's copy of the Blueprint, named by the path.  The Novice stations of a Camp are made so:
 //  no capture opened them (the one recorded open of a Novice station has the same four blocks as the Apprentice ones).
 // ============================================================================
@@ -107,7 +107,7 @@ struct GenericConfig {
     std::set<int64_t>        hunting_defs;
     /// ... and the name of each, which the creature's nameplate shows (UNPCInfo.CharacterName: gather/gathering.h hunting_names).  A def with no name here keeps the donor's UNPCInfo as it is.
     std::map<int64_t, std::string> hunting_names;
-    /// false (worldd --no-gathering): the world does not look the defs up and no creature is huntable.
+    /// false (world --no-gathering): the world does not look the defs up and no creature is huntable.
     bool                     hunting = true;
     /// Quests part 3, slice 1: the interactable definitions of the quest objects (content::ObjectData).  A Blueprint that is no pawn and whose instance names one of them is a quest object
     /// (a body, a crate, a root, a building site): it is made from a recorded one.  Empty: no quest object is made.
@@ -177,7 +177,7 @@ public:
 private:
     /// The plain template of the asset's Blueprint (seven blocks), made and kept; nullptr with `why` when the Blueprint has none.
     const OpenTemplate* make_plain(const content::NpcAssetRow& asset, Verdict* why, bool talks) const;
-    /// The archetype's export of a Blueprint path (the class default object and its package, with NetGUIDs of worldd's own), minted on the first request and the same for every
+    /// The archetype's export of a Blueprint path (the class default object and its package, with NetGUIDs of world's own), minted on the first request and the same for every
     /// template of that path: a humanoid has two (the silent one and the one with the interactable subobject), and one Blueprint must not be exported under two NetGUIDs.
     /// nullptr when the path names no package.
     const repl::ExportChain* archetype_export(const std::string& path) const;

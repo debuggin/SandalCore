@@ -70,7 +70,7 @@ public:
     int tier_at(double x, double y) const;
 
     size_t roads() const { return roads_.size(); }
-    /// The node level the file's tiers were resolved at (its header says; -1: it does not).  worldd warns when it is not the level the world runs at.
+    /// The node level the file's tiers were resolved at (its header says; -1: it does not).  world warns when it is not the level the world runs at.
     int    node_level() const { return node_level_; }
     size_t segments() const { return segments_; }
     bool   empty() const { return roads_.empty(); }

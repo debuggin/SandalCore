@@ -11,7 +11,7 @@
 //  78 entries, one per tag of the NodeTax tree ("NodeTax.GoodsTax.MarketplaceTax"), each with the TaxDetails record its limits come from,
 //  the node's current percent and the owning node's percent (the retail captures; libaocnet protocol/repl/vendor_codec.h).
 //
-//  What worldd answers: the same 78 tags with the values of a node nobody has changed (the retail capture's: vendor/node_tax_table.h, generated
+//  What world answers: the same 78 tags with the values of a node nobody has changed (the retail capture's: vendor/node_tax_table.h, generated
 //  by tools/capture/gen_vendor.py), but with every tax percent 0: the GM vendors are free and untaxed (modelled, not retail: a retail node
 //  with no owner taxes at the 0.5 default).  The PTR vendor defs have no TaxTag at all ("None"), so the window looks no entry up and shows 0%
 //  whatever the table holds; the 0 only keeps the table honest should a def with a tag ever be used.  The table's NodeGuid is the node the

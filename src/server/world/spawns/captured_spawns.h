@@ -4,13 +4,13 @@
 // ============================================================================
 //  spawns/captured_spawns.h  (plan E1, stage 1)
 //
-//  What the retail captures give worldd of the other actors, parsed from the generated spawns/area_spawns.h (tools/capture/gen_area_spawns.py):
+//  What the retail captures give world of the other actors, parsed from the generated spawns/area_spawns.h (tools/capture/gen_area_spawns.py):
 //
 //    templates   one open per NPC archetype of the area's population chain: the archetype's export, the subobjects' names and checksums, and
 //                every content block's payload read into the ObjectState the replicator writes from (libaocnet block_reader.h);
 //    spawns      the town and node NPCs and the gatherable nodes seen within the area, each the open the retail server sent, with its position.
 //
-//  An OpenTemplate is a retail open as a value: `instantiate` makes a repl::Actor from it with NetGUIDs worldd mints (the actor, the AI
+//  An OpenTemplate is a retail open as a value: `instantiate` makes a repl::Actor from it with NetGUIDs world mints (the actor, the AI
 //  controller object its Owner and Controller name, then the components in the order the open sent them: retail's pattern, research/actors
 //  evidence 1.1) and the values that must be this actor's own:
 //
@@ -88,7 +88,7 @@ public:
     std::set<std::string> npc_leaves() const;
     const std::vector<CapturedSpawn>& spawns() const { return spawns_; }
     size_t template_count() const { return by_path_.size(); }
-    /// Every NetGUID of an export link of the tables (archetypes, packages, component classes): a NetGUID worldd mints for an object of its own
+    /// Every NetGUID of an export link of the tables (archetypes, packages, component classes): a NetGUID world mints for an object of its own
     /// (spawns/generic_npc.h) must not be one of them.
     bool static_id_in_use(uint64_t object_id) const { return static_ids_.count(object_id) != 0; }
 
@@ -114,7 +114,7 @@ public:
     /// The donor of a kind ("ground", "flying", "aquatic"); nullptr when the captures have none.
     const OpenTemplate* donor(const std::string& kind) const;
     const std::vector<OpenTemplate>& opens() const { return opens_; }
-    /// Every NetGUID of an export link of the table (the three archetypes and their packages): a NetGUID worldd mints for a Blueprint of its own must not be one.
+    /// Every NetGUID of an export link of the table (the three archetypes and their packages): a NetGUID world mints for a Blueprint of its own must not be one.
     bool static_id_in_use(uint64_t object_id) const { return static_ids_.count(object_id) != 0; }
 
 private:
@@ -143,7 +143,7 @@ struct InstanceParams {
     int64_t     component_def = 0, interact_def = 0, actor_def = 0;
 };
 
-/// Mints the NetGUIDs of an actor: next() returns a fresh FIntrepidNetworkGUID of worldd's allocator.
+/// Mints the NetGUIDs of an actor: next() returns a fresh FIntrepidNetworkGUID of world's allocator.
 using Minter = std::function<protocol::emit::FIntrepidNetworkGUID()>;
 
 /// Makes a world actor from an open: new NetGUIDs, the instance's own values (above). nullopt, with `error`, when a value is refused.

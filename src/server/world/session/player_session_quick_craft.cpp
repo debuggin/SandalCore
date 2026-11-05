@@ -73,7 +73,7 @@ const content::CraftStationDef *find_quick_station_def(const QuickFactsInput &in
     const content::CraftStationData *defs = in.world ? in.world->station_data() : nullptr;
     const content::CraftRecipeData *recipes = in.world ? in.world->craft_recipes() : nullptr;
     if (!in.actor || !defs || !recipes) {
-        refusal = in.actor ? "worldd has no station definitions or recipes (an "
+        refusal = in.actor ? "world has no station definitions or recipes (an "
                              "older content.db)"
                            : "the station or the recipes are gone";
         return nullptr;

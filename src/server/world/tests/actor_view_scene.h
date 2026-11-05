@@ -4,7 +4,7 @@
 #pragma once
 
 #include "combat/npc_ability_replicator.h"
-#include "test_worldd_actor_view_common.h"
+#include "test_world_actor_view_common.h"
 
 #include <algorithm>
 #include <cstdint>

@@ -237,7 +237,7 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
         return std::nullopt;
     }
     if (own.crc32 != bundle.crc32 || own.exprs.size() != bundle.exprs.size()) {
-        error = "the stat bundle the ability tables compile to (crc32 " + std::to_string(own.crc32) + ") is not the one worldd runs (crc32 " +
+        error = "the stat bundle the ability tables compile to (crc32 " + std::to_string(own.crc32) + ") is not the one world runs (crc32 " +
                 std::to_string(bundle.crc32) + ")";
         return std::nullopt;
     }

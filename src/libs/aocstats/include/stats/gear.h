@@ -74,7 +74,7 @@ struct ItemGear : items::ItemRarityFacts {
     std::vector<std::string>        tags;   // GameplayTags, in the record's order
 };
 
-/// Where the item facts come from: content.db in worldd, a table in a test. A pointer is valid for the catalog's life.
+/// Where the item facts come from: content.db in world, a table in a test. A pointer is valid for the catalog's life.
 class GearCatalog {
 public:
     virtual ~GearCatalog() = default;

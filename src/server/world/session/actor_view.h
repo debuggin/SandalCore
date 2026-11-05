@@ -58,7 +58,7 @@
 //  pass.  Exports are marked acknowledged from the Connection's ack events (on_ack), once per object, as the replicator's ExportAcks needs.
 //
 //  Cost.  A pass visits the actors in the 350 m ring and the ones the view tracks: with a few hundred actors that is a few microseconds each
-//  (the tests measure it: test_worldd_actor_view).  Opens per pass are capped (RelevancyConfig::max_opens_per_tick), nearest first.
+//  (the tests measure it: test_world_actor_view).  Opens per pass are capped (RelevancyConfig::max_opens_per_tick), nearest first.
 // ============================================================================
 #pragma once
 // C.Y.B with C-O-A
@@ -107,7 +107,7 @@ public:
         /// players' passes do not all land on one tick.  None: a pass is due once the relevancy config's tick has gone by since the last (the tests, and the old loop).
         std::shared_ptr<ViewPhases> phases;
         /// The update built once for the views that hold an actor in the same state (session/shared_updates.h), shared by the views of one server.  None: every view builds its own.  The test
-        /// programs get the sharing AOC_TEST_SHARE_UPDATES names (verify without it); worldd sets this from `--share-updates`.
+        /// programs get the sharing AOC_TEST_SHARE_UPDATES names (verify without it); world sets this from `--share-updates`.
         std::shared_ptr<SharedUpdates> shared = SharedUpdates::from_test_environment();
     };
 

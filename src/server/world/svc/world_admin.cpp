@@ -165,7 +165,7 @@ struct WorldAdminServer::Service final : adminv1::WorldAdminService::Service {
     template <class F>
     grpc::Status on_net_thread(F&& f) {
         if (!owner.queue_.run(std::forward<F>(f), owner.options_.call_timeout)) {
-            return grpc::Status(grpc::StatusCode::UNAVAILABLE, "worldd's network thread did not take the call in time (is worldd stopping?)");
+            return grpc::Status(grpc::StatusCode::UNAVAILABLE, "world's network thread did not take the call in time (is world stopping?)");
         }
         return grpc::Status::OK;
     }
@@ -479,7 +479,7 @@ bool WorldAdminServer::start(std::string* error) {
     server_ = builder.BuildAndStart();
     if (!server_ || port == 0) {
         server_.reset();
-        if (error) *error = "cannot listen on " + options_.address + " (is another worldd running? set AOC_WORLD_ADMIN_ADDR)";
+        if (error) *error = "cannot listen on " + options_.address + " (is another world running? set AOC_WORLD_ADMIN_ADDR)";
         return false;
     }
     port_ = port;

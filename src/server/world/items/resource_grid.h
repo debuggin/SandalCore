@@ -14,7 +14,7 @@
 //
 //  An item takes inv_w x inv_h cells and is never turned.  The slot the client is told (the event's slot, the payload's) is the row-major index of the item's top-left cell,
 //  slot = y * columns + x, and a new stack goes to the FIRST free rectangle scanning rows, then columns, skipping blocked and covered cells [R: 12 captured slots in five
-//  captures fit this: 1198's Resource1 and Resource2 lists, 1469, 1470 and 1471; tests/test_worldd_resource.cpp checks each].
+//  captures fit this: 1198's Resource1 and Resource2 lists, 1469, 1470 and 1471; tests/test_world_resource.cpp checks each].
 // ============================================================================
 #pragma once
 

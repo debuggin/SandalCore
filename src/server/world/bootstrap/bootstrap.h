@@ -5,7 +5,7 @@
 //  bootstrap/bootstrap.h
 //
 //  The native bootstrap of one joining player (plan A5, spec section 4): the
-//  sequence of chains worldd sends from NMT_Join to a client that can walk, as
+//  sequence of chains world sends from NMT_Join to a client that can walk, as
 //  data, built from a PlayerSetup with the libaocnet replicator. Pure and
 //  offline: no sockets, no Connection, no database. Plan E3 sends each Send on a
 //  channel of its role and feeds the acknowledgements back.
@@ -53,7 +53,7 @@
 //  object (the level, a class) in every chain that names it, as the original did.
 //
 //  Chain limits (net/connection.h): every chain here has at most 256 parts and every
-//  export bunch at most 7621 bits; test_worldd_bootstrap checks it for the whole
+//  export bunch at most 7621 bits; test_world_bootstrap checks it for the whole
 //  sequence.
 // ============================================================================
 #pragma once
@@ -84,7 +84,7 @@ namespace aoc::worldd::bootstrap {
 enum class Role : uint8_t { PlayerController, GameState, Pawn, PlayerState };
 // C | O | A + Cyb
 
-/// How much of the original's GameState open worldd sends (transcript section 6.1; each tier is an in-game run).
+/// How much of the original's GameState open world sends (transcript section 6.1; each tier is an in-game run).
 enum class GameStateMode : uint8_t {
     /// AuthServerIDReplicated, RemoteRole, Role, GameModeClass, bReplicatedHasBegunPlay and the world time; empty
     /// world arrays.
@@ -500,7 +500,7 @@ public:
     /// The correction of a move the checks refused (plan A6, spec section 10): ClientAdjustPosition on the pawn's channel,
     /// which puts the client back at a position the server holds. `time_stamp` is the TimeStamp of the refused move (the
     /// client finds that saved move, takes the position and replays the moves after it), `location` the last good position
-    /// in cm, `velocity` in cm/s (worldd does not simulate: zero), `movement_mode` the packed movement mode of the last good
+    /// in cm, `velocity` in cm/s (world does not simulate: zero), `movement_mode` the packed movement mode of the last good
     /// move. NewBase is none, NewBaseBoneName None, bHasBase and bBaseRelativePosition false. Unreliable: the function's
     /// flags (0x01820c42) have no FUNC_NetReliable, and the next refused move brings the next correction. Touches no shadow.
     std::optional<Send> correction(float time_stamp, const repl::Vec3d& location, const repl::Vec3d& velocity, uint8_t movement_mode) const;

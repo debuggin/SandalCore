@@ -6,7 +6,7 @@
 //
 //  The plausibility checks of plan A6 (spec section 10), as pure logic: given the last
 //  good position of a player and a move the client reports (protocol/repl/move_packed.h),
-//  say whether the move is plausible or the client must be put back.  worldd does not
+//  say whether the move is plausible or the client must be put back.  world does not
 //  simulate movement: it trusts the client's position as long as that position is one the
 //  character could have reached, and corrects it when not.
 //
@@ -48,7 +48,7 @@
 //                             other 30 retail Dodges peak at 1,408-1,688), allowed instead of max_speed while a Dodge is on
 //                             (check()'s `dash`: the Evasion and a margin, from the ability runtime).  The Rogue's dash is the
 //                             one move faster than max_speed; running and sprinting stay far below it (600 and 720 cm/s with no
-//                             talents, 834 with the best retail ones).  The retail Rogue dash is in test_worldd_move_checker
+//                             talents, 834 with the best retail ones).  The retail Rogue dash is in test_world_move_checker
 //    max_rise_speed 1,350     1.5 x 884 cm/s, the fastest upward step (a jump's launch) in the captures
 //    max_rise_burst 500 cm    the upward credit (the other directions hold `slack`): climbing onto a ledge in
 //                             game lifted the character 112, 132 and 131 cm in three moves 15 ms apart (375 cm
@@ -63,7 +63,7 @@
 //                             (25% for a client clock that runs fast, packet jitter), at most 5 s in hand (a
 //                             stall of the client or the network, then the burst that follows).  All 2,483
 //                             captured moves pass at their own pace, in 0.2 s and 1 s bursts, and with a
-//                             client clock 15% fast (test_worldd_move_checker); a client that races its
+//                             client clock 15% fast (test_world_move_checker); a client that races its
 //                             TimeStamp or sends 36 moves in one datagram gets the bank once and 1.25 x
 //                             real time after that
 //    first_move_seconds 1 s   the first move is measured against the spawn point as if 1 s had passed

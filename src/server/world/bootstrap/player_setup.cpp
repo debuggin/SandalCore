@@ -14,7 +14,7 @@ SessionGuids mint_session_guids(protocol::ServerGuidAllocator& a, const emit::FI
     SessionGuids g;
     // The capture's order: PlayerState 528, PlayerController 530, GlobalGMCommands 532, the quest and FTUE components
     // 534 and 536, the pawn 538, its components 540..566 (transcript section 4.2).  The tutorial component takes its place right after
-    // GlobalGMCommands; the quest component, which worldd does not send, leaves none.
+    // GlobalGMCommands; the quest component, which world does not send, leaves none.
     g.player_state = a.next();
     g.player_controller = a.next();
     g.global_gm_commands = a.next();

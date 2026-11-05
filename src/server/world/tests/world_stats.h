@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  server/worldd/tests/world_stats.h
+//  server/world/tests/world_stats.h
 //
 //  The stat context (plan B3) a test gives build_player_setup: the stat program of a ContentDb parsed and verified once, and the catalog of
 //  its items' stat data. Kept per file path, for the life of the test.

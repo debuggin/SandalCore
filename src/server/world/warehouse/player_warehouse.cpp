@@ -169,9 +169,9 @@ bool PlayerSession::open_warehouse(Connection& conn, const world::WorldActor& np
         return false;
     };
     const warehouse::Book* book = world_ ? world_->warehouses() : nullptr;
-    if (!book) return refuse("worldd has no warehouse data (rebuild content.db with this checkout's contentc)");
+    if (!book) return refuse("world has no warehouse data (rebuild content.db with this checkout's contentc)");
     const world::CityNodes* nodes = world_->city_nodes();
-    if (!nodes) return refuse("worldd has no city nodes");
+    if (!nodes) return refuse("world has no city nodes");
     const world::NodeSite site = nodes->node_at(npc.x, npc.y);
     const world::CityNodeInfo* town = nodes->by_rank(site.node_rank);
     if (!town) return refuse("the clerk stands in no town");

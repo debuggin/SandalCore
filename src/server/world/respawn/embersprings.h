@@ -11,7 +11,7 @@
 //    the home    one discovered place the character made its home by using the shrine (a prompt, then a yes); the home respawn waits two hours after its last use.
 //    the choices the death window lists the discovered shrine nearest the body (by horizontal distance) and the home; the home waits for its cooldown.
 //
-//  Header-only on purpose (a new source file would have to be listed in worldd's CMakeLists.txt, which every player's navigation mesh build is stamped with).
+//  Header-only on purpose (a new source file would have to be listed in world's CMakeLists.txt, which every player's navigation mesh build is stamped with).
 // ============================================================================
 #pragma once
 

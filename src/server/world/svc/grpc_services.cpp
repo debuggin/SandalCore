@@ -90,7 +90,7 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
     prepare(ctx);
     characterv1::GetCharacterRequest req;
     req.set_id(id);
-    req.set_include_items(true);   // plan B2: worldd plays the character, so it needs its items
+    req.set_include_items(true);   // plan B2: world plays the character, so it needs its items
     characterv1::GetCharacterResponse resp;
     CharacterResult r;
     r.status = map_grpc_status(stubs_->character->GetCharacter(&ctx, req, &resp));
@@ -121,7 +121,7 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
         case characterv1::ITEM_CONTAINER_RESOURCE1: it.container = ItemContainer::Resource1; break;
         case characterv1::ITEM_CONTAINER_RESOURCE2: it.container = ItemContainer::Resource2; break;
         default:
-            // an item in a storage this worldd has never heard of: the whole record is not one it can play
+            // an item in a storage this world has never heard of: the whole record is not one it can play
             r.status = CallStatus::Failed;
             r.character.items.clear();
             return r;

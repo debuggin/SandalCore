@@ -7,7 +7,7 @@
 //
 //  The places the retail captures' characters and creatures stood within 1.1 km of the login spot: the capturing player's own walking (the Location and
 //  MovementMode of each ServerMovePacked it sent), and the NPCs' and other players' ReplicatedMovement.  An actor's origin is a capsule's centre, a half
-//  height above its ground (a player 98 cm).  test_worldd_nav checks that a ground lies under each one.
+//  height above its ground (a player 98 cm).  test_world_nav checks that a ground lies under each one.
 #pragma once
 namespace aoc::worldd::tests {
 enum class GroundKind { Player, OtherPlayer, Mount, Npc };

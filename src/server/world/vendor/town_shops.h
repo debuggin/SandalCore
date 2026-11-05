@@ -215,7 +215,7 @@ public:
             return q;
         };
         const content::VendorData::Def* d = def(shop);
-        if (!d) return refuse("the shop is not one worldd knows");
+        if (!d) return refuse("the shop is not one world knows");
         if (d->blacklisted) return refuse("the shop is blacklisted");
         if ((d->operations & 1) == 0) return refuse("the shop does not sell");
         if (cart.vendor != shop) return refuse("the cart names vendor " + std::to_string(cart.vendor) + ", not the one the player has open (" + d->name + ")");

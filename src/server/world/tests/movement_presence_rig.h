@@ -3,7 +3,7 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #pragma once
 
-#include "test_worldd_movement_common.h"
+#include "test_world_movement_common.h"
 
 #include "bootstrap/constants.h"
 #include "capture_blocks.h"

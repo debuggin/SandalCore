@@ -6,7 +6,7 @@
 //
 //  See constants.h. Every id, path and checksum below is the original server's,
 //  from its export bunches in fixtures/replay_data.bin (packet numbers in
-//  constants.h); the test_worldd_bootstrap golden tests compare each chain's
+//  constants.h); the test_world_bootstrap golden tests compare each chain's
 //  bits with the capture.
 // ============================================================================
 #include "bootstrap/constants.h"

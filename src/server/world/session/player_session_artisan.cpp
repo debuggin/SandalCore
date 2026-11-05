@@ -105,7 +105,7 @@ StationPlanResult plan_station_job(const repl::StartCraft &req, const CraftFacts
     const content::CraftStationData *defs = in.world ? in.world->station_data() : nullptr;
     const content::CraftRecipeData *recipes = in.world ? in.world->craft_recipes() : nullptr;
     if (!defs || !recipes) {
-        out.refusal = "worldd has no station definitions or recipes (an older content.db)";
+        out.refusal = "world has no station definitions or recipes (an older content.db)";
         return out;
     }
     const auto def = defs->defs.find(in.actor->station.def);

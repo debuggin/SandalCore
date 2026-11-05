@@ -4,13 +4,13 @@
 // ============================================================================
 //  svc/world_admin.h  (the GM travel tools)
 //
-//  worldd's admin API: WorldAdminService (proto/internal/aoc/worldadmin/v1), served on AOC_WORLD_ADMIN_ADDR (default 127.0.0.1:50056).  API-FIRST: worldctl and the
+//  world's admin API: WorldAdminService (proto/internal/aoc/worldadmin/v1), served on AOC_WORLD_ADMIN_ADDR (default 127.0.0.1:50056).  API-FIRST: worldctl and the
 //  admin app to come (a 3D viewer that controls the server) call the same methods.
 //
 //    * Calls carry the service token ("authorization: Bearer <token>", svc/service_token.h), as every internal call does; without it (or with another) the call is refused
 //      with Unauthenticated and nothing else happens.  The comparison does not stop at the first different byte; the token is never logged.  Refusals are logged at most
 //      once a second.
-//    * A call arrives on a gRPC thread.  It is NOT applied there: it is put on the AdminQueue and applied on worldd's network thread, between two ticks of the world, by
+//    * A call arrives on a gRPC thread.  It is NOT applied there: it is put on the AdminQueue and applied on world's network thread, between two ticks of the world, by
 //      AdminQueue::drain (main's loop), where the sessions live; no session state is touched off-thread.  The gRPC thread waits for the answer (call_timeout, 5 s) and a call
 //      the network thread did not start by then ends with Unavailable and is never applied (a call that was started is waited for).
 //    * The work itself is GmTravel (session/gm_travel.h); this file is the door: the token, the queue, the mapping of its answers to gRPC's.

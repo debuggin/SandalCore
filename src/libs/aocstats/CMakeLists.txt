@@ -15,15 +15,15 @@ target_include_directories(aocstats PUBLIC
 )
 
 add_executable(test_world_stats
-    tests/test_worldd_stats.cpp
-    tests/test_worldd_stats_combat.cpp
+    tests/test_world_stats.cpp
+    tests/test_world_stats_combat.cpp
 )
 target_link_libraries(test_world_stats PRIVATE aocstats)
 target_compile_definitions(test_world_stats PRIVATE
     STATS_CORPUS_PATH="${CMAKE_BINARY_DIR}/../gen/fixtures/corpus.txt"
 )
 
-add_executable(test_world_effects tests/test_worldd_effects.cpp)
+add_executable(test_world_effects tests/test_world_effects.cpp)
 target_link_libraries(test_world_effects PRIVATE aocstats)
 target_compile_definitions(test_world_effects PRIVATE
     STATS_CORPUS_PATH="${CMAKE_BINARY_DIR}/../gen/fixtures/corpus.txt"

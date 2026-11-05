@@ -34,7 +34,7 @@ std::string verify_bare_classes(const stats::StatBundle& bundle, const std::set<
 }
 
 std::string stat_program_problem(const content::StatProgramRow& row, const stats::StatBundle& bundle, const content::AbilityRules& rules) {
-    if (row.version != stats::kBundleVersion) return "its format version is " + std::to_string(row.version) + ", this worldd runs " + std::to_string(stats::kBundleVersion);
+    if (row.version != stats::kBundleVersion) return "its format version is " + std::to_string(row.version) + ", this world runs " + std::to_string(stats::kBundleVersion);
     if (row.stats != static_cast<int>(bundle.stats.size()) || row.classes != static_cast<int>(bundle.classes.size())) {
         return "its row says " + std::to_string(row.stats) + " stats and " + std::to_string(row.classes) + " classes, the bundle has " +
                std::to_string(bundle.stats.size()) + " and " + std::to_string(bundle.classes.size());
@@ -101,7 +101,7 @@ bool PlayerWorld::init_core_tables(std::string& problem) {
         return false;
     }
     if (const std::string why = stat_program_problem(*row, bundle, *rules_); !why.empty()) {
-        problem = "the stat program in content.db is not one this worldd can run: " + why;
+        problem = "the stat program in content.db is not one this world can run: " + why;
         return false;
     }
     bundle_ = std::move(bundle);
@@ -119,7 +119,7 @@ bool PlayerWorld::init_core_tables(std::string& problem) {
     }
     auto curve = leveling::LevelCurve::from(*leveling_type_, error);
     if (!curve) {
-        problem = "content.db's Adventuring level curve is not one this worldd can level with: " + error;
+        problem = "content.db's Adventuring level curve is not one this world can level with: " + error;
         return false;
     }
     curve_ = std::move(*curve);
@@ -145,7 +145,7 @@ bool PlayerWorld::init_progression_tables(std::string& problem) {
     }
     auto catalog = talents::Catalog::from(std::move(*data), error);
     if (!catalog) {
-        problem = "content.db's skill trees are not what this worldd can run: " + error;
+        problem = "content.db's skill trees are not what this world can run: " + error;
         return false;
     }
     talents_ = std::move(*catalog);
@@ -159,7 +159,7 @@ bool PlayerWorld::init_progression_tables(std::string& problem) {
             spdlog::info("[content] professions: {} professions, {} certification levels, {} certification actions", professions_->size(),
                          prof_data->certifications.size(), prof_data->actions.size());
         } else {
-            problem = "content.db's professions are not what this worldd can run: " + why;
+            problem = "content.db's professions are not what this world can run: " + why;
             return false;
         }
     } else if (!why.empty()) {

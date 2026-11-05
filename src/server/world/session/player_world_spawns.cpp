@@ -454,7 +454,7 @@ PlayerWorld::StationResult PlayerWorld::place_station(const std::string& node_na
         return r;
     };
     if (!station_placement_ready()) {
-        return fail(StationStatus::Refused, "the towns' people are not running (worldd needs the area, the nodes and their people)");
+        return fail(StationStatus::Refused, "the towns' people are not running (world needs the area, the nodes and their people)");
     }
     if (node_name.empty() || plot_name.empty() || station_name.empty()) return fail(StationStatus::Invalid, "a node, a plot and a station are needed");
     const world::CityNodeInfo* node = city_nodes_->by_name(node_name);
@@ -496,7 +496,7 @@ PlayerWorld::StationResult PlayerWorld::place_station(const std::string& node_na
         r.y = made->y;
         r.z = made->z;
     }
-    spdlog::info("[stations] {}: placed {} (actor {}) on {} of {} at ({:.0f}, {:.0f}, {:.0f}), a station of {}; it stays until removed, until the node drops below a Village, or until worldd stops",
+    spdlog::info("[stations] {}: placed {} (actor {}) on {} of {} at ({:.0f}, {:.0f}, {:.0f}), a station of {}; it stays until removed, until the node drops below a Village, or until world stops",
                  by, blueprint, id, plot->name, node->display_name, r.x, r.y, r.z, r.building);
     return r;
 }
@@ -509,7 +509,7 @@ PlayerWorld::StationResult PlayerWorld::remove_station(const std::string& node_n
         spdlog::info("[stations] {}: remove {} {}: refused: {}", by, node_name, plot_name, r.message);
         return r;
     };
-    if (!city_nodes_) return fail(StationStatus::Refused, "worldd has no city nodes");
+    if (!city_nodes_) return fail(StationStatus::Refused, "world has no city nodes");
     const world::CityNodeInfo* node = city_nodes_->by_name(node_name);
     if (!node) return fail(StationStatus::NotFound, "no city node is named \"" + node_name + "\"");
     for (auto it = placed_stations_.begin(); it != placed_stations_.end(); ++it) {

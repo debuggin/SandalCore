@@ -533,7 +533,7 @@ void PlayerSession::init_quests(PlayerWorld& world, const svc::Character& charac
     if (!quest_worker_ || !book || !character.quest_log) {
         spdlog::info("[session] {}: quests are off for this character ({})", pb_.setup().name,
                      !book            ? "this content.db has no quest tables"
-                     : !quest_worker_ ? "worldd has no quest service"
+                     : !quest_worker_ ? "world has no quest service"
                                       : "its quest log did not load at the login");
         return;
     }

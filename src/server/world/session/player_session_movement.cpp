@@ -153,7 +153,7 @@ void PlayerSession::note_unserved_blocks(Role role, const repl::ClientBunch& par
                 whole += kHex[bunch.data[i] >> 4];
                 whole += kHex[bunch.data[i] & 15];
             }
-            spdlog::warn("[session] {}: the client calls an RPC on a subobject of its {} that it names by path (\"{}\", outer {}/{}/{}, export flags {}, {} payload bits): worldd "
+            spdlog::warn("[session] {}: the client calls an RPC on a subobject of its {} that it names by path (\"{}\", outer {}/{}/{}, export flags {}, {} payload bits): world "
                          "replicates no such subobject, so the call is skipped and the rest of its bunch is read; said once per name; the bunch is {}, {} bits, and starts {}",
                          name(), role_name(role), n.path, n.outer.ObjectId, n.outer.ServerId, n.outer.Randomizer, static_cast<unsigned>(n.flags), block.payload_bits,
                          bunch.reliable ? "reliable" : "unreliable", bunch.bits, whole);
@@ -316,7 +316,7 @@ void PlayerSession::dispatch(Connection& conn, Role role, const repl::ClientRpc&
         if (name_of_rpc == "Server_RemoveLocaleFTUEs") return on_remove_ftues(conn, rpc, now);
     }
     if (unhandled_logged_.insert(std::string(name_of_rpc)).second) {
-        spdlog::info("[session] {}: ignoring the client's {} ({}): worldd does not answer it (once per call)", name(), name_of_rpc, role_name(role));
+        spdlog::info("[session] {}: ignoring the client's {} ({}): world does not answer it (once per call)", name(), name_of_rpc, role_name(role));
     }
 }
 

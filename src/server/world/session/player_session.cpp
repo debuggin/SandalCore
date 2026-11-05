@@ -112,7 +112,7 @@ struct GmGiveSpec {
 std::optional<content::ItemRecord> prepare_gm_give_item(const content::ContentDb* db, const GmGiveSpec& spec,
                                                         PlayerSession::GmItemResult& r, int32_t& given_quality_out) {
   if (!db) {
-    r.refusal = "worldd has no content.db to read the item from";
+    r.refusal = "world has no content.db to read the item from";
     return std::nullopt;
   }
   if (spec.count < 1 || spec.count > 100000) {

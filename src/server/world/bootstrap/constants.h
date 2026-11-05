@@ -4,7 +4,7 @@
 // ============================================================================
 //  bootstrap/constants.h
 //
-//  What worldd's bootstrap copies from the original server, each with where it
+//  What world's bootstrap copies from the original server, each with where it
 //  was seen (fixtures/replay_data.bin packet numbers, docs/world-bootstrap-
 //  transcript.md sections, tools/ and the export table of the transcript's
 //  scratch folder).  Same for every player and server: class and asset hashes
@@ -78,7 +78,7 @@ repl::ExportChain game_mode_class_export();
 emit::FIntrepidNetworkGUID game_mode_class_guid();
 emit::FIntrepidNetworkGUID hud_class_guid();
 
-/// A montage worldd can name in a ReplicatedActiveAbilities item: its GUID (a static asset's, ServerId 0) and the export
+/// A montage world can name in a ReplicatedActiveAbilities item: its GUID (a static asset's, ServerId 0) and the export
 /// chain that gives the client its path. Static GUIDs are not computed from the path (a hash no one has found), so only the
 /// montages a capture shows are known: the General_Rest montage (replay_data.bin, pkt#8175), and, from the retail captures
 /// of 2026-02 (research 2026-10-02: the same ids in every session and on every server), the Sprint montage, the four Dodge

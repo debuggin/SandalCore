@@ -19,7 +19,7 @@
 //
 //  The archetype.  A donor is the retail open of the same kind of mount (ground 911, aquatic 898, flying 871); the item's Blueprint decides which export the
 //  open carries: the donor's own when the item's Blueprint is the donor's, else the Blueprint's class default object by its path with checksum 0 and a
-//  NetGUID worldd mints (the E1 generic-open path, spawns/generic_npc.h: the client does not compare a zero checksum).  The three captured Blueprints keep
+//  NetGUID world mints (the E1 generic-open path, spawns/generic_npc.h: the client does not compare a zero checksum).  The three captured Blueprints keep
 //  their retail export; the others, the GM Eagle Gryphon (Mount_Flying_Gryphon_5_Armored) among them, are made.
 //
 //  What is the instance's own: where it stands and its yaw; the owner (its CharacterGuid in the alignments, the creature-owner guid and the interaction
@@ -28,7 +28,7 @@
 //  Also the instance's own (stage 3 fix 2): the alignments (the mount INHERITS its owner's: a donor's belong to the player who was captured, 898's was a Combatant, the
 //  PvP flag) and the rider's AnimBP (the interaction data names it and the open exports the class: without it the rider stands on the mount).
 //  What is the capture's, kept: everything else (CharacterType 1.1, the penetrations, the interaction definition, the ability list).
-//  Modelled, not retail: the open has no ReplicatedBasedMovement (retail names the ground object the mount stands on, which worldd has no export for: the NPCs of E1 go without it too).
+//  Modelled, not retail: the open has no ReplicatedBasedMovement (retail names the ground object the mount stands on, which world has no export for: the NPCs of E1 go without it too).
 // ============================================================================
 #pragma once
 
@@ -80,7 +80,7 @@ struct MountParams {
     std::optional<double>                health;
     /// The owner's own alignments (its pawn's UAlignmentComponent.Alignments, as they are now): the mount INHERITS them, as retail's does (the mount's
     /// InheritedAlignments are its owner's, the retail captures).  Unset: a player with no PvP flag, node or guild (Player, NonCombatant, the
-    /// owner's Instigator and PVPSuppressed_Perceiver: the alignments of worldd's own pawn).  Fix 2 of stage 3: the donors' alignments belong to the CAPTURING
+    /// owner's Instigator and PVPSuppressed_Perceiver: the alignments of world's own pawn).  Fix 2 of stage 3: the donors' alignments belong to the CAPTURING
     /// players (898's owner stood in a Lawless zone and was a Combatant: the PvP flag; the others had a node and a guild) and must never reach a mount of ours.
     std::optional<repl::AlignmentContainer> owner_alignments;
 };
@@ -141,7 +141,7 @@ public:
     /// The class path of the AnimBP the rider of `row` is put on: the file's for its Blueprint, else the one the retail donor of its kind named (ground:
     /// Swiftclaw, the terror bird's, the retail capture; aquatic: Tidesnapper, the Shoalskipper's, 898; flying: Dawnbreaker, 871).
     std::string rider_anim_of(const content::MountRow& row) const;
-    /// The export of that AnimBP class (the class, its package: flags 5, checksum 0, NetGUIDs worldd mints from the path, stable between calls): what the actor's
+    /// The export of that AnimBP class (the class, its package: flags 5, checksum 0, NetGUIDs world mints from the path, stable between calls): what the actor's
     /// open carries so that the client can find the class its AttachmentAnimation names.  Empty for a path without a dot.
     repl::ExportChain rider_anim_export(const std::string& class_path) const;
 

@@ -4,7 +4,7 @@
 // ============================================================================
 //  bootstrap/player_setup.h
 //
-//  The input of worldd's native bootstrap (plan A5, spec section 4): everything
+//  The input of world's native bootstrap (plan A5, spec section 4): everything
 //  the sequence of one joining player is built from, typed for what the
 //  replicator needs.  Plan E1 fills it from the character record and content.db,
 //  plan E3 hands it to a PlayerBootstrap after NMT_Join.
@@ -158,7 +158,7 @@ struct LoginIdentity {
 
 // ---- the session --------------------------------------------------------------------------------------------------
 
-/// The GUID of every object the bootstrap names. Dynamic objects are minted under worldd's ServerId (even ObjectIds,
+/// The GUID of every object the bootstrap names. Dynamic objects are minted under world's ServerId (even ObjectIds,
 /// protocol/server_guid_allocator.h); the capture's were consecutive even ids in this order, 528..566 (transcript
 /// section 4.2). The GameState is the world's, not the player's: the caller says which.
 struct SessionGuids {
@@ -293,7 +293,7 @@ struct PlayerSetup {
     LoginIdentity login;
 
     // ---- the session [sess] --------------------------------------------------------------------------------------
-    uint32_t     server_id = 0;       // worldd's ServerId: BaseCharacterInfo.ServerId and the GUIDs' server
+    uint32_t     server_id = 0;       // world's ServerId: BaseCharacterInfo.ServerId and the GUIDs' server
     /// The server's clock in seconds (its uptime in the capture): the GameState's world time, the PlayerController's
     /// SummonCooldownTimer, the PlayerState's StartTime (whole seconds) and what ClientSetTime derives from.
     double       world_time = 0;

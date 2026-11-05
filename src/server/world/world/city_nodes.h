@@ -4,7 +4,7 @@
 // ============================================================================
 //  world/city_nodes.h  (Nodes 1, stage 1)
 //
-//  worldd's city node registry: what the design data says about the 81 city nodes (content.db's city_node and city_zoi, contentc version 12:
+//  world's city node registry: what the design data says about the 81 city nodes (content.db's city_node and city_zoi, contentc version 12:
 //  the rank, the type, the place, the zone of influence and its biome) and the nodes' LIVE state, the levels the citynode service holds
 //  (svc/city_node_feed.h watches it).  "Node" is the settlement (CityNodeRecord), not a resource node or a talent node.
 //
@@ -12,7 +12,7 @@
 //    level_of(node)   the node's level now
 //
 //  Where the levels come from, and what happens when the service is not there: a registry starts with every node at Wilderness (source Default).  The
-//  service's snapshot (Service) replaces every level at once, and each later change moves one.  When the service cannot be reached at start, worldd
+//  service's snapshot (Service) replaces every level at once, and each later change moves one.  When the service cannot be reached at start, world
 //  loads the seed file's levels (Seed; svc/city_node_feed.h logs the one warning and keeps retrying); login never waits for any of it.
 //
 //  The node reads of an expression (stats/stat_program.h kHostNodeBiome ...) are answered by node_host_fn below, the C++ twin of statprog's NodeWorld:

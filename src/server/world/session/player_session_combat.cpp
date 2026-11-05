@@ -260,7 +260,7 @@ bool is_valid_trigger_input(const std::optional<ParsedTriggerInput>& parsed, con
 void log_unreadable_trigger(size_t& logged, std::string_view session_name, bool has_parsed, size_t param_bits) {
   if (++logged <= PlayerSession::kLoggedPerKind) {
     spdlog::warn("[session] {}: a ServerTriggerAbility{} does not read ({} parameter bits): ignored", session_name,
-                 has_parsed ? " for an ability worldd runs" : "", param_bits);
+                 has_parsed ? " for an ability world runs" : "", param_bits);
   }
 }
 
@@ -678,7 +678,7 @@ void PlayerSession::on_branch_request(Connection& conn, const repl::ClientRpc& r
   if (!pipeline_->branch_request(request->client_instance_id, request->branch_guid, ability_seconds(now))) {
     if (unhandled_logged_.insert("ServerRequestBranchVerification").second) {
       spdlog::info(
-          "[session] {}: the client's ServerRequestBranchVerification belongs to no cast worldd waits for (it answers "
+          "[session] {}: the client's ServerRequestBranchVerification belongs to no cast world waits for (it answers "
           "it for the cast bars it knows: kBranchedCasts in ability_pipeline.cpp; told once)",
           name());
     }

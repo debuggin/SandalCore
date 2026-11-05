@@ -282,7 +282,7 @@ const OpenTemplate* GenericNpcs::template_for(const content::NpcAssetRow& asset,
         const std::string key = path + "#hunting#" + std::to_string(asset.interact_component) + "#" + std::to_string(asset.interaction_def);
         if (const auto it = made_.find(key); it != made_.end()) return &it->second;
         OpenTemplate t = *plain;
-        // a living huntable's other blocks (the retail capture's Raven, to the bit in test_worldd_hunting): the CombatInfo's three flags written, the AbilityComponent empty, the nameplate's name
+        // a living huntable's other blocks (the retail capture's Raven, to the bit in test_world_hunting): the CombatInfo's three flags written, the AbilityComponent empty, the nameplate's name
         for (const char* cls : {"UNPCCombatInfo", "UAoCAbilityComponent"}) {
             const int to = t.find(cls), from = living_ ? living_->find(cls) : -1;
             if (to > 0 && from > 0) t.blocks[static_cast<size_t>(to)].state = living_->blocks[static_cast<size_t>(from)].state;
@@ -442,7 +442,7 @@ const OpenTemplate* GenericNpcs::make_plain(const content::NpcAssetRow& asset, V
         const int at = t.find("UInteractableComponent");
         if (at > 0) t.blocks[static_cast<size_t>(at)] = *dialogue_;
     }
-    // the archetype's export: the class default object in its package, checksum 0 (see the header), static NetGUIDs of worldd's own, the same for each template of the path
+    // the archetype's export: the class default object in its package, checksum 0 (see the header), static NetGUIDs of world's own, the same for each template of the path
     const repl::ExportChain* exported = archetype_export(path);
     if (!exported) return fail(Verdict::NoPath);
     t.archetype = *exported;

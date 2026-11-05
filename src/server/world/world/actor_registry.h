@@ -4,12 +4,12 @@
 // ============================================================================
 //  world/actor_registry.h
 //
-//  The world's other actors: the NPCs, the resource nodes and a player's lingering effects, held once for the whole worldd, each as the
+//  The world's other actors: the NPCs, the resource nodes and a player's lingering effects, held once for the whole world, each as the
 //  replicated state a connection opens (repl::Actor: its values, its subobjects, what SerializeNewActor says) plus what the server itself
 //  knows of it (its kind, where it stands, who it belongs to).  The per-connection side is session/actor_view.h: which of these a client
 //  has opened, on which channel, and what it has been sent.
 //
-//  An actor's NetGUID is the registry's key (its ObjectId, even, minted from worldd's allocator in the retail pattern: the actor, the AI
+//  An actor's NetGUID is the registry's key (its ObjectId, even, minted from world's allocator in the retail pattern: the actor, the AI
 //  controller object its Owner and Controller name at +2, then the components; research/actors/evidence.md 1.1).  Nothing here sends
 //  anything and nothing here reads a clock.
 //

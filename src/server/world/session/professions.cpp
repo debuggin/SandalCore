@@ -57,7 +57,7 @@ std::optional<Book> Book::from(const content::ProfessionData& data, std::string&
         std::string why;
         auto curve = leveling::LevelCurve::from(r.leveling, why);
         if (!curve) {
-            error = "the level curve of profession " + r.name + " is not one this worldd can level with: " + why;
+            error = "the level curve of profession " + r.name + " is not one this world can level with: " + why;
             return std::nullopt;
         }
         if (curve->max_level() < last_max) {

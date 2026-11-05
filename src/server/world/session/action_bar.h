@@ -14,7 +14,7 @@
 //  some other way, is not in the captures.
 //
 //  Modelled, not captured (the part-2 spec's "Settled in D1, stage 2"):
-//    - a bought or granted skill with an ability is placed by worldd on the first empty slot of the banks 0-3 (so that it survives a relog):
+//    - a bought or granted skill with an ability is placed by world on the first empty slot of the banks 0-3 (so that it survives a relog):
 //      a DESIGN CHOICE, not retail behaviour; the client is told with the usual ClientUpdateSkillOnActionbar, and a ServerSetActionbarSlotUseData
 //      that puts the same skill elsewhere moves it (a skill the server placed is on one slot at most);
 //    - a slot the client sets must be inside the banks 0-19 and slots 0-11, hold an enumeration value the client has and a rarity and combo

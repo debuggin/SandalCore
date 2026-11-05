@@ -12,7 +12,7 @@
 //    the character     its certification in that profession reaches the interaction's tier, and its level the tier's first level (certification_level.min_level)
 //    the tool          the item in the interaction's slot is a gathering tool (gather_tool) of that profession whose tier reaches the node's, with durability left; and the
 //                      character may use that tool: its own requirement (the item's RequiredProfession and RequiredCertification, else its tool data's) is met
-//                      (worldd's equip rules do not check a tool's certification: the T3 tools need Journeyman and equip at Novice)
+//                      (world's equip rules do not check a tool's certification: the T3 tools need Journeyman and equip at Novice)
 //    combat            a node whose interaction does not allow it is not harvested in combat
 //
 //  A refusal is one of the Refusal values with a sentence for the log; the session counts each kind.

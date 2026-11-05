@@ -19,7 +19,7 @@ namespace grpc { class ClientContext; class Status; }
 
 namespace aoc { namespace worldd { namespace svc {
 
-/// Maps a gRPC status to how worldd treats it.  Unauthenticated means the
+/// Maps a gRPC status to how world treats it.  Unauthenticated means the
 /// service token is wrong: a setup error, reported as Failed.
 CallStatus map_grpc_status(const grpc::Status& s);
 
@@ -32,7 +32,7 @@ public:
     };
 
     /// `timeout` is every call's deadline but save_position's, which has its own (shorter: the saver's worker thread is
-    /// waited for when worldd stops, so a hung character service may hold it for one deadline).
+    /// waited for when world stops, so a hung character service may hold it for one deadline).
     GrpcServices(const Addresses& addresses, std::string token,
                  std::chrono::milliseconds timeout = std::chrono::seconds(5),
                  std::chrono::milliseconds save_timeout = std::chrono::seconds(2));

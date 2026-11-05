@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  server/worldd/tests/content_db_fixture.h
+//  server/world/tests/content_db_fixture.h
 //
-//  A small content.db for worldd's tests (test_worldd_content_db, test_worldd_character_setup):
+//  A small content.db for world's tests (test_world_content_db, test_world_character_setup):
 //  a SQLite file in a temp directory with the tables and columns the reader uses.  Their names are
 //  services/internal/content/schema.go's (the one place contentc's DDL lives): meta(key, value),
 //  class(guid, name, archetype_id), class_stat_base(class_guid, level, stat_guid, stat_name, value,
@@ -59,7 +59,7 @@ struct DbOptions {
     bool        class_table = true;
     bool        stat_table = true;
     /// Plan A7: ability_runtime, effect_runtime, effect_stat_runtime and stamina_rule, with the numbers contentc resolves
-    /// from the real design database (what test_worldd_content_db and the abilities tests expect of both this fixture and a
+    /// from the real design database (what test_world_content_db and the abilities tests expect of both this fixture and a
     /// real content.db).
     bool        ability_tables = true;
     /// When set, the first `ability_from` in the ability_runtime INSERT is replaced by `ability_to`: a content.db whose
@@ -82,7 +82,7 @@ struct DbOptions {
     /// Universal tree's grants.
     bool        progress_tables = true;
     /// Plan D1, stage 2 (still contentc version 5): skill_point_type, leveling_point, skill_tree, skill_node, skill_node_require,
-    /// skill_node_exclusive, skill_rank, skill_rank_cost and item_weapon, with the real rows of talent_fixture.sql (tools/worldd/gen_talent_fixture.py):
+    /// skill_node_exclusive, skill_rank, skill_rank_cost and item_weapon, with the real rows of talent_fixture.sql (tools/world/gen_talent_fixture.py):
     /// the class, Universal, weapon and gathering trees, and the starting kits' weapons. Needs progress_tables (skill_rank_stat_mod is theirs).
     bool        talent_tables = true;
 };

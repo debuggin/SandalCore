@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // ============================================================================
-//  server/worldd/tests/cyb_appearance.h
+//  server/world/tests/cyb_appearance.h
 //
 //  The customization JSON of the local test character `cyb` (a Kaelar male Bard, level 1), in the two forms
-//  it has on its way to worldd.  The aoc_test database holds no copy of cyb (its characters table is empty
+//  it has on its way to world.  The aoc_test database holds no copy of cyb (its characters table is empty
 //  between test runs) and the `aoc` database was not read: the source is the create_info payload of the
 //  legacy server's dist/Release/data/characters.json (the file tools/charimport imports into the character
 //  store): the value of its "CustomizationDataKey" entry, byte for byte.

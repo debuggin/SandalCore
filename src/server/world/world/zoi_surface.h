@@ -10,7 +10,7 @@
 //  height.  Only the ZOI guid is here; what a ZOI is (its node, its biome) is world/city_nodes.h's, from content.db.
 //
 //  G1 stage 1 (merged) has a Riverlands-only region table from the same grid, spawns/region_data.h (what spawning uses); the two sit side by side and
-//  test_worldd_city_nodes checks they agree cell for cell.  A later step unifies them: this one is the whole-world side.
+//  test_world_city_nodes checks they agree cell for cell.  A later step unifies them: this one is the whole-world side.
 // ============================================================================
 #pragma once
 

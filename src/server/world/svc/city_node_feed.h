@@ -4,12 +4,12 @@
 // ============================================================================
 //  svc/city_node_feed.h  (Nodes 1, stage 1)
 //
-//  worldd's view of the citynode service (services/internal/citynode, proto/internal/aoc/citynode/v1): a thread that calls WatchNodes, applies the
+//  world's view of the citynode service (services/internal/citynode, proto/internal/aoc/citynode/v1): a thread that calls WatchNodes, applies the
 //  snapshot it sends first to the node registry (world/city_nodes.h) as one change, then each change after it, and calls again when the stream ends.
 //
 //    * Login never waits for it.  The thread is started after the registry is made and the seed's levels are loaded; whatever happens to the stream,
 //      the registry keeps its last levels.
-//    * When the service cannot be reached, ONE warning is logged for the outage ("... worldd runs with the seed's levels, retrying") and the thread
+//    * When the service cannot be reached, ONE warning is logged for the outage ("... world runs with the seed's levels, retrying") and the thread
 //      retries with a backoff (0.5 s growing to 5 s).  When a stream comes back its snapshot replaces every level at once, and a later outage warns once again.
 //    * The stream's contract (citynode.proto): one snapshot (seq = the last change it includes), then changes numbered seq + 1, + 2 ... with no gap.  A
 //      number that is not the next one is a desynchronisation: the stream is dropped and called again, whose snapshot is the whole state.  The service ends a

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// net/tick_profile.h: per-phase tick timing counters for `worldd --loop-stats` (disabled by default; worker threads write to thread-local redirects).
+// net/tick_profile.h: per-phase tick timing counters for `world --loop-stats` (disabled by default; worker threads write to thread-local redirects).
 #pragma once
 
 #include <chrono>

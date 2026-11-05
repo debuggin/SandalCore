@@ -7,7 +7,7 @@
 //
 //  The first move of every ServerMovePacked of every capture of the folder (MovementMode 1: walking) at a place inside the Riverlands' footprint
 //  (fixtures/region/riverlands_rects.json) and more than 1.1 km from the login spot (ground_key.h holds that circle), one position per capture per 20 m cell.
-//  A walking player's origin is a capsule's centre, 98 cm above its ground (a mounted player: the mount's capsule, lower).  test_worldd_nav checks that a ground lies under each.
+//  A walking player's origin is a capsule's centre, 98 cm above its ground (a mounted player: the mount's capsule, lower).  test_world_nav checks that a ground lies under each.
 #pragma once
 #include "ground_key.h"
 namespace aoc::worldd::tests {

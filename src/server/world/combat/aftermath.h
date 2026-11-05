@@ -47,7 +47,7 @@
 namespace aoc::worldd::combat {
 
 struct AftermathConfig {
-    bool   enabled = true;                  // the kill switch (worldd --no-loot): no experience, loot or respawn
+    bool   enabled = true;                  // the kill switch (world --no-loot): no experience, loot or respawn
     bool   respawn = true;
     double corpse_seconds = 15.0;           // [R] 15.0 s after the death (7 of 7 corpses with nothing to loot)
     double emptied_seconds = 4.0;           // [R] 3.97 to 4.08 s after the loot was emptied (11 of 11)
@@ -57,8 +57,8 @@ struct AftermathConfig {
     bool   death_loss = true;               // the PvE death takes about half of each stack of materials into a pile (--no-death-loss: nothing)
     double pile_seconds = 600.0;            // [modelled] a dead player's pile (no capture shows one close unemptied)
     double default_respawn_seconds = 60.0;  // [modelled] a data NPC whose instance says 0
-    double loot_chance_mult = 1.0;          // [modelled] x the chance of every RollEachByPercent loot draw (never the quantities): worldd --loot-chance-mult, AOC_LOOT_CHANCE_MULT
-    double loot_rarity_boost = 1.0;         // [modelled, test only] x the weight of every outcome above Common in a kill's rarity rolls (RollContext::rarity_boost; never a harvest): worldd --loot-rarity-boost, AOC_LOOT_RARITY_BOOST
+    double loot_chance_mult = 1.0;          // [modelled] x the chance of every RollEachByPercent loot draw (never the quantities): world --loot-chance-mult, AOC_LOOT_CHANCE_MULT
+    double loot_rarity_boost = 1.0;         // [modelled, test only] x the weight of every outcome above Common in a kill's rarity rolls (RollContext::rarity_boost; never a harvest): world --loot-rarity-boost, AOC_LOOT_RARITY_BOOST
     double min_respawn_seconds = 1.0;       // [R] the shortest retail respawn: 1.07 s
     uint64_t seed = 1;
 };
