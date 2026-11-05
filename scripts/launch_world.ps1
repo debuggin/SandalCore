@@ -6,16 +6,16 @@
 [CmdletBinding()]
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$WorlddArgs = @()
+    [string[]]$WorldArgs = @()
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Resolve-WorlddExecutable {
+function Resolve-WorldExecutable {
     param([Parameter(Mandatory)][string]$RepoRoot)
 
-    $exeNames = if ($IsWindows) { @('world.exe', 'worldd.exe') } else { @('world', 'worldd') }
+    $exeNames = if ($IsWindows) { @('world.exe') } else { @('world') }
     $candidates = [System.Collections.Generic.List[string]]::new()
     foreach ($exeName in $exeNames) {
         $candidates.Add((Join-Path $RepoRoot 'dist' 'server' 'world' $exeName))
@@ -29,12 +29,12 @@ function Resolve-WorlddExecutable {
             return (Resolve-Path -LiteralPath $candidate).Path
         }
     }
-    throw "world executable ('$($exeNames[0])' or '$($exeNames[1])') not found under dist/server/world or build/x64/src/server/world. Run .\scripts\build.ps1 -Target world first."
+    throw "world executable ('$($exeNames[0])') not found under dist/server/world or build/x64/src/server/world. Run .\scripts\build.ps1 -Target world first."
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$worlddExe = Resolve-WorlddExecutable -RepoRoot $repoRoot
-$binDir = Split-Path -Parent $worlddExe
+$worldExe = Resolve-WorldExecutable -RepoRoot $repoRoot
+$binDir = Split-Path -Parent $worldExe
 $distWorldDir = Join-Path $repoRoot 'dist' 'server' 'world'
 $distReleaseDir = Join-Path $repoRoot 'dist' 'Release'
 $pathSep = [System.IO.Path]::PathSeparator
@@ -57,10 +57,10 @@ try {
         }
     }
 
-    & $worlddExe @WorlddArgs
+    & $worldExe @WorldArgs
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
-        throw "worldd exited with code $exitCode"
+        throw "world exited with code $exitCode"
     }
 } finally {
     Pop-Location

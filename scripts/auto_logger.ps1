@@ -23,8 +23,9 @@ $RepoRoot = Split-Path -Parent $ScriptDir
 $DistDir = Join-Path $RepoRoot "dist\Release"
 $DistLogsDir = Join-Path $DistDir "logs"
 $PrivateLogsRoot = if ($env:AOC_MIRROR_LOGS_ROOT) { $env:AOC_MIRROR_LOGS_ROOT } else { Join-Path $RepoRoot "dist\logs\mirror" }   # a second copy of every run
-$ClientLogPath = Join-Path $env:LOCALAPPDATA "AOC\Saved\Logs\AOC.log"
-$CefLogPath = Join-Path $env:LOCALAPPDATA "AOC\Saved\Logs\cef3.log"
+$ClientLogsDir = Join-Path $env:LOCALAPPDATA "AOC\Saved\Logs"
+$ClientLogPath = Join-Path $ClientLogsDir "AOC.log"
+$CefLogPath = Join-Path $ClientLogsDir "cef3.log"
 $GoLogsDir = Join-Path $RepoRoot "dist\services\logs"
 
 function Sync-FileSafe($srcPath, $dstPath) {
@@ -90,7 +91,7 @@ while ($true) {
     $clientProc = Get-Process -Name "AOCClient-Win64-Shipping" -ErrorAction SilentlyContinue | Select-Object -First 1
     $launcherProc = Get-Process -Name "SandalLauncher" -ErrorAction SilentlyContinue | Select-Object -First 1
     # The Go services and world from this checkout: the run is named after the first of them to start.
-    $goProc = Get-Process -Name world, worldd, gateway -ErrorAction SilentlyContinue |
+    $goProc = Get-Process -Name world, gateway -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($RepoRoot, [System.StringComparison]::OrdinalIgnoreCase) } |
         Sort-Object StartTime | Select-Object -First 1
     $runProc = $goProc
@@ -134,7 +135,7 @@ while ($true) {
 
         $needsSummaryUpdate = $false
 
-        foreach ($name in 'auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'world', 'worldd') {
+        foreach ($name in 'auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'world') {
             $svcLog = Join-Path $GoLogsDir "$name.log"
             if (-not (Test-Path $svcLog)) { continue }
             $fi = Get-Item $svcLog
@@ -147,13 +148,20 @@ while ($true) {
             }
         }
 
-        if (Test-Path $ClientLogPath) {
-            $fi = Get-Item $ClientLogPath
-            $szKey = "client"
+        $activeClientLog = if (Test-Path -LiteralPath $ClientLogsDir -PathType Container) {
+            $latestLog = Get-ChildItem -LiteralPath $ClientLogsDir -Filter 'AOC*.log' -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+            if ($null -ne $latestLog) { $latestLog.FullName } else { $ClientLogPath }
+        } else {
+            $ClientLogPath
+        }
+        if (Test-Path -LiteralPath $activeClientLog) {
+            $fi = Get-Item -LiteralPath $activeClientLog
+            $szKey = "client:$($fi.Name)"
             if ($lastSizes[$szKey] -ne $fi.Length) {
                 $lastSizes[$szKey] = $fi.Length
                 foreach ($d in $allDests) {
-                    Sync-FileSafe $ClientLogPath (Join-Path $d "game_client.txt") | Out-Null
+                    Sync-FileSafe $activeClientLog (Join-Path $d "game_client.txt") | Out-Null
                 }
                 $needsSummaryUpdate = $true
             }

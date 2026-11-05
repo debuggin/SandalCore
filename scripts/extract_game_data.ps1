@@ -32,10 +32,9 @@
                                                region_rects.tsv, the Riverlands' rectangles, and the test fixtures (listed in .gitignore)
     dist\content\aoc.usmap                     a copy of src\config\layouts\aoc.usmap, where the tools look for it
 
-  It needs: the game (Steam, or GAME_ROOT / -GameRoot), the .NET 8 SDK (mapc), Go (contentc), and Visual Studio 2022 Build Tools
-  with CMake and vcpkg (aoc_navbuild, built by scripts\build.ps1). The first run fetches CUE4Parse (src\tools\mapc\fetch_cue4parse.ps1) and restores mapc's NuGet
-  packages, so it needs the network once. A full run takes about 10 minutes on a fast PC (the longest step is the map read for the navigation mesh) and up to
-  4 GB of memory for any one program; the first build of the C++ libraries (vcpkg) comes on top and can take a long time.
+  It needs: the game (Steam, or GAME_ROOT / -GameRoot), the .NET 10 SDK (mapc) and Go (contentc), plus CMake for aoc_navbuild (built by
+  scripts\build.ps1). The first run fetches CUE4Parse (src\tools\mapc\fetch_cue4parse.ps1) and restores mapc's NuGet packages, so it needs the network once.
+  A full run takes about 10 minutes on a fast PC (the longest step is the map read for the navigation mesh) and up to 4 GB of memory for any one program.
 
   Every step is skipped when what it reads is unchanged since the last run (a stamp per step in build\.extract), so scripts\build.ps1 and the launchers can call
   this every time. The navigation mesh step, the longest, reads the map, the towns' floors and buildings, the Riverlands' rectangles and where the five towns' nodes stand
@@ -96,7 +95,7 @@ $navbuild  = Join-Path $distDir "Release\aoc_navbuild$exeExt"
 $logFile   = Join-Path $stampDir 'current.log'
 $lastLog   = Join-Path $stampDir 'last_run.log'
 # The creature kinds that attack with their own animation: one container folder of the game's files per kind (its Blueprints and the animation montages beside them).
-# worldd animates exactly the Blueprints this reads; a kind that is not listed keeps its single swing.
+# world animates exactly the Blueprints this reads; a kind that is not listed keeps its single swing.
 $NpcFolders = @('AOC/Content/DesignAssets/Population/NPC/Beast/Rabid', 'AOC/Content/DesignAssets/Population/NPC/Beast/Canine', 'AOC/Content/DesignAssets/Population/NPC/Beast/Bear',
                'AOC/Content/DesignAssets/Population/NPC/Beast/Bird/Raven', 'AOC/Content/DesignAssets/Population/NPC/Humanoid/Goblin',
                # the bandits (raiders, captains, archers, mages, healers: their Blueprints, trees and animation montages) and the one raider montage that lives beside the raider's animations
@@ -553,7 +552,7 @@ $steps = @(
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $gen 'gen_region_rects.ps1'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', (Join-Path $outDir 'content.db')) 'gen_region_rects'
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $gen 'gen_region.ps1')) 'gen_region'
     } },
-    @{ Name = 'headers'; Title = "Generate worldd's tables and the citynode constants"; Outputs = @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\world\node_constants.h', 'build\gen\go\citynodeconsts\constants_gen.go', 'build\gen\world\spawns\garden_defs.h'); Run = {
+    @{ Name = 'headers'; Title = "Generate world's tables and the citynode constants"; Outputs = @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\world\node_constants.h', 'build\gen\go\citynodeconsts\constants_gen.go', 'build\gen\world\spawns\garden_defs.h'); Run = {
         Assert-Files @('dist\content\content.db', 'dist\content\zoi_chunks', 'dist\content\client_config\DefaultAoCRecordConstants.ini') 'run the earlier steps first'
         $gen = Join-Path $repoRoot 'src\tools\schemagen'
         $db = Join-Path $outDir 'content.db'
@@ -570,7 +569,7 @@ $steps = @(
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\schemagen\gen_gear_fixture.ps1'), $db) 'gen_gear_fixture'
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\schemagen\gen_tooltips.ps1'), '--db', $db) 'gen_tooltips'
     } },
-    @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++; the first build also builds the C++ libraries with vcpkg)'; Outputs = @("dist\Release\aoc_navbuild$exeExt"); Run = {
+    @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++ navigation mesh builder)'; Outputs = @("dist\Release\aoc_navbuild$exeExt"); Run = {
         Assert-Files @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\spawns\region_data.h', 'build\gen\world\spawns\garden_defs.h') 'run the earlier steps first'
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'scripts\build.ps1'), '-Target', 'aoc_navbuild', '-Jobs', "$Jobs") 'build_navbuild'
     } },

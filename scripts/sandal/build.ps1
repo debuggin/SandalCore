@@ -77,8 +77,9 @@ function Write-BuildStep {
 $quiet = [bool]$opts.Json
 if ($quiet) { $env:SANDAL_QUIET = '1' }
 if (-not $opts.DryRun) {
-    Write-BuildStep -Message '[Step 1/4] Checking extracted game data in dist/content/...' -Quiet $quiet
+    Write-BuildStep -Message '[Step 1/4] Checking extracted game data in dist/content/ and staging dist/...' -Quiet $quiet
     $null = Ensure-SandalGameData -RepoRoot $rootPath -CheckOnly
+    $null = Sync-SandalDistStage -RepoRoot $rootPath -Config $opts.Config
     Write-BuildStep -Message "[Step 2/4] Building C++ & .NET targets (config=$($opts.Config))..." -Quiet $quiet
     if ($opts.Json) {
         & (Join-Path $rootPath 'scripts\build.ps1') -Config $opts.Config 6>&1 | Out-Host
@@ -97,8 +98,8 @@ if (-not $opts.DryRun) {
     if ($LASTEXITCODE -ne 0) {
         throw "scripts/services.ps1 -Action build failed with exit code $LASTEXITCODE."
     }
-    Write-BuildStep -Message '[Step 4/4] Staging dist/ and deploy/ directories...' -Quiet $quiet
-    $null = Sync-SandalDistStage -RepoRoot $rootPath -Config $opts.Config
+    Write-BuildStep -Message '[Step 4/4] Staging deploy/ directory...' -Quiet $quiet
+    $null = Ensure-SandalContentDbCurrent -RepoRoot $rootPath -CheckOnly
     $null = Sync-SandalDeployStage -RepoRoot $rootPath
 } else {
     Write-BuildStep -Message "[Step 1/4] (dry-run) Would build C++, .NET, and Go targets (config=$($opts.Config))." -Quiet $quiet

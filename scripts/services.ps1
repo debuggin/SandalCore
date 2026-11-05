@@ -5,21 +5,21 @@
                                  character creation rules and of the character service's content.db use
                                  $env:AOC_CONTENT_DB (or dist\content\content.db) when that file exists, and skip without it
     scripts\services.ps1 build   build auth, character, citynode, nodectl, quests, questctl, worldctl, charimport, mesh, gateway into dist\services
-    scripts\services.ps1 run     build, then start auth, character, citynode, quests, mesh, gateway and worldd hidden; each logs
+    scripts\services.ps1 run     build, then start auth, character, citynode, quests, mesh, gateway and world hidden; each logs
                                  to dist\services\logs\<name>.log (the previous run's: <name>.prev.log).  citynode
                                  (Nodes 1) serves the city nodes on :50055 and applies src\config\seeds\citynode_seed.json once, at its
                                  first start; dist\services\nodectl.exe is its command line (src\server\services\README.md, "City nodes").
-                                 worldctl.exe (the GM travel tools: players, places, tp, speed) talks to worldd's admin API on
+                                 worldctl.exe (the GM travel tools: players, places, tp, speed) talks to world's admin API on
                                  :50056 (src\server\services\README.md, "GM travel tools")
-                                 worldd (dist\Release\worldd.exe, scripts\build.ps1 -Target worldd) registers with mesh;
-                                 there is no static world.  worldd gets
+                                 world (dist\Release\world.exe, scripts\build.ps1 -Target world) registers with mesh;
+                                 there is no static world.  world gets
                                  --content-db dist\content\content.db (or $env:AOC_CONTENT_DB): the file
-                                 contentc builds; without it worldd starts but refuses every login.
-                                 $env:AOC_GAMESTATE_MODE (tier1, tier2, tier3, captured; default tier3) reaches worldd as it is.
+                                 contentc builds; without it world starts but refuses every login.
+                                 $env:AOC_GAMESTATE_MODE (tier1, tier2, tier3, captured; default tier3) reaches world as it is.
                                  The character service gets the same --content-db (plan B1): it checks a new
                                  character's race, gender, class and customization against it; without it
                                  the service starts but refuses to create characters, saying why
-    scripts\services.ps1 stop    stop those processes, worldd included (drops the gateway's live
+    scripts\services.ps1 stop    stop those processes, world included (drops the gateway's live
                                  client sessions); needs neither Go nor Docker
     scripts\services.ps1 login   sign in with src\config\dev_login.local.json and save the session token
     scripts\services.ps1 down    stop the containers (data volume kept)
@@ -88,7 +88,7 @@ function Build {
     New-Item -ItemType Directory -Force $out | Out-Null
     Push-Location $svc
     try {
-        foreach ($name in 'auth', 'character', 'citynode', 'nodectl', 'quests', 'questctl', 'worldctl', 'charimport', 'mesh', 'gateway', 'meshgw', 'admin') {
+        foreach ($name in 'auth', 'character', 'citynode', 'nodectl', 'quests', 'questctl', 'worldctl', 'charimport', 'mesh', 'gateway', 'mesh-gateway', 'admin') {
             $pkg = if ($name -eq 'quests') { './cmd/quest' } else { "./cmd/$name" }
             & go build -o (Join-Path $out "$name$exeExt") $pkg
             if ($LASTEXITCODE -ne 0) { throw "go build $name failed" }
@@ -98,31 +98,23 @@ function Build {
 }
 # [C O A + Cyb]
 
-$worldPrimary = Join-Path $root 'dist' 'Release' "world$exeExt"
-$worldFallback = Join-Path $root 'dist' 'Release' "worldd$exeExt"
-$worldd = if (Test-Path -LiteralPath $worldPrimary -PathType Leaf) {
-    $worldPrimary
-} elseif (Test-Path -LiteralPath $worldFallback -PathType Leaf) {
-    $worldFallback
-} else {
-    $worldPrimary
-}
+$worldExe = Join-Path $root 'dist' 'Release' "world$exeExt"
 $tokenFile = Join-Path $out 'service.token'
-# content.db, the file worldd values characters from and the character service checks new characters against
+# content.db, the file world values characters from and the character service checks new characters against
 # (plan C1's contentc, src\server\services\README.md "Content").
 $contentDb = if ($env:AOC_CONTENT_DB) { $env:AOC_CONTENT_DB } else { Join-Path $root 'dist' 'content' 'content.db' }
 
 # The auth, character, citynode, quests, mesh, gateway and world processes running from this
 # checkout (not another checkout's copy).
 function Get-ServiceProcess {
-    $exes = @('auth', 'character', 'citynode', 'quests', 'mesh', 'gateway' | ForEach-Object { Join-Path $out "$_$exeExt" }) + @($worldPrimary, $worldFallback)
-    Get-Process -Name auth, character, citynode, quests, mesh, gateway, world, worldd -ErrorAction SilentlyContinue |
+    $exes = @('auth', 'character', 'citynode', 'quests', 'mesh', 'gateway' | ForEach-Object { Join-Path $out "$_$exeExt" }) + @($worldExe)
+    Get-Process -Name auth, character, citynode, quests, mesh, gateway, world -ErrorAction SilentlyContinue |
         Where-Object { $exes -contains $_.Path }
 }
 
 function Stop-ServiceProcesses($procs) { # WHY: stop world first so its gRPC streams close from its side
-    $worlds = @($procs | Where-Object { $_.Name -in @('world', 'worldd') })
-    $others = @($procs | Where-Object { $_.Name -notin @('world', 'worldd') })
+    $worlds = @($procs | Where-Object { $_.Name -eq 'world' })
+    $others = @($procs | Where-Object { $_.Name -ne 'world' })
     $worlds | Stop-Process -Force -ErrorAction SilentlyContinue
     $worlds | ForEach-Object { $null = $_.WaitForExit(5000) }
     $others | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -246,9 +238,8 @@ try {
         }
         'build' { Build }
         'run' {
-            $worldd = if (Test-Path -LiteralPath $worldPrimary -PathType Leaf) { $worldPrimary } elseif (Test-Path -LiteralPath $worldFallback -PathType Leaf) { $worldFallback } else { $worldPrimary }
-            if (-not (Test-Path $worldd)) {
-                throw "$worldd is missing: build it with scripts\build.ps1 -Target world"
+            if (-not (Test-Path $worldExe)) {
+                throw "$worldExe is missing: build it with scripts\build.ps1 -Target world"
             }
             if (-not (Test-Path $contentDb)) {
                 & (Join-Path $root 'scripts' 'extract_game_data.ps1')
@@ -282,10 +273,10 @@ try {
 
             try {
                 foreach ($name in $names) {
-                    $isWorld = ($name -in @('world', 'worldd'))
-                    $exe = if ($isWorld) { $worldd } else { Join-Path $out "$name$exeExt" }
+                    $isWorld = ($name -eq 'world')
+                    $exe = if ($isWorld) { $worldExe } else { Join-Path $out "$name$exeExt" }
 
-                    $alreadyRunning = $runningProcs | Where-Object { ($_.Path -eq $exe -or ($isWorld -and $_.Name -in @('world', 'worldd'))) -and -not $_.HasExited }
+                    $alreadyRunning = $runningProcs | Where-Object { ($_.Path -eq $exe -or ($isWorld -and $_.Name -eq 'world')) -and -not $_.HasExited }
                     if ($alreadyRunning) {
                         Write-Host "Skipping $name (PID $($alreadyRunning.Id) is already running)" -ForegroundColor Yellow
                         continue

@@ -80,11 +80,32 @@ function Write-TestStep {
     }
 }
 
+function Resolve-SandalTestDotnetExe {
+    $cmd = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd -and (@(& $cmd.Source --list-sdks 2>$null) | Where-Object { $_ -match '^(\d+)\.' -and [int]$Matches[1] -ge 10 })) {
+        return $cmd.Source
+    }
+    $userHome = if ($HOME) { $HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { '' }
+    if ($userHome) {
+        $userExe = Join-Path $userHome '.dotnet' $(if ($IsWindows) { 'dotnet.exe' } else { 'dotnet' })
+        if (Test-Path -LiteralPath $userExe -PathType Leaf) { return $userExe }
+    }
+    if ($cmd) { return $cmd.Source }
+    return 'dotnet'
+}
+
 $quiet = [bool]$opts.Json
 if ($quiet) { $env:SANDAL_QUIET = '1' }
 if (-not $opts.DryRun) {
     Write-TestStep -Message "[Step 1/2] Staging dist/ test assets (config=$($opts.Config))..." -Quiet $quiet
     $null = Sync-SandalDistStage -RepoRoot $rootPath -Config $opts.Config
+    $goMod = Join-Path $rootPath 'src\server\services\go.mod'
+    if (Test-Path -LiteralPath $goMod -PathType Leaf) {
+        $goVer = if ([System.IO.File]::ReadAllText($goMod) -match '(?m)^go\s+([0-9.]+)') { $Matches[1] } else { '1.24.0' }
+        $goWork = Join-Path $rootPath 'dist\go.work'
+        [System.IO.File]::WriteAllText($goWork, "go $goVer`nuse ../src/server/services`n", [System.Text.UTF8Encoding]::new($false))
+        $env:GOWORK = $goWork
+    }
     Write-TestStep -Message "[Step 2/2] Running test suites (filter='$($opts.Filter)')..." -Quiet $quiet
     $distConfigDir = Join-Path (Join-Path $rootPath 'dist') $opts.Config
     $prevPath = $env:PATH
@@ -108,14 +129,33 @@ if (-not $opts.DryRun) {
             }
         }
         if ($normFilter -in @('', 'go')) {
-            Get-ChildItem (Join-Path $rootPath 'src/tests/go/*_test.go') | ForEach-Object {
+            Push-Location (Join-Path $rootPath 'src\server\services')
+            try {
+                Get-ChildItem (Join-Path $rootPath 'src/tests/go/*_test.go') | ForEach-Object {
+                    if ($opts.Json) {
+                        & go test $_.FullName 6>&1 | Out-Host
+                    } else {
+                        & go test $_.FullName
+                    }
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "go test failed for $($_.Name)"
+                    }
+                }
+            } finally {
+                Pop-Location
+            }
+        }
+        if ($normFilter -in @('', 'dotnet', 'csharp', 'launcher')) {
+            $dotnetTestProj = Join-Path $rootPath 'src/tests/dotnet/SandalLauncher.Tests/SandalLauncher.Tests.csproj'
+            if (Test-Path -LiteralPath $dotnetTestProj -PathType Leaf) {
+                $dotnetExe = Resolve-SandalTestDotnetExe
                 if ($opts.Json) {
-                    & go test $_.FullName 6>&1 | Out-Host
+                    & $dotnetExe test $dotnetTestProj -c $opts.Config --nologo 6>&1 | Out-Host
                 } else {
-                    & go test $_.FullName
+                    & $dotnetExe test $dotnetTestProj -c $opts.Config --nologo
                 }
                 if ($LASTEXITCODE -ne 0) {
-                    throw "go test failed for $($_.Name)"
+                    throw "dotnet test failed for $dotnetTestProj (exit $LASTEXITCODE)."
                 }
             }
         }
@@ -131,11 +171,16 @@ if (-not $opts.DryRun) {
                 throw "Invoke-Pester failed with $($res.FailedCount) failed test(s)."
             }
         }
-        if ($normFilter -notin @('', 'cpp', 'go', 'powershell', 'pester')) {
+        if ($normFilter -notin @('', 'cpp', 'go', 'dotnet', 'csharp', 'launcher', 'powershell', 'pester')) {
             $pattern = if ($normFilter -in @('e2e', 'e2e_user_journey', 'e2euserjourney')) { 'E2EUserJourney' } else { $opts.Filter }
-            Get-ChildItem (Join-Path $rootPath 'src/tests/go/*_test.go') | Where-Object { $_.Name -match $pattern } | ForEach-Object {
-                if ($opts.Json) { & go test $_.FullName 6>&1 | Out-Host } else { & go test $_.FullName }
-                if ($LASTEXITCODE -ne 0) { throw "go test failed for $($_.Name)" }
+            Push-Location (Join-Path $rootPath 'src\server\services')
+            try {
+                Get-ChildItem (Join-Path $rootPath 'src/tests/go/*_test.go') | Where-Object { $_.Name -match $pattern } | ForEach-Object {
+                    if ($opts.Json) { & go test $_.FullName 6>&1 | Out-Host } else { & go test $_.FullName }
+                    if ($LASTEXITCODE -ne 0) { throw "go test failed for $($_.Name)" }
+                }
+            } finally {
+                Pop-Location
             }
             $pesterMatches = @(Get-ChildItem (Join-Path $rootPath 'src/tests/powershell/*.Tests.ps1') | Where-Object { $_.Name -match $pattern })
             if ($pesterMatches.Count -gt 0) {

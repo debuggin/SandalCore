@@ -15,7 +15,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 if ($Arguments.Count -gt 0) {
-    throw 'launch_all.ps1 takes no positional arguments. The native and quick options belonged to the retired replay-based login server; the Go services and worldd are the only server path.'
+    throw 'launch_all.ps1 takes no positional arguments. The native and quick options belonged to the retired replay-based login server; the Go services and world are the only server path.'
 }
 
 $exeExt = if ($IsWindows) { '.exe' } else { '' }
@@ -95,7 +95,7 @@ function Assert-LaunchDistBinaries {
     $missing = [System.Collections.Generic.List[string]]::new()
     $specs = @(
         @{ Primary = 'SandalLauncher'; Fallback = 'launcher' },
-        @{ Primary = 'world';          Fallback = 'worldd' }
+        @{ Primary = 'world';          Fallback = 'world' }
     )
     foreach ($spec in $specs) {
         $binPath = Resolve-DistBinaryPath -DistDirPath $DistDirPath -PrimaryName $spec.Primary -FallbackName $spec.Fallback -ExeExtension $ExeExtension
@@ -192,7 +192,7 @@ function Wait-LaunchEndpoint {
     }
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $names = switch ($ServiceName) {
-        'world'  { @('world', 'worldd') }
+        'world'  { @('world') }
         default  { @($ServiceName) }
     }
     while ((Get-Date) -lt $deadline) {
@@ -243,8 +243,8 @@ function Start-LaunchServicesAndVerify {
     & pwsh -NoProfile -File $servicesScript -Action run
     if ($LASTEXITCODE -ne 0) { throw "scripts/services.ps1 run failed with exit code $LASTEXITCODE." }
     $checks = @(
-        @{ Proto = 'TCP'; Port = 8081;  Name = 'auth' },
-        @{ Proto = 'TCP'; Port = 443;   Name = 'gateway' },
+        @{ Proto = 'TCP'; Port = 8080;  Name = 'auth' },
+        @{ Proto = 'TCP'; Port = 50061; Name = 'gateway' },
         @{ Proto = 'TCP'; Port = 50055; Name = 'citynode' },
         @{ Proto = 'TCP'; Port = 50058; Name = 'quests' },
         @{ Proto = 'UDP'; Port = 7777;  Name = 'world' }

@@ -68,6 +68,41 @@ function Resolve-RunOptions {
     }
 }
 
+function Test-SandalLauncherSourceNewer {
+    param([string]$LauncherSrcDir, [string]$LauncherDllPath)
+    if (-not (Test-Path -LiteralPath $LauncherDllPath -PathType Leaf)) {
+        return $true
+    }
+    if (-not (Test-Path -LiteralPath $LauncherSrcDir -PathType Container)) {
+        return $false
+    }
+    $dllTime = (Get-Item -LiteralPath $LauncherDllPath).LastWriteTimeUtc
+    foreach ($srcFile in @(Get-ChildItem -LiteralPath $LauncherSrcDir -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+        if ($srcFile.Extension -in @('.cs', '.axaml', '.csproj') -and $srcFile.LastWriteTimeUtc -gt $dllTime) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Resolve-SandalDotnetExe {
+    $cmd = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd -and (@(& $cmd.Source --list-sdks 2>$null) | Where-Object { $_ -match '^(\d+)\.' -and [int]$Matches[1] -ge 10 })) {
+        return $cmd.Source
+    }
+    $userHome = if ($HOME) { $HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { '' }
+    if ($userHome) {
+        $userDotnetDir = Join-Path $userHome '.dotnet'
+        $userExe = Join-Path $userDotnetDir $(if ($IsWindows) { 'dotnet.exe' } else { 'dotnet' })
+        if (Test-Path -LiteralPath $userExe -PathType Leaf) {
+            $env:DOTNET_ROOT = $userDotnetDir
+            return $userExe
+        }
+    }
+    if ($cmd) { return $cmd.Source }
+    return ''
+}
+
 function Ensure-SandalLauncherBinary {
     [CmdletBinding()]
     param(
@@ -78,19 +113,23 @@ function Ensure-SandalLauncherBinary {
     $launcherExe = Join-Path $RootDirPath "dist/launcher/SandalLauncher$ExeExtension"
     $releaseExe = Join-Path $RootDirPath "dist/Release/SandalLauncher$ExeExtension"
     $launcherDll = Join-Path $RootDirPath 'dist/launcher/SandalLauncher.dll'
-    if ((Test-Path -LiteralPath $launcherExe -PathType Leaf) -or (Test-Path -LiteralPath $releaseExe -PathType Leaf) -or (Test-Path -LiteralPath $launcherDll -PathType Leaf)) {
+    $launcherSrcDir = Join-Path $RootDirPath 'src/clients/launcher'
+    $hasBinary = (Test-Path -LiteralPath $launcherExe -PathType Leaf) -or (Test-Path -LiteralPath $releaseExe -PathType Leaf) -or (Test-Path -LiteralPath $launcherDll -PathType Leaf)
+    $needsBuild = (-not $hasBinary) -or (Test-SandalLauncherSourceNewer -LauncherSrcDir $launcherSrcDir -LauncherDllPath $launcherDll)
+    if (-not $needsBuild) {
         return
     }
-    $launcherCsproj = Join-Path $RootDirPath 'src/clients/launcher/SandalLauncher.csproj'
+    $launcherCsproj = Join-Path $launcherSrcDir 'SandalLauncher.csproj'
     if (-not (Test-Path -LiteralPath $launcherCsproj -PathType Leaf)) {
         return
     }
-    $dotnetCmd = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($dotnetCmd) {
+    $dotnetExe = Resolve-SandalDotnetExe
+    if ($dotnetExe) {
         Write-RunStep -Message '[Step 2/6] Building and publishing SandalLauncher desktop client...' -Quiet $Quiet
         $distRelDir = Join-Path $RootDirPath 'dist/Release'
-        $null = & $dotnetCmd.Source publish $launcherCsproj -c Release -o (Join-Path $RootDirPath 'dist/launcher') -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
-        $null = & $dotnetCmd.Source publish $launcherCsproj -c Release -o $distRelDir -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
+        $null = & $dotnetExe build $launcherCsproj -c Release --nologo 2>&1
+        $null = & $dotnetExe publish $launcherCsproj -c Release -o (Join-Path $RootDirPath 'dist/launcher') -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
+        $null = & $dotnetExe publish $launcherCsproj -c Release -o $distRelDir -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
         Write-RunStep -Message '[Step 2/6] SandalLauncher publish complete.' -Quiet $Quiet
     }
 }
@@ -155,8 +194,8 @@ function Invoke-RunPipeline {
         foreach ($msg in @(
             '[Step 1/6] (dry-run) Would verify extracted game data in dist/content/.',
             '[Step 2/6] (dry-run) Would verify SandalLauncher binary in dist/launcher/.',
-            '[Step 3/6] (dry-run) Would stage runtime and deploy manifests (dist/ & deploy/).',
-            '[Step 4/6] (dry-run) Would verify local TLS certificates in dist/certs/.',
+            '[Step 3/6] (dry-run) Would verify local TLS certificates in dist/certs/.',
+            '[Step 4/6] (dry-run) Would stage runtime and deploy manifests (dist/ & deploy/).',
             "[Step 5/6] (dry-run) Would start Docker Compose stack (profile=$($Options.Profile)).",
             "[Step 6/6] (dry-run) Would launch SandalLauncher window (spawn=$($Options.SpawnLauncher))."
         )) { Write-RunStep -Message $msg -Quiet $quiet }
@@ -172,22 +211,20 @@ function Invoke-RunPipeline {
     $env:SANDAL_FROM_RUN = '1'
     try {
         Write-RunStep -Message '[Step 1/6] Checking extracted game data in dist/content/...' -Quiet $quiet
-        $null = Ensure-SandalGameData -RepoRoot $RootDirPath
-        Write-RunStep -Message '[Step 2/6] Verifying SandalLauncher desktop executable...' -Quiet $quiet
-        Ensure-SandalLauncherBinary -RootDirPath $RootDirPath -ExeExtension $ExeExtension -Quiet $quiet
-        Write-RunStep -Message '[Step 3/6] Staging runtime assets and Docker Compose manifests (dist/ & deploy/)...' -Quiet $quiet
+        $gameDataRes = Ensure-SandalGameData -RepoRoot $RootDirPath
+        Write-RunStep -Message '[Step 2/6] Staging runtime assets in dist/...' -Quiet $quiet
         $null = Sync-SandalDistStage -RepoRoot $RootDirPath -Config 'Release'
-        $null = Sync-SandalDeployStage -RepoRoot $RootDirPath
-        Write-RunStep -Message '[Step 4/6] Verifying local TLS certificates in dist/certs/...' -Quiet $quiet
-        $certsDir = Join-Path $RootDirPath 'dist/certs'
+        Write-RunStep -Message '[Step 3/6] Verifying SandalLauncher desktop executable...' -Quiet $quiet
+        Ensure-SandalLauncherBinary -RootDirPath $RootDirPath -ExeExtension $ExeExtension -Quiet $quiet
+        Write-RunStep -Message '[Step 4/6] Verifying local TLS certificates and Docker Compose manifests (dist/certs/ & deploy/)...' -Quiet $quiet
         $certsScript = Join-Path $RootDirPath 'scripts/sandal/certs.ps1'
-        if (-not (Test-Path -LiteralPath (Join-Path $certsDir 'server.crt') -PathType Leaf) -and (Test-Path -LiteralPath $certsScript -PathType Leaf)) {
-            $null = & $certsScript -OutputDir $certsDir -RepoRoot $RootDirPath -Json
-        }
+        if (Test-Path -LiteralPath $certsScript -PathType Leaf) { $null = & $certsScript -OutputDir (Join-Path $RootDirPath 'dist/certs') -RepoRoot $RootDirPath -Json }
+        $null = Sync-SandalDeployStage -RepoRoot $RootDirPath
         Write-RunStep -Message "[Step 5/6] Starting SandalCore Docker containers (profile=$($Options.Profile))..." -Quiet $quiet
         $null = Ensure-SandalDockerDaemon
         $upScript = Join-Path $RootDirPath 'scripts/sandal/up.ps1'
         if ($quiet) { $null = & $upScript -Profile $Options.Profile -Detach -RepoRoot $RootDirPath -Json } else { & $upScript -Profile $Options.Profile -Detach -RepoRoot $RootDirPath }
+        if ($gameDataRes.Extracted -or $gameDataRes.SyncedDeploy) { $null = Restart-SandalContentDbContainers }
         if ($Options.SpawnLauncher) {
             Write-RunStep -Message '[Step 6/6] Opening SandalLauncher desktop window...' -Quiet $quiet
             $spawnedPid = Start-SandalLauncherProcess -RootDirPath $RootDirPath -ExeExtension $ExeExtension -Port $Options.AutomationPort

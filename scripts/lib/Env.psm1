@@ -6,15 +6,13 @@ function Write-SandalStep {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Step, [Parameter(Mandatory)][string]$Message, [switch]$Quiet)
     if ($Quiet -or $env:SANDAL_QUIET -eq '1' -or $env:SANDAL_SUPPRESS_SUBSTEPS -eq '1') { return }
-    $callerJson = [bool](Get-Variable -Name AsJson -ValueOnly -ErrorAction SilentlyContinue) -or
-                  [bool](Get-Variable -Name Json -ValueOnly -ErrorAction SilentlyContinue)
+    $callerJson = [bool](Get-Variable -Name AsJson -ValueOnly -ErrorAction SilentlyContinue) -or [bool](Get-Variable -Name Json -ValueOnly -ErrorAction SilentlyContinue)
     if (-not $callerJson) {
         $callerOpts = Get-Variable -Name opts -ValueOnly -ErrorAction SilentlyContinue
         if ($null -ne $callerOpts -and $null -ne $callerOpts.PSObject.Properties['Json'] -and [bool]$callerOpts.Json) { $callerJson = $true }
     }
     if ($callerJson) { return }
-    [Console]::Out.WriteLine("[SandalCore][$Step] $Message")
-    [Console]::Out.Flush()
+    [Console]::Out.WriteLine("[SandalCore][$Step] $Message"); [Console]::Out.Flush()
 }
 
 function New-SandalCsprngSecret {
@@ -100,6 +98,7 @@ function Initialize-SandalEnv {
         if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$') { $outLines.Add($line); continue }
         $key = $Matches[1]
         $val = if ($localMap.Contains($key)) { [string]$localMap[$key] } else { $Matches[2].Trim() }
+        if ($key -in @('WORLD_PUBLIC_HOST', 'WORLD_HOST') -and $val -eq 'world') { $val = '127.0.0.1' }
         $null = $seenKeys.Add($key)
         if ($key -notin $SecretKeys) { $outLines.Add("${key}=${val}"); continue }
         $null = $seenSecrets.Add($key)
@@ -201,37 +200,27 @@ function Copy-SandalSqlFiles {
 function Write-SandalDistServerScripts {
     param([Parameter(Mandatory)][string]$DistDir)
     $startLines = @(
-        '#Requires -Version 7.2',
-        'param([switch]$DryRun)',
-        'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''',
+        '#Requires -Version 7.2', 'param([switch]$DryRun)', 'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''',
         '$distRoot = $PSScriptRoot; $svcDir = Join-Path $distRoot ''services''; $relDir = Join-Path $distRoot ''Release''; $logsDir = Join-Path $distRoot ''logs''',
         '$contentDb = if ($env:AOC_CONTENT_DB) { $env:AOC_CONTENT_DB } else { Join-Path $distRoot ''content\content.db'' }',
         '$tokenFile = Join-Path $svcDir ''service.token''; $exeExt = if ($IsWindows) { ''.exe'' } else { '''' }',
         'if (-not $DryRun) {',
         '    $null = New-Item -ItemType Directory -Path $svcDir, $logsDir -Force',
-        '    if (-not (Test-Path -LiteralPath $tokenFile -PathType Leaf)) {',
-        '        $bytes = [byte[]]::new(32); [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)',
-        '        [System.IO.File]::WriteAllText($tokenFile, ([System.Convert]::ToHexString($bytes).ToLowerInvariant()))',
-        '    }',
+        '    if (-not (Test-Path -LiteralPath $tokenFile -PathType Leaf)) { $bytes = [byte[]]::new(32); [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes); [System.IO.File]::WriteAllText($tokenFile, ([System.Convert]::ToHexString($bytes).ToLowerInvariant())) }',
         '    $env:AOC_SERVICE_TOKEN = (Get-Content -LiteralPath $tokenFile -Raw).Trim()',
         '}',
-        '$names = @(''auth'', ''character'', ''citynode'', ''quests'', ''mesh'', ''gateway'', ''meshgw'', ''admin'', ''worldd'')',
-        'foreach ($name in $names) {',
-        '    $exe = if ($name -eq ''worldd'') { Join-Path $relDir "$name$exeExt" } else { Join-Path $svcDir "$name$exeExt" }',
+        'foreach ($name in @(''auth'', ''character'', ''citynode'', ''quests'', ''mesh'', ''gateway'', ''mesh-gateway'', ''admin'', ''world'')) {',
+        '    $exe = if ($name -eq ''world'') { Join-Path $relDir "$name$exeExt" } else { Join-Path $svcDir "$name$exeExt" }',
         '    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }',
-        '    $argList = if ($name -in @(''worldd'', ''character'') -and (Test-Path -LiteralPath $contentDb -PathType Leaf)) { @(''--content-db'', $contentDb) } else { @() }',
+        '    $argList = if ($name -in @(''world'', ''character'') -and (Test-Path -LiteralPath $contentDb -PathType Leaf)) { @(''--content-db'', $contentDb) } else { @() }',
         '    if ($DryRun) { Write-Output "DRYRUN start $exe $($argList -join '' '')"; continue }',
-        '    $outLog = Join-Path $logsDir "$name.out.log"; $errLog = Join-Path $logsDir "$name.log"',
-        '    $null = Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory $distRoot -RedirectStandardOutput $outLog -RedirectStandardError $errLog -WindowStyle Hidden -PassThru',
+        '    $null = Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory $distRoot -RedirectStandardOutput (Join-Path $logsDir "$name.out.log") -RedirectStandardError (Join-Path $logsDir "$name.log") -WindowStyle Hidden -PassThru',
         '}'
     )
     [System.IO.File]::WriteAllText((Join-Path $DistDir 'start_server.ps1'), (($startLines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
     $stopLines = @(
-        '#Requires -Version 7.2',
-        'param([switch]$DryRun)',
-        'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''',
-        '$distRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)',
-        '$names = @(''worldd'', ''world'', ''gateway'', ''meshgw'', ''admin'', ''mesh'', ''quests'', ''citynode'', ''character'', ''auth'')',
+        '#Requires -Version 7.2', 'param([switch]$DryRun)', 'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''',
+        '$distRoot = [System.IO.Path]::GetFullPath($PSScriptRoot); $names = @(''world'', ''gateway'', ''mesh-gateway'', ''admin'', ''mesh'', ''quests'', ''citynode'', ''character'', ''auth'')',
         '$procs = @(Get-Process -Name $names -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($distRoot, [System.StringComparison]::OrdinalIgnoreCase) })',
         'if ($DryRun) { Write-Output "DRYRUN stop $($procs.Count) process(es) under $distRoot"; exit 0 }',
         'foreach ($p in $procs) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }'
@@ -246,19 +235,14 @@ function Write-SandalLauncherScripts {
         'if exist "%DIST_DIR%launcher\SandalLauncher.exe" ( start "" "%DIST_DIR%launcher\SandalLauncher.exe" %* & exit /b 0 )',
         'if exist "%DIST_DIR%Release\SandalLauncher.exe" ( start "" "%DIST_DIR%Release\SandalLauncher.exe" %* & exit /b 0 )',
         'if exist "%DIST_DIR%Debug\SandalLauncher.exe" ( start "" "%DIST_DIR%Debug\SandalLauncher.exe" %* & exit /b 0 )',
-        'echo SandalLauncher.exe not found in "%DIST_DIR%launcher", "%DIST_DIR%Release", or "%DIST_DIR%Debug". Run: pwsh ./scripts/build.ps1 -Target SandalLauncher',
-        'exit /b 1'
+        'echo SandalLauncher.exe not found in "%DIST_DIR%launcher", "%DIST_DIR%Release", or "%DIST_DIR%Debug". Run: pwsh ./scripts/build.ps1 -Target SandalLauncher', 'exit /b 1'
     )
     [System.IO.File]::WriteAllText((Join-Path $DistDir 'launch_launcher.bat'), (($batLines -join "`r`n") + "`r`n"), [System.Text.UTF8Encoding]::new($false))
     $ps1Lines = @(
-        '#Requires -Version 7.2',
-        'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''',
-        '$exeName = if ($IsWindows) { ''SandalLauncher.exe'' } else { ''SandalLauncher'' }',
+        '#Requires -Version 7.2', 'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''', '$exeName = if ($IsWindows) { ''SandalLauncher.exe'' } else { ''SandalLauncher'' }',
         'foreach ($sub in @(''launcher'', ''Release'', ''Debug'')) {',
-        '    $candidate = Join-Path $PSScriptRoot $sub $exeName',
-        '    if (Test-Path -LiteralPath $candidate -PathType Leaf) { & $candidate @args; exit $LASTEXITCODE }',
-        '    $dllCandidate = Join-Path $PSScriptRoot $sub ''SandalLauncher.dll''',
-        '    if (Test-Path -LiteralPath $dllCandidate -PathType Leaf) { & dotnet $dllCandidate @args; exit $LASTEXITCODE }',
+        '    $candidate = Join-Path $PSScriptRoot $sub $exeName; if (Test-Path -LiteralPath $candidate -PathType Leaf) { & $candidate @args; exit $LASTEXITCODE }',
+        '    $dllCandidate = Join-Path $PSScriptRoot $sub ''SandalLauncher.dll''; if (Test-Path -LiteralPath $dllCandidate -PathType Leaf) { & dotnet $dllCandidate @args; exit $LASTEXITCODE }',
         '}',
         '[Console]::Error.WriteLine("SandalLauncher not found under $PSScriptRoot/launcher, Release, or Debug. Run: pwsh ./scripts/build.ps1 -Target SandalLauncher"); exit 1'
     )
@@ -272,13 +256,6 @@ function Sync-SandalLauncherStage {
     $launcherDir = Join-Path $DistDir 'launcher'
     foreach ($d in @($launcherDir, $configDir)) {
         if (Test-Path -LiteralPath $d -PathType Container) { Get-ChildItem -LiteralPath $d -Filter '*.pdb' -Recurse -File -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
-    }
-    if (Test-Path -LiteralPath $configDir -PathType Container) {
-        $srcExe = Join-Path $configDir 'world.exe'
-        $dstExe = Join-Path $configDir 'worldd.exe'
-        if ((Test-Path -LiteralPath $srcExe -PathType Leaf) -and ((-not (Test-Path -LiteralPath $dstExe -PathType Leaf)) -or ((Get-Item -LiteralPath $srcExe).LastWriteTimeUtc -gt (Get-Item -LiteralPath $dstExe).LastWriteTimeUtc))) {
-            Copy-Item -LiteralPath $srcExe -Destination $dstExe -Force
-        }
     }
     $buildOut = Join-Path $RepoRoot "build\dotnet\bin\SandalLauncher\$Config\net10.0"
     if (-not (Test-Path -LiteralPath $buildOut -PathType Container)) { $buildOut = Join-Path $RepoRoot "build\dotnet\bin\SandalLauncher\$Config\net8.0" }
@@ -334,6 +311,26 @@ function Sync-SandalDistStage {
     return [pscustomobject]@{ DistDir = $distDir; Config = $Config }
 }
 
+function Sync-SandalDeployContentSubdirs {
+    param([string]$DistContent, [string]$DeployContent)
+    foreach ($subName in @('zoi_chunks', 'client_config')) {
+        $subSrc = Join-Path $DistContent $subName
+        if (-not (Test-Path -LiteralPath $subSrc -PathType Container)) { continue }
+        $subDst = Join-Path $DeployContent $subName
+        $null = New-Item -ItemType Directory -Path $subDst -Force
+        foreach ($f in @(Get-ChildItem -LiteralPath $subSrc -Recurse -File -Force)) {
+            $rel = [System.IO.Path]::GetRelativePath($subSrc, $f.FullName)
+            $dst = Join-Path $subDst $rel
+            $parent = Split-Path -Parent $dst
+            if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
+            if ((Test-Path -LiteralPath $dst -PathType Leaf) -and ((Get-Item -LiteralPath $dst).Length -eq $f.Length)) { continue }
+            if (Test-Path -LiteralPath $dst -PathType Leaf) { Remove-Item -LiteralPath $dst -Force }
+            try { $null = New-Item -ItemType HardLink -Path $dst -Target $f.FullName -ErrorAction Stop }
+            catch { Copy-Item -LiteralPath $f.FullName -Destination $dst -Force }
+        }
+    }
+}
+
 function Sync-SandalDeployRuntimeDirs {
     param([Parameter(Mandatory)][string]$RepoRoot, [Parameter(Mandatory)][string]$DeployDir)
     $distDir = Join-Path $RepoRoot 'dist'
@@ -355,13 +352,15 @@ function Sync-SandalDeployRuntimeDirs {
     $distContent = Join-Path $distDir 'content'
     $deployContent = Join-Path $DeployDir 'content'
     if (-not (Test-Path -LiteralPath $distContent -PathType Container)) { return }
-    foreach ($f in @(Get-ChildItem -LiteralPath $distContent -File -Force | Where-Object { $_.Extension -in @('.tsv', '.usmap', '.db') -or $_.Name -eq 'area_nav.bin' })) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $distContent -File -Force | Where-Object { $_.Extension -in @('.tsv', '.usmap', '.db', '.bin', '.json', '.sql') })) {
         $dst = Join-Path $deployContent $f.Name
-        if ((Test-Path -LiteralPath $dst -PathType Leaf) -and ((Get-Item -LiteralPath $dst).Length -eq $f.Length)) { continue }
-        if (Test-Path -LiteralPath $dst -PathType Leaf) { Remove-Item -LiteralPath $dst -Force }
+        $dstItem = Get-Item -LiteralPath $dst -ErrorAction SilentlyContinue
+        if ($null -ne $dstItem -and $dstItem.Length -eq $f.Length -and $dstItem.LastWriteTimeUtc -ge $f.LastWriteTimeUtc) { continue }
+        if ($null -ne $dstItem) { Remove-Item -LiteralPath $dst -Force }
         try { $null = New-Item -ItemType HardLink -Path $dst -Target $f.FullName -ErrorAction Stop }
         catch { Copy-Item -LiteralPath $f.FullName -Destination $dst -Force }
     }
+    Sync-SandalDeployContentSubdirs -DistContent $distContent -DeployContent $deployContent
 }
 
 function Write-SandalDeployScripts {
@@ -561,10 +560,6 @@ function ConvertTo-SandalWslPath {
 function Sync-SandalWorldImageAlias {
     param([scriptblock]$CommandRunner = $null)
     if ($null -ne $CommandRunner) { return }
-    if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('image', 'inspect', 'sandal-world:local')) -ne 0 -and
-        (Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('image', 'inspect', 'sandal-worldd:local')) -eq 0) {
-        $null = Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('tag', 'sandal-worldd:local', 'sandal-world:local')
-    }
 }
 
 function Set-SandalWslComposeMountEnv {
@@ -762,36 +757,141 @@ function Ensure-SandalDockerDaemon {
     return [pscustomobject]@{ Ready = ($finalExit -eq 0); DryRun = $false; Distro = $Distro; Started = $false }
 }
 
+function Get-SandalExpectedContentDbVersion {
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    $buildGo = Join-Path $RepoRoot 'src\server\services\cmd\contentc\build.go'
+    if ((Test-Path -LiteralPath $buildGo -PathType Leaf) -and ([System.IO.File]::ReadAllText($buildGo, [System.Text.Encoding]::UTF8) -match '(?m)^\s*const\s+Version\s*=\s*"(\d+)"')) { return $Matches[1] }
+    return '40'
+}
+
+function Test-SandalContentDbBinaryMarkers {
+    param([Parameter(Mandatory)][string]$ContentDbPath, [Parameter(Mandatory)][string]$ExpectedVersion)
+    $fs = [System.IO.File]::OpenRead($ContentDbPath)
+    try {
+        $buf = [byte[]]::new([int][Math]::Min(4194304L, $fs.Length))
+        $actual = $fs.Read($buf, 0, $buf.Length)
+        $headStr = [System.Text.Encoding]::Latin1.GetString($buf, 0, $actual)
+        return ($headStr.Contains("contentc.version$ExpectedVersion") -and $headStr.Contains('cast_ability_guid'))
+    } finally { $fs.Dispose() }
+}
+
+function Test-SandalContentcSourceNewer {
+    param([Parameter(Mandatory)][string]$RepoRoot, [Parameter(Mandatory)][datetime]$DbWriteTimeUtc)
+    $contentcDir = Join-Path $RepoRoot 'src\server\services\cmd\contentc'
+    if (-not (Test-Path -LiteralPath $contentcDir -PathType Container)) { return $false }
+    foreach ($f in @(Get-ChildItem -LiteralPath $contentcDir -Filter '*.go' -File -Force)) {
+        if ($f.Name -notlike '*_test.go' -and $f.LastWriteTimeUtc -gt $DbWriteTimeUtc) { return $true }
+    }
+    return $false
+}
+
+function Test-SandalContentDbCurrent {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    $expectedVer = Get-SandalExpectedContentDbVersion -RepoRoot $RepoRoot
+    $contentDb = Join-Path $RepoRoot 'dist\content\content.db'
+    if (-not (Test-Path -LiteralPath $contentDb -PathType Leaf)) { return [pscustomobject]@{ Current = $false; Reason = 'missing'; ExpectedVersion = $expectedVer; ContentDb = $contentDb } }
+    $dbItem = Get-Item -LiteralPath $contentDb
+    if ($dbItem.Length -lt 10485760L) { return [pscustomobject]@{ Current = $false; Reason = 'undersized'; ExpectedVersion = $expectedVer; ContentDb = $contentDb } }
+    if (Test-SandalContentcSourceNewer -RepoRoot $RepoRoot -DbWriteTimeUtc $dbItem.LastWriteTimeUtc) { return [pscustomobject]@{ Current = $false; Reason = 'source_newer'; ExpectedVersion = $expectedVer; ContentDb = $contentDb } }
+    if (-not (Test-SandalContentDbBinaryMarkers -ContentDbPath $contentDb -ExpectedVersion $expectedVer)) { return [pscustomobject]@{ Current = $false; Reason = 'version_or_schema_mismatch'; ExpectedVersion = $expectedVer; ContentDb = $contentDb } }
+    [System.IO.File]::WriteAllText((Join-Path $RepoRoot 'dist\content\content.db.version'), "$expectedVer`n", [System.Text.UTF8Encoding]::new($false))
+    return [pscustomobject]@{ Current = $true; Reason = 'ok'; ExpectedVersion = $expectedVer; ContentDb = $contentDb }
+}
+
+function Find-SandalCacheDbcPath {
+    param([Parameter(Mandatory)][string]$RepoRoot, [string]$GameRoot = '')
+    $dbcRel = 'AOC\Plugins\DesignDataPlugin\Generated\Client\CacheDB.dbc'
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($raw in @($GameRoot, $env:GAME_ROOT, $env:SANDAL_CLIENT_PAK_DIR, $env:AOC_PAKS_DIR)) { if (-not [string]::IsNullOrWhiteSpace($raw)) { $candidates.Add($raw.Trim().Trim('"')) } }
+    foreach ($envFile in @((Join-Path $RepoRoot 'src\config\sandal.local.env'), (Join-Path $RepoRoot 'deploy\.env'))) {
+        $map = Get-SandalEnvMap -EnvPath $envFile; if ($map.Contains('SANDAL_CLIENT_PAK_DIR')) { $candidates.Add([string]$map['SANDAL_CLIENT_PAK_DIR']) }
+    }
+    if ($IsWindows) {
+        foreach ($drive in [System.IO.DriveInfo]::GetDrives() | Where-Object { $_.DriveType -eq 'Fixed' }) {
+            $r = $drive.Name.TrimEnd('\')
+            foreach ($s in @('Program Files (x86)\Steam', 'SteamLibrary', 'Steam')) { $candidates.Add("$r\$s\steamapps\common\Ashes of Creation\Game") }
+        }
+    }
+    foreach ($cand in $candidates) {
+        $base = if ($cand -match '(?i)[\\/]AOC[\\/]Content[\\/]Paks$') { Split-Path (Split-Path (Split-Path $cand -Parent) -Parent) -Parent } else { $cand }
+        foreach ($tryRoot in @($base, (Join-Path $base 'Game'))) {
+            $dbc = Join-Path $tryRoot $dbcRel; if (Test-Path -LiteralPath $dbc -PathType Leaf) { return $dbc }
+        }
+    }
+    return ''
+}
+
+function Sync-SandalContentDbToDeploy {
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    $srcDb = Join-Path $RepoRoot 'dist\content\content.db'
+    if (-not (Test-Path -LiteralPath $srcDb -PathType Leaf)) { return $false }
+    $deployContent = Join-Path $RepoRoot 'deploy\content'; $null = New-Item -ItemType Directory -Path $deployContent -Force
+    $dstDb = Join-Path $deployContent 'content.db'; $srcItem = Get-Item -LiteralPath $srcDb; $dstItem = Get-Item -LiteralPath $dstDb -ErrorAction SilentlyContinue
+    if ($null -ne $dstItem -and $dstItem.Length -eq $srcItem.Length -and $dstItem.LastWriteTimeUtc -ge $srcItem.LastWriteTimeUtc) { return $false }
+    if ($null -ne $dstItem) { Remove-Item -LiteralPath $dstDb -Force }
+    try { $null = New-Item -ItemType HardLink -Path $dstDb -Target $srcItem.FullName -ErrorAction Stop } catch { Copy-Item -LiteralPath $srcItem.FullName -Destination $dstDb -Force }
+    return $true
+}
+
+function Invoke-SandalFastContentcRebuild {
+    param([Parameter(Mandatory)][string]$RepoRoot, [string]$GameRoot = '')
+    $outDir = Join-Path $RepoRoot 'dist\content'; $usmap = Join-Path $outDir 'aoc.usmap'; $cfgDir = Join-Path $outDir 'client_config'
+    $curves = Join-Path $outDir 'artisan_curves.tsv'; $names = Join-Path $outDir 'item_names.tsv'; $dbc = Find-SandalCacheDbcPath -RepoRoot $RepoRoot -GameRoot $GameRoot
+    if (-not ($dbc -and (Test-Path -LiteralPath $usmap -PathType Leaf) -and (Test-Path -LiteralPath $cfgDir -PathType Container) -and (Test-Path -LiteralPath $curves -PathType Leaf) -and (Test-Path -LiteralPath $names -PathType Leaf))) { return $false }
+    $goCmd = Get-Command go -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $goExe = if ($goCmd) { $goCmd.Source } elseif (Test-Path -LiteralPath 'C:\Program Files\Go\bin\go.exe') { 'C:\Program Files\Go\bin\go.exe' } else { '' }
+    if (-not $goExe) { return $false }
+    Write-SandalStep -Step 'GameData' -Message "Rebuilding content.db via contentc from $dbc..."
+    Push-Location (Join-Path $RepoRoot 'src\server\services')
+    try { & $goExe run ./cmd/contentc --dbc $dbc --usmap $usmap --config $cfgDir --artisan-curves $curves --item-names $names --out (Join-Path $outDir 'content.db'); return ($LASTEXITCODE -eq 0) }
+    finally { Pop-Location }
+}
+
+function Restart-SandalContentDbContainers {
+    [CmdletBinding()]
+    param()
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return @() }
+    $running = @(& docker ps --format '{{.Names}}' 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $running.Count -eq 0) { return @() }
+    $targets = @('aoc-world', 'aoc-character', 'aoc-citynode') | Where-Object { $_ -in $running }
+    if ($targets.Count -gt 0) { Write-SandalStep -Step 'DeployStage' -Message "Restarting content.db consumers ($($targets -join ', '))..."; $null = & docker restart @targets 2>$null }
+    return $targets
+}
+
+function Ensure-SandalContentDbCurrent {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$RepoRoot, [string]$GameRoot = '', [switch]$CheckOnly)
+    $probe = Test-SandalContentDbCurrent -RepoRoot $RepoRoot
+    if ($probe.Current) {
+        return [pscustomobject]@{ Ready = $true; Rebuilt = $false; SyncedDeploy = (Sync-SandalContentDbToDeploy -RepoRoot $RepoRoot); Version = $probe.ExpectedVersion; ContentDb = $probe.ContentDb }
+    }
+    Write-SandalStep -Step 'GameData' -Message "content.db requires rebuild (reason=$($probe.Reason), expected_version=$($probe.ExpectedVersion))..."
+    $rebuilt = Invoke-SandalFastContentcRebuild -RepoRoot $RepoRoot -GameRoot $GameRoot
+    $extractScript = Join-Path $RepoRoot 'scripts\extract_game_data.ps1'
+    if (-not $rebuilt -and (Test-Path -LiteralPath $extractScript -PathType Leaf)) {
+        $extractArgs = if (-not [string]::IsNullOrWhiteSpace($GameRoot)) { @('-GameRoot', $GameRoot) } else { @() }
+        $clientAvailable = (-not $CheckOnly)
+        if ($CheckOnly) { try { $null = & $extractScript -CheckOnly @extractArgs *>$null; $clientAvailable = ($LASTEXITCODE -eq 0) } catch { $clientAvailable = $false } }
+        if ($clientAvailable) {
+            Write-SandalStep -Step 'GameData' -Message 'Extracting game data from Ashes client pak files...'
+            & $extractScript -Force @extractArgs
+            if ($LASTEXITCODE -ne 0) { throw "Game data extraction failed (exit code $LASTEXITCODE)." }
+            $rebuilt = $true
+        }
+    }
+    $after = Test-SandalContentDbCurrent -RepoRoot $RepoRoot
+    $syncedAfter = if ($after.Current) { Sync-SandalContentDbToDeploy -RepoRoot $RepoRoot } else { $false }
+    return [pscustomobject]@{ Ready = $after.Current; Rebuilt = $rebuilt; SyncedDeploy = $syncedAfter; Version = $after.ExpectedVersion; ContentDb = $after.ContentDb }
+}
+
 function Ensure-SandalGameData {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$RepoRoot, [string]$GameRoot = '', [switch]$CheckOnly)
     $contentDb = Join-Path $RepoRoot 'dist\content\content.db'
     Write-SandalStep -Step 'GameData' -Message "Checking game data database ($contentDb)..."
-    if ((Test-Path -LiteralPath $contentDb -PathType Leaf) -and ((Get-Item -LiteralPath $contentDb).Length -gt 0)) {
-        return [pscustomobject]@{ Ready = $true; Extracted = $false; ContentDb = $contentDb }
-    }
-    $extractScript = Join-Path $RepoRoot 'scripts\extract_game_data.ps1'
-    if (-not (Test-Path -LiteralPath $extractScript -PathType Leaf)) {
-        return [pscustomobject]@{ Ready = $false; Extracted = $false; ContentDb = $contentDb }
-    }
-    $extractArgs = if (-not [string]::IsNullOrWhiteSpace($GameRoot)) { @('-GameRoot', $GameRoot) } else { @() }
-    $clientAvailable = $false
-    if ($CheckOnly) {
-        try { $null = & $extractScript -CheckOnly @extractArgs *>$null; $clientAvailable = ($LASTEXITCODE -eq 0) } catch { $clientAvailable = $false }
-    }
-    if ($clientAvailable -or (-not $CheckOnly)) {
-        Write-SandalStep -Step 'GameData' -Message 'Extracting game data from Ashes client pak files...'
-        & $extractScript @extractArgs
-        if ($LASTEXITCODE -ne 0) { throw "Game data extraction failed (exit code $LASTEXITCODE)." }
-    }
-    $ready = (Test-Path -LiteralPath $contentDb -PathType Leaf) -and ((Get-Item -LiteralPath $contentDb).Length -gt 0)
-    return [pscustomobject]@{ Ready = $ready; Extracted = $ready; ContentDb = $contentDb }
+    $res = Ensure-SandalContentDbCurrent -RepoRoot $RepoRoot -GameRoot $GameRoot -CheckOnly:$CheckOnly
+    return [pscustomobject]@{ Ready = $res.Ready; Extracted = $res.Rebuilt; SyncedDeploy = $res.SyncedDeploy; Version = $res.Version; ContentDb = $res.ContentDb }
 }
 
-Export-ModuleMember -Function @(
-    'Write-SandalStep', 'New-SandalCsprngSecret', 'Get-SandalEnvMap', 'Set-SandalSecretAcl',
-    'Initialize-SandalEnv', 'Sync-SandalDistStage', 'Sync-SandalDeployStage', 'Test-SandalDockerDaemonReady',
-    'Start-SandalDockerDesktopIfInstalled', 'Set-SandalWslComposeMountEnv', 'Start-SandalWslKeepAlive',
-    'Start-SandalIpv6DockerBridge', 'Install-SandalPowerShellDockerAutoWake', 'Complete-SandalWslDockerDaemonSetup',
-    'Ensure-SandalDockerDaemon', 'Ensure-SandalGameData'
-)
+Export-ModuleMember -Function @('Write-SandalStep', 'New-SandalCsprngSecret', 'Get-SandalEnvMap', 'Set-SandalSecretAcl', 'Initialize-SandalEnv', 'Sync-SandalDistStage', 'Sync-SandalDeployStage', 'Test-SandalDockerDaemonReady', 'Start-SandalDockerDesktopIfInstalled', 'Set-SandalWslComposeMountEnv', 'Start-SandalWslKeepAlive', 'Start-SandalIpv6DockerBridge', 'Install-SandalPowerShellDockerAutoWake', 'Complete-SandalWslDockerDaemonSetup', 'Ensure-SandalDockerDaemon', 'Test-SandalContentDbCurrent', 'Ensure-SandalContentDbCurrent', 'Restart-SandalContentDbContainers', 'Ensure-SandalGameData')

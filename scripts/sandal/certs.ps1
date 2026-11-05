@@ -44,7 +44,7 @@ function Resolve-CertsOptions {
 function Write-CertAndKeyPem {
     param(
         [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
-        [System.Security.Cryptography.ECDsa]$PrivateKey,
+        [System.Security.Cryptography.RSA]$PrivateKey,
         [string]$TargetDir,
         [string]$Stem
     )
@@ -75,28 +75,28 @@ function New-DotNetLeafCertificate {
         [string]$TargetDir,
         [string]$Stem
     )
-    $leafKey = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve+NamedCurves]::nistP256)
+    $leafKey = [System.Security.Cryptography.RSA]::Create(2048)
     $leafCert = $null
     try {
         $req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
             "CN=$CommonName, O=SandalCore",
             $leafKey,
-            [System.Security.Cryptography.HashAlgorithmName]::SHA256
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
         )
         $req.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($false, $false, 0, $true))
         $kuFlags = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature -bor [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyEncipherment
         $req.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new($kuFlags, $true))
         $oids = [System.Security.Cryptography.OidCollection]::new()
-        $null = $oids.Add([System.Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.1'))
-        $null = $oids.Add([System.Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.2'))
-        if ($EkuOid -and $EkuOid -notin @('1.3.6.1.5.5.7.3.1', '1.3.6.1.5.5.7.3.2')) {
-            $null = $oids.Add([System.Security.Cryptography.Oid]::new($EkuOid))
-        }
+        $null = $oids.Add([System.Security.Cryptography.Oid]::new($EkuOid))
         $req.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($oids, $false))
-        $san = [System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder]::new()
-        $san.AddDnsName('localhost')
-        $san.AddIpAddress([System.Net.IPAddress]::Parse('127.0.0.1'))
-        $req.CertificateExtensions.Add($san.Build())
+        if ($Stem -eq 'server') {
+            $san = [System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder]::new()
+            $san.AddIpAddress([System.Net.IPAddress]::Parse('127.0.0.1'))
+            $san.AddIpAddress([System.Net.IPAddress]::Parse('::1'))
+            foreach ($dns in @('localhost', 'gateway', 'aoc-gateway')) { $san.AddDnsName($dns) }
+            $req.CertificateExtensions.Add($san.Build())
+        }
         $req.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509SubjectKeyIdentifierExtension]::new($req.PublicKey, $false))
         $serial = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(16)
         $serial[0] = [byte]($serial[0] -band 0x7F)
@@ -114,13 +114,14 @@ function Invoke-DotNetPkiGeneration {
     if (-not (Test-Path -LiteralPath $TargetDir)) {
         $null = New-Item -ItemType Directory -Path $TargetDir -Force
     }
-    $caKey = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve+NamedCurves]::nistP256)
+    $caKey = [System.Security.Cryptography.RSA]::Create(2048)
     $caCert = $null
     try {
         $caReq = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
             'CN=SandalCore Local Root CA, O=SandalCore',
             $caKey,
-            [System.Security.Cryptography.HashAlgorithmName]::SHA256
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
         )
         $caReq.CertificateExtensions.Add([System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension]::new($true, $true, 0, $true))
         $caKu = [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::KeyCertSign -bor [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::CrlSign
@@ -129,7 +130,7 @@ function Invoke-DotNetPkiGeneration {
         $now = [DateTimeOffset]::UtcNow.AddMinutes(-10)
         $caCert = $caReq.CreateSelfSigned($now, $now.AddDays(3650))
         $caRecord = Write-CertAndKeyPem -Certificate $caCert -PrivateKey $caKey -TargetDir $TargetDir -Stem 'ca'
-        $srvRecord = New-DotNetLeafCertificate -IssuerCert $caCert -CommonName 'localhost' -EkuOid '1.3.6.1.5.5.7.3.1' -TargetDir $TargetDir -Stem 'server'
+        $srvRecord = New-DotNetLeafCertificate -IssuerCert $caCert -CommonName '127.0.0.1' -EkuOid '1.3.6.1.5.5.7.3.1' -TargetDir $TargetDir -Stem 'server'
         $cliRecord = New-DotNetLeafCertificate -IssuerCert $caCert -CommonName 'sandal-client' -EkuOid '1.3.6.1.5.5.7.3.2' -TargetDir $TargetDir -Stem 'client'
         return @($caRecord, $srvRecord, $cliRecord)
     } finally {
@@ -138,26 +139,73 @@ function Invoke-DotNetPkiGeneration {
     }
 }
 
-function Test-ExistingCertsValid {
-    param([string]$TargetDir)
-    foreach ($name in @('ca.crt', 'ca.key', 'server.crt', 'server.key', 'client.crt', 'client.key')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $TargetDir $name) -PathType Leaf)) {
-            return $false
+function Ensure-ServerCertPairFiles {
+    param([string]$TargetDir, [string]$FallbackCertsDir)
+    if (-not (Test-Path -LiteralPath $TargetDir)) {
+        $null = New-Item -ItemType Directory -Path $TargetDir -Force
+    }
+    $serverPem = Join-Path $TargetDir 'server.pem'
+    $serverCrt = Join-Path $TargetDir 'server.crt'
+    $serverKey = Join-Path $TargetDir 'server.key'
+    if (-not (Test-Path -LiteralPath $serverPem -PathType Leaf) -and (Test-Path -LiteralPath $serverCrt -PathType Leaf)) {
+        Copy-Item -LiteralPath $serverCrt -Destination $serverPem -Force
+    }
+    if (-not (Test-Path -LiteralPath $serverPem -PathType Leaf) -and $FallbackCertsDir -and (Test-Path -LiteralPath $FallbackCertsDir -PathType Container)) {
+        foreach ($name in @('server.pem', 'server.crt', 'server.key', 'ca.crt', 'ca.pem')) {
+            $src = Join-Path $FallbackCertsDir $name
+            $dst = Join-Path $TargetDir $name
+            if ((Test-Path -LiteralPath $src -PathType Leaf) -and -not (Test-Path -LiteralPath $dst -PathType Leaf)) {
+                Copy-Item -LiteralPath $src -Destination $dst -Force
+            }
         }
     }
-    $cert = $null
-    try {
-        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile(
-            (Join-Path $TargetDir 'server.crt'),
-            (Join-Path $TargetDir 'server.key')
-        )
-        $daysLeft = ($cert.NotAfter.ToUniversalTime() - [DateTime]::UtcNow).TotalDays
-        return ($daysLeft -gt 30.0)
-    } catch {
+    $hasPair = (Test-Path -LiteralPath $serverPem -PathType Leaf) -and (Test-Path -LiteralPath $serverKey -PathType Leaf)
+    if (-not $hasPair) {
         return $false
-    } finally {
-        if ($null -ne $cert) { $cert.Dispose() }
     }
+    Copy-Item -LiteralPath $serverPem -Destination $serverCrt -Force
+    $caCrtPath = Join-Path $TargetDir 'ca.crt'
+    $isStaleCa = $false
+    if (Test-Path -LiteralPath $caCrtPath -PathType Leaf) {
+        $srvCert = $null
+        $caCert = $null
+        try {
+            $srvCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem((Get-Content -LiteralPath $serverPem -Raw))
+            $caCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem((Get-Content -LiteralPath $caCrtPath -Raw))
+            $isStaleCa = ($srvCert.Issuer -ne $caCert.Subject)
+        } catch {
+        } finally {
+            if ($null -ne $srvCert) { $srvCert.Dispose() }
+            if ($null -ne $caCert) { $caCert.Dispose() }
+        }
+    }
+    if ($isStaleCa) {
+        $deployCertsDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\deploy\certs'))
+        foreach ($dir in @($TargetDir, $deployCertsDir)) {
+            if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+            foreach ($staleName in @('ca.crt', 'ca.pem', 'ca.key', 'client.crt', 'client.pem', 'client.key')) {
+                Remove-Item -LiteralPath (Join-Path $dir $staleName) -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    return $true
+}
+
+function Test-SandalRootCaThumbprintTrusted {
+    param([string]$Thumbprint)
+    foreach ($loc in @([System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser, [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine)) {
+        $store = [System.Security.Cryptography.X509Certificates.X509Store]::new([System.Security.Cryptography.X509Certificates.StoreName]::Root, $loc)
+        try {
+            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+            $found = $store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $Thumbprint, $false)
+            if ($found.Count -gt 0) { return $true }
+        } catch {
+        } finally {
+            $store.Close()
+            $store.Dispose()
+        }
+    }
+    return $false
 }
 
 function Install-SandalRootCaToCurrentUserStore {
@@ -165,31 +213,38 @@ function Install-SandalRootCaToCurrentUserStore {
     if (-not $IsWindows -or -not (Test-Path -LiteralPath $CaCertPath -PathType Leaf)) {
         return $false
     }
-    $cert = $null
-    $roStore = $null
+    $ca = $null
+    $rwStore = $null
     try {
-        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($CaCertPath)
-        $roStore = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root', 'CurrentUser')
-        $roStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
-        $found = $roStore.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $cert.Thumbprint, $false)
-        if ($found.Count -gt 0) {
+        $ca = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($CaCertPath)
+        if (Test-SandalRootCaThumbprintTrusted -Thumbprint $ca.Thumbprint) {
             return $true
         }
-        $roStore.Close()
-        if ($env:CI -eq 'true' -or $env:SANDAL_QUIET -eq '1') {
+        if ($env:CI -eq 'true') {
             return $false
         }
-        $proc = Start-Process -FilePath 'certutil.exe' -ArgumentList @('-user', '-addstore', '-f', 'Root', $CaCertPath) -WindowStyle Hidden -PassThru -ErrorAction Stop
-        if (-not $proc.WaitForExit(1500)) {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            return $false
+        [Console]::Error.WriteLine('Adding the SandalCore local CA to your CurrentUser Trusted Root store (choose Yes if Windows prompts to confirm)...')
+        $rwStore = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+            [System.Security.Cryptography.X509Certificates.StoreName]::Root,
+            [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+        )
+        $rwStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        foreach ($oldCert in @($rwStore.Certificates | Where-Object { $_.Subject -match 'CN=Sandal\s*Core Local (Root )?CA' -and $_.Thumbprint -ne $ca.Thumbprint })) {
+            try { $rwStore.Remove($oldCert) } catch {}
         }
-        return ($proc.ExitCode -eq 0)
+        $rwStore.Add($ca)
+        $rwStore.Close()
+        if (Test-SandalRootCaThumbprintTrusted -Thumbprint $ca.Thumbprint) {
+            return $true
+        }
+        $null = & certutil.exe -user -addstore -f Root $CaCertPath *> $null
+        return ($LASTEXITCODE -eq 0)
     } catch {
-        return $false
+        $null = & certutil.exe -user -addstore -f Root $CaCertPath *> $null
+        return ($LASTEXITCODE -eq 0)
     } finally {
-        if ($null -ne $roStore) { $roStore.Close(); $roStore.Dispose() }
-        if ($null -ne $cert) { $cert.Dispose() }
+        if ($null -ne $rwStore) { $rwStore.Close(); $rwStore.Dispose() }
+        if ($null -ne $ca) { $ca.Dispose() }
     }
 }
 
@@ -204,22 +259,31 @@ if (-not (Get-Command Set-SandalSecretAcl -ErrorAction SilentlyContinue)) {
 }
 
 $defaultCertsDir = Join-Path $rootPath 'dist\certs'
+$legacyCertsDir = Join-Path $rootPath 'certs'
 $opts = Resolve-CertsOptions -BaseOutDir $OutputDir -BaseForce ([bool]$Force) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
 $targetDir = if ($opts.OutputDir) { [System.IO.Path]::GetFullPath($opts.OutputDir) } else { $defaultCertsDir }
 
 $action = 'dry_run'
 $artifacts = @()
+$caCertPath = Join-Path $targetDir 'ca.crt'
 if (-not $opts.DryRun) {
-    if (-not $opts.Force -and (Test-ExistingCertsValid -TargetDir $targetDir)) {
+    $hasServerPair = if ($opts.Force) { $false } else { Ensure-ServerCertPairFiles -TargetDir $targetDir -FallbackCertsDir $legacyCertsDir }
+    if ($hasServerPair -and -not $opts.Force) {
         $action = 'reused'
         foreach ($keyName in @('ca.key', 'server.key', 'client.key')) {
-            $null = Set-SandalSecretAcl -LiteralPath (Join-Path $targetDir $keyName)
+            $keyCandidate = Join-Path $targetDir $keyName
+            if (Test-Path -LiteralPath $keyCandidate -PathType Leaf) {
+                $null = Set-SandalSecretAcl -LiteralPath $keyCandidate
+            }
+        }
+        if (Test-Path -LiteralPath $caCertPath -PathType Leaf) {
+            $null = Install-SandalRootCaToCurrentUserStore -CaCertPath $caCertPath
         }
     } else {
         $action = 'generated'
         $artifacts = @(Invoke-DotNetPkiGeneration -TargetDir $targetDir)
+        $null = Install-SandalRootCaToCurrentUserStore -CaCertPath $caCertPath
     }
-    $null = Install-SandalRootCaToCurrentUserStore -CaCertPath (Join-Path $targetDir 'ca.crt')
 }
 
 $payload = [ordered]@{
@@ -230,8 +294,8 @@ $payload = [ordered]@{
     force      = [bool]$opts.Force
     dry_run    = [bool]$opts.DryRun
     no_color   = $useNoColor
-    algorithm  = 'ECDSA-P256'
-    san        = @('DNS:localhost', 'IP:127.0.0.1')
+    algorithm  = 'RSA-2048'
+    san        = @('IP:127.0.0.1', 'IP:::1', 'DNS:localhost', 'DNS:gateway', 'DNS:aoc-gateway')
     key_acl    = '0600'
     artifacts  = $artifacts
 }

@@ -638,7 +638,7 @@ function Write-OutputOrCheck {
                 $null
             }
             if ($cur -ne $pair.Text) {
-                [Console]::Error.WriteLine("$($pair.Path): out of date — re-run gen_region_rects.ps1")
+                [Console]::Error.WriteLine("$($pair.Path): out of date -- re-run gen_region_rects.ps1")
                 exit 1
             }
         }

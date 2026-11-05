@@ -244,7 +244,7 @@ $dotnetExe = Get-Command dotnet -CommandType Application -ErrorAction SilentlyCo
 if (($Target -in @('all', 'launcher', 'SandalLauncher')) -and (Test-Path -LiteralPath $launcherCsproj -PathType Leaf) -and $dotnetExe) {
     $distLauncherDir = Join-Path $repoRoot 'dist' 'launcher'
     New-Item -ItemType Directory -Force -Path $distDir, $distLauncherDir | Out-Null
-    Write-Host "Publishing SandalLauncher (.NET 8) to $distDir and $distLauncherDir ..."
+    Write-Host "Publishing SandalLauncher (.NET 10) to $distDir and $distLauncherDir ..."
     & $dotnetExe publish $launcherCsproj -c $Config -o $distDir -p:DebugType=None -p:DebugSymbols=false --nologo
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish SandalLauncher to $distDir failed (exit $LASTEXITCODE)." }
     & $dotnetExe publish $launcherCsproj -c $Config -o $distLauncherDir -p:DebugType=None -p:DebugSymbols=false --nologo

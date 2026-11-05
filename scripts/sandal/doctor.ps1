@@ -28,6 +28,15 @@ function Test-DoctorPwsh {
 function Test-DoctorBinary {
     param([int]$Tier, [string]$BinaryName)
     $cmd = Get-Command $BinaryName -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $cmd -and $BinaryName -eq 'dotnet') {
+        $userHome = if ($HOME) { $HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { '' }
+        if ($userHome) {
+            $userExe = Join-Path $userHome '.dotnet' $(if ($IsWindows) { 'dotnet.exe' } else { 'dotnet' })
+            if (Test-Path -LiteralPath $userExe -PathType Leaf) {
+                $cmd = Get-Item -LiteralPath $userExe
+            }
+        }
+    }
     if ($null -eq $cmd) {
         return [pscustomobject]@{
             tier     = $Tier
@@ -38,19 +47,30 @@ function Test-DoctorBinary {
             detail   = "$BinaryName not found on PATH"
         }
     }
-    $verStr = if ($cmd.Version -and $cmd.Version.Major -gt 0) { $cmd.Version.ToString() } else { 'detected' }
+    $srcPath = if ($cmd.PSObject.Properties['Source']) { $cmd.Source } else { $cmd.FullName }
+    $verStr = if ($cmd.PSObject.Properties['Version'] -and $cmd.Version -and $cmd.Version.Major -gt 0) { $cmd.Version.ToString() } else { 'detected' }
     return [pscustomobject]@{
         tier     = $Tier
         name     = $BinaryName
         category = 'toolchain'
         status   = 'PASS'
         version  = $verStr
-        detail   = "$BinaryName ($($cmd.Source))"
+        detail   = "$BinaryName ($srcPath)"
     }
 }
 
+function Get-DoctorRunningContainers {
+    param([bool]$DryRunMode = $false)
+    $running = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    if ($DryRunMode -or -not (Get-Command docker -ErrorAction SilentlyContinue)) { return $running }
+    foreach ($name in @(& docker ps --format '{{.Names}}' 2>$null)) {
+        if (-not [string]::IsNullOrWhiteSpace("$name")) { $null = $running.Add(("$name").Trim()) }
+    }
+    return $running
+}
+
 function Get-DoctorPortChecks {
-    param()
+    param([bool]$DryRunMode = $false)
     $ipProps = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties()
     $activeTcp = [System.Collections.Generic.HashSet[int]]::new()
     foreach ($ep in $ipProps.GetActiveTcpListeners()) {
@@ -60,16 +80,18 @@ function Get-DoctorPortChecks {
     foreach ($ep in $ipProps.GetActiveUdpListeners()) {
         $null = $activeUdp.Add($ep.Port)
     }
+    $runningContainers = Get-DoctorRunningContainers -DryRunMode $DryRunMode
     $specs = @(
-        @{ Port = 5432; Protocol = 'TCP'; Service = 'postgresql' },
-        @{ Port = 6379; Protocol = 'TCP'; Service = 'redis' },
-        @{ Port = 8000; Protocol = 'TCP'; Service = 'gateway-http' },
-        @{ Port = 8090; Protocol = 'TCP'; Service = 'admin-http' },
-        @{ Port = 7777; Protocol = 'UDP'; Service = 'world-udp' }
+        @{ Port = 5432;  Protocol = 'TCP'; Service = 'postgres';      Container = 'aoc-postgres' },
+        @{ Port = 8080;  Protocol = 'TCP'; Service = 'gateway-http';  Container = 'aoc-gateway' },
+        @{ Port = 8443;  Protocol = 'TCP'; Service = 'ingress-https'; Container = 'aoc-ingress-proxy' },
+        @{ Port = 9090;  Protocol = 'TCP'; Service = 'ingress-grpc';  Container = 'aoc-ingress-proxy' },
+        @{ Port = 50061; Protocol = 'TCP'; Service = 'ics-tls';       Container = 'aoc-gateway' }
     )
     $results = [System.Collections.Generic.List[object]]::new()
     foreach ($spec in $specs) {
         $inUse = if ($spec.Protocol -eq 'UDP') { $activeUdp.Contains($spec.Port) } else { $activeTcp.Contains($spec.Port) }
+        $stackActive = $inUse -and $runningContainers.Contains($spec.Container)
         $results.Add([pscustomobject]@{
             tier      = 6
             name      = "$($spec.Protocol):$($spec.Port)"
@@ -78,8 +100,8 @@ function Get-DoctorPortChecks {
             protocol  = $spec.Protocol
             service   = $spec.Service
             available = (-not $inUse)
-            status    = if (-not $inUse) { 'PASS' } else { 'WARN' }
-            detail    = if (-not $inUse) { "127.0.0.1:$($spec.Port)/$($spec.Protocol) ($($spec.Service)) available" } else { "127.0.0.1:$($spec.Port)/$($spec.Protocol) ($($spec.Service)) in use" }
+            status    = if (-not $inUse -or $stackActive) { 'PASS' } else { 'WARN' }
+            detail    = if (-not $inUse) { "127.0.0.1:$($spec.Port)/$($spec.Protocol) ($($spec.Service)) free" } elseif ($stackActive) { "127.0.0.1:$($spec.Port)/$($spec.Protocol) ($($spec.Service)) listening (stack active)" } else { "127.0.0.1:$($spec.Port)/$($spec.Protocol) ($($spec.Service)) in use" }
         })
     }
     return $results.ToArray()
@@ -108,7 +130,7 @@ $toolchains = @(
     (Test-DoctorBinary -Tier 4 -BinaryName 'go'),
     (Test-DoctorBinary -Tier 5 -BinaryName 'docker')
 )
-$portChecks = @(Get-DoctorPortChecks)
+$portChecks = @(Get-DoctorPortChecks -DryRunMode $useDryRun)
 $allChecks = [System.Collections.Generic.List[object]]::new()
 foreach ($tc in $toolchains) { $allChecks.Add($tc) }
 foreach ($pc in $portChecks) { $allChecks.Add($pc) }

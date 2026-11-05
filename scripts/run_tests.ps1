@@ -13,7 +13,7 @@
 #      .\scripts\run_tests.ps1 -Heavy                  # also run the heavy tests (below)
 #      .\scripts\run_tests.ps1 -Jobs 6                 # build at most 6 projects and 6 compiler processes at a time (see build.ps1)
 #
-#  The heavy tests (test_worldd_region_load: 1 GB of ground, about a minute, wall-clock checks) are NOT in the default gate: on a PC that is also building or
+#  The heavy tests (test_world_region_load: 1 GB of ground, about a minute, wall-clock checks) are NOT in the default gate: on a PC that is also building or
 #  playing a timing check can flip, and the PC hard-resets under load.  -Heavy runs them (G1 review B I1); the plan's last task and the lead do, alone, under the
 #  heavy-job lock.  src/tests/fixtures/test-baseline.txt does not list them.
 #
@@ -55,7 +55,7 @@ Push-Location $root
 try {
     $oldPath = $env:PATH
     $env:PATH = "$dist$pathSep$oldPath"
-    $heavyTests = @('test_world_region_load', 'test_worldd_region_load')
+    $heavyTests = @('test_world_region_load')
     $skippers = New-Object System.Collections.Generic.List[string]
     $testBinaries = if ($IsWindows) {
         Get-ChildItem -LiteralPath $testDist -Filter 'test_*.exe' -File -ErrorAction SilentlyContinue
@@ -64,7 +64,7 @@ try {
             Where-Object { [string]::IsNullOrEmpty($_.Extension) -or $_.Extension -eq '.exe' }
     }
     $lines = @(foreach ($exe in $testBinaries | Where-Object { $Heavy -or ($heavyTests -notcontains $_.BaseName) } | Sort-Object Name) {
-        $realGround = ($exe.BaseName -in @('test_world_node_pop', 'test_worldd_node_pop')) -and (Test-Path -LiteralPath (Join-Path $root 'dist' 'content' 'area_nav.bin'))
+        $realGround = ($exe.BaseName -in @('test_world_node_pop')) -and (Test-Path -LiteralPath (Join-Path $root 'dist' 'content' 'area_nav.bin'))
         if ($realGround) { $env:AOC_REAL_GROUND = '1' }
         $text = & $exe.FullName 2>&1 | Out-String
         $code = $LASTEXITCODE

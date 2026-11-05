@@ -7,6 +7,59 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Assert-SandalCertsAndContentReady {
+    param([string]$RootDir)
+    $envModule = Join-Path $RootDir 'scripts\lib\Env.psm1'
+    if (-not (Get-Command Ensure-SandalContentDbCurrent -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $envModule -PathType Leaf)) {
+        Import-Module $envModule -Force -DisableNameChecking
+    }
+    if (Get-Command Ensure-SandalContentDbCurrent -ErrorAction SilentlyContinue) {
+        $contentState = Ensure-SandalContentDbCurrent -RepoRoot $RootDir
+        if (($contentState.Rebuilt -or $contentState.SyncedDeploy) -and (Get-Command Restart-SandalContentDbContainers -ErrorAction SilentlyContinue)) {
+            $restarted = @(Restart-SandalContentDbContainers)
+            if ($restarted.Count -gt 0 -and (Test-Path -LiteralPath (Join-Path $RootDir 'deploy\compose.yml') -PathType Leaf)) {
+                & docker compose -f (Join-Path $RootDir 'deploy\compose.yml') --env-file (Join-Path $RootDir 'deploy\.env') up -d --wait *> $null
+            }
+        }
+    }
+    $caPath = Join-Path $RootDir 'dist\certs\ca.crt'
+    $srvPem = Join-Path $RootDir 'dist\certs\server.pem'
+    $srvKey = Join-Path $RootDir 'dist\certs\server.key'
+    foreach ($p in @($srvPem, $srvKey, (Join-Path $RootDir 'deploy\content\zoi_chunks'), (Join-Path $RootDir 'deploy\content\content.db'))) {
+        if (-not (Test-Path -LiteralPath $p)) {
+            throw "Required certificate or Riverlands content path is missing: $p"
+        }
+    }
+    $srvCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem((Get-Content -LiteralPath $srvPem -Raw))
+    $cn = $srvCert.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+    if ($cn -eq 'sandalcore-gateway') {
+        throw "dist/certs/server.pem must not use the untrusted ephemeral CN=sandalcore-gateway certificate."
+    }
+    if ((Test-Path -LiteralPath $caPath -PathType Leaf) -and $IsWindows -and $env:CI -ne 'true') {
+        $caCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem((Get-Content -LiteralPath $caPath -Raw))
+        if ($srvCert.Issuer -eq $caCert.Subject) {
+            $tp = $caCert.Thumbprint
+            if (-not ((Test-Path -LiteralPath "Cert:\CurrentUser\Root\$tp") -or (Test-Path -LiteralPath "Cert:\LocalMachine\Root\$tp"))) {
+                throw "CA certificate thumbprint '$tp' from dist/certs/ca.crt is not installed in Cert:\CurrentUser\Root or Cert:\LocalMachine\Root."
+            }
+        }
+    }
+}
+
+function Start-SandalComposeStackIfNeeded {
+    param([string]$RootDir, [string[]]$ExpectedContainers)
+    $needsStart = -not (Test-Path -LiteralPath (Join-Path $RootDir 'deploy\compose.yml') -PathType Leaf)
+    if (-not $needsStart) {
+        foreach ($name in $ExpectedContainers) {
+            $st = (& docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $name 2>$null) -join ''
+            if ($LASTEXITCODE -ne 0 -or $st.Trim() -ne 'running|healthy') { $needsStart = $true; break }
+        }
+    }
+    if (-not $needsStart) { return }
+    & pwsh -NoProfile -File (Join-Path $RootDir 'sandal.ps1') deploy -Json *> $null
+    & docker compose -f (Join-Path $RootDir 'deploy\compose.yml') --env-file (Join-Path $RootDir 'deploy\.env') up -d --wait --remove-orphans *> $null
+}
+
 function Assert-SandalDockerStackHealthy {
     param([string]$RootDir)
     $envModule = Join-Path $RootDir 'scripts\lib\Env.psm1'
@@ -16,14 +69,16 @@ function Assert-SandalDockerStackHealthy {
     if (Get-Command Ensure-SandalDockerDaemon -ErrorAction SilentlyContinue) {
         $null = Ensure-SandalDockerDaemon
     }
+    $expected = @(
+        'aoc-postgres', 'aoc-auth', 'aoc-character', 'aoc-citynode', 'aoc-quest',
+        'aoc-mesh', 'aoc-gateway', 'aoc-mesh-gateway', 'aoc-web-admin', 'aoc-world', 'aoc-ingress-proxy'
+    )
+    Start-SandalComposeStackIfNeeded -RootDir $RootDir -ExpectedContainers $expected
+    Assert-SandalCertsAndContentReady -RootDir $RootDir
     $tetherRows = @(& docker ps -a --filter 'name=^/aoc-tether$' --format '{{.Names}}' 2>$null | Where-Object { $_ -and $_.Trim() -ne '' })
     if ($tetherRows.Count -gt 0) {
         throw "Deprecated aoc-tether container still exists: $($tetherRows -join ', ')"
     }
-    $expected = @(
-        'aoc-postgres', 'aoc-auth', 'aoc-character', 'aoc-citynode', 'aoc-quest',
-        'aoc-mesh', 'aoc-gateway', 'aoc-meshgw', 'aoc-web-admin', 'aoc-world', 'aoc-ingress-proxy'
-    )
     $statuses = [ordered]@{}
     foreach ($name in $expected) {
         $st = (& docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $name 2>$null) -join ''
@@ -31,6 +86,10 @@ function Assert-SandalDockerStackHealthy {
             throw "Container '$name' is not running|healthy (observed: '$($st.Trim())')."
         }
         $statuses[$name] = $st.Trim()
+    }
+    $worldLogs = (& docker logs --tail 50 aoc-world 2>&1) -join "`n"
+    if ($worldLogs -match 'did not open|refuses every login|no such column') {
+        throw "aoc-world startup logs indicate content.db open/schema failure:`n$worldLogs"
     }
     return [pscustomobject]@{
         ContainerCount = $expected.Count

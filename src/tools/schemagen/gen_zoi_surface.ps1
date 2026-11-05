@@ -393,7 +393,7 @@ function Invoke-Main {
             $null
         }
         if ($cur -ne $res.HeaderText) {
-            [Console]::Error.WriteLine("$($opts.Out): out of date — re-run gen_zoi_surface.ps1")
+            [Console]::Error.WriteLine("$($opts.Out): out of date -- re-run gen_zoi_surface.ps1")
             exit 1
         }
         return

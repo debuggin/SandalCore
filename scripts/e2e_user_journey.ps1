@@ -215,7 +215,7 @@ function Get-E2EDiagnosticBundle {
             $client.Dispose()
         }
     }
-    $procs = @(Get-Process -Name @('SandalLauncher', 'AOCClient-Win64-Shipping', 'world', 'worldd') -ErrorAction SilentlyContinue | ForEach-Object {
+    $procs = @(Get-Process -Name @('SandalLauncher', 'AOCClient-Win64-Shipping', 'world') -ErrorAction SilentlyContinue | ForEach-Object {
         [pscustomobject]@{ id = $_.Id; name = $_.ProcessName }
     })
     return [ordered]@{

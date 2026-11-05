@@ -108,6 +108,11 @@ function Get-ExtractNavInputSalt {
 
 function Test-ExtractStageReady {
     param([string]$StageName, [string]$GraphStage, [string]$RootPath)
+    if (($StageName -eq 'extract-db' -or $GraphStage -eq 'database') -and (Get-Command Test-SandalContentDbCurrent -ErrorAction SilentlyContinue)) {
+        if (-not (Test-SandalContentDbCurrent -RepoRoot $RootPath).Current) {
+            return $false
+        }
+    }
     $graphReady = Test-SandalStageUpToDate -Stage $GraphStage -RepoRoot $RootPath
     if ($StageName -eq $GraphStage) {
         return [bool]$graphReady
@@ -165,6 +170,9 @@ function Invoke-ExtractStagePipeline {
             if ($LASTEXITCODE -ne 0) {
                 throw "extract_game_data.ps1 failed with exit code $LASTEXITCODE."
             }
+            if (Get-Command Ensure-SandalContentDbCurrent -ErrorAction SilentlyContinue) {
+                $null = Ensure-SandalContentDbCurrent -RepoRoot $RootPath -GameRoot $Options.PakDir -CheckOnly
+            }
         }
     }
     $results = [System.Collections.Generic.List[object]]::new()
@@ -195,6 +203,9 @@ $useNoColor = [bool]($NoColor -or $inheritedNoColor -or -not [string]::IsNullOrE
 $rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
 if (-not (Get-Command Invoke-WithHeavyOperationLock -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $rootPath 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
+}
+if (-not (Get-Command Test-SandalContentDbCurrent -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $rootPath 'scripts\lib\Env.psm1') -Force -DisableNameChecking
 }
 
 $defaults = @{

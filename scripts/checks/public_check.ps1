@@ -280,6 +280,48 @@ function Test-SandalRootDirectoryHierarchy {
     return , $findings.ToArray()
 }
 
+function Test-SandalGitIdentityHygiene {
+    param(
+        [Parameter(Mandatory)][string]$RootPath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations
+    )
+    if (-not (Test-Path -LiteralPath (Join-Path $RootPath '.git'))) {
+        return
+    }
+    $email = [string](& git -C $RootPath config user.email 2>$null)
+    $email = $email.Trim()
+    if ($email -match '(?i)(?:@localhost$|^debug@)') {
+        $Violations.Add("GitIdentityHygiene: forbidden placeholder git user.email configured: $email")
+    }
+}
+
+function Test-SandalDocumentationRealityHygiene {
+    param(
+        [Parameter(Mandatory)][string]$RootPath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations
+    )
+    $docFiles = [System.Collections.Generic.List[string]]::new()
+    $rootReadme = Join-Path $RootPath 'README.md'
+    if (Test-Path -LiteralPath $rootReadme -PathType Leaf) { $docFiles.Add($rootReadme) }
+    $docsDir = Join-Path $RootPath 'docs'
+    if (Test-Path -LiteralPath $docsDir -PathType Container) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $docsDir -Filter '*.md' -File -ErrorAction SilentlyContinue)) { $docFiles.Add($f.FullName) }
+    }
+    $srcDir = Join-Path $RootPath 'src'
+    if (Test-Path -LiteralPath $srcDir -PathType Container) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $srcDir -Filter 'README.md' -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '[\\/]control-app[\\/]' })) { $docFiles.Add($f.FullName) }
+    }
+    $staleRegex = '(?:\bworldd\b|\bWORLDD\b|\bmeshgw\b|\bMESHGW\b|\bvcpkg\b|Visual Studio|Build Tools|\.NET 8\b|\bnet8\.0\b|an uncommitted draft|12-container)'
+    foreach ($docPath in $docFiles) {
+        $content = [System.IO.File]::ReadAllText($docPath)
+        $m = [regex]::Match($content, $staleRegex)
+        if ($m.Success) {
+            $rel = [System.IO.Path]::GetRelativePath($RootPath, $docPath).Replace('\', '/')
+            $Violations.Add("DocumentationRealityHygiene: forbidden stale token '$($m.Value)' in $rel")
+        }
+    }
+}
+
 function Invoke-SandalPublicCheck {
     [CmdletBinding()]
     [Alias('Invoke-SandalPublicChecks')]
@@ -294,6 +336,8 @@ function Invoke-SandalPublicCheck {
     Test-SandalEnvSchemaTemplates -RootPath $Root -Violations $violations
     Test-SandalRetiredLegacyScripts -Root $Root -Violations $violations
     $null = Test-SandalRootDirectoryHierarchy -RepoRoot $Root -Violations $violations
+    Test-SandalGitIdentityHygiene -RootPath $Root -Violations $violations
+    Test-SandalDocumentationRealityHygiene -RootPath $Root -Violations $violations
 
     if ($violations.Count -gt 0) {
         foreach ($violation in $violations) {

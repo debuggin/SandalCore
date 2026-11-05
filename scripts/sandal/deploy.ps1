@@ -47,6 +47,9 @@ $rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (
 if (-not (Get-Command Sync-SandalDistStage -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $rootPath 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
 }
+if (-not (Get-Command Ensure-SandalContentDbCurrent -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $rootPath 'scripts\lib\Env.psm1') -Force -DisableNameChecking
+}
 
 $opts = Resolve-DeployOptions `
     -BaseConfig $Config `
@@ -62,17 +65,20 @@ $composeFile = Join-Path $deployDir 'compose.yml'
 $envFile = Join-Path $deployDir '.env'
 
 if (-not $opts.DryRun) {
+    $dbState = Ensure-SandalContentDbCurrent -RepoRoot $rootPath
     $null = Sync-SandalDistStage -RepoRoot $rootPath -Config $opts.Config
+    $certsScript = Join-Path $rootPath 'scripts\sandal\certs.ps1'
+    if (Test-Path -LiteralPath $certsScript -PathType Leaf) {
+        $null = & $certsScript -OutputDir $certsDir -RepoRoot $rootPath -Json
+    }
     $null = Sync-SandalDeployStage -RepoRoot $rootPath
     $srcDockerIgnore = Join-Path $rootPath 'src\deploy\.dockerignore'
     $destDockerIgnore = Join-Path $deployDir '.dockerignore'
     if (Test-Path -LiteralPath $srcDockerIgnore -PathType Leaf) {
         Copy-Item -LiteralPath $srcDockerIgnore -Destination $destDockerIgnore -Force
     }
-    $serverCrt = Join-Path $certsDir 'server.crt'
-    $certsScript = Join-Path $rootPath 'scripts\sandal\certs.ps1'
-    if (-not (Test-Path -LiteralPath $serverCrt -PathType Leaf) -and (Test-Path -LiteralPath $certsScript -PathType Leaf)) {
-        $null = & $certsScript -OutputDir $certsDir -RepoRoot $rootPath -Json
+    if ($dbState.Rebuilt -or $dbState.SyncedDeploy) {
+        $null = Restart-SandalContentDbContainers
     }
 }
 
