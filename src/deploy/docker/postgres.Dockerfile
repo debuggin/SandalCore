@@ -21,7 +21,8 @@ ENV PGPORT=${PGPORT} \
 
 COPY --chown=70:70 src/server/services/sql/migrations/*.sql /docker-entrypoint-initdb.d/
 COPY --chown=70:70 src/deploy/postgres/init/*.sql /docker-entrypoint-initdb.d/
-RUN printf 'CREATE TABLE IF NOT EXISTS schema_migrations (version INT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());\nINSERT INTO schema_migrations (version) SELECT generate_series(1, 23) ON CONFLICT (version) DO NOTHING;\n' > /docker-entrypoint-initdb.d/99-schema-migrations.sql && \
+RUN MAX_VER=$(ls /docker-entrypoint-initdb.d/[0-9][0-9][0-9][0-9]_*.sql | wc -l | tr -d '[:space:]') && \
+    printf 'CREATE TABLE IF NOT EXISTS schema_migrations (version INT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());\nINSERT INTO schema_migrations (version) SELECT generate_series(1, %s) ON CONFLICT (version) DO NOTHING;\n' "${MAX_VER}" > /docker-entrypoint-initdb.d/99-schema-migrations.sql && \
     chown 70:70 /docker-entrypoint-initdb.d/99-schema-migrations.sql
 USER postgres
 USER 70:70
@@ -30,4 +31,4 @@ STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=10 \
     CMD ["pg_isready", "-U", "aoc", "-d", "aoc"]
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["postgres"]
+CMD ["postgres", "-c", "shared_buffers=256MB", "-c", "effective_cache_size=768MB", "-c", "work_mem=4MB", "-c", "maintenance_work_mem=64MB", "-c", "wal_buffers=8MB", "-c", "min_wal_size=64MB", "-c", "max_wal_size=512MB", "-c", "checkpoint_completion_target=0.9", "-c", "random_page_cost=1.1", "-c", "effective_io_concurrency=200", "-c", "jit=off", "-c", "max_connections=120"]

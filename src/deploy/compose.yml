@@ -44,6 +44,33 @@ services:
     restart: unless-stopped
     cpus: 2.0
     mem_limit: 1g
+    shm_size: 256m
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=256MB"
+      - "-c"
+      - "effective_cache_size=768MB"
+      - "-c"
+      - "work_mem=4MB"
+      - "-c"
+      - "maintenance_work_mem=64MB"
+      - "-c"
+      - "wal_buffers=8MB"
+      - "-c"
+      - "min_wal_size=64MB"
+      - "-c"
+      - "max_wal_size=512MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "jit=off"
+      - "-c"
+      - "max_connections=120"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-aoc}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME}
@@ -78,6 +105,8 @@ services:
       AOC_ALLOW_INSECURE_DB: "1"
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+      AOC_DB_MAX_CONNS: "${AOC_DB_MAX_CONNS:-16}"
+      AOC_DB_MIN_CONNS: "${AOC_DB_MIN_CONNS:-2}"
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
       AOC_AUTH_HTTP_ADDR: ":${AUTH_HTTP_PORT:-8081}"
       AOC_AUTH_HTTP_BIND_ADDR: ":${AUTH_HTTP_PORT:-8081}"
@@ -114,6 +143,8 @@ services:
       AOC_ALLOW_INSECURE_DB: "1"
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+      AOC_DB_MAX_CONNS: "${AOC_DB_MAX_CONNS:-16}"
+      AOC_DB_MIN_CONNS: "${AOC_DB_MIN_CONNS:-2}"
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
       AOC_CHAR_GRPC_ADDR: ":${CHARACTER_GRPC_PORT:-50053}"
       AOC_CHARACTER_GRPC_ADDR: ":${CHARACTER_GRPC_PORT:-50053}"
@@ -152,6 +183,8 @@ services:
       AOC_ALLOW_INSECURE_DB: "1"
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+      AOC_DB_MAX_CONNS: "${AOC_DB_MAX_CONNS:-16}"
+      AOC_DB_MIN_CONNS: "${AOC_DB_MIN_CONNS:-2}"
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
       AOC_CITYNODE_GRPC_ADDR: ":${CITYNODE_GRPC_PORT:-50056}"
       AOC_CITYNODE_GRPC_BIND_ADDR: ":${CITYNODE_GRPC_PORT:-50056}"
@@ -187,6 +220,8 @@ services:
       AOC_ALLOW_INSECURE_DB: "1"
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+      AOC_DB_MAX_CONNS: "${AOC_DB_MAX_CONNS:-16}"
+      AOC_DB_MIN_CONNS: "${AOC_DB_MIN_CONNS:-2}"
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
       AOC_QUESTS_GRPC_ADDR: ":${QUEST_GRPC_PORT:-50057}"
       AOC_QUEST_GRPC_ADDR: ":${QUEST_GRPC_PORT:-50057}"
@@ -222,6 +257,8 @@ services:
       AOC_ALLOW_INSECURE_DB: "1"
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+      AOC_DB_MAX_CONNS: "${AOC_DB_MAX_CONNS:-16}"
+      AOC_DB_MIN_CONNS: "${AOC_DB_MIN_CONNS:-2}"
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
       AOC_MESH_GRPC_ADDR: ":${MESH_GRPC_PORT:-50054}"
       AOC_MESH_GRPC_BIND_ADDR: ":${MESH_GRPC_PORT:-50054}"
@@ -298,6 +335,8 @@ services:
       WORLD_PORT: ${WORLD_UDP_PORT:-7777}
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+      AOC_DB_MAX_CONNS: "${AOC_DB_MAX_CONNS:-16}"
+      AOC_DB_MIN_CONNS: "${AOC_DB_MIN_CONNS:-2}"
     volumes:
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
       - ${AOC_DIST_CERTS_DIR:-./certs}:/app/certs:ro

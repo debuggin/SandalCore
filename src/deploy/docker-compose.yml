@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-# Local development infrastructure for the Go services and worldd.
-#   docker compose -f deploy/docker-compose.yml up -d --wait
+# Local development infrastructure for the Go services and world.
+#   docker compose -f src/deploy/docker-compose.yml up -d --wait
 name: aoc
 
 services:
   postgres:
     image: postgres:17
+    cpus: 1.0
+    mem_limit: 512m
+    shm_size: 256m
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "effective_cache_size=384MB", "-c", "work_mem=4MB", "-c", "maintenance_work_mem=32MB", "-c", "wal_buffers=4MB", "-c", "checkpoint_completion_target=0.9", "-c", "random_page_cost=1.1", "-c", "jit=off", "-c", "max_connections=100"]
     environment:
       POSTGRES_USER: aoc
       POSTGRES_PASSWORD: aoc
@@ -27,7 +31,9 @@ services:
 
   nats:
     image: nats:2.10
-    command: ["-js", "-m", "8222"]
+    cpus: 1.0
+    mem_limit: 256m
+    command: ["-js", "-m", "8222", "--max_payload", "1MB", "--max_pending", "16MB", "--write_deadline", "5s", "--store_dir", "/tmp/nats", "--max_mem_store", "64MB", "--max_file_store", "256MB"]
     ports:
       - "127.0.0.1:4222:4222"
       - "127.0.0.1:8222:8222"
