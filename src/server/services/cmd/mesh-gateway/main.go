@@ -105,10 +105,10 @@ func (g *Gateway) RouteForwardPacket(
 }
 
 func main() {
-	config.HandleHealthcheck("8086", "AOC_MESHGW_HTTP_BIND_ADDR", "AOC_MESHGW_ADDR", "19082")
-	config.BindContainerFlags("meshgw")
+	config.HandleHealthcheck("8086", "AOC_MESH_GATEWAY_HTTP_BIND_ADDR", "AOC_MESH_GATEWAY_ADDR", "19082")
+	config.BindContainerFlags("mesh-gateway")
 	if err := run(); err != nil {
-		slog.Error("meshgw stopped", "err", err)
+		slog.Error("mesh-gateway stopped", "err", err)
 		os.Exit(1)
 	}
 }
@@ -120,7 +120,7 @@ func run() error {
 }
 
 func resolveProbeAddr() string {
-	for _, k := range []string{"AOC_MESHGW_HTTP_BIND_ADDR", "SANDAL_MESHGW_HTTP_BIND_ADDR", "AOC_MESHGW_ADDR", "SANDAL_MESHGW_ADDR"} {
+	for _, k := range []string{"AOC_MESH_GATEWAY_HTTP_BIND_ADDR", "SANDAL_MESH_GATEWAY_HTTP_BIND_ADDR", "AOC_MESH_GATEWAY_ADDR", "SANDAL_MESH_GATEWAY_ADDR"} {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			return v
 		}
@@ -146,7 +146,7 @@ func runWithContext(ctx context.Context, probeAddr string) error {
 	}
 	reg := mesh.NewRegistry(nil, cfg.MeshHeartbeatTTL, cfg.MeshStaticWorld)
 	router := mesh.NewZoneRouter(mesh.DefaultBoundaryHysteresisCm)
-	gw, err := newGateway(reg, router, "meshgw")
+	gw, err := newGateway(reg, router, "mesh-gateway")
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func runWithContext(ctx context.Context, probeAddr string) error {
 		}
 		errc <- nil
 	}()
-	slog.Info("meshgw listening", "http_probes", lis.Addr().String(), "hysteresis_cm", router.HysteresisCm())
+	slog.Info("mesh-gateway listening", "http_probes", lis.Addr().String(), "hysteresis_cm", router.HysteresisCm())
 	select {
 	case <-ctx.Done():
 	case err = <-errc:

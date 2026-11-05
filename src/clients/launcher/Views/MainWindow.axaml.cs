@@ -477,14 +477,9 @@ namespace SandalLauncher.ViewModels
 
         private async Task EnsureCharacterAndLaunchAsync(CancellationToken ct)
         {
-            try
-            {
-                if (IsAuthenticated && Characters.Count == 0)
-                    _ = await CreateCharacterWithIdsAsync(SanitizeAutoCharacterName(SignedInUsername), 1, 1, ct).ConfigureAwait(false);
-                if (IsAuthenticated && Characters.Count > 0 && string.IsNullOrWhiteSpace(LastJoinTicket))
-                    _ = await SelectCharacterByNameOrIdAsync(Characters[0].CharacterId, spawnClient: false, ct).ConfigureAwait(false);
-            }
-            catch (Exception ex) { Trace.WriteLine(ex.Message); }
+            _ = ct;
+            EnsureInMemoryTetherRunning();
+            _tetherListener?.UpdateToken(AccessToken);
             await InvokeOnUiIfDesktopAsync(LaunchClient).ConfigureAwait(false);
         }
 

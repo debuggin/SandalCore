@@ -31,7 +31,7 @@ func TestGatewaySeedDefaultZonesAndRouteForwardPacket(t *testing.T) {
 	if err := seedDefaultZones(router); err != nil {
 		t.Fatalf("seedDefaultZones() error = %v", err)
 	}
-	gw, err := newGateway(reg, router, "meshgw-test")
+	gw, err := newGateway(reg, router, "mesh-gateway-test")
 	if err != nil {
 		t.Fatalf("newGateway() error = %v", err)
 	}
@@ -59,7 +59,7 @@ func TestGatewaySeedDefaultZonesAndRouteForwardPacket(t *testing.T) {
 }
 
 func TestGatewayRouteForwardPacketValidationErrors(t *testing.T) {
-	gw, err := newGateway(nil, nil, "meshgw-auto")
+	gw, err := newGateway(nil, nil, "mesh-gateway-auto")
 	if err != nil || len(gw.router.Zones()) != 2 {
 		t.Fatalf("newGateway(nil, nil) = (%v, zones=%d), want (nil, 2)", err, len(gw.router.Zones()))
 	}
@@ -92,7 +92,7 @@ func TestGatewayHealthProbesAndStaticWorldCheck(t *testing.T) {
 	if err := seedDefaultZones(router); err != nil {
 		t.Fatalf("seedDefaultZones error = %v", err)
 	}
-	gw, err := newGateway(reg, router, "meshgw-probe")
+	gw, err := newGateway(reg, router, "mesh-gateway-probe")
 	if err != nil {
 		t.Fatalf("newGateway error = %v", err)
 	}
@@ -124,12 +124,12 @@ func TestGatewayResolveProbeAddrAndRunWithContext(t *testing.T) {
 		t.Fatal("checkStaticWorld(\"0.0.0.0:7777\") = nil, want error")
 	}
 
-	t.Setenv("AOC_MESHGW_HTTP_BIND_ADDR", "")
-	t.Setenv("SANDAL_MESHGW_HTTP_BIND_ADDR", "127.0.0.1:17778")
+	t.Setenv("AOC_MESH_GATEWAY_HTTP_BIND_ADDR", "")
+	t.Setenv("SANDAL_MESH_GATEWAY_HTTP_BIND_ADDR", "127.0.0.1:17778")
 	if got := resolveProbeAddr(); got != "127.0.0.1:17778" {
 		t.Fatalf("resolveProbeAddr() = %q, want 127.0.0.1:17778", got)
 	}
-	t.Setenv("AOC_MESHGW_HTTP_BIND_ADDR", "127.0.0.1:17777")
+	t.Setenv("AOC_MESH_GATEWAY_HTTP_BIND_ADDR", "127.0.0.1:17777")
 	if got := resolveProbeAddr(); got != "127.0.0.1:17777" {
 		t.Fatalf("resolveProbeAddr() = %q, want 127.0.0.1:17777", got)
 	}

@@ -31,6 +31,7 @@ public sealed class LocalTetherListener : IAsyncDisposable, IDisposable
     private static readonly byte[] ProcessorIdBytes = Encoding.ASCII.GetBytes(LauncherProcessorId);
     private readonly UdpClient _udp;
     private readonly byte[]?[] _sentPayloads = new byte[]?[64];
+    private uint _sessionId;
     private long _sendSeq;
     private long _recvSeq;
 
@@ -42,8 +43,11 @@ public sealed class LocalTetherListener : IAsyncDisposable, IDisposable
     }
 
     public int Port { get; }
+    public uint SessionId => _sessionId;
     public string ActiveAccessToken { get; set; } = string.Empty;
     public string IcsEndpoint { get; set; } = "127.0.0.1:50061";
+
+    public void UpdateToken(string? token) => ActiveAccessToken = token ?? string.Empty;
 
     public static uint BuildMagic(byte version, MsgId msgId) => (AppNumber << 16) | ((uint)version << 8) | (uint)msgId;
 
@@ -71,7 +75,10 @@ public sealed class LocalTetherListener : IAsyncDisposable, IDisposable
         BinaryPrimitives.WriteInt64BigEndian(buffer[32..40], header.TimestampMsec);
     }
 
-    public static byte[]? BuildReplyPacket(in ArqHeader req, long? nowMsec = null)
+    public static byte[]? BuildReplyPacket(ArqHeader req, int? currentRecvSeq = null) =>
+        BuildReplyPacket(in req, nowMsec: null, currentRecvSeq: currentRecvSeq);
+
+    public static byte[]? BuildReplyPacket(in ArqHeader req, long? nowMsec, long? currentRecvSeq = null)
     {
         if (!req.IsValid) return null;
         long ts = nowMsec ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -84,8 +91,9 @@ public sealed class LocalTetherListener : IAsyncDisposable, IDisposable
             return reply;
         }
         if (req.MsgId is not (MsgId.Data or MsgId.AskWindow)) return null;
+        long nextExpectedRecv = (req.MsgId == MsgId.AskWindow ? (currentRecvSeq ?? req.SequenceNumber) : req.SequenceNumber) + 1;
         byte[] pkt = new byte[HeaderSize];
-        WriteHeader(pkt, new ArqHeader(BuildMagic(req.Version, req.MsgId == MsgId.Data ? MsgId.Ack : MsgId.TellWindow), req.SessionId, DefaultWindowSize, 0, 0, req.MsgId == MsgId.Data ? req.SequenceNumber : 0, req.SequenceNumber + 1, ts));
+        WriteHeader(pkt, new ArqHeader(BuildMagic(req.Version, req.MsgId == MsgId.Data ? MsgId.Ack : MsgId.TellWindow), req.SessionId, DefaultWindowSize, 0, 0, req.MsgId == MsgId.Data ? req.SequenceNumber : 0, nextExpectedRecv, ts));
         return pkt;
     }
 
@@ -95,22 +103,26 @@ public sealed class LocalTetherListener : IAsyncDisposable, IDisposable
         if (!TryParseHeader(res.Buffer, out ArqHeader hdr)) return false;
         if (hdr.MsgId == MsgId.Connect)
         {
+            _sessionId = hdr.SessionId == 0 ? 1u : hdr.SessionId;
             _recvSeq = hdr.SequenceNumber;
             _sendSeq = 0;
             Array.Clear(_sentPayloads);
         }
-        if (hdr.MsgId == MsgId.AskWindow && hdr.NextExpectedRecvSeq < _sendSeq &&
+        else if (hdr.MsgId == MsgId.Data)
+        {
+            _recvSeq = hdr.SequenceNumber;
+        }
+        if (hdr.MsgId == MsgId.AskWindow && hdr.NextExpectedRecvSeq >= 0 && hdr.NextExpectedRecvSeq < _sendSeq &&
             _sentPayloads[hdr.NextExpectedRecvSeq % 64] is { Length: > 0 } cached)
         {
             byte[] retransmit = FrameDataPacket(in hdr, hdr.NextExpectedRecvSeq, cached);
             await _udp.SendAsync(retransmit, res.RemoteEndPoint, cancellationToken).ConfigureAwait(false);
             return true;
         }
-        if (BuildReplyPacket(in hdr) is not { } reply) return false;
+        if (BuildReplyPacket(in hdr, nowMsec: null, currentRecvSeq: _recvSeq) is not { } reply) return false;
         await _udp.SendAsync(reply, res.RemoteEndPoint, cancellationToken).ConfigureAwait(false);
         if (hdr.MsgId == MsgId.Data && res.Buffer.Length > HeaderSize)
         {
-            _recvSeq = hdr.SequenceNumber;
             if (TryBuildDataReplyPayload(res.Buffer.AsSpan(HeaderSize), out byte[]? dataPayload) && dataPayload is not null)
             {
                 long seq = _sendSeq++;

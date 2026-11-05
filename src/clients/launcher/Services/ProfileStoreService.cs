@@ -77,10 +77,11 @@ public sealed class ProfileStoreService
     public IReadOnlyList<LauncherProfile> CreateDefaultProfiles()
     {
         LauncherConfig cfg = _configProvider();
-        return
-        [
-            LauncherProfile.FromLauncherConfig(cfg, "local-dev", "Local Dev (Verra Sandbox)")
-        ];
+        LauncherProfile localDev = LauncherProfile.FromLauncherConfig(cfg, "local-dev", "Local Dev (Verra Sandbox)") with
+        {
+            GatewayIcsAddr = SandalConfigLoader.NormalizeIcsEndpoint(cfg.GatewayIcsAddr)
+        };
+        return [localDev];
     }
 
     public LauncherProfileCatalog LoadCatalog()
@@ -334,12 +335,17 @@ public sealed class ProfileStoreService
             ? new LauncherProfileCatalog { SchemaVersion = 1, Profiles = JsonSerializer.Deserialize<LauncherProfile[]>(rawJson, SerializerOptions) ?? [] }
             : JsonSerializer.Deserialize<LauncherProfileCatalog>(rawJson, SerializerOptions);
         if (catalog?.Profiles is null) throw new InvalidDataException("LauncherProfiles.json could not be deserialized.");
+        string resolvedLocalIcs = $"{SandalConfigLoader.ResolveLocalIcsHost()}:50061";
         LauncherProfile[] normalized = new LauncherProfile[catalog.Profiles.Length];
         for (int i = 0; i < catalog.Profiles.Length; i++)
         {
-            LauncherProfile profile = catalog.Profiles[i] with
+            LauncherProfile src = catalog.Profiles[i];
+            string normalizedIcs = string.Equals(src.Id, "local-dev", StringComparison.OrdinalIgnoreCase)
+                ? resolvedLocalIcs
+                : SandalConfigLoader.NormalizeIcsEndpoint(src.GatewayIcsAddr);
+            LauncherProfile profile = src with
             {
-                GatewayIcsAddr = SandalConfigLoader.NormalizeIcsEndpoint(catalog.Profiles[i].GatewayIcsAddr)
+                GatewayIcsAddr = normalizedIcs
             };
             ValidateProfile(profile);
             normalized[i] = profile;

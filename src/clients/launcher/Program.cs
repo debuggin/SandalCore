@@ -473,7 +473,7 @@ namespace SandalLauncher.ViewModels
         {
             if (_tetherListener is not null)
             {
-                _tetherListener.ActiveAccessToken = AccessToken;
+                _tetherListener.UpdateToken(AccessToken);
                 _tetherListener.IcsEndpoint = _config.GatewayIcsAddr;
                 return _tetherListener.Port;
             }
@@ -481,7 +481,7 @@ namespace SandalLauncher.ViewModels
             {
                 try { _tetherListener = new LocalTetherListener(19021); }
                 catch (Exception) { _tetherListener = new LocalTetherListener(0); }
-                _tetherListener.ActiveAccessToken = AccessToken;
+                _tetherListener.UpdateToken(AccessToken);
                 _tetherListener.IcsEndpoint = _config.GatewayIcsAddr;
                 _tetherCts = new CancellationTokenSource();
                 _ = _tetherListener.RunAsync(_tetherCts.Token);
@@ -730,7 +730,7 @@ namespace SandalLauncher.ViewModels
                 AccessToken = session.AccessToken;
                 if (_tetherListener is not null)
                 {
-                    _tetherListener.ActiveAccessToken = session.AccessToken;
+                    _tetherListener.UpdateToken(session.AccessToken);
                     _tetherListener.IcsEndpoint = _config.GatewayIcsAddr;
                 }
                 SignedInUsername = session.Username;
@@ -770,8 +770,7 @@ namespace SandalLauncher.ViewModels
             WorldEndpoint = string.Empty;
             JoinTicketBadgeText = "No active join ticket";
             AccessToken = string.Empty;
-            if (_tetherListener is not null)
-                _tetherListener.ActiveAccessToken = string.Empty;
+            _tetherListener?.UpdateToken(string.Empty);
             SignedInUsername = string.Empty;
             AuthPassword = string.Empty;
             IsAuthenticated = false;

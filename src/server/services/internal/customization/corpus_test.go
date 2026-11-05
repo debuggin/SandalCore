@@ -4,12 +4,12 @@
 
 package customization
 
-// The corpus shared with worldd: tests/fixtures/customization_cases.json. Each case is a character's race, gender, class
-// and customization JSON with what the service says of it (accepted) and what worldd's customization_from_json
-// builds from the text that is stored (worldd). The same file is read by worldd's test_worldd_character_setup, so
+// The corpus shared with world: tests/fixtures/customization_cases.json. Each case is a character's race, gender, class
+// and customization JSON with what the service says of it (accepted) and what world's customization_from_json
+// builds from the text that is stored (world). The same file is read by world's test_world_character_setup, so
 // the rule that matters, "a character the service accepts joins", is held on both sides: here Check (with Normalize)
-// must say what 'accepted' says and every accepted case must be one worldd builds; there worldd must build exactly
-// what 'worldd' says. A case worldd refuses is one the service has to refuse; the ones worldd builds and the service
+// must say what 'accepted' says and every accepted case must be one world builds; there world must build exactly
+// what 'world' says. A case world refuses is one the service has to refuse; the ones world builds and the service
 // refuses are the creator's own ranges and options. The test needs the real content.db (AOC_CONTENT_DB): the ids of
 // cyb and the retail captures are its.
 
@@ -38,7 +38,7 @@ type corpusCase struct {
 		Suffix string `json:"suffix"`
 	} `json:"text_repeat"`
 	Accepted bool            `json:"accepted"`
-	Worldd   string          `json:"worldd"` // "builds" or "refuses": worldd on the stored text
+	World    string          `json:"world"`  // "builds" or "refuses": world on the stored text
 	Stored   json.RawMessage `json:"stored"` // the stored text when Normalize changes it
 }
 
@@ -91,11 +91,11 @@ func TestCorpusIsConsistent(t *testing.T) {
 			t.Errorf("two cases are named %q", c.Name)
 		}
 		seen[c.Name] = true
-		if c.Worldd != "builds" && c.Worldd != "refuses" {
-			t.Errorf("%s: worldd is %q, want builds or refuses", c.Name, c.Worldd)
+		if c.World != "builds" && c.World != "refuses" {
+			t.Errorf("%s: world is %q, want builds or refuses", c.Name, c.World)
 		}
-		if c.Accepted && c.Worldd != "builds" {
-			t.Errorf("%s: accepted, but worldd refuses it: a character the service takes must join", c.Name)
+		if c.Accepted && c.World != "builds" {
+			t.Errorf("%s: accepted, but world refuses it: a character the service takes must join", c.Name)
 		}
 		if c.Stored != nil && !c.Accepted {
 			t.Errorf("%s: has a stored form but is not accepted", c.Name)

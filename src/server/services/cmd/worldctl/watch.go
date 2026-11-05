@@ -26,9 +26,9 @@ import (
 	"aocrop/services/internal/svcauth"
 )
 
-// watch is the reference consumer of worldd's world stream (WorldStreamService): it subscribes to an area, keeps the entities the frames
+// watch is the reference consumer of world's world stream (WorldStreamService): it subscribes to an area, keeps the entities the frames
 // describe, checks the frames' sequence and, once a second, prints one line: the frames that came, what they changed, how many entities it
-// holds, and the cost of a publish that worldd reports in GetStatus. A frame out of sequence makes it subscribe again, as the stream's
+// holds, and the cost of a publish that world reports in GetStatus. A frame out of sequence makes it subscribe again, as the stream's
 // contract asks of any reader.
 //
 //	worldctl watch [--area minx,miny,maxx,maxy] [--density [--cell 50000]] [--layers all|players,npcs,nodes,mounts,loot] [--seconds N]
@@ -79,9 +79,9 @@ func explainWatch(err error, addr string) string {
 	if s, ok := status.FromError(err); ok {
 		switch s.Code() {
 		case codes.Unavailable:
-			return fmt.Sprintf("worldd's world stream is not reachable at %s (is worldd running, and not started with --no-world-stream?): %s", addr, s.Message())
+			return fmt.Sprintf("world's world stream is not reachable at %s (is world running, and not started with --no-world-stream?): %s", addr, s.Message())
 		case codes.Unauthenticated:
-			return "refused: the service token is wrong (use the service.token worldd was started with)"
+			return "refused: the service token is wrong (use the service.token world was started with)"
 		case codes.InvalidArgument, codes.ResourceExhausted:
 			return "refused: " + s.Message()
 		}
@@ -166,7 +166,7 @@ func (w *watcher) subscribe(ctx context.Context) error {
 	}
 }
 
-// follow keeps a stream open: it subscribes again after a gap or when worldd goes away for a moment, and gives up on anything else.
+// follow keeps a stream open: it subscribes again after a gap or when world goes away for a moment, and gives up on anything else.
 func (w *watcher) follow(ctx context.Context) error {
 	for ctx.Err() == nil {
 		err := w.subscribe(ctx)
@@ -235,7 +235,7 @@ func (w *watcher) line(ctx context.Context) {
 	defer cancel()
 	if st, err := w.client.GetStatus(sctx, &worldadminv1.GetStatusRequest{}); err == nil {
 		s := st.GetStats()
-		line += fmt.Sprintf("  | publish %.3f ms (worst %.3f) loop %.2f ms | worldd: players %d npcs %d nodes %d mounts %d | streams %d", s.GetPublishMs(), s.GetPublishMaxMs(), s.GetTickMs(),
+		line += fmt.Sprintf("  | publish %.3f ms (worst %.3f) loop %.2f ms | world: players %d npcs %d nodes %d mounts %d | streams %d", s.GetPublishMs(), s.GetPublishMaxMs(), s.GetTickMs(),
 			s.GetPlayers(), s.GetNpcs(), s.GetResourceNodes(), s.GetMounts(), st.GetSubscribers())
 	} else if ctx.Err() == nil {
 		line += "  | status: " + explainWatch(err, w.addr)
@@ -248,7 +248,7 @@ func runWatch(ctx context.Context, args []string, out, errw io.Writer) int {
 	fs := flag.NewFlagSet("worldctl watch", flag.ContinueOnError)
 	fs.SetOutput(errw)
 	cfg := config.Load()
-	addr := fs.String("addr", cfg.WorldStreamAddr, "worldd's world stream address")
+	addr := fs.String("addr", cfg.WorldStreamAddr, "world's world stream address")
 	tokenFile := fs.String("token-file", defaultTokenFile(cfg.ServiceTokenFile), "the service token file")
 	area := fs.String("area", "-5000000,-5000000,5000000,5000000", "the area in cm: minx,miny,maxx,maxy")
 	density := fs.Bool("density", false, "counts per cell instead of single entities")

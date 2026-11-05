@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 
+	"google.golang.org/protobuf/encoding/protowire"
+
 	characterv1 "aocrop/services/gen/aoc/character/v1"
 	"aocrop/services/internal/character"
 	"aocrop/services/internal/chardef"
@@ -29,21 +31,27 @@ type tokenVerifier interface {
 }
 
 type characterEntry struct {
-	ID        string `json:"id"`
-	CharID    string `json:"character_id"`
-	Name      string `json:"name"`
-	ClassID   int32  `json:"class_id"`
-	RaceID    int32  `json:"race_id"`
-	Level     int32  `json:"level"`
-	Zone      string `json:"zone"`
-	AccountID int64  `json:"-"`
+	ID          string `json:"id"`
+	CharID      string `json:"character_id"`
+	Name        string `json:"name"`
+	ClassID     int32  `json:"class_id"`
+	ClassName   string `json:"class_name,omitempty"`
+	ArchetypeID int32  `json:"archetype_id,omitempty"`
+	RaceID      int32  `json:"race_id"`
+	GenderID    int32  `json:"gender_id"`
+	Level       int32  `json:"level"`
+	Zone        string `json:"zone"`
+	AccountID   int64  `json:"-"`
 }
 
 type createCharacterPayload struct {
-	Name     string `json:"name"`
-	ClassID  int32  `json:"class_id"`
-	RaceID   int32  `json:"race_id"`
-	GenderID int32  `json:"gender_id"`
+	Name           string `json:"name"`
+	ClassID        int32  `json:"class_id"`
+	ClassName      string `json:"class_name"`
+	RaceID         int32  `json:"race_id"`
+	GenderID       int32  `json:"gender_id"`
+	AppearanceJSON string `json:"appearance_json"`
+	CreateInfo     []byte `json:"create_info"`
 }
 
 type selectCharacterPayload struct {
@@ -264,15 +272,22 @@ func protoToEntry(c *characterv1.Character, acctID int64) characterEntry {
 	if zone == "" {
 		zone = "verra-01"
 	}
+	clsID, archID, clsName := defaultClassMeta(uint32(max(c.GetClassId(), 0)))
+	if c.GetClassName() != "" {
+		clsName = c.GetClassName()
+	}
 	return characterEntry{
-		ID:        c.GetId(),
-		CharID:    c.GetId(),
-		Name:      c.GetName(),
-		ClassID:   max(c.GetClassId(), 1),
-		RaceID:    c.GetRaceId(),
-		Level:     max(c.GetLevel(), 1),
-		Zone:      zone,
-		AccountID: acctID,
+		ID:          c.GetId(),
+		CharID:      c.GetId(),
+		Name:        c.GetName(),
+		ClassID:     clsID,
+		ClassName:   clsName,
+		ArchetypeID: archID,
+		RaceID:      c.GetRaceId(),
+		GenderID:    c.GetGenderId(),
+		Level:       max(c.GetLevel(), 1),
+		Zone:        zone,
+		AccountID:   acctID,
 	}
 }
 
@@ -281,16 +296,76 @@ func storeCharToEntry(c character.Character) characterEntry {
 	if zone == "" {
 		zone = "verra-01"
 	}
-	return characterEntry{
-		ID:        c.ID,
-		CharID:    c.ID,
-		Name:      c.Name,
-		ClassID:   max(c.ClassID, 1),
-		RaceID:    c.RaceID,
-		Level:     max(c.Level, 1),
-		Zone:      zone,
-		AccountID: c.AccountID,
+	clsID, archID, clsName := defaultClassMeta(uint32(max(c.ClassID, 0)))
+	if c.ClassName != "" {
+		clsName = c.ClassName
 	}
+	return characterEntry{
+		ID:          c.ID,
+		CharID:      c.ID,
+		Name:        c.Name,
+		ClassID:     clsID,
+		ClassName:   clsName,
+		ArchetypeID: archID,
+		RaceID:      c.RaceID,
+		GenderID:    c.GenderID,
+		Level:       max(c.Level, 1),
+		Zone:        zone,
+		AccountID:   c.AccountID,
+	}
+}
+
+func defaultClassMeta(classID uint32) (int32, int32, string) {
+	cid := int32(classID)
+	if className, ok := chardef.ClassName(cid); ok {
+		return cid, chardef.ArchetypeID(cid), className
+	}
+	return chardef.ClassFighter, chardef.ArchetypeID(chardef.ClassFighter), "Fighter"
+}
+
+func defaultAppearanceJSON(raceID, genderID, classID int32, className string) string {
+	raceName, ok := chardef.RaceName(raceID)
+	if !ok {
+		raceName = "Kaelar"
+	}
+	genderName, ok := chardef.GenderName(genderID)
+	if !ok {
+		genderName = "Male"
+	}
+	if className == "" {
+		className, _ = chardef.ClassName(classID)
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"presetGuid":       "0",
+		"randomSeed":       0,
+		"skinSet":          0,
+		"bIsHelmetVisible": true,
+		"bIsCapeVisible":   true,
+		"race":             raceName,
+		"gender":           genderName,
+		"class":            className,
+	})
+	return string(raw)
+}
+
+func buildCreateInfoWire(appearanceJSON string, genderID, raceID, classID int32) []byte {
+	var entry, wrapper, b []byte
+	entry = protowire.AppendTag(entry, 1, protowire.BytesType)
+	entry = protowire.AppendString(entry, "CustomizationDataKey")
+	entry = protowire.AppendTag(entry, 2, protowire.BytesType)
+	entry = protowire.AppendString(entry, appearanceJSON)
+	wrapper = protowire.AppendTag(wrapper, 2, protowire.BytesType)
+	wrapper = protowire.AppendBytes(wrapper, entry)
+	b = protowire.AppendTag(b, 1, protowire.BytesType)
+	b = protowire.AppendBytes(b, wrapper)
+	for i, v := range [3]int32{genderID, raceID, classID} {
+		if v > 0 {
+			b = protowire.AppendTag(b, protowire.Number(2+i), protowire.VarintType)
+			b = protowire.AppendVarint(b, uint64(v))
+		}
+	}
+	b = protowire.AppendTag(b, 5, protowire.BytesType)
+	return protowire.AppendString(b, "Riverlands")
 }
 
 func (b *characterHTTPBridge) handleCreateCharacter(w http.ResponseWriter, r *http.Request) {
@@ -308,31 +383,37 @@ func (b *characterHTTPBridge) handleCreateCharacter(w http.ResponseWriter, r *ht
 		writeBridgeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if req.ClassID <= 0 {
-		req.ClassID = 1
+	if req.ClassID <= 0 && req.ClassName != "" {
+		if byName, ok := chardef.ClassByName(strings.TrimSpace(req.ClassName)); ok {
+			req.ClassID = byName
+		}
 	}
-	className, okClass := chardef.ClassName(req.ClassID)
-	if !okClass {
-		className = "Fighter"
-		req.ClassID = chardef.ClassFighter
+	if req.RaceID < chardef.RaceKaelar || req.RaceID > chardef.RaceNikua {
+		req.RaceID = chardef.RaceKaelar
 	}
-	entry := b.storeCreatedCharacter(r.Context(), acctID, req, className)
+	if req.GenderID < chardef.GenderMale || req.GenderID > chardef.GenderFemale {
+		req.GenderID = chardef.GenderMale
+	}
+	entry := b.storeCreatedCharacter(r.Context(), acctID, req)
 	writeBridgeJSON(w, http.StatusCreated, entry)
 }
 
-func (b *characterHTTPBridge) storeCreatedCharacter(ctx context.Context, acctID int64, req createCharacterPayload, className string) characterEntry {
-	archetype := chardef.ArchetypeID(req.ClassID)
+func (b *characterHTTPBridge) storeCreatedCharacter(ctx context.Context, acctID int64, req createCharacterPayload) characterEntry {
+	clsID, archetype, className := defaultClassMeta(uint32(max(req.ClassID, 0)))
+	req.ClassID = clsID
+	appearance := strings.TrimSpace(req.AppearanceJSON)
+	if appearance == "" || appearance == "{}" {
+		appearance = defaultAppearanceJSON(req.RaceID, req.GenderID, req.ClassID, className)
+	}
+	createInfo := req.CreateInfo
+	if len(createInfo) == 0 {
+		createInfo = buildCreateInfoWire(appearance, req.GenderID, req.RaceID, req.ClassID)
+	}
 	if b.deps != nil && b.deps.Characters != nil {
 		if c, err := b.deps.Characters.Create(ctx, &characterv1.CreateCharacterRequest{
-			AccountId:      acctID,
-			Name:           req.Name,
-			RaceId:         req.RaceID,
-			GenderId:       req.GenderID,
-			ClassId:        req.ClassID,
-			ArchetypeId:    archetype,
-			ClassName:      className,
-			AppearanceJson: `{}`,
-			Level:          1,
+			AccountId: acctID, Name: req.Name, RaceId: req.RaceID, GenderId: req.GenderID,
+			ClassId: req.ClassID, ArchetypeId: archetype, ClassName: className,
+			AppearanceJson: appearance, CreateInfo: createInfo, Level: 1,
 		}); err == nil && c != nil {
 			entry := protoToEntry(c, acctID)
 			b.recordMemChar(acctID, entry)
@@ -341,15 +422,9 @@ func (b *characterHTTPBridge) storeCreatedCharacter(ctx context.Context, acctID 
 	}
 	if b.charStore != nil {
 		if c, err := b.charStore.Create(ctx, character.New{
-			AccountID:      acctID,
-			Name:           req.Name,
-			RaceID:         req.RaceID,
-			GenderID:       req.GenderID,
-			ClassID:        req.ClassID,
-			ArchetypeID:    archetype,
-			ClassName:      className,
-			AppearanceJSON: `{}`,
-			Level:          1,
+			AccountID: acctID, Name: req.Name, RaceID: req.RaceID, GenderID: req.GenderID,
+			ClassID: req.ClassID, ArchetypeID: archetype, ClassName: className,
+			AppearanceJSON: appearance, CreateInfo: createInfo, Level: 1, MaxCharacters: character.DefaultMaxCharacters,
 		}); err == nil {
 			entry := storeCharToEntry(c)
 			b.recordMemChar(acctID, entry)
@@ -358,14 +433,8 @@ func (b *characterHTTPBridge) storeCreatedCharacter(ctx context.Context, acctID 
 	}
 	id := randomHex16Bytes()
 	entry := characterEntry{
-		ID:        id,
-		CharID:    id,
-		Name:      req.Name,
-		ClassID:   req.ClassID,
-		RaceID:    req.RaceID,
-		Level:     1,
-		Zone:      "verra-01",
-		AccountID: acctID,
+		ID: id, CharID: id, Name: req.Name, ClassID: req.ClassID, ClassName: className,
+		ArchetypeID: archetype, RaceID: req.RaceID, GenderID: req.GenderID, Level: 1, Zone: "verra-01", AccountID: acctID,
 	}
 	b.recordMemChar(acctID, entry)
 	return entry

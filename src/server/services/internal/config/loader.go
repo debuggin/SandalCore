@@ -69,6 +69,7 @@ func LoadWithEnvFile(path string) (Config, error) {
 	}
 	duration := func(key string, def time.Duration) time.Duration { return parseDur(str(key, ""), def) }
 	grpcPublic := str("AOC_GATEWAY_GRPC_PUBLIC", "") == "1" || str("AOC_GATEWAY_GRPC_BIND_ADDR", "") != ""
+	defCert, defKey := defaultGatewayTLSPaths()
 	return Config{
 		Env:               str("AOC_ENV", "development"),
 		MeshMode:          str("AOC_MESH_MODE", "standalone"),
@@ -79,8 +80,8 @@ func LoadWithEnvFile(path string) (Config, error) {
 		CityNodeGRPCAddr:  firstStr("127.0.0.1:50055", "AOC_CITYNODE_GRPC_ADDR", "AOC_CITYNODE_GRPC_BIND_ADDR", "CITYNODE_GRPC_ADDR"),
 		CityNodeSeed:      str("AOC_CITYNODE_SEED", "config/seeds/citynode_seed.json"),
 		QuestsGRPCAddr:    firstStr("127.0.0.1:50058", "AOC_QUESTS_GRPC_ADDR", "AOC_QUEST_GRPC_BIND_ADDR", "AOC_QUEST_GRPC_ADDR", "QUEST_GRPC_ADDR"),
-		WorldAdminAddr:    firstStr("127.0.0.1:50056", "AOC_WORLD_ADMIN_ADDR", "WORLDD_ADMIN_GRPC_ADDR"),
-		WorldStreamAddr:   firstStr("127.0.0.1:50057", "AOC_WORLD_STREAM_ADDR", "WORLDD_STREAM_GRPC_ADDR"),
+		WorldAdminAddr:    firstStr("127.0.0.1:50056", "AOC_WORLD_ADMIN_ADDR", "AOC_WORLD_ADMIN_GRPC_ADDR", "WORLD_ADMIN_GRPC_ADDR", "WORLDD_ADMIN_GRPC_ADDR"),
+		WorldStreamAddr:   firstStr("127.0.0.1:50057", "AOC_WORLD_STREAM_ADDR", "AOC_WORLD_STREAM_GRPC_ADDR", "WORLD_STREAM_GRPC_ADDR", "WORLDD_STREAM_GRPC_ADDR"),
 		TokenTTL:          duration("AOC_TOKEN_TTL", 24*time.Hour),
 		ServiceTokenFile:  str("AOC_SERVICE_TOKEN_FILE", "dist/services/service.token"),
 		ContentDB:         str("AOC_CONTENT_DB", "dist/content/content.db"),
@@ -93,10 +94,29 @@ func LoadWithEnvFile(path string) (Config, error) {
 		GatewayICSAddr:    firstStr("127.0.0.1:443", "AOC_GATEWAY_ICS_ADDR", "AOC_GATEWAY_HTTP_BIND_ADDR", "AOC_GATEWAY_HTTP_ADDR"),
 		GatewayGRPCAddr:   firstStr("127.0.0.1:50050", "AOC_GATEWAY_GRPC_ADDR", "AOC_GATEWAY_GRPC_BIND_ADDR"),
 		GatewayGRPCPublic: grpcPublic,
-		GatewayTLSCert:    str("AOC_GATEWAY_TLS_CERT", "dist/certs/server.pem"),
-		GatewayTLSKey:     str("AOC_GATEWAY_TLS_KEY", "dist/certs/server.key"),
+		GatewayTLSCert:    str("AOC_GATEWAY_TLS_CERT", defCert),
+		GatewayTLSKey:     str("AOC_GATEWAY_TLS_KEY", defKey),
 		TicketTTL:         duration("AOC_TICKET_TTL", 2*time.Minute),
 	}, err
+}
+
+func defaultGatewayTLSPaths() (string, string) {
+	for _, pair := range [][2]string{
+		{"/app/certs/server.pem", "/app/certs/server.key"},
+		{"/app/certs/server.crt", "/app/certs/server.key"},
+		{"dist/certs/server.pem", "dist/certs/server.key"},
+		{"certs/server.pem", "certs/server.key"},
+	} {
+		if isRegularFile(pair[0]) && isRegularFile(pair[1]) {
+			return pair[0], pair[1]
+		}
+	}
+	return "dist/certs/server.pem", "dist/certs/server.key"
+}
+
+func isRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func (c Config) Validate() error {
@@ -281,10 +301,14 @@ func BindContainerFlags(service string) {
 	ensureStringFlag("citynode", "", "citynode gRPC address")
 	ensureStringFlag("quest", "", "quest gRPC address")
 	ensureStringFlag("mesh", "", "mesh gRPC address")
-	ensureStringFlag("worldd-admin", "", "worldd admin gRPC address")
-	ensureStringFlag("worldd-stream", "", "worldd stream gRPC address")
-	ensureStringFlag("worldd-host", "", "static worldd host")
-	ensureStringFlag("worldd-port", "", "static worldd port")
+	ensureStringFlag("world-admin", "", "world admin gRPC address")
+	ensureStringFlag("world-stream", "", "world stream gRPC address")
+	ensureStringFlag("world-host", "", "static world host")
+	ensureStringFlag("world-port", "", "static world port")
+	ensureStringFlag("worldd-admin", "", "world admin gRPC address (legacy alias)")
+	ensureStringFlag("worldd-stream", "", "world stream gRPC address (legacy alias)")
+	ensureStringFlag("worldd-host", "", "static world host (legacy alias)")
+	ensureStringFlag("worldd-port", "", "static world port (legacy alias)")
 	ensureStringFlag("content-db", "", "content database path")
 	ensureStringFlag("seed", "", "citynode seed path")
 	if flag.Lookup("no-kit-backfill") == nil {
@@ -319,15 +343,12 @@ func applyContainerFlagEnv(service string) {
 	setIfNonEmpty("AOC_CITYNODE_GRPC_ADDR", flagVal("citynode"))
 	setIfNonEmpty("AOC_QUESTS_GRPC_ADDR", flagVal("quest"))
 	setIfNonEmpty("AOC_MESH_GRPC_ADDR", flagVal("mesh"))
-	setIfNonEmpty("AOC_WORLD_ADMIN_ADDR", flagVal("worldd-admin"))
-	setIfNonEmpty("AOC_WORLD_STREAM_ADDR", flagVal("worldd-stream"))
+	setIfNonEmpty("AOC_WORLD_ADMIN_ADDR", firstNonEmpty(flagVal("world-admin"), flagVal("worldd-admin")))
+	setIfNonEmpty("AOC_WORLD_STREAM_ADDR", firstNonEmpty(flagVal("world-stream"), flagVal("worldd-stream")))
 	setIfNonEmpty("AOC_CONTENT_DB", flagVal("content-db"))
 	setIfNonEmpty("AOC_CITYNODE_SEED", flagVal("seed"))
-	if wh := flagVal("worldd-host"); wh != "" && os.Getenv("AOC_MESH_STATIC_WORLD") == "" {
-		wp := flagVal("worldd-port")
-		if wp == "" {
-			wp = "7777"
-		}
+	if wh := firstNonEmpty(flagVal("world-host"), flagVal("worldd-host"), os.Getenv("AOC_WORLD_HOST"), os.Getenv("WORLD_HOST"), os.Getenv("WORLDD_HOST")); wh != "" && os.Getenv("AOC_MESH_STATIC_WORLD") == "" {
+		wp := firstNonEmpty(flagVal("world-port"), flagVal("worldd-port"), os.Getenv("AOC_WORLD_PORT"), os.Getenv("WORLD_PORT"), os.Getenv("WORLDD_PORT"), "7777")
 		_ = os.Setenv("AOC_MESH_STATIC_WORLD", net.JoinHostPort(wh, wp))
 	}
 	applyServicePrimaryAddr(service, addr, httpAddr, grpcAddr)
@@ -356,8 +377,8 @@ func applyServicePrimaryAddr(service, addr, httpAddr, grpcAddr string) {
 			_ = os.Setenv("AOC_GATEWAY_GRPC_ADDR", grpcAddr)
 			_ = os.Setenv("AOC_GATEWAY_GRPC_PUBLIC", "1")
 		}
-	case "meshgw":
-		setIfNonEmpty("AOC_MESHGW_ADDR", primary)
+	case "mesh-gateway", "meshgw":
+		setIfNonEmpty("AOC_MESH_GATEWAY_ADDR", primary)
 	case "admin":
 		setIfNonEmpty("AOC_ADMIN_ADDR", primary)
 	}

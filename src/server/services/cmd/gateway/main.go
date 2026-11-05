@@ -206,11 +206,23 @@ func resolveAuthHTTPBaseURL() string {
 }
 
 func resolveWorldEndpoint() string {
-	host := strings.TrimSpace(os.Getenv("WORLDD_HOST"))
+	host := strings.TrimSpace(os.Getenv("WORLD_HOST"))
+	if host == "" {
+		host = strings.TrimSpace(os.Getenv("AOC_WORLD_HOST"))
+	}
+	if host == "" {
+		host = strings.TrimSpace(os.Getenv("WORLDD_HOST"))
+	}
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	port := strings.TrimSpace(os.Getenv("WORLDD_PORT"))
+	port := strings.TrimSpace(os.Getenv("WORLD_PORT"))
+	if port == "" {
+		port = strings.TrimSpace(os.Getenv("AOC_WORLD_PORT"))
+	}
+	if port == "" {
+		port = strings.TrimSpace(os.Getenv("WORLDD_PORT"))
+	}
 	if port == "" {
 		port = "7777"
 	}
@@ -464,19 +476,44 @@ func icsCredentials(certFile, keyFile string) (credentials.TransportCredentials,
 }
 
 func icsCredentialsOrEphemeral(certFile, keyFile string) (credentials.TransportCredentials, error) {
-	creds, err := icsCredentials(certFile, keyFile)
-	if err == nil {
-		return creds, nil
+	candidates := [][2]string{
+		{strings.TrimSpace(certFile), strings.TrimSpace(keyFile)},
+		{"/app/certs/server.pem", "/app/certs/server.key"},
+		{"/app/certs/server.crt", "/app/certs/server.key"},
+		{"dist/certs/server.pem", "dist/certs/server.key"},
+		{"certs/server.pem", "certs/server.key"},
 	}
-	if _, cerr := os.Stat(certFile); errors.Is(cerr, os.ErrNotExist) {
-		if _, kerr := os.Stat(keyFile); errors.Is(kerr, os.ErrNotExist) {
-			if altCreds, aerr := icsCredentials("/app/certs/server.pem", "/app/certs/server.key"); aerr == nil {
-				return altCreds, nil
-			}
-			return ephemeralICSCredentials()
+	var primaryErr error
+	for i, pair := range candidates {
+		if pair[0] == "" || pair[1] == "" {
+			continue
+		}
+		creds, err := icsCredentials(pair[0], pair[1])
+		if err == nil {
+			slog.Info("loaded ICS TLS certificate", "cert", pair[0])
+			return creds, nil
+		}
+		if i == 0 {
+			primaryErr = err
 		}
 	}
-	return nil, err
+	if primaryErr != nil && !bothCertFilesMissing(certFile, keyFile) {
+		return nil, primaryErr
+	}
+	slog.Warn("no disk TLS certificate found for ICS listener; falling back to ephemeral self-signed TLS certificate", "cert", certFile, "key", keyFile)
+	return ephemeralICSCredentials()
+}
+
+func bothCertFilesMissing(certFile, keyFile string) bool {
+	for _, p := range [2]string{strings.TrimSpace(certFile), strings.TrimSpace(keyFile)} {
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			return false
+		}
+	}
+	return true
 }
 
 func ephemeralICSCredentials() (credentials.TransportCredentials, error) {
@@ -491,14 +528,14 @@ func ephemeralICSCredentials() (credentials.TransportCredentials, error) {
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{"localhost", "gateway"},
+		DNSNames:     []string{"localhost", "gateway", "aoc-gateway"},
 		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
 	if err != nil {
 		return nil, fmt.Errorf("ICS ephemeral certificate: %w", err)
 	}
-	slog.Info("gateway using ephemeral in-memory self-signed TLS certificate for ICS listener")
+	slog.Warn("gateway using ephemeral in-memory self-signed TLS certificate for ICS listener")
 	return loggedCreds{credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: priv}},
 		MinVersion:   tls.VersionTLS12,

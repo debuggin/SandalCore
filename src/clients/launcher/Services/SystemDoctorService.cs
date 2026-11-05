@@ -9,7 +9,7 @@ public sealed record DoctorCheckItem(string CheckId, string Title, DoctorCheckSe
 
 public sealed record DoctorProbeInput
 {
-    public bool WorlddUdp7777Ready { get; init; } = true;
+    public bool WorldUdp7777Ready { get; init; } = true;
     public bool GatewayHttp8080Ready { get; init; } = true;
     public bool PostgresTcp5432Ready { get; init; } = true;
     public bool NatsTcp4222Ready { get; init; } = true;
@@ -75,7 +75,7 @@ public static class SystemDoctorService
         DoctorProbeInput p = input ?? new DoctorProbeInput();
         DoctorCheckItem[] checks =
         [
-            EvaluatePortReadiness(7777, "UDP", "worldd", p.WorlddUdp7777Ready),
+            EvaluatePortReadiness(7777, "UDP", "world", p.WorldUdp7777Ready),
             EvaluatePortReadiness(8080, "HTTP", "gateway", p.GatewayHttp8080Ready),
             EvaluatePortReadiness(5432, "TCP", "PostgreSQL", p.PostgresTcp5432Ready),
             EvaluatePortReadiness(4222, "TCP", "NATS", p.NatsTcp4222Ready),
