@@ -1,303 +1,124 @@
-# libaocnet
+# `libaocnet` — UE5 / IntrepidNet Wire Protocol & Replication Library
 
-C++20 static library with the AoC / IntrepidNet protocol code: everything
-needed to read and write the bits on the wire, independent of any server.
+`libaocnet` (`aocnet`) is a standalone C++23 static library implementing the Unreal Engine 5.6 / IntrepidNet UDP wire protocol, bit-stream codecs, generated `RepLayout` class schemas, and stateful actor/subobject replication engine used by `world` (`aoc-world`).
 
-| Directory | Contents |
-|---|---|
-| `protocol/conn/` | The connection (plan A4): 14-bit sequence arithmetic (`sequence.h`), packet acks ported from UE5 FNetPacketNotify (`packet_notify.h`), the stateless handshake with Intrepid's 94-byte extension and the cookie-derived initial sequences (`handshake.h`), data-packet framing in both directions and the control-channel bunch header (`packet_framing.h`), NMT messages (`nmt.h`). Tested against the retail client's captured packets (`tests/capture_packets.h`) |
-| `protocol/wire/` | Bit primitives (`ue5_primitives.h`), packet header and PacketInfo (`packet_info.h`), bunch headers and `walk_bunches` (`packet_parser.h`), partial-bunch reassembly, RPC payload codecs (`actor_rpc_parser.h`, `level_visibility.h`, `hit_confirmation.h` (superseded by `repl/hit_codec.h`), `server_move_parser.h`) |
-| `protocol/emit/` | Bunch writer, `ActorBuilder`, package-map exports, RepLayout codecs (`replayout/`) |
-| `protocol/schema/` | The older hand-derived class schemas and the schema registry (`actor_rep_handles.h`, the per-actor `*_schema.cpp`); new code uses `generated/` |
-| `protocol/schema/generated/` | The client's net classes as C++ tables (RepLayout commands, field tables, RPC parameters), generated from the client's own class layout by the schema generator; `MANIFEST.sha256` keeps them honest |
-| `protocol/repl/` | The replication core (plan A4R): replicated values, per-object state, NetSerialize codecs, RepLayout blocks with a per-connection shadow, fast arrays, RPCs, exports and content blocks, and the replicator that emits an actor's open, updates and RPCs for `world`'s (`aoc-world`) `Connection`. Tested bit for bit against the original server's captured bunches |
-| `protocol/net_guid_allocator.h` | NetGUID allocation per player (the retired login server used it; no target includes it now) |
-| `protocol/server_guid_allocator.h` | NetGUIDs minted under a world server's ServerId (`world` / `aoc-world`) |
+---
 
-## Boundary rule
+## 1. Directory Layout & Physical Boundary
 
-Files here may include only the C++ standard library, `spdlog`, and headers
-under `libs/aocnet`. The `aocnet` target's only include directory is this
-folder, so anything else fails to compile.
+| Directory / Header | Responsibility |
+|:---|:---|
+| `protocol/conn/` | 14-bit sequence number arithmetic (`sequence.h`), UE5 `FNetPacketNotify` ack bitvectors (`packet_notify.h`), 4-way `StatelessConnect` handshake with the 96-byte Intrepid extension block and cookie-derived initial sequences (`handshake.h`), bidirectional data-packet and `Ch 0` control-bunch framing (`packet_framing.h`), and `NMT_*` control messages (`nmt.h`). |
+| `protocol/wire/` | Bit-level UE5 primitives (`ue5_primitives.h`), packet header & `PacketInfo` (`packet_info.h`), bunch headers and `walk_bunches` (`packet_parser.h`), partial-bunch reassembly (`kMaxSingleBunchBits = 7621`, `kMaxPartialBunchBits = 7616`), and low-level RPC payload parsers (`actor_rpc_parser.h`, `level_visibility.h`, `server_move_parser.h`). |
+| `protocol/emit/` | Outbound bunch writer, `ActorBuilder`, package-map export framing, and `RepLayout` field emitters (`replayout/`). |
+| `protocol/schema/` | Base schema registry and legacy hand-derived class schemas (`actor_rep_handles.h`, `*_schema.cpp`). |
+| `protocol/schema/generated/` | Client net-class schemas (`RepLayout` commands, net-field indices, and RPC parameter layouts) generated directly from `AOCClient-Win64-Shipping.exe` and verified via `MANIFEST.sha256`. |
+| `protocol/repl/` | Stateful replication engine: typed `Value`s, `RepState`, `NetSerialize` struct codecs, per-connection `RepShadow` delta blocks, `FFastArraySerializer` deltas, typed RPC builders/parsers, package-map `ExportChain`/`ExportAcks`, `SendLedger` NAK recovery, and `open_actor` / `update_actor` / `call_rpc` emitters. |
+| `protocol/server_guid_allocator.h` | Deterministic `FIntrepidNetGUID` allocation scoped under a world server's `ServerId`. |
+| `protocol/net_guid_allocator.h` | Per-player `NetGUID` allocator utility header. |
 
-Include paths keep the `protocol/` prefix: `#include "protocol/wire/packet_parser.h"`.
+### Header Boundary Rule
 
-One gap in that enforcement: a header is only checked when some translation unit of the
-`aocnet` target, its tests or `world` includes it. `net_guid_allocator.h` and `emit/actor_bunch.h`
-are included by none (the retired login server used them), so a forbidden include there would
-first fail in a new consumer.
+Translation units in `src/libs/aocnet/` may include only the C++ standard library, `spdlog`, and headers within `src/libs/aocnet/` using the `protocol/` prefix (for example, `#include "protocol/wire/packet_parser.h"`). The `aocnet` CMake target exports `NOMINMAX` on Windows so `std::min` / `std::max` in `ue5_primitives.h` never collide with Windows macros.
 
-Consumers on Windows get `NOMINMAX` from the target (`ue5_primitives.h` calls
-`std::min`).
+---
 
-## Class schemas (`protocol/schema/generated/`)
+## 2. Generated Class Schemas (`protocol/schema/generated/`)
 
-The client's net classes as C++ tables, generated from the exe so nothing in them is guessed.
-The schema generator reads `AOCClient-Win64-Shipping.exe` (read-only) and writes one header per class and per super class:
-49 schemas, 45 native and 4 Blueprint (`PlayerPawn_C`, `AoCPlayerControllerBP_C`,
-`AoCGameStateBP_C`, `AoCPlayerStateBP_C`); the mounts milestone (stage 1) added `UMountComponent` (12 commands, 11 net fields, two RPCs: `ItemInstanceGuid` 5-8, `bIsDesummoning` 9, `bIsSummoning` 10, `DissolveTimer` 11; `find_component_schema("GroundMountComponent" | "FlyingMountComponent" | "AquaticMountComponent")` and `find_class_schema("MountComponent_C")`, an alias in `CLASS_ALIASES` with no header of its own: the Blueprint component class the retail opens export it as, which adds no replicated variable); plan D2 (review) added `AAoCAbilityLingeringEffect`, the actor a Bard dance's visual effect is on the client
-(32 commands, 21 fields, no RPC; its retail opens are in `src/server/world/tests/capture_lingering.h`); plan D1 added `ULevelingComponent`, the PlayerController's `XPTracker`
-(five fast maps and three RPCs; `find_component_schema("XPTracker")`); plan E1, stage 3, part 2 added `ULootComponent` (`OwnerGuid`, `CosmeticData.TopRarity`, `ServerLootContainer`) and `APlayerLootPile` (the actor a dead player's materials fall into; its three loot components are dynamic subobjects, as a corpse's); plan E1 added the other actors' classes: `ANPCCharacter` (70 commands, 91 net fields: ReplicatedMovement, Owner, Controller, the timestamp,
-`CurrentMovementInput`), `AGatherableActor` (28 commands: `GatherableGuid` 23-26, `bGathered` 27), and the components of an NPC and of a node: `UNPCInfo` (the subobject every NPC calls `BaseCharacterInfo`:
-`CharacterGuid`, `Level`, `CreatureOwnerName`), `UNPCCombatInfo`, `UNPCSecondaryInfo` (`InteractInfo`: `PopInstanceId` 34, `PopAssetId` 35) and its parent `UCharacterSecondaryInfo`, `UNPCAppearanceComponent`,
-`UInteractableComponent` (`InteractVisibleStateMap`; four RPCs, none of them the client's interaction request) and `UAoCNodePlotComponent`; `find_component_schema("InteractInfo")`, `("NPCAppearanceComponent")`, `("InteractableComponent")` and
-`("AoCNodePlot")` name them. Each holds three tables, flattened super class first
-(`schema_types.h`, the one hand-written file, describes them):
+The schema generator in [`src/tools/schemagen/`](../../tools/schemagen/) reads `AOCClient-Win64-Shipping.exe` and cooked packages read-only to emit deterministic C++ tables for the client's replicated classes and pawn/actor components:
 
-- RepLayout commands: the wire handle (1-based), the dotted path (`AttachmentReplication.AttachParent`),
-  the property type, the wire width and, for a NetSerialize struct, its name. `commands[handle - 1]`.
-- Net fields: the property and RPC field indices of the class, NumFields (the `SerializeInt` maximum
-  of a field header) and the function flags.
-- RPC parameters: per RPC, its parameters flattened into commands the way `FRepLayout::InitFromFunction`
-  does.
+- **Native & Blueprint Actor Classes**: 49 core class schemas (45 native and 4 Blueprint classes: `PlayerPawn_C`, `AoCPlayerControllerBP_C`, `AoCGameStateBP_C`, `AoCPlayerStateBP_C`), including `ANPCCharacter`, `AGatherableActor`, `AAoCAbilityLingeringEffect`, `APlayerLootPile`, and `ANodeLayoutReplicator`.
+- **Component Schemas**: `ULevelingComponent` (`XPTracker`), `UMountComponent` (`GroundMountComponent`, `FlyingMountComponent`, `AquaticMountComponent`, and the `MountComponent_C` alias), `ULootComponent`, `UNPCInfo` (`BaseCharacterInfo`), `UNPCCombatInfo`, `UNPCSecondaryInfo` (`InteractInfo`) and its parent `UCharacterSecondaryInfo`, `UNPCAppearanceComponent`, `UInteractableComponent`, and `UAoCNodePlotComponent`.
 
-`index.h` finds a schema by native or Blueprint class name (`find_class_schema("AoCPlayerControllerBP_C")`),
-a pawn component by its export name (`find_component_schema("BaseCharacterInfo")`), or lists all of them.
-The rules the generator follows (`UClass::ClassReps`, `FClassNetCacheMgr`, enum widths, ...) are in
-`src/tools/schemagen/` (`scripts/generators.ps1 -Action schemagen`) with their UE 5.6 source functions; every exe address is in the header
-that uses it.
+Each generated header conforms to `schema_types.h` and defines three flattened tables ordered from root superclass to leaf class:
+
+1. **`RepLayout` Commands (`commands[handle - 1]`)**: 1-based wire handle, dotted property path (`AttachmentReplication.AttachParent`), `PropType`, wire bit width, and `NetSerialize` struct type name.
+2. **Net Fields**: Property and RPC field indices, `NumFields` (the `SerializeInt` upper bound for field headers), and `UFunction` flags.
+3. **RPC Parameters**: Per-RPC parameter lists flattened into `RepLayout` commands matching `FRepLayout::InitFromFunction`.
+
+`index.h` resolves schemas by native or Blueprint class name (`find_class_schema("AoCPlayerControllerBP_C")`) or by component export name (`find_component_schema("BaseCharacterInfo")`).
+
+### Schema Verification & Blueprint Invariants
 
 ```powershell
-# the schema generator rewrites what changed, and MANIFEST.sha256 (about 50 s)
-# with -Check it regenerates in memory and compares; exit 1 on any difference
-pwsh -File scripts/generators.ps1 -Action schemagen -Check
+# Verify that all generated headers and index.cpp match MANIFEST.sha256 (LF-normalized)
+pwsh -File scripts/generators.ps1 -Only schemagen -Strict
 ```
 
-`MANIFEST.sha256` lists the generated files (every header and `index.cpp` but `schema_types.h`) as
-`sha256sum` lines, hashed with LF line endings so a CRLF checkout matches. `-Check` needs only the exe:
-it fails when the manifest, a file on disk, or the regenerated text differ, or when the directory holds a
-header the tool does not write. Run it after touching `src/tools/schemagen/`, and whenever the exe changes.
+- **Blueprint Class Layout**: The four Blueprint actor classes add zero `CPF_Net` replicated properties beyond their native C++ parent classes; `PlayerPawn_C` (4 functions) and `AoCPlayerControllerBP_C` (6 functions) extend only the net-field table with `FUNC_Net` Blueprint RPC events sorted by name (`BLUEPRINT_NET_FUNCTIONS`).
+- **Unsupported Container Guard (`PropType::Unknown`)**: Four properties using `TOptional` or `TSet` (`AAoCGameStateBase::Quests.GeneralQuestMarker`, `AAoCPlayerController::QuestInstance.QuestObjectiveMarker.MapMarkerOverride`, and `AAoCPlayerController::SpawnQueryResults.ChildSocketGuids` / `.UsedChildSocketGuids`) are emitted as `PropType::Unknown` and rejected by `RepState::set` at construction time.
 
-The Blueprint classes, found in the cooked packages:
+---
 
-- They add no replicated variable: the class member lists carry no `CPF_Net` property (`PlayerPawn_C` 56
-  members, `AoCPlayerControllerBP_C` 37, `AoCPlayerStateBP_C` 1, `AoCGameStateBP_C` 3), and the captured
-  PlayerController open decodes to its last bit on native handles alone. A Blueprint class's RepLayout
-  commands are its native parent's.
-- `PlayerPawn_C` (4) and `AoCPlayerControllerBP_C` (6) do add replicated Blueprint events (`FUNC_Net`
-  functions). They extend the field table after the parent's fields, sorted by name
-  (`BLUEPRINT_NET_FUNCTIONS` in `src/tools/schemagen/`).
-- `pwsh -File scripts/generators.ps1 -Action schemagen` re-checks both facts against the cooked packages.
+## 3. Replication Core (`protocol/repl/`)
 
-Two property types are not modelled, `TOptional` and `TSet`, in four properties: `AAoCGameStateBase`'s
-`Quests.GeneralQuestMarker`, and `AAoCPlayerController`'s `QuestInstance.QuestObjectiveMarker.MapMarkerOverride`,
-`SpawnQueryResults.ChildSocketGuids` and `.UsedChildSocketGuids`. schemagen warns, the header carries a NOTE,
-and the command has `PropType::Unknown`, which no `Value` fits, so `RepState::set` refuses it.
+`protocol/repl/` provides bit-exact UE5 replication state management, `NetSerialize` codecs, and typed RPC framing verified against retail packet captures.
 
-## Replication core (`protocol/repl/`)
+| Header | Contents |
+|:---|:---|
+| `value.h` | `Value`: Tagged union of wire-replicated values (`bool`, integers, floats, `FString`, `FName`, `FText`, object references, soft object references, typed `NetSerialize` structs, and dynamic arrays). Quantized vectors store wire integers directly for lossless round-tripping; floats compare by raw IEEE-754 bit pattern. |
+| `rep_state.h` | `RepState`: Per-object property map indexed by `RepLayout` handle. `set(schema, "path", value)` validates property path, type, bit width, string NUL-safety, and struct codec availability up front. |
+| `codecs.h` | Readers/writers for `FString`, `FName`, `FText`, object/soft-object refs, `FVector`/`FVector2D`/`FRotator`, `FVector_NetQuantize*` (`QuantVec`), `FRepMovement`, `FUniqueNetIdRepl`, gameplay tags, `FStatInt32InstRep`, `FCharacterLoadTracker`, `FQuat`, `FGuidToBoolWrapper`, `FAlignmentContainer`, `FAppearanceId`, `FCharacterCustomizationSaveData`, `FPlayerMovementInput` (4-bit movement direction), and `CodecOptions` (rotation width, quantization levels, extended stat records, customization presets, and `inline_objects`). |
+| `rep_block.h` | `write_rep_block` / `read_rep_block` (`bDoChecksum`, ascending handle loop, terminator `0`, dynamic array count + element handles), `RepShadow` per-connection handle tracking, `ParentMask` role filtering, and `SerializeInt(field, NumFields + 1)` field headers. |
+| `fast_array.h` | `FFastArraySerializer` delta engine: `FastArrayState` (`ReplicationID`, `ReplicationKey`, array key), `FastArrayShadow`, `write_fast_array_delta`, and `write_fast_array_fields`. |
+| `rpc.h` | Bidirectional RPC serialization via `RpcSchema` (`FRepLayout::SendPropertiesForRPC`) and `read_client_bunch` for client-to-server bunches (safely skipping unrecognized or in-place subobject blocks via their bit-length headers and recording `ClientBunch::in_place` / `skipped_fields`). |
+| `subobject.h` | Package-map exports (`ExportLink`, `ExportChain`, `pack_exports` into `<= 7621`-bit bunches, `ExportAcks`) and content blocks (`write_content_block`, `read_content_blocks`, `InPlaceName`). |
+| `move_packed.h` | `read_move_packed` / `write_move_packed` for `ServerMovePacked` (`FCharacterServerMovePackedBits`: new, pending, and old moves with `TimeStamp`, acceleration, location, control rotation, flags, movement base/mode, and AoC input direction). |
+| `ability_rpc.h` | Typed parsers/builders for `ServerTriggerAbility` (`TriggerAbility`, including `inline_targets` for unexported NPC `CollisionCylinder` components), `ServerNotifyHeldAbilityCancelled`, `read_trigger_prefix`, and `ClientEndAbility(ClientInstanceId)`. |
+| `item_codec.h` | `NetSerialize` codecs for `FItemInstance` (1,096 bits populated, 1 bit empty; record ID, packed ints, gems, durability, GUID, timestamps, duplicated fields, persisted stats, cooldowns, custom data) and `FItemStorageEvent` (including optional `FCalloutQueueInfo` harvest acquisition popups), with strict element-count bounds (`<= 64` gems/cooldowns/custom/containers, `<= 31` stats, `<= 4096` slots). |
+| `storage_rpc.h` | Typed storage and loot RPC framing: `StoragePayload` (`ClientReceiveStoragePayload`), `ClientReceiveStorageEvent` / `ServerRequestStorageEvent`, `LootPayload` (`ClientReceiveLootStoragePayload`), `ServerRequestLootStorageEvents`, and `ClientRemoveListenerFromStorage`. |
+| `item_rpc.h` | Typed `ItemUse` parsers/builders for `ServerItemUsed` and `ServerActivateItem` (`Storage`, `Slot`, `ExpectedItem`, `RequestedEquipSlot`). |
+| `hit_codec.h`, `hit_rpc.h` | `NetSerialize` codec for `FSerializedClientHitConfirmations` (`HitConfirmations` / `HitInstance` / `HitTarget`, up to 40 targets and 10 stat/hit modifiers per hit) and typed RPC helpers for `RequestHitVerification_Server` (`parse_hit_request` with `CodecOptions::inline_objects`) and `ClientHitConfirmationsReliable` / `ClientHitConfirmations` (`client_hit_confirmations` with `extra_exports` for target NPC `CollisionCylinder` chains). |
+| `leveling.h`, `skill_rpc.h` | `ULevelingComponent` (`XPTracker`) `LevelingState` across the 5 fast maps (XP/debt, certifications, skill points, skill tree rank lists) and typed RPC helpers for `ServerPurchaseSkillBuild`, `ClientUpdateSkillOnActionbar`, `ClientReceiveActionbarSlotPayload`, `ServerSetActionbarSlotUseData`, and `ServerSetUseRangedWeapon`. |
+| `vendor_codec.h`, `vendor_rpc.h` | `NetSerialize` codecs and RPC helpers for `FVendorPurchaseCart`, `FVendorTransactionCart`, `ServerInteractWithInteractableComponent`, `ClientOpenVendor`, and `FNodeTaxDetails` (`ServerGetNodeTaxTable`, `ClientSetNodeTaxTable`). |
+| `craft_rpc.h` | Typed RPC builders/parsers for `ClientOpenCraftingStationUI` (`open_station_params`, `parse_open_station`). |
+| `channeling_codec.h` | `NetSerialize` codec for `FChannelingData` (handle 26 on `UCharacterSecondaryInfo` / `InteractInfo`) driving client gathering animations and progress bars. |
+| `callout_codec.h` | `NetSerialize` codec for `FLocalizedMessage` on `PlayerController` `CalloutQueueReplication` fast arrays. |
+| `block_reader.h` | `load_object_state` converting captured `RepLayout` and fast-array content blocks into live `ObjectState` templates. |
+| `replicator.h`, `send_ledger.h` | `Actor`, `ActorShadow`, `open_actor`, `update_actor`, `call_rpc` / `call_rpcs`, and `SendLedger` per-channel unreliable NAK recovery. |
 
-What an actor is as the server holds it, and what goes out for it, in the form the original server
-sent (`fixtures/replay_data.bin`). Every form here was read off the capture and checked bit for bit by
-the `test_repl_*` tests; the facts' evidence (packet numbers, exe addresses, UE source functions) is in
-each header's top comment.
-
-| File | Contents |
-|---|---|
-| `value.h` | `Value`: one replicated value, tagged by what the wire carries (bool, integers, floats, FString, FName, FText, object reference, soft object, a NetSerialize struct in its typed form, a dynamic array of element states). Quantized values are held as the integers on the wire, so bits round trip exactly; floats compare by bit pattern |
-| `rep_state.h` | `RepState`: an object's values by RepLayout handle. `set(schema, "path", value)` checks the path, the kind and the width, and refuses what the writer would refuse (a NUL in a string, a quantized component over 63 bits, an id over 255 bytes, a struct without a codec), so a bad value fails where it is built and cannot stall the object later |
-| `codecs.h` | Readers and writers for FString, FName, FText, objects, soft objects, FVector / FVector2D / FRotator, the `FVector_NetQuantize*` family (`QuantVec`), `FRepMovement`, `FUniqueNetIdRepl`, gameplay tags, `FStatInt32InstRep`, `FCharacterLoadTracker`, and AoC's own structs: FQuat, FGuidToBoolWrapper, FAlignmentContainer, FAppearanceId, FCharacterCustomizationSaveData, `FPlayerMovementInput` (plan E1: four bits, the direction an NPC or a player holds; the last four bits of every one of the 323 NPC opens of the retail capture), and (plans A7 and B2) `FItemInstance` and `FItemStorageEvent`, whose codecs are in `item_codec.h`. `CodecOptions` carries what the bytes do not say (FRepMovement's rotation width and quantization levels, which stat Records carry Base and EquipmentValue, whether the client knows a customization preset, and `inline_objects`: whether an object parameter of a client RPC may name its object in place, as a `Value` `InlineObject`, the form the client uses for the pawn's CollisionCylinder in a trigger's Targets). A struct without a codec is refused by name; no reader guesses |
-| `rep_block.h` | The RepLayout block (`write_rep_block` / `read_rep_block`): bDoChecksum, handles ascending, handle 0; dynamic arrays as a count and element handles. `RepShadow` is what one connection last got: the first send is every set handle, later ones only the changed handles. `ParentMask` leaves out the properties a connection should not get. The field-loop header (`SerializeInt(field, NumFields + 1)`, packed bit count) is here too |
-| `fast_array.h` | `FFastArraySerializer`'s delta payload: `FastArrayState` (items with ReplicationID and Key, the array key), `FastArrayShadow` (the last key and ID-to-key map), `write_fast_array_delta`, `write_fast_array_fields` (right after the RepLayout block, or alone: a StatsComponent block has no RepLayout block) and the readers |
-| `rpc.h` | RPCs by their `RpcSchema`, both directions: parameters as `FRepLayout::SendPropertiesForRPC` writes them, the field header, `read_client_bunch` for C>S bunches (a block it cannot serve -- a RepLayout block, a subobject nothing resolves or the client names in place, an RPC field the class has no RPC for -- is skipped by its payload bits and the rest of the bunch is read; `ClientBunch::in_place` and `skipped_fields` say what was skipped) |
-| `subobject.h` | Package-map exports (`ExportLink`, `ExportChain`, `pack_exports` into bunches of at most 7621 bits, `ExportAcks`), and content blocks (`write_content_block`, `read_content_blocks`): stably named and dynamic subobjects, and the client's form, where a subobject the server never gave a GUID is named in place (`InPlaceName`: the default GUID, export flags, outer, path, checksum) |
-| `move_packed.h` | The parameter of `ServerMovePacked` (plan A6): `read_move_packed` / `write_move_packed` for the `FCharacterServerMovePackedBits` the client sends, its new, pending and old moves (TimeStamp, acceleration, location, control rotation, flags, movement base and mode, AoC's input direction). The layout is from the exe and every captured move reads and writes back to the client's bits |
-| `ability_rpc.h` | The ability RPCs of plan A7: `parse_trigger_ability` and `parse_held_ability_cancelled` read `ServerTriggerAbility` and `ServerNotifyHeldAbilityCancelled` from a decoded call (`TriggerAbility`: AbilityGuid, ClientInstanceId, AnimationIndex, InputVector, the targets by GUID and, since the E1 stage 3 fix, the ones named in place as `inline_targets` (an NPC's CollisionCylinder: the client has no GUID for a component the server never exported), ItemData; the cancel's ClientInstanceId), `read_trigger_prefix` reads the first two parameters of a call that did not decode whole, and `client_end_ability` builds the server's `ClientEndAbility(ClientInstanceId)` (reliable). All 54 captured calls of `tests/capture_abilities.h` read and write back to the client's bits |
-| `item_codec.h` | The item structs of plan B2, read from the client exe and tested bit for bit against the retail captures: `FItemInstance` (`ItemInstance`: has-item bit, record id, four packed ints, gems, durability, stolen, GUID, creation time, crate guid, the three duplicated members written twice as the exe does, node, lock, persisted stats, cooldowns, custom data, timestamp; a plain instance is 1,096 bits, the empty one 1), `StorageEventContainer` and `FItemStorageEvent` (`ItemStorageEvent`, with its optional `FCalloutQueueInfo` -- `CalloutQueueInfo`, the pick-up popup of a harvest: the "Acquired <item> xN" message, the item again, type, size, category and time, proven on the 24 retail harvest events). Every layout, exe address and bound is in the header's top comment. The readers refuse what the exe's writer never produces (a duplicated member whose copies differ, a packed int that is not minimal or is over 32 bits, a UBOOL above 1, an event's callout that holds an FText of another history or a localized message with arguments) and bound every count (64 gems, 31 persisted stats, 64 cooldowns, 64 custom data entries, 64 target containers, 4,096 slots a container; a count is also checked against the bits left) so a hostile count buys no memory |
-| `storage_rpc.h` | The storage RPCs in a typed form: `StoragePayload` (`ClientReceiveStoragePayload`'s `TargetStorage` and `FItemStorageData`: one `StorageSlot` per `MaximumItems`, an empty slot all zeros, a filled slot's `Slot` its index; `storage_payload_params` / `parse_storage_payload`, on the pawn's and on the PlayerController's schema entry) and `storage_event_params` / `parse_storage_event` for the RPCs whose one parameter is an `FItemStorageEvent` (`ClientReceiveStorageEvent`, `ServerRequestStorageEvent`); since plan E1 stage 3 part 2 the loot window's RPCs: `LootPayload` (`ClientReceiveLootStoragePayload`: `LootActor`, the same `FItemStorageData` as a storage payload with `bClientRetrieveOnly` and each slot's loot permission, and `LootAllocationMethods`), `loot_payload_params` / `parse_loot_payload`, `parse_loot_events` (`ServerRequestLootStorageEvents`: the client's type-3 events) and `remove_listener_params` (`ClientRemoveListenerFromStorage`); `test_repl_loot` decodes every loot RPC of the retail capture and rebuilds them bit for bit |
-| `item_rpc.h` | The client's item-use RPCs of plan B2 in a typed form: `parse_item_used` and `parse_activate_item` read `ServerItemUsed` and `ServerActivateItem` (the same four parameters, on the pawn: `Storage`, `Slot`, `ExpectedItem` (the instance guid the client believes is there) and `RequestedEquipSlot`, `kAnyEquipSlot` 0xFFFFFFFF in all 141 retail equips) from a decoded call into an `ItemUse`. A parameter at its default is not on the wire and reads as that default |
-| `hit_codec.h` | The NetSerialize codec of `FSerializedClientHitConfirmations` (plan D2), the parameter of `ClientHitConfirmationsReliable` / `ClientHitConfirmations`, from the exe: an 11-bit hit count, per hit a 15-bit byte length and the `SerializedData` blob, which is an `FHitInst` (four int64, a UBOOL, the instigator and source `FIntrepidNetGUID`s, a 7-bit target count, up to 40 `FHitTargetInst`: the component, two vectors of doubles, up to 10 stat mods, an interrupt list, a UBOOL, a flags byte, up to 10 hit modifiers) and two prediction UBOOLs, padded to a byte. `HitConfirmations` / `HitInstance` / `HitTarget` are the typed values (in `value.h`); `read_struct` / `write_struct` reach it by the struct name. Every one of the 7,115 captured calls (419 retail data: 11,025 hits, 11,362 targets) reads to its last bit and writes back the same bits. The readers refuse what the exe's writer never produces (a UBOOL above 1, a count above the exe's own clamps, a blob with a whole spare byte or non-zero padding, more than 64 interrupts) and bound every count |
-| `hit_rpc.h` | The hit path in a typed form: `parse_hit_request` / `hit_request_params` for the client's `RequestHitVerification_Server` (`HitRequest`: components by GUID or named in place, the three int64, the quantized actor location, the packed yaw and pitch; read with `CodecOptions::inline_objects`: 41 of the 6,955 captured requests name a component in place), `parse_hit_confirmations` / `hit_confirmations_params` and `client_hit_confirmations(pc, hits, reliable, acks, extra_exports)` for the server's answer (E1 stage 3 fix 2: `extra_exports` are the chains of the objects the hits name that the client may hold no GUID for, a target NPC's CollisionCylinder as `component_export` of its actor, exported with the call unless acknowledged; retail exports each target's cylinder in the confirmation's bunch when no earlier bunch did). The older `protocol/wire/hit_confirmation.h` is the first-guess framing (uint16 counts, no targets) and is superseded |
-| `leveling.h` | `ULevelingComponent`, the PlayerController's `XPTracker`, typed (plan D1): `DesignDataId` (`FDesignDataObjectId`) and `LevelingState`, which keeps the five fast maps by key (experience and experience debt int64, certifications int64, skill points uint16, the rank list of each skill tree), sets, changes and erases entries the way `MarkItemDirty` does, applies a decoded payload and writes the deltas a connection's shadows say it lacks. The generated schema needs no struct codec: every item of the five maps is a flat list of scalar commands the generic fast-array layer carries. All 443 captured blocks (272 retail captures) read to their last bit and write back the same bits |
-| `skill_rpc.h` | The skill-tree and action-bar RPCs in a typed form (plan D1): `ServerPurchaseSkillBuild` (`SkillBuild`: ranks bought or given back; `refund_only()` is a respec), `ClientUpdateSkillOnActionbar`, `ClientReceiveActionbarSlotPayload` (`ActionbarPayload`, the use data and its enums) and `ServerSetActionbarSlotUseData` (and, plan D1 stage 2, `ServerSetUseRangedWeapon`: `parse_set_use_ranged_weapon` and `set_use_ranged_weapon_params`): a parser from a decoded call and a `*_params` builder each, and emitters on a PlayerController for the two server RPCs. A purchase's reply is the AbilityComponent's `KnownAbilities` / `ReplicatedRecordsToLoad` array update, a StatsComponent `CurrentEffects` item, the XPTracker's rank list for the tree and the skill update, all of which read and write back bit for bit |
-| `rpc_fields.h` | The small helpers the typed RPC layers above share: a parameter's value by dotted path, an array parameter's element commands and local handles, typed access to a `Value` |
-| `block_reader.h` | Plan E1: `load_object_state(schema, data, bits, has_rep_layout)` reads a captured content block (the RepLayout block, then the fast-array fields; an RPC field is refused) into the `ObjectState` the replicator writes from, trying the rotation width (byte or short) and the customization-preset assumption the bits do not say; `default_block_options()` is the stat table's rule (the two extended `FStatInt32InstRep` families). It turns a retail open into a template a server can make an actor from |
-| `vendor_codec.h`, `vendor_rpc.h` | Plan E1, the vendor flow: the NetSerialize codecs of `FVendorPurchaseCart` (vendor guid, an int32 count and per item the record, the quantity and two `TOptional<int64>`) and `FVendorTransactionCart` (vendor guid, the instance guids, an operation byte: from the retail capture), and the typed RPCs: `parse_interact_request` (`ServerInteractWithInteractableComponent`: the component, a counter, the zone), `parse_vendor_purchase`, `parse_vendor_transaction`, `open_vendor_params` / `parse_open_vendor` (`ClientOpenVendor`: `MerchSetId` is the `VendorDef` guid, `Vendor` the NPC). The three purchases of the captures (1, 1 and 6 items) read to their last bit and write back the same bits. **Fix 4** added `FNodeTaxDetails` (`NodeTaxDetails`: the node's int64 guid, an int32 count and per entry an ANSI `FString` tag, the TaxDetails record guid, an int32 flat tax, two floats and two int32 bools; the exe's NetSerialize and the captures' bytes), the parameter of the server's `ClientSetNodeTaxTable`, with `parse_node_tax_request` / `node_tax_request_params` (the client's `ServerGetNodeTaxTable(NodeGuid)`) and `parse_node_tax_table` / `node_tax_table_params`: the two tables of the retail data (78 entries, 54,537 bits each) read to their last bit and write back the same bits |
-| `craft_rpc.h` | The crafting station window in a typed form (crafting, step 0): `open_station_params` for `ClientOpenCraftingStationUI` (the station actor, the service tax `StationTax` and none of the player's jobs) and `parse_open_station` to read it back (header only) |
-| `channeling_codec.h` | Gathering stage 2, the fix after the user's test 1: the NetSerialize codec of `FChannelingData` (`ChannelingData`, value.h), the `ChannelingData` (handle 26) of the pawn's InteractInfo (`UCharacterSecondaryInfo`): what the pawn is channeling. The retail server sets it with the node's wake at the start of a harvest (576 bits after the 9-bit block prefix: the node's netguid, six 32-bit words, a double start time, a float duration, the tool's item record id and instance guid) and clears it about 2 ms after the result frame (288 bits: the node, the flags word 0x106 and zeros); without it the client plays no gather animation, shows no bar and never sends its own `ServerInterruptChannel`. The layout is read from ten harvests (the retail captures: both blocks of each read to the last bit and are written back to the exact bits, `test_repl_gather`), not from the exe; what the flags word and the active flag mean is inferred, and the reader refuses what no capture shows (a bool above 1, an unflagged tool record or guid). |
-| `callout_codec.h` | The mounts milestone, stage 1: the NetSerialize codec of `FLocalizedMessage` (`LocalizedMessage`, value.h), the `LocalizedMessage` of a PlayerController callout (`CalloutQueueReplication`'s items, a classic fast array: every command of an item in order): the string table and the key as FStrings and an int32 count of format arguments (nothing for `LookupArgs`), read from the retail captures (the empty message is 96 bits, `Economy` / `UnequipFailCorruption` 336); 533 callouts of the captures decode with it, none has an argument, so a non-zero count is refused. `test_repl_mount` reads the refused summon's callout ("Cannot summon mount here.", the retail captures) and seven messages that fill it |
-| `replicator.h` | `Actor` (an `ObjectState` plus `Subobject`s), `ActorShadow` (a connection's `ObjectShadow` per object) and the three emitters: `open_actor`, `update_actor`, `call_rpc` / `call_rpcs`. Each returns an `Emission` (export bunches and payload, plus the GUIDs they name) that maps onto `world`'s `Chain` |
+### Usage Example
 
 ```cpp
-repl::Actor pc = make_pc();                      // schema, values, open info, subobjects
-repl::ActorShadow shadow;                        // what the connection has: nothing
-auto open = repl::open_actor(pc, shadow, acks);  // the first chain on the channel
+repl::Actor pc = make_pc();                      // Schema, RepState values, open info, subobjects
+repl::ActorShadow shadow;                        // Per-connection replication shadow
+auto open = repl::open_actor(pc, shadow, acks);  // First emission on the actor channel
 world::Chain c{.channel = 3, .open = true, .exports = open->exports, .payload = open->payload};
-// later: set values on pc.obj.state, then
-auto update = repl::update_actor(pc, shadow, acks);   // nullopt: nothing changed (or *failed)
+
+// Subsequent delta update: work on a shadow copy and commit only when send_chain succeeds
+repl::ActorShadow next = shadow;
+auto e = repl::update_actor(pc, next, acks, &failed);
+if (e && connection.send_chain(to_chain(3, false, *e))) {
+    shadow = std::move(next);
+}
 ```
 
-The storage RPCs (plan B2, `storage_rpc.h`) are built from typed values and sent through `call_rpc` like any other:
+### Caller Contracts
 
-```cpp
-repl::StoragePayload backpack;                         // an empty Backpack: its target, MaximumItems and one default slot each
-backpack.target = backpack_guid;  backpack.maximum_items = 70;  backpack.storage.resize(70);
-backpack.storage[3].item = item;  backpack.storage[3].slot = 3;    // a filled slot: the instance, and Slot = its index
-auto params = repl::storage_payload_params(*pawn_schema.rpc("ClientReceiveStoragePayload"), backpack);
-auto call = repl::call_rpc(pawn, nullptr, "ClientReceiveStoragePayload", *params, {}, acks);   // retail sends it to the PlayerController too
+1. **Atomic Shadow Commit**: `open_actor` and `update_actor` advance `ActorShadow` in place. Always pass a copy of `ActorShadow` and commit it only after `Connection::send_chain` accepts the resulting `Chain` so congestion rejections never drop property deltas.
+2. **Deferred `ExportAcks` Confirmation**: Mark `Emission::exported_by_bunch[i]` in `ExportAcks` only when `Connection::take_ack_events` reports packet delivery for export bunch part `i` (never at enqueue time), matching `UPackageMapClient::ReceivedAck`.
+3. **Unreliable NAK Recovery (`SendLedger`)**: For unreliable actor channels (`ActorView`), record each sent update in `SendLedger::sent` and feed `AckEvent` notifications to `SendLedger::on_event`. On an unreliable packet drop, `SendLedger` rolls back unacknowledged handle shadows and sets `FastArrayShadow::resend` (`kUnknownKey`) so the next tick transmits the latest state (`FRepLayout::ReceivedNak`). Callers must suppress unreliable updates while `Connection::reliable_pending()` is true on that channel.
+4. **Fast-Array Dirty Marking**: After mutating a `FastArrayState` (`insert`, modify, or erase), call `mark_array_dirty()` (or `set_array_key()`) so the delta emitter increments the array replication key.
 
-repl::ItemStorageEvent add;  add.type = uint8_t(repl::StorageEventType::Add);  add.item = item;
-add.targets.push_back({.object = backpack_guid, .slots = {{3, 1, item.guid}}});   // one slot, the quantity, the instance GUID
-auto ev = repl::storage_event_params(*pc_schema.rpc("ClientReceiveStorageEvent"), add);
-// a request from the client: repl::parse_storage_event(rpc.call) on a decoded ServerRequestStorageEvent
-```
+---
 
-Object GUIDs, paths and checksums are the caller's: the actor and its components come from the
-per-ServerId allocator (`protocol/server_guid_allocator.h`), names and checksums from the content.
-Chains, partial bunches and sequence numbers belong to `world`'s (`aoc-world`) `Connection`, never to the replicator.
+## 4. Offline Capture Headers & Verification Suite
 
-### Caller contracts
-
-The replicator is a pure function of the actor, the shadow and the export acks; two things stay with
-whoever drives it, and getting either wrong loses data without any error.
-
-- **Atomic emission.** `open_actor` and `update_actor` advance the shadow as they emit, and
-  `Connection::send_chain` can refuse the chain (window full, wrong channel state). A shadow advanced
-  for a chain that was never sent makes the update lost for good: the next one finds nothing changed.
-  Emit on a copy and keep the copy only when the chain is accepted:
-
-  ```cpp
-  repl::ActorShadow next = shadow;                        // work on a copy
-  auto e = repl::update_actor(actor, next, acks, &failed);
-  // to_chain: an Emission's exports and payload into a world::Chain
-  if (e && connection.send_chain(to_chain(channel, false, *e))) shadow = std::move(next);
-  // refused: `shadow` is untouched, and the same update is built again later
-  ```
-
-  `can_send_chain` asks the same question without queueing. On `*failed` the shadow is as it was.
-  `test_world_repl_acks` shows the refused update not lost.
-- **Export acks.** UE writes an object's export, with its path, again until the client acknowledged it,
-  per GUID (`UPackageMapClient::ReceivedAck`). `ExportAcks` is that knowledge, and only the caller can
-  fill it: mark `Emission::exported_by_bunch[i]` when `Connection::take_ack_events` reports export part `i`
-  of that chain as delivered, never when the chain is queued (a reliable bunch is not known to have
-  arrived until its packet is acked; the capture re-sends pkt#78's exports at pkt#107). A lost part marks
-  nothing. A marked GUID stays marked; the set only grows (`forget` removes one), bounded by the objects
-  the connection ever had exported. `test_world_repl_acks` drives the whole loop with a dropped packet.
-
-- **Lost packets** (plan E1 stage 1, fix 2: `send_ledger.h`). The shadow is "what was last SENT", so a lost UNRELIABLE update leaves the client with the
-  old value until something changes the property again. UE resends the current value of what a lost packet carried (`FRepLayout::ReceivedNak`; a fast
-  array puts the state from before the payload back); `SendLedger` does the same. Per channel: `update_actor(..., &failed, &record)` gives the update's
-  `SentRecord` (the handles written, the fast-array items written or removed, a subobject's first block), `ledger.sent(chain, reliable, parts, record,
-  shadow)` once the Connection accepted the chain, `ledger.on_event(chain, delivered, shadow)` for each `AckEvent`, `ledger.clear()` when the channel
-  closes or opens. A lost unreliable chain makes the shadow forget its handles (the next update writes the CURRENT value in full), gives its fast-array
-  items `kUnknownKey` (an item the array lost is a deletion again) and sets `FastArrayShadow::resend` (the array goes out although its key is the shadow's),
-  and makes a lost first block of a subobject new again. What a newer chain carried is left alone (the newest chain owns an entry), so an acknowledged value
-  is never sent again for an older loss and a value that changed again goes out once, as the newest. A reliable chain is tracked too (it takes entries
-  from older unreliable ones) but its lost parts are no NAK: the Connection resends them. **The caller sends unreliably only while
-  `reliable_pending()` is false**: a lost reliable bunch is resent later than the unreliable chains sent since and would overwrite them with older values
-  (found by `test_world_actor_nak`'s soak). The table is bounded (`kMaxRecords`, the oldest evicted as a NAK). `world`'s pawn, PlayerController and PlayerState
-  chains are all reliable, so a lost one is resent whole by the Connection and needs none of this (`test_world_ability_session`'s lossy soak proves
-  the client's Stamina follows the runtime's at 10% loss in bursts of 20); `ActorView` uses it for every other actor. `test_repl_send_ledger` tests it on
-  its own: lost first and last updates, bursts, the newest value, acknowledged state, adds / changes / removes of fast-array items, a lost new subobject,
-  reliable chains, parts, the bound, and a seeded soak of 280 runs.
-
-Things to know when using it:
-
-- Per-connection replication conditions (OwnerOnly, SkipOwner, InitialOnly, ...) are a hook, not a table:
-  `ObjectShadow::active` is a `ParentMask` the caller computes from the connection's role, and the writers
-  skip inactive properties; when one turns active, what differs from the shadow is sent. The table of which
-  property has which condition (`GetLifetimeReplicatedProps` in the exe) is plan A5's.
-- `FastArrayState::insert` replicates nothing alone: call `mark_array_dirty` (or `set_array_key`) after
-  inserting into an array the client already has.
-- A value set and then removed from an array element is sent as the type's zero value (the client keeps
-  the old one otherwise); a type with no known zero (FText, some structs) fails the write instead, so set a
-  value rather than remove it. An empty array on a first send goes out as count 0, which is harmless.
-- `call_rpcs` refuses a mix of reliable and unreliable RPCs (one bunch has one reliability) and a target that
-  is not the actor or one of its subobjects.
-- Reading is bounded: at most 16,384 array elements per block, 2,048 changed or deleted fast-array items, 1,024
-  RPCs in a client bunch, 65,535 characters per string.
-- Not supported: deleting a dynamic subobject (the destroy message is neither written nor read);
-  `FFastArraySerializer`'s struct-delta item form and the `TOptional` it needs (the quest cache; the array is
-  refused rather than written wrong); a fast array property with `ArrayDim > 1`.
-- An update of a RepLayout dynamic array is unproven against the original server's capture (it holds only first
-  sends of those) but proven against the retail captures: the AbilityComponent's `KnownAbilities` /
-  `ReplicatedRecordsToLoad` updates of 32 purchase replies (a count and the new element) read and write back bit for bit
-  (`test_repl_leveling`). Unproven: `ObjectShadow::invalidate` (it reproduces the original server's resend of `AuthServerIDReplicated` at
-  pkt#107; UE has no known mechanism for it), and the FText parameter of an RPC, which is always sent, an
-  empty one too (whether UE leaves an empty one out is unverified).
-
-## Captured test data (`src/tools/schemagen/`)
-
-`tests/capture_blocks.h` and `tests/capture_aoc_codecs.h` hold blocks, values, whole actor-open chains,
-RPC blocks and client bunches the original server and the retail client sent, as hex with their packet and
-bit position. They are generated, not edited:
+Committed test fixture headers (`src/tests/cpp/net/capture_*.h`: `capture_blocks.h`, `capture_aoc_codecs.h`, `capture_moves.h`, `capture_abilities.h`, `capture_items.h`, `capture_hits.h`, `capture_leveling.h`, `capture_mount.h`, `capture_npc.h`, `capture_vendor.h`) are generated from packet captures via [`src/tools/schemagen/`](../../tools/schemagen/):
 
 ```powershell
-pwsh -File scripts/generators.ps1 -Action all            # about 45 s; says "unchanged" for each header
-pwsh -File scripts/generators.ps1 -Action all -Check     # write nothing, exit 1 when a header would change
+# Verify that all committed capture headers and generated schemas are up to date
+pwsh -File scripts/generators.ps1 -Strict
 ```
 
-The capture generators (`src/tools/schemagen/`) and the captures they read (`fixtures/replay_data.bin`) are offline developer tools; the headers they made are committed.
+Run the full C++ protocol and replication test suite via:
 
-Plan E1's: `capture_npc.h` (`src/tools/schemagen/`, about 60 s): every NPC and gatherable open of the retail data (330 NPCs of 25 archetypes, 220 gatherables) and the 2,620 updates that followed the NPC opens, as content blocks (hex, bit count, the schema class that reads it), and the nine vendor NPC opens of the retail capture; `capture_vendor.h`: the five vendor RPCs of the client and the one the server answered with. The server's own copy of the NPC opens it makes actors from is `src/server/world/spawns/area_spawns.h` (`scripts/generators.ps1 -Action area-spawns`).
+```powershell
+pwsh -File sandal.ps1 test
+```
 
-Three headers have a generator of their own: `capture_moves.h`, `capture_abilities.h` and, for the item codecs of plan B2, `capture_items.h`
-(`src/tools/schemagen/`, about 90 s): the item RPCs of the retail login, the original server's Bard and the retail client, with the text an independent
-wire decoder read from each. The retail captures are not in the repository: `--retail-dir` (or `AOC_RETAIL_JL`) is the folder of the converted capture files
-(`NNNN_<name>.jsonl`; the login is `1198_*`). The header is 300 KB, most of it the 125 + 13 events and ten distinct storage payloads as hex.
+The test targets in [`src/tests/cpp/`](../../tests/cpp/) verify bit-for-bit round-trip fidelity and fuzz resilience across every protocol layer:
 
-Two more, for the leveling and hit codecs of plans D1 and D2, built the same way from the retail captures (`--retail-dir`, the exe), about 35 and 15 s: `capture_hits.h`
-(41 `ClientHitConfirmations*` calls of the retail server and 12 `RequestHitVerification_Server` of the retail client, picked out of the 7,115 + 6,955 captured calls for every variant
-of the layout, and five synthetic ones at the exe's limits, each with the text of an independent wire decoder written from the exe's code) and `capture_leveling.h`
-(12 XPTracker blocks picked out of 443, 17 retail purchases, refunds, swaps and respecs each with the client's request and the server's whole answer (97 blocks), 11 action-bar payloads and the 6 slot calls the client sent;
-the text comes from the repo's fast-array and RepLayout decoders and the hand-written RPC layouts). The mid-session captures name no class: the capture toolset (`src/tools/schemagen/`) cuts them
-(the PlayerController is channel 3, a subobject's class is fixed by its GUID in the pick table). The headers are 126 KB and 439 KB; texts over 60,000 characters are arrays of chunks (under the 65,535-byte C++ string literal ceiling).
-
-## Tests
-
-`tests/` holds plain executables that print `[ok ]`/`[FAIL]` and exit 0 on
-success. To add one, create `tests/test_<name>.cpp` and add `test_<name>` to
-the `foreach` list in `tests/CMakeLists.txt`. Build and run all tests via
-`pwsh -File sandal.ps1 test` (or `scripts/run_tests.ps1`; C++ targets are compiled inside the Linux builder in `src/deploy/docker/cpp.Dockerfile`). The six tests that compare against recorded
-packets (`test_sc_packet_info`, `test_name_update_bunch`, `test_pawn_spawn_diff`,
-`test_pc_spawn_diff`, `test_pkt22_round_trip`, `test_pkt104_round_trip`) read
-them from the folder named by the environment variable `AOC_RECORDINGS_DIR`
-(`tests/recordings.h` lists the file names). No recordings ship with the
-repository: without the variable (or without the file) such a test prints
-`SKIP: no recordings` and exits 0.
-
-`test_repl_move_packed` reads the 640 + 1,843 `ServerMovePacked` parameters of `tests/capture_moves.h` (generated from the e2e capture and the 2026-09-29 run) to their last bit, writes each back to the same
-bits, and checks the TimeStamps and locations form a continuous path. `read_move_packed` is given the buffer's size and
-refuses an `end` beyond it (it never reads past the buffer); a seeded fuzz (40,000 reads of mutated captures, random containers and
-hostile NumBits, each from a heap buffer of exactly the bytes it needs: an address sanitizer build reports an over-read) runs in
-the same test.
-
-`test_repl_ability_rpc` (plan A7) reads the 16 + 31 `ServerTriggerAbility` and 4 + 3 `ServerNotifyHeldAbilityCancelled` calls of `tests/capture_abilities.h` (generated from the e2e capture and the 2026-09-29 run) to their last bit with `decoded` true, writes each back to the
-client's bits, and checks what the research found in all 308 calls of 15 captures: `ClientInstanceId` counts every trigger from 0 without a gap,
-every cancel names an earlier Sprint or Guard, `ItemData` is "no item" (Slot -1, Location 24), `bPvpForceFlag` is 0; the empty `FItemInstance`
-(the whole codec is `test_repl_items`'s), the `InlineObject` form (the flags the form does not define are refused on read as well as on write), and `ClientEndAbility` read back by the schema-driven reader; a seeded fuzz (16,254 captured bunches with bits flipped,
-cut short or with a noisy tail, each from a heap buffer of exactly the bytes it needs) checks that nothing crashes and every trigger or cancel that decodes reads back equal from the bits it writes.
-
-The replication tests (`test_generated_schemas`, `test_repl_codecs`, `test_repl_aoc_codecs`, `test_repl_rep_block`,
-`test_repl_fast_array`, `test_repl_rpc`, `test_repl_actor_open`) compare bit for bit against
-`tests/capture_blocks.h` and `capture_aoc_codecs.h`, regenerated from
-`fixtures/replay_data.bin`. `test_world_channels` and `test_world_repl_acks` (`src/server/world/tests`) run the
-replicator on `world`'s `Connection`. After changing the schema generator, run `pwsh -File scripts/generators.ps1 -Action schemagen -Check`.
-
-`test_repl_item_rpc` (plan B2) reads `ServerItemUsed` and `ServerActivateItem` from four of the retail client's own calls (an equip and an unequip of a chest piece, a two-hander, a focus: 201 bits each) with the pawn's schema entry, parses them (the values the research read), writes them back from the typed form to the same bits,
-checks that the two RPCs give the same `ItemUse` and that each parser refuses the other's call, an undecoded call and any other RPC, and fuzzes the payload (every truncation and a seeded run of bit flips).
-
-`test_repl_items` (plan B2) reads every item RPC of `tests/capture_items.h` (generated from the full retail login `ashesfinalui`, the original server's Bard and
-the retail client's own calls) with the PlayerController's, the pawn's or the AbilityComponent's schema entry, through the typed layer and back to the same bits: the login's 125 `ClientReceiveStorageEvent`
-and six distinct `ClientReceiveStoragePayload` (Backpack 70 slots, Equipment 83, Quest 100, three resource bags; each sent to the PlayerController and to the pawn several times: 2,342 `FItemInstance`, 1,512 of
-them empty), the Bard's 13 events and four payloads (1,217 instances), the client's 31 `ServerRequestStorageEvent` and 15 `ServerTriggerAbility` with an item. Each of the 174 distinct instances is also read alone from its own
-bits and written back, and the text of everything read (instances, events, payloads) is compared with what an independent wire decoder (`src/tools/schemagen/`, written from the exe's code) made of the same
-bits. The fields no retail instance has (gems, custom data, a stolen or crate-carrying item, an enchantment or tempering value, packed ints of more than one byte) are checked against that decoder's own writer on 8
-synthetic instances (`kSynthetic`, not retail data). Hostile input: each refusal on its own, every truncation, a hostile count, and a seeded fuzz of 4,888 mutated captures (bit flips, cuts, noisy tails, special
-words at random places, each from a heap buffer of exactly the bytes it needs) in which whatever reads writes back to a payload that reads equal and nothing takes long.
-
-`test_repl_hits` (plan D2) reads the 41 captured `ClientHitConfirmationsReliable` / `ClientHitConfirmations` payloads of `tests/capture_hits.h` (a sample of the 7,115 captured calls, picked for every variant: reliable and unreliable, 1 to 20 hits, 0 to 9 targets, 0 to 3 stat mods, 0 to 9 hit modifiers, interrupts, the attempted-interrupt flag, the eleven Flags values seen, pvp, an unset Source, each prediction-flag pair) with the PlayerController's schema entry, parses them into `HitConfirmations`, builds the parameters again from the typed form and writes them: the same bits, and every hit alone as a `SerializedData` blob. The 12 captured `RequestHitVerification_Server` (0 to 9 components, one named in place, one naming `Default_Self`) go the same way with the AbilityComponent's entry and `CodecOptions::inline_objects`. What each call holds is compared with the text an independent wire decoder (`src/tools/schemagen/`) made of the same bits, five synthetic calls at the exe's limits (10 stat mods and hit modifiers, 40 targets, a NaN, -0.0, Flags 255) agree with that decoder's writer, and `client_hit_confirmations` reads back through the field loop. Hostile input: each refusal on its own (counts over the exe's clamps, a UBOOL of 2, padding, a spare byte, every truncation) and a seeded fuzz of the 58 payloads (16,298 mutated reads: bit flips, cuts, noise tails and special words, each from a heap buffer of exactly the bytes it needs) in which whatever reads writes back to a payload that reads equal. A one-off sweep, not kept, read all 14,070 captured hit RPCs (7,115 confirmations with 11,025 hits and 11,362 targets, 6,955 requests with 41 components named in place) and wrote each back to the same bits.
-
-`test_repl_leveling` (plan D1) reads 12 XPTracker blocks of `tests/capture_leveling.h` (a sample of the 443 captured ones) with the generated `ULevelingComponent` schema, applies them to a `LevelingState`, writes each back from the state a server would hold (a first send from the typed items themselves, an update from the shadow its base key implies) and compares its text with the wire reader's; 17 retail purchases, refunds, swaps and respecs (the client's `ServerPurchaseSkillBuild` and the server's whole answer, 97 blocks: the AbilityComponent's RepLayout array updates, the StatsComponent's `CurrentEffects`, the XPTracker's tree list, the `ClientUpdateSkillOnActionbar` calls) read, typed and write back bit for bit, with the answer checked against the request (the tree's list holds the ranks bought and not the ones given back, one skill update per purchase and none for a respec); 11 action-bar payloads (1 to 494 slots) and the 6 `ServerSetActionbarSlotUseData` calls the same way; `LevelingState` on its own (entries, deltas against shadows, a second state applying them, erases as deleted IDs); and a seeded fuzz of every captured block and payload (27,443 mutated reads). A one-off sweep, not kept, read all 443 XPTracker blocks, 128 purchase requests, 223 skill updates, 150 action-bar payloads, 6 slot calls, 32 AbilityComponent array updates and 128 CurrentEffects blocks of the retail captures and wrote each back to the same bits. `test_generated_schemas` checks the generated `ULevelingComponent` (fields 2 to 6, the nested rank list, `ServerDemoteCertification`).
-
-`test_repl_mount` (the mounts milestone, stage 1) reads the four mount opens of `tests/capture_mount.h` (36 blocks of the retail captures: the `ANPCCharacter` actor block and its eight subobjects, among them the new `UMountComponent`) to their last bit and writes each back to the same bits; checks the NetGUID pattern (the actor's id A: A+4 ... A+14, the MountComponent A+18, the InteractableComponent A+20), the export names the three kinds of mount component resolve through, the summoning flag, the owner and the stats at the owner's level (MaxHealth 3572 at level 20, 24375 = 4875 x 5 for a Dawnbreaker at 25); reads nine PlayerController callouts (the refused summon's and seven that fill `FLocalizedMessage`) and writes them back (the shadow primed at the delta's base key: they are updates of an array that held earlier items); the codec on its own (sizes, refusals, truncations, non-ASCII text); and a seeded fuzz of the captured blocks.
-
-`test_repl_npc` (plan E1) reads every NPC and gatherable block of `tests/capture_npc.h` with the generated schemas (a RepLayout block, then the field loop: fast arrays and RPC fields) and writes it back from the typed values to the same bits: 330 NPC opens (the research's 323 and seven more whose subobjects the capture never names), the
-2,620 NPC updates (ReplicatedMovement and its timestamp, `CurrentMovementInput` alone, the stats' fast arrays, the shared multicast RPC, whose payload has no codec yet: its header and bit count only), the 220 `AGatherableActor` opens with their `UInteractableComponent`, and the 9 vendor NPCs of the retail capture; `FPlayerMovementInput` as a value (every direction, a value above 15 refused); and a seeded fuzz of
-the blocks. `test_repl_vendor` (plan E1) reads the six captured vendor calls of `tests/capture_vendor.h` with the schema entry of their RPC, parses them, builds the parameters again from the typed form and writes them: the same bits; checks what each holds (the vendor guid is `ClientOpenVendor`'s `MerchSetId`, quantities, the one cart with an optional set); the limits (255 items, a count the bits cannot hold, an optional flag of 2, a negative count); and the truncations of every call and a seeded fuzz of 4,000 mutations.
-
-## Known issues
-
-- `protocol/emit/actor_builder.cpp` reads `probe_v3_subobjects.txt` from the
-  current working directory when it opens a subobject, so output depends on
-  where the process runs.
-- The tests are not registered with CTest; `scripts/run_tests.ps1` is the runner.
+- **Connection & Wire Framing**: Sequence wrap-around, `FNetPacketNotify` ack bitvectors, 4-way `StatelessConnect` handshake and cookie verification, `Ch 0` `NMT_*` control messages, and partial-bunch reassembly.
+- **Generated Schemas & Core Replication (`test_generated_schemas`, `test_repl_codecs`, `test_repl_aoc_codecs`, `test_repl_rep_block`, `test_repl_fast_array`, `test_repl_rpc`, `test_repl_actor_open`, `test_repl_send_ledger`)**: Bit-exact decoding and re-encoding of captured actor opens, delta blocks, fast arrays, and 280-run seeded packet-loss soak tests.
+- **Subsystem RPC & Struct Codecs (`test_repl_move_packed`, `test_repl_ability_rpc`, `test_repl_item_rpc`, `test_repl_items`, `test_repl_hits`, `test_repl_leveling`, `test_repl_mount`, `test_repl_npc`, `test_repl_vendor`, `test_repl_gather`, `test_repl_loot`)**: Bit-for-bit round-trip checks against thousands of retail movement, ability, inventory, loot, combat hit, skill tree, mount, NPC, vendor, tax table, and gathering blocks, paired with seeded heap-bounded truncation and bit-flip fuzzing.
