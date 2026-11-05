@@ -157,7 +157,9 @@ function Test-SandalNoPythonInScripts {
         }
         foreach ($bat in @(Get-ChildItem -LiteralPath $scriptsDir -Filter '*.bat' -Recurse -File -Force -ErrorAction SilentlyContinue)) {
             $rel = [System.IO.Path]::GetRelativePath($RootPath, $bat.FullName).Replace('\', '/')
-            $findings.Add("NoBatInScripts: forbidden .bat script in scripts/: $rel")
+            if ($rel -ine 'scripts/ensure_pwsh.bat') {
+                $findings.Add("NoBatInScripts: forbidden .bat script in scripts/: $rel")
+            }
         }
     }
     if ($null -ne $Violations) { foreach ($item in $findings) { $Violations.Add($item) } }
@@ -199,6 +201,8 @@ function Test-SandalInTreeBuildArtifacts {
 }
 
 function Test-SandalRootDirectoryHierarchy {
+    [CmdletBinding()]
+    [Alias('Test-SandalMinimalBatSurface')]
     param(
         [Parameter(Mandatory)][Alias('RootPath', 'Root')][string]$RepoRoot,
         [AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations = $null
@@ -206,10 +210,10 @@ function Test-SandalRootDirectoryHierarchy {
     $findings = [System.Collections.Generic.List[string]]::new()
     $null = Test-SandalNoPythonInScripts -RootPath $RepoRoot -Violations $findings
     $allowedRootDirs = @('src', 'build', 'dist', 'deploy', 'docs', 'scripts', '.github')
-    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'GEMINI.md', '.gitignore', '.gitattributes', '.graphifyignore', 'sandal.ps1', 'start.bat', 'stop.bat')
+    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'GEMINI.md', '.gitignore', '.gitattributes', '.graphifyignore', 'sandal.ps1', 'start.bat', 'stop.bat', 'build.bat')
     $stealthDirs = @('.git', '.agents', '.claude', '_workspace', '.beads', 'graphify-out')
     foreach ($bat in @(Get-ChildItem -LiteralPath $RepoRoot -Filter '*.bat' -File -Force -ErrorAction SilentlyContinue)) {
-        if ($bat.Name -notin @('start.bat', 'stop.bat')) {
+        if ($bat.Name -notin @('start.bat', 'stop.bat', 'build.bat')) {
             $findings.Add("NoRootBatFiles: forbidden root .bat file: $($bat.Name)")
         }
     }

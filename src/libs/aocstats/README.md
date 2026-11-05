@@ -1,14 +1,14 @@
-# worldd/stats: the stat engine (plan B3)
+# aocstats: the stat engine (plan B3)
 
-A small C++20 library (`worldd_stats`, no dependency on the rest of worldd or the net code) that reads the
-compiled stat formula graph that `services/internal/statprog` (Go) writes, and runs it for one character: the
+A small C++20 library (`aocstats`, no dependency on the rest of `world` (`aoc-world`) or the net code) that reads the
+compiled stat formula graph that `src/server/services/internal/statprog` (Go) writes, and runs it for one character: the
 stats of its class at its level with its equipment, each with the audience mask of its replication. The format, the
 model and the compiler are documented in [`src/server/services/internal/statprog/README.md`](../../server/services/internal/statprog/README.md);
-this is the reader and the interpreter, the gear rules and the character's stats, which `worldd` runs (`server/worldd/README.md`, "Stats").
+this is the reader and the interpreter, the gear rules and the character's stats, which `world` runs (`src/server/world/README.md`, "Stats").
 
 ```cpp
 #include "stats/stat_engine.h"
-using namespace aoc::worldd::stats;
+using namespace aoc::world::stats;
 
 StatBundle bundle;  std::string err;
 if (!parse_bundle(bytes, bundle, err)) { /* refused: err says why */ }   // verifies everything, once
@@ -46,10 +46,10 @@ if (run_stats(bundle, in, StatState{}, out, err)) {
 
 `gear_inputs(catalog, worn, rounding)` makes the engine's equipment input from the worn items (record, Quality, EEquipSlot): the rules of `statprog`'s `gear.go` over the tables of content.db (an item's stat block at its rarity band,
 interpolated `Min + (Max - Min) * (q - X) / (Y - X)`, an item with no curve reads CommonMin; the sets' tiers up to the worn count at the lowest rarity of the worn pieces; the gameplay tags under the slot's name). The catalog is an interface
-(`GearCatalog`): `content::ContentGearCatalog` reads content.db and keeps what it read, a test uses a table. `Rounding::HalfUp` is what worldd uses (the research's best fit on the retail Ranger: 376 of 442 against 358; not proven), except for a stat the client shows as a percentage (`StatTypeDef.bDisplayAsPercentage`,
+(`GearCatalog`): `content::ContentGearCatalog` reads content.db and keeps what it read, a test uses a table. `Rounding::HalfUp` is what `world` uses (the research's best fit on the retail Ranger: 376 of 442 against 358; not proven), except for a stat the client shows as a percentage (`StatTypeDef.bDisplayAsPercentage`,
 `stat_def.display_pct` from contentc version 33): the Ranger's capture holds a crowbar's CrateLootPercent 0.25 and a rod's hook rate 0.05 as they are, and a carried crate's MoveSpeedMult -0.5 leaves the 0.5 the capture of a pick-up shows; the Go
 corpus's kit cases are `None`, which is the same for them (the kits' stat values are whole). The C++ equals Go's on the real tables for the captured Bard, the retail Ranger and the sixteen kit cases: mods, tags and the digest of
-every stat, bit for bit (`test_worldd_character_setup` with `AOC_CONTENT_DB`; the cases carry their items in the corpus: `rounding` and `item RECORD QUALITY SLOT` lines).
+every stat, bit for bit (`test_world_character_setup` with `AOC_CONTENT_DB`; the cases carry their items in the corpus: `rounding` and `item RECORD QUALITY SLOT` lines).
 
 `CharacterStats` is one player's stats as the client holds them (float32): `start(worn)` at the join; `update(worn, changed)` after every gear change returns the stats whose wire value changed (the float bits, and base and equipment for a
 stat that replicates them), in stat order. The engine returns the maximum for the stats that spawn at their maximum (Health, Mana, Stamina, a class's resource: `StatValue::held()`); the current value is the character's own: an update clamps it
@@ -61,7 +61,7 @@ arrays took the change, and does not send a run whose `next.faults` is not 0 (as
 
 ## D2 engine layer (`stat_engine.h`, `content/ability_content.h`; plan D2)
 
-The same additions as Go's (`services/internal/statprog/README.md`, "D2 engine layer"), bit for bit. Plan D2's ability runtime (`session/ability_pipeline.h`, `server/worldd/README.md` "Abilities of every class") runs on them: `CharacterStats` holds the character's effect state (`set_passives`: the ranks' passives, `set_effects`: the runtime's effects, `set_ranks`: what `GetSkillPurchased` reads, `set_moving` and `set_in_combat`) and `CharacterStats::evaluation` runs the expression programs against it; the passives plan D1 fed as extra mods (Endurance Training's `MaxStamina +10`) are effects now, the one path for every stat mod.
+The same additions as Go's (`src/server/services/internal/statprog/README.md`, "D2 engine layer"), bit for bit. Plan D2's ability runtime (`session/ability_pipeline.h`, `src/server/world/README.md` "Abilities of every class") runs on them: `CharacterStats` holds the character's effect state (`set_passives`: the ranks' passives, `set_effects`: the runtime's effects, `set_ranks`: what `GetSkillPurchased` reads, `set_moving` and `set_in_combat`) and `CharacterStats::evaluation` runs the expression programs against it; the passives plan D1 fed as extra mods (Endurance Training's `MaxStamina +10`) are effects now, the one path for every stat mod.
 
 ```cpp
 in.effects = {{effect_ref, /*stacks*/ 2, /*tags*/ {"Debuff.Staggered"}, /*mods*/ {{stat_guid, /*one stack's value*/ 0.03}}}};
@@ -78,25 +78,25 @@ double v; ev.eval(program, host, v, err);
   `in.effects` and `in.ranks` first and add what the `StatState` says.
 - **`ExprEvaluator`** refuses a program that is not in `StatBundle::exprs` (`is_expr`); `parse_bundle` refuses a bundle in which a stat formula uses a host operation, or whose `exprs` are out of range or not increasing (format version 2,
   `kBundleVersion`: a version 1 file is refused).
-- **`content/ability_content.h`** (`AbilityContent`, the library `worldd_ability_content`) reads the ability tables of a contentc 6 `content.db` on a connection of its own: ranks (`auto_ranks_at(level)` gives the engine's `ranks`), abilities,
+- **`content/ability_content.h`** (`AbilityContent`, the library `world_ability_content`) reads the ability tables of a contentc 6 `content.db` on a connection of its own: ranks (`auto_ranks_at(level)` gives the engine's `ranks`), abilities,
   costs, effect costs, montages with the NetGUID where a capture names one, hits, effects, mods, projectiles, zones and the expressions (`expr(id)`: text, terms, program, `uses_target`, error). It refuses a file built by an older contentc
-  (the message says to rebuild it) and one without the tables. `test_worldd_ability_content` runs it on the working tree's `dist/content/content.db` (or `AOC_CONTENT_DB`; skipped without one) together with this engine and the
+  (the message says to rebuild it) and one without the tables. `test_world_ability_content` runs it on the working tree's `dist/content/content.db` (or `AOC_CONTENT_DB`; skipped without one) together with this engine and the
   stored bundle: the Mana costs of the research (56.875 to 199.0625), Flourish's 20 s and 2 charges, the level-25 Bard sprinting at 1.3, Glee and Note_Comedy.
 
 ### Host functions and resources (plan D2, stage 2)
 
-Expression functions the stat engine does not own go through a generic operation, bit for bit as in Go (`services/internal/statprog/README.md`): `OpHost0/1/2` (0x61 to 0x63, operand `u16 function + u16 string`) call `ExprHost::host_fn`. Function ids: 1 RemainingCharges, 2 ApplicableTarget, 3 MovementKey, 4 StatDelta, 5 HitStatMod, 6 HitStatEffective,
+Expression functions the stat engine does not own go through a generic operation, bit for bit as in Go (`src/server/services/internal/statprog/README.md`): `OpHost0/1/2` (0x61 to 0x63, operand `u16 function + u16 string`) call `ExprHost::host_fn`. Function ids: 1 RemainingCharges, 2 ApplicableTarget, 3 MovementKey, 4 StatDelta, 5 HitStatMod, 6 HitStatEffective,
 7 IsNeutral, 8 IsEnemy, 9 AngleBetween, 10 Now, 11 ProgressDuration. `RandDoubleRange` compiles to a `Lerp` with `Rand`; `GetAbilityProgressRatio()` with no argument asks about the running ability; an expression's own StatMod terms may read their siblings. The verifier knows the operations; `testdata/corpus.txt` has `host fn FN NAME F64` lines and `host progress -`
 (the empty group), run by both engines (`go run . corpus --db ... --out ...` rewrites it, `corpus --check` compares).
 A stat with `kStatResource` is a held class resource: `StatOut` carries its limits and regeneration (`max`, `min`, `has_*`), `StatInputs::current` feeds the held value to `GetStat`, `CharacterStats::set_resources` names the guids (`content::kResourceStats`).
 
 ### The gathering reads (Gathering stage 2; `gather_host.h`)
 
-Host functions **180 to 184** (`kHostArtisanStat` .. `kHostGatherBaseSecs`) are what the Artisan equations ask of a harvest: `GetArtisanshipModifiedStat(actor, stat)` (name = the stat's guid, args[0] = the actor's role; the player is the caster), `GetRolledItemQuality()`, `GetItemRarity()`, `GetSourceCertificationTier()` and `GetGatheringInteractionBaseDuration()`. `stats::GatherContext` (`quality`, `item_rarity`, `source_tier`, `base_duration`, `ratings` by stat guid) and `gather_host_fn(ctx, fn, name, args, n, out)` answer them (false for any other function; a stat with no rating, another actor and a name that is no guid read 0): the harvest host of the Harvesting part fills the context and calls it from its `ExprHost::host_fn`. `RandIntRange` (14) answers `lo` when `hi < lo`, in every host. `test_worldd_stats` holds `gather_host_fn` to the corpus's `gatherhost` blocks (the Go `GatherContext`'s answers), `test_worldd_effects` runs the Artisan programs of the real bundle in the `real_gather_*` fxcases, with the same `fn` answers and SplitMix seeds as the Go engine.
+Host functions **180 to 184** (`kHostArtisanStat` .. `kHostGatherBaseSecs`) are what the Artisan equations ask of a harvest: `GetArtisanshipModifiedStat(actor, stat)` (name = the stat's guid, args[0] = the actor's role; the player is the caster), `GetRolledItemQuality()`, `GetItemRarity()`, `GetSourceCertificationTier()` and `GetGatheringInteractionBaseDuration()`. `stats::GatherContext` (`quality`, `item_rarity`, `source_tier`, `base_duration`, `ratings` by stat guid) and `gather_host_fn(ctx, fn, name, args, n, out)` answer them (false for any other function; a stat with no rating, another actor and a name that is no guid read 0): the harvest host of the Harvesting part fills the context and calls it from its `ExprHost::host_fn`. `RandIntRange` (14) answers `lo` when `hi < lo`, in every host. `test_world_stats` holds `gather_host_fn` to the corpus's `gatherhost` blocks (the Go `GatherContext`'s answers), `test_world_effects` runs the Artisan programs of the real bundle in the `real_gather_*` fxcases, with the same `fn` answers and SplitMix seeds as the Go engine.
 
 ## Tests
 
-`test_worldd_stats` ([`tests/test_worldd_stats.cpp`](tests/test_worldd_stats.cpp), target in `src/libs/aocstats/CMakeLists.txt`)
+`test_world_stats` ([`tests/test_world_stats.cpp`](tests/test_world_stats.cpp), target in `src/libs/aocstats/CMakeLists.txt`)
 runs the shared corpus `build/gen/fixtures/corpus.txt` (`src/tests/cpp/stats/testdata/corpus.txt`) that the Go side writes
 (`go run ./internal/statprog/cmd/statprog corpus --out ../../../build/gen/fixtures/corpus.txt`; `--check` fails when it is stale;
 the file is `-text` so git never changes its line ends):
@@ -118,12 +118,11 @@ the file is `-text` so git never changes its line ends):
   refusals, and the wire comparison.
 
 ```powershell
-scripts\build.ps1 -Target test_worldd_stats
-dist\Release\test_worldd_stats.exe          # from the repo root
+pwsh -File sandal.ps1 test
 ```
 
-`test_worldd_effects` (plan D2) reads the `fxcase` blocks of the same corpus: 14 characters with effects, ranks and a host, whose stats, 3,640 expression results and 12 retail numbers (the Mana costs, the Sprint's 1.3, Glee's and Note_Comedy's effect) equal the Go engine's to the bit
+`test_world_effects` (plan D2) reads the `fxcase` blocks of the same corpus: 14 characters with effects, ranks and a host, whose stats, 3,640 expression results and 12 retail numbers (the Mana costs, the Sprint's 1.3, Glee's and Note_Comedy's effect) equal the Go engine's to the bit
 (the tiny graph's every form of effect mod, and the real bundle's 507 expression programs in each of seven cases), and checks by hand the three forms of an effect mod, the retail Mitigation and HealingMult, what the effects
-answer the state functions, the inputs it refuses, the evaluator's refusals and SplitMix64's first outputs. `test_worldd_stats` skips the `fxcase` blocks and refuses the 98 hostile blobs (the host-operation-in-a-formula rule is proven here, in the reader that opens the files: those blobs are whole-blob corpus lines, FIX 2).
-`test_worldd_ability_content` is described above. Both new binaries are in `fixtures/test-baseline.txt` (`scripts\run_tests.ps1 -SaveBaseline`). The tests that need the real tables or the real session are in
-`test_worldd_character_setup`, `test_worldd_content_db`, `test_worldd_items_session` and `test_worldd_abilities`.
+answer the state functions, the inputs it refuses, the evaluator's refusals and SplitMix64's first outputs. `test_world_stats` skips the `fxcase` blocks and refuses the 98 hostile blobs (the host-operation-in-a-formula rule is proven here, in the reader that opens the files: those blobs are whole-blob corpus lines, FIX 2).
+`test_world_ability_content` is described above. Both binaries are in `src/tests/fixtures/test-baseline.txt` (`scripts\run_tests.ps1 -SaveBaseline`). The tests that need the real tables or the real session are in
+`test_world_character_setup`, `test_world_content_db`, `test_world_items_session` and `test_world_abilities`.

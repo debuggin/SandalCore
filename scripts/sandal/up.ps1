@@ -94,6 +94,9 @@ $allUpToDate = (@($stageChecks | Where-Object { -not $_.up_to_date }).Count -eq 
 
 if (-not $opts.DryRun) {
     $null = Ensure-SandalDockerDaemon
+    if (Get-Command Set-SandalWslComposeMountEnv -ErrorAction SilentlyContinue) {
+        Set-SandalWslComposeMountEnv -DeployDir (Join-Path $rootPath 'deploy')
+    }
     Push-Location $rootPath
     try {
         & docker @composeArgs

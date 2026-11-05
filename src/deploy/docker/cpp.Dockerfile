@@ -4,7 +4,7 @@
 FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential clang-18 llvm-18 lld-18 ccache cmake ninja-build git pkg-config python3 \
+    build-essential clang-18 llvm-18 lld-18 ccache cmake ninja-build git pkg-config \
     libssl-dev libgrpc++-dev libprotobuf-dev protobuf-compiler protobuf-compiler-grpc \
     libc-ares-dev libre2-dev libsqlite3-dev libspdlog-dev libcli11-dev nlohmann-json3-dev && \
     mkdir -p /usr/lib/x86_64-linux-gnu/cmake/unofficial-sqlite3 && \
@@ -16,6 +16,7 @@ WORKDIR /workspace
 COPY src/vcpkg.json src/CMakeLists.txt src/CMakePresets.json ./src/
 COPY build/gen/ ./build/gen/
 COPY build/third_party/ ./build/third_party/
+COPY scripts/wsl/gen-node-constants.sh ./scripts/wsl/gen-node-constants.sh
 COPY src/ ./src/
 
 RUN mkdir -p /workspace/build/gen/cpp/aocproto && \
@@ -45,7 +46,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     mkdir -p /workspace/build/gen/proto /workspace/build/gen/world/world /workspace/build/gen/go/aoc/nodeconstants && \
     cp -r /workspace/build/gen/cpp/aocproto/* /workspace/build/gen/proto/ && \
     if [ ! -f "/workspace/build/gen/world/world/node_constants.h" ]; then \
-        python3 /workspace/src/tools/schemagen/gen_node_constants.py \
+        sh /workspace/scripts/wsl/gen-node-constants.sh \
             --cpp-out /workspace/build/gen/world/world/node_constants.h \
             --go-out /workspace/build/gen/go/aoc/nodeconstants/node_constants.go; \
     fi && \

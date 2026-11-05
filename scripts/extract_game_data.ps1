@@ -24,7 +24,7 @@
     dist\content\npc_trees.tsv                 what each Blueprint's state tree has tasks for (wander, patrol): an NPC whose tree has neither stands at its post (src\tools\npcabilities)
     dist\content\town_platforms.bin           the floor of the five towns (two city platform maps)  (mapc, from the game's containers)
     dist\content\town_layout_items.tsv,        the buildings, walls and terraces of the five towns' layouts at the level each town starts at (src\config\seeds\citynode_seed.json):
-                                               what stands where (a python list from content.db),
+                                               what stands where (a list from content.db),
       town_layouts.bin                         then their collision geometry (mapc, from the game's containers)
     dist\content\area_geom.bin, area_nav.bin   the navigation mesh (combat needs it)             (mapc and aoc_navbuild)
     dist\content\client_config\, zoi_chunks\   the game's Config files and its zone-of-influence grid (read by the generators below)
@@ -32,7 +32,7 @@
                                                region_rects.tsv, the Riverlands' rectangles, and the test fixtures (listed in .gitignore)
     dist\content\aoc.usmap                     a copy of src\config\layouts\aoc.usmap, where the tools look for it
 
-  It needs: the game (Steam, or GAME_ROOT / -GameRoot), the .NET 8 SDK (mapc), Go (contentc), Python 3.10+ (the generators), and Visual Studio 2022 Build Tools
+  It needs: the game (Steam, or GAME_ROOT / -GameRoot), the .NET 8 SDK (mapc), Go (contentc), and Visual Studio 2022 Build Tools
   with CMake and vcpkg (aoc_navbuild, built by scripts\build.ps1). The first run fetches CUE4Parse (src\tools\mapc\fetch_cue4parse.ps1) and restores mapc's NuGet
   packages, so it needs the network once. A full run takes about 10 minutes on a fast PC (the longest step is the map read for the navigation mesh) and up to
   4 GB of memory for any one program; the first build of the C++ libraries (vcpkg) comes on top and can take a long time.
@@ -73,7 +73,6 @@ $ErrorActionPreference = 'Stop'
 $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })     # powershell -File hands over "a,b" as one string
 $Skip = @($Skip | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $repoRoot  = Split-Path $PSScriptRoot -Parent
-$env:PYTHONPYCACHEPREFIX = Join-Path $repoRoot 'build\pycache'
 $distDir   = Join-Path $repoRoot 'dist'
 $outDir    = Join-Path $distDir 'content'
 $stampDir  = Join-Path $repoRoot 'build' '.extract'
@@ -153,7 +152,7 @@ function Get-CodeHash([string[]]$paths) {
         $full = Join-Path $repoRoot $p
         if (-not (Test-Path -LiteralPath $full)) { $lines.Add("$p missing"); continue }
         $files = if ((Get-Item -LiteralPath $full).PSIsContainer) {
-            Get-ChildItem -LiteralPath $full -Recurse -File | Where-Object { $_.FullName -notmatch '\\(bin|obj|__pycache__)\\' -and $_.Name -notmatch '_test\.go$|\.md$|\.pyc$|^region_rects\.tsv$' }
+            Get-ChildItem -LiteralPath $full -Recurse -File | Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' -and $_.Name -notmatch '_test\.go$|\.md$|^region_rects\.tsv$' }
         } else { Get-Item -LiteralPath $full }
         $sub = New-Object System.Collections.Generic.List[string]
         foreach ($f in $files) {
@@ -271,27 +270,6 @@ function Find-Exe([string]$name, [string[]]$extra = @()) {
     return $null
 }
 
-function Find-Python {
-    foreach ($try in @('python', 'py')) {
-        $c = Get-Command $try -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (-not $c) { continue }
-        [string[]]$prefix = @()
-        if ($try -eq 'py') { $prefix = @('-3') }
-        $oldPref = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            $pyArgs = @($prefix) + @('-c', 'import sys; print(sys.version_info[0], sys.version_info[1])')
-            $res = @(& $c.Source @pyArgs 2>$null)
-            $code = $LASTEXITCODE
-            $v = if ($res.Count -gt 0) { [string]$res[0] } else { '' }
-            if ($code -eq 0 -and $v -match '^(\d+) (\d+)$' -and ([int]$Matches[1] -gt 3 -or ([int]$Matches[1] -eq 3 -and [int]$Matches[2] -ge 10))) {
-                return [pscustomobject]@{ Exe = $c.Source; Prefix = $prefix; Version = ($v -replace ' ', '.') }
-            }
-        } catch { } finally { $ErrorActionPreference = $oldPref }
-    }
-    return $null
-}
-
 function Find-DotnetSdk8 {
     $dn = Find-Exe 'dotnet' @("$env:ProgramFiles\dotnet\dotnet.exe")
     if (-not $dn) { return $null }
@@ -406,11 +384,9 @@ foreach ($pak in (Get-ChildItem -LiteralPath $gamePaks -File)) { $paks.Add(('{0}
 $paks.Sort([System.StringComparer]::OrdinalIgnoreCase)
 $gameId = Get-TextHash (($paks -join "`n") + "`n" + ('exe {0} {1}' -f $exeLen, $exeTicks) + "`n" + ('dbc {0} {1}' -f $dbcLen, $dbcItem.LastWriteTimeUtc.Ticks))
 
-$python = Find-Python
 $dotnet = Find-DotnetSdk8
 $go     = Find-Exe 'go' @('C:\Program Files\Go\bin\go.exe')
 $missing = @()
-if (-not $python) { $missing += 'Python 3.10 or newer (python on PATH)' }
 if (-not $dotnet) { $missing += 'the .NET 8 SDK (dotnet)' }
 if (-not $go)     { $missing += 'Go (go on PATH)' }
 if (-not (Test-Path -LiteralPath $usmapSrc)) { $missing += 'src\config\layouts\aoc.usmap (part of the repository)' }
@@ -419,7 +395,7 @@ if ($missing.Count -gt 0) {
         'Run scripts\install_dependencies.ps1 to install what is missing, open a new window (so the new PATH applies), then run this again.',
         'More: README.md, "Build and run", "What to install".')
 }
-Say ("Tools       : Python {0}, .NET SDK, Go; {1} jobs for C++, {2} threads for the navigation mesh" -f $python.Version, $Jobs, $NavThreads)
+Say ("Tools       : .NET SDK, Go; {0} jobs for C++, {1} threads for the navigation mesh" -f $Jobs, $NavThreads)
 
 # ---------------------------------------------------------------------------------------------------------------------
 # The steps
@@ -429,9 +405,9 @@ function Get-CodeContentc { Get-CodeHash @('src\server\services\cmd\contentc', '
 function Get-CodeNpcAbilities { Get-CodeHash @('src\tools\npcabilities') }
 function Get-CodeItemNames { Get-CodeHash @('src\tools\itemnames') }
 # WHY: CMakeLists.txt is intentionally excluded from Get-CodeGens, Get-CodeNav, and Get-CodeLayouts so CMake topology edits never invalidate game data stamps.
-function Get-CodeGens     { Get-CodeHash @('src\tools\schemagen\gen_zoi_surface.py', 'src\tools\schemagen\gen_region_rects.py', 'src\tools\schemagen\gen_region.py', 'src\tools\schemagen\gen_node_constants.py', 'src\tools\schemagen\gen_gm_garden.py', 'src\tools\schemagen\gen_tooltips.py', 'src\tools\schemagen\gen_gear_fixture.py', 'src\tools\schemagen\gen_talent_fixture.py') }
+function Get-CodeGens     { Get-CodeHash @('src\tools\schemagen\gen_zoi_surface.ps1', 'src\tools\schemagen\gen_region_rects.ps1', 'src\tools\schemagen\gen_region.ps1', 'src\tools\schemagen\gen_gm_garden.ps1', 'src\tools\schemagen\gen_tooltips.ps1', 'src\tools\schemagen\gen_gear_fixture.ps1', 'src\tools\schemagen\gen_talent_fixture.ps1') }
 function Get-CodeNav      { Get-CodeHash @('src\libs\aocnav', 'src\tools\navbuild', 'build\third_party\recastnavigation', 'src\vcpkg.json') }
-# The level each node starts at in the server's seed file (src\config\seeds\citynode_seed.json): the towns' buildings are listed at those levels (src\tools\schemagen\gen_town_layouts.py), so a change of a
+# The level each node starts at in the server's seed file (src\config\seeds\citynode_seed.json): the towns' buildings are listed at those levels (src\tools\schemagen\gen_town_layouts.ps1), so a change of a
 # level there changes the list and the navigation mesh.  Only "nodes" counts: the workshops and the comment do not change what the map holds.
 function Get-SeedLevels {
     $path = Join-Path $repoRoot 'src\config\seeds\citynode_seed.json'
@@ -442,7 +418,7 @@ function Get-SeedLevels {
     $pairs.Sort([System.StringComparer]::OrdinalIgnoreCase)
     return ($pairs -join ';')
 }
-function Get-CodeLayouts  { (Get-CodeHash @('src\tools\schemagen\gen_town_layouts.py')) + ' ' + (Get-SeedLevels) }
+function Get-CodeLayouts  { (Get-CodeHash @('src\tools\schemagen\gen_town_layouts.ps1')) + ' ' + (Get-SeedLevels) }
 # WHY: navmesh hashes only the exact files and city_node rows it reads (not upstream step IDs) so unrelated content.db edits do not trigger an 8+ minute navmesh rebuild.
 function Get-NodeRowsHash {
     $db = Join-Path $outDir 'content.db'
@@ -559,25 +535,25 @@ $steps = @(
         Assert-Files @('dist\content\content.db', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'export-zoi', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_zoi'
         $gen = Join-Path $repoRoot 'src\tools\schemagen'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_region_rects.py'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', (Join-Path $outDir 'content.db'))) 'gen_region_rects'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_region.py'))) 'gen_region'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $gen 'gen_region_rects.ps1'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', (Join-Path $outDir 'content.db')) 'gen_region_rects'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $gen 'gen_region.ps1')) 'gen_region'
     } },
     @{ Name = 'headers'; Title = "Generate worldd's tables and the citynode constants"; Outputs = @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\world\node_constants.h', 'build\gen\go\citynodeconsts\constants_gen.go', 'build\gen\world\spawns\garden_defs.h'); Run = {
         Assert-Files @('dist\content\content.db', 'dist\content\zoi_chunks', 'dist\content\client_config\DefaultAoCRecordConstants.ini') 'run the earlier steps first'
         $gen = Join-Path $repoRoot 'src\tools\schemagen'
         $db = Join-Path $outDir 'content.db'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_zoi_surface.py'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', $db)) 'gen_zoi_surface'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_node_constants.py'), '--ini', (Join-Path $outDir 'client_config\DefaultAoCRecordConstants.ini'))) 'gen_node_constants'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_gm_garden.py'), '--content-db', $db)) 'gen_gm_garden'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $gen 'gen_zoi_surface.ps1'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', $db) 'gen_zoi_surface'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'scripts\generators.ps1'), '-ClientConfig', (Join-Path $outDir 'client_config'), '-Only', 'node_constants') 'gen_node_constants'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $gen 'gen_gm_garden.ps1'), '--content-db', $db) 'gen_gm_garden'
     } },
     @{ Name = 'fixtures'; Title = 'Generate the test fixtures'; Outputs = @('build\gen\fixtures\corpus.txt', 'build\gen\world\tests\talent_fixture.sql', 'build\gen\world\tests\gear_fixture.h', 'build\gen\world\tests\tooltip_key.h'); Run = {
         Assert-Files @('dist\content\content.db', "dist\tools\statprog$exeExt") 'run the earlier steps first'
         $db = Join-Path $outDir 'content.db'
         New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'build\gen\fixtures') | Out-Null
         Invoke-Checked $statprog @('corpus', '--db', $db, '--out', (Join-Path $repoRoot 'build\gen\fixtures\corpus.txt')) 'statprog_corpus'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\schemagen\gen_talent_fixture.py'), $db)) 'gen_talent_fixture'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\schemagen\gen_gear_fixture.py'), $db)) 'gen_gear_fixture'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\schemagen\gen_tooltips.py'), '--db', $db)) 'gen_tooltips'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\schemagen\gen_talent_fixture.ps1'), $db) 'gen_talent_fixture'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\schemagen\gen_gear_fixture.ps1'), $db) 'gen_gear_fixture'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\schemagen\gen_tooltips.ps1'), '--db', $db) 'gen_tooltips'
     } },
     @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++; the first build also builds the C++ libraries with vcpkg)'; Outputs = @("dist\Release\aoc_navbuild$exeExt"); Run = {
         Assert-Files @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\spawns\region_data.h', 'build\gen\world\spawns\garden_defs.h') 'run the earlier steps first'
@@ -597,7 +573,7 @@ $steps = @(
     } },
     @{ Name = 'townlayouts'; Title = 'Read the buildings, walls and terraces of the five towns (a list from content.db, then the meshes it names from the game, mapc; a few seconds)'; Outputs = @('dist\content\town_layout_items.tsv', 'dist\content\town_layouts.bin'); Run = {
         Assert-Files @('dist\content\content.db', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the tools and database steps first'
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\schemagen\gen_town_layouts.py'), '--content-db', (Join-Path $outDir 'content.db'), '--out', (Join-Path $outDir 'town_layout_items.tsv'))) 'gen_town_layouts'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\schemagen\gen_town_layouts.ps1'), '--content-db', (Join-Path $outDir 'content.db'), '--out', (Join-Path $outDir 'town_layout_items.tsv')) 'gen_town_layouts'
         Invoke-Checked $dotnet @($mapcDll, 'town-layouts', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir, '--min-free-gb', '8') 'mapc_town_layouts'
     } },
     @{ Name = 'npcabilities'; Title = 'Read the creature Blueprints and animation montages that give the creatures their attacks, what every creature notices and how far it follows, and the humanoid Blueprints and records that dress and name the people (src/tools/npcabilities; about two minutes)'; Outputs = @('dist\content\npc_abilities.tsv', 'dist\content\npc_montages.tsv', 'dist\content\npc_targeting.tsv', 'dist\content\npc_senses.tsv', 'dist\content\npc_aggro_curves.tsv', 'dist\content\npc_looks.tsv', 'dist\content\npc_appearances.tsv', 'dist\content\npc_names.tsv', 'dist\content\npc_trees.tsv'); Run = {
@@ -609,12 +585,12 @@ $steps = @(
         $savedHeap = $env:DOTNET_GCHeapHardLimit
         if (-not $env:DOTNET_GCHeapHardLimit) { $env:DOTNET_GCHeapHardLimit = '0x100000000' }     # reading every creature Blueprint peaks at 7.7 GB without this limit
         try { Invoke-Checked $dotnet $npcArgs 'npcabilities_read' } finally { $env:DOTNET_GCHeapHardLimit = $savedHeap }
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\npcabilities\targeting.py'), '--content-db', (Join-Path $outDir 'content.db'),
-            '--abilities', (Join-Path $outDir 'npc_abilities.tsv'), '--out', (Join-Path $outDir 'npc_targeting.tsv'))) 'npcabilities_targeting'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\npcabilities\targeting.ps1'), '--content-db', (Join-Path $outDir 'content.db'),
+            '--abilities', (Join-Path $outDir 'npc_abilities.tsv'), '--out', (Join-Path $outDir 'npc_targeting.tsv')) 'npcabilities_targeting'
         $savedHeap = $env:DOTNET_GCHeapHardLimit
         if (-not $env:DOTNET_GCHeapHardLimit) { $env:DOTNET_GCHeapHardLimit = '0x100000000' }     # reading the people's looks peaks at 7.6 GB without this limit and at 4.0 GB with it, with the same tables
         try { Invoke-Checked $dotnet @($npcAbilitiesDll, 'looks', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'npcabilities_looks' } finally { $env:DOTNET_GCHeapHardLimit = $savedHeap }
-        Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\npcabilities\looks.py'), '--content-db', (Join-Path $outDir 'content.db'), '--out-dir', $outDir)) 'npcabilities_names'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\npcabilities\looks.ps1'), '--content-db', (Join-Path $outDir 'content.db'), '--out-dir', $outDir) 'npcabilities_names'
     } },
     @{ Name = 'navmesh'; Title = 'Read the map and build the navigation mesh, the NPC motion table and the foliage (mapc; the longest step)'; Outputs = @('dist\content\npc_motion.tsv', 'dist\content\region_foliage.tsv', 'dist\content\area_geom.bin', 'dist\content\area_nav.bin'); Run = {
         Assert-Files @('build\gen\nav\region_rects.tsv', "dist\Release\aoc_navbuild$exeExt", 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll', 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'

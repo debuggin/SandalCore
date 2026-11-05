@@ -9,7 +9,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "SilentlyContinue"
 
-# Single-instance check
 try {
     $myPid = $PID
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
@@ -98,9 +97,9 @@ Write-Host "[AutoLogger] Background auto-logger active. Streaming all 4 applicat
 
 while ($true) {
     $clientProc = Get-Process -Name "AOCClient-Win64-Shipping" -ErrorAction SilentlyContinue | Select-Object -First 1
-    $tetherProc = Get-Process -Name "tether_server" -ErrorAction SilentlyContinue | Select-Object -First 1
-    # The Go services and worldd from this checkout: the run is named after the first of them to start.
-    $goProc = Get-Process -Name worldd, gateway -ErrorAction SilentlyContinue |
+    $tetherProc = Get-Process -Name "tether", "tether_server" -ErrorAction SilentlyContinue | Select-Object -First 1
+    # The Go services and world from this checkout: the run is named after the first of them to start.
+    $goProc = Get-Process -Name world, worldd, gateway -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($RepoRoot, [System.StringComparison]::OrdinalIgnoreCase) } |
         Sort-Object StartTime | Select-Object -First 1
     $runProc = $goProc
@@ -113,7 +112,6 @@ while ($true) {
         $idleSecondsAfterStop += [math]::Max(1, [int]($IntervalMs / 1000))
     }
 
-    # Find active run ID
     $runId = ""
     if ($runProc) {
         $runId = "run_" + $runProc.StartTime.ToString("yyyyMMdd_HHmmss")
@@ -145,9 +143,6 @@ while ($true) {
 
         $needsSummaryUpdate = $false
 
-# built by Cyb with C O A
-
-        # 1. Tether Server
         $latestTether = Get-ChildItem -Path $DistLogsDir -Filter "tether-*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($latestTether) {
             $szKey = "tether_" + $latestTether.FullName
@@ -161,8 +156,7 @@ while ($true) {
             }
         }
 
-        # 2. The Go services and worldd: dist\services\logs\<name>.log
-        foreach ($name in 'auth', 'character', 'citynode', 'mesh', 'gateway', 'worldd') {
+        foreach ($name in 'auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'world', 'worldd') {
             $svcLog = Join-Path $GoLogsDir "$name.log"
             if (-not (Test-Path $svcLog)) { continue }
             $fi = Get-Item $svcLog
@@ -175,7 +169,6 @@ while ($true) {
             }
         }
 
-        # 3. Game Client
         if (Test-Path $ClientLogPath) {
             $fi = Get-Item $ClientLogPath
             $szKey = "client"
@@ -188,7 +181,6 @@ while ($true) {
             }
         }
 
-        # 4. The client's browser log
         if (Test-Path $CefLogPath) {
             $fi = Get-Item $CefLogPath
             if ($lastSizes["cef"] -ne $fi.Length) {
@@ -199,7 +191,6 @@ while ($true) {
             }
         }
 
-        # Update summary
         if ($needsSummaryUpdate) {
             $sumText = Generate-Summary $repoDest $currentRunId
             foreach ($d in $allDests) {
@@ -208,7 +199,6 @@ while ($true) {
         }
     }
 
-    # When all emulator/client processes have stopped for 15 seconds, exit cleanly
     if ($sawProcessesRunning -and $idleSecondsAfterStop -ge 15) {
         Write-Host "[AutoLogger] All processes stopped. Final logs saved to $currentRunId. Exiting." -ForegroundColor Cyan
         break

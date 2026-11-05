@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using SandalCore.Config;
 using SandalLauncher.Models;
 using SandalLauncher.Security;
 
@@ -96,7 +97,7 @@ public sealed class ClientLaunchService
             if (!OperatingSystem.IsWindows())
             {
                 try { File.SetUnixFileMode(tempPath, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
-                catch (PlatformNotSupportedException) { }
+                catch (PlatformNotSupportedException ex) { Trace.WriteLine(ex.Message); }
             }
             File.Move(tempPath, targetPath, overwrite: true);
             return targetPath;
@@ -104,7 +105,94 @@ public sealed class ClientLaunchService
         finally
         {
             CryptographicOperations.ZeroMemory(utf8);
-            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch (IOException) { }
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); }
+            catch (IOException ex) { Trace.WriteLine(ex.Message); }
+        }
+    }
+
+    public static bool TryResolveClientExecutable(string? clientPathOrDirectory, out string resolvedExePath)
+    {
+        resolvedExePath = string.Empty;
+        if (string.IsNullOrWhiteSpace(clientPathOrDirectory)) return false;
+        try
+        {
+            resolvedExePath = ResolveClientExecutable(clientPathOrDirectory);
+            return File.Exists(resolvedExePath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    public static Process StartGameOrMockProcess(LauncherConfig? config, bool allowMockFallback = true, int mockSleepSeconds = 300)
+    {
+        if (config is not null && TryResolveClientExecutable(config.ClientPakDir, out string realExe))
+        {
+            try
+            {
+                var realPsi = new ProcessStartInfo(realExe)
+                {
+                    WorkingDirectory = Path.GetDirectoryName(realExe) ?? string.Empty,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                realPsi.ArgumentList.Add($"-GatewayAddr={config.GatewayHttpAddr}");
+                realPsi.ArgumentList.Add($"-IcsAddr={config.GatewayIcsAddr}");
+                realPsi.ArgumentList.Add($"-UseEOS={(config.ClientUseEos ? "true" : "false")}");
+                realPsi.ArgumentList.Add("-NoEAC");
+                if (Process.Start(realPsi) is { } startedReal)
+                    return startedReal;
+            }
+            catch (Exception ex) when (allowMockFallback)
+            {
+                Trace.WriteLine(ex.Message);
+            }
+        }
+        if (!allowMockFallback)
+            throw new FileNotFoundException("Configured Ashes of Creation client executable was not found.");
+        ProcessStartInfo mockPsi = BuildMockGameStartInfo(mockSleepSeconds);
+        return Process.Start(mockPsi) ?? throw new InvalidOperationException("Failed to start mock game client process.");
+    }
+
+    public static ProcessStartInfo BuildMockGameStartInfo(int sleepSeconds = 300)
+    {
+        string asmPath = typeof(ClientLaunchService).Assembly.Location;
+        string? candidateExe = !string.IsNullOrWhiteSpace(asmPath)
+            ? Path.ChangeExtension(asmPath, OperatingSystem.IsWindows() ? ".exe" : null)
+            : null;
+        ProcessStartInfo psi;
+        if (!string.IsNullOrWhiteSpace(candidateExe) && File.Exists(candidateExe))
+        {
+            psi = new ProcessStartInfo(candidateExe);
+        }
+        else if (!string.IsNullOrWhiteSpace(asmPath) && File.Exists(asmPath))
+        {
+            psi = new ProcessStartInfo("dotnet");
+            psi.ArgumentList.Add(asmPath);
+        }
+        else
+        {
+            psi = new ProcessStartInfo(Environment.ProcessPath ?? "dotnet");
+        }
+        psi.UseShellExecute = false;
+        psi.CreateNoWindow = true;
+        psi.ArgumentList.Add("--mock-game-client");
+        psi.ArgumentList.Add(Math.Max(1, sleepSeconds).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        return psi;
+    }
+
+    public static bool IsProcessAlive(int? pid)
+    {
+        if (pid is not > 0) return false;
+        try
+        {
+            using Process proc = Process.GetProcessById(pid.Value);
+            return !proc.HasExited;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
         }
     }
 

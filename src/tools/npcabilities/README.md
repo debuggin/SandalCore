@@ -2,7 +2,7 @@
 
 Reads what the creatures of the game attack with out of your own game files, for the creatures that play their attacks with their own animation.
 
-    dotnet src/tools/npcabilities/bin/Release/net8.0/npcabilities.dll read --dir AOC/Content/DesignAssets/Population/NPC/Beast/Rabid [--dir ...] [--senses-dir AOC/Content/DesignAssets/Population] [--out-dir dist/content] [--check]
+    dotnet build/dotnet/bin/npcabilities/Release/net8.0/npcabilities.dll read --dir AOC/Content/DesignAssets/Population/NPC/Beast/Rabid [--dir ...] [--senses-dir AOC/Content/DesignAssets/Population] [--out-dir dist/content] [--check]
 
 `scripts/extract_game_data.ps1` runs it as the `npcabilities` step (`-Only tools,npcabilities`); it needs only the game's containers (no map read, about a minute).
 The folders it reads are listed in the script (`$NpcFolders`): one per creature kind, holding the kind's Blueprints and the animation montages beside them.
@@ -44,7 +44,7 @@ It writes three tables (five with `--senses-dir`):
   done at that time, and the cooldowns the task starts run from there. It is filled for the folders the extractor lists as `$NpcAnimEndFolders` (the bandits) and empty for the others,
   whose cooldowns run from the start of the cast. `fires` is `time:key` for every notify of the montage that launches a projectile (the time in seconds at a play rate of 1; the key picks the
   ability's projectile record, 0 when the notify names none): the projectile leaves the creature there, flies by its record's speed and path, and lands the hits of its record when it arrives.
-- `npc_targeting.tsv` (`targeting.py`, from content.db): where each listed ability's hit lands, one line per targeting record of the ability (`key`):
+- `npc_targeting.tsv` (`pwsh -File src/tools/npcabilities/targeting.ps1` / `scripts/extract_game_data.ps1`, from `content.db`): where each listed ability's hit lands, one line per targeting record of the ability (`key`):
   - `discovery` is how the record finds its target: `none`, `prefers_active` (what the creature fights now, else the one the cast was aimed at), `only_locked` (the one the cast was aimed at),
     `only_active` or `prefers_locked`.
   - `check_validity` says whether the record measures anything. At 0 the hit lands on that target wherever it stands, and the distance and angle on the line are only what the record states, not
@@ -69,7 +69,7 @@ It writes three tables (five with `--senses-dir`):
   - `leash_anchor` is `combat_start` when the creature's state tree saves the place its fight began as its leash location (866 of the 1,194), else empty.
   The extractor reads the folder in about a minute and keeps the .NET heap under 4 GB (reading every Blueprint peaks near 8 GB without the limit).
 
-worldd reads all five (`--npc-abilities`, `--npc-montages`, `--npc-targeting`, `--npc-senses`, `--npc-aggro-curves`). A creature whose Blueprint is in the first table uses its abilities in the order the tree tries them, among
+`world` (`aoc-world`) reads all five (`--npc-abilities`, `--npc-montages`, `--npc-targeting`, `--npc-senses`, `--npc-aggro-curves`). A creature whose Blueprint is in the first table uses its abilities in the order the tree tries them, among
 the tasks of its fight whose conditions the tables can say (the conditions are asked afresh at every try, a roll included); starts each attack with the ability's montage, lands every hit when its notify says, by the hit's targeting record (on the target wherever it stands unless the record measures, and on everyone inside its volumes), stands still for the montage when the task says so,
 moves the creature along the montage's root motion as the client does (it stops at a player's capsule and at the edge of the walkable ground, is held or stopped by its freeze box, and the
 world says where it is at every step), turns it to its target while the ability plays when the tree says so (the lunge then goes the way the creature faces at each step), keeps the AI's walk orders waiting until
@@ -78,18 +78,19 @@ its rotation rate: its facing never jumps, and it is never stopped only to turn.
 
 ## The people's looks and names
 
-    dotnet src/tools/npcabilities/bin/Release/net8.0/npcabilities.dll looks [--out-dir dist/content] [--check]
-    python src/tools/npcabilities/looks.py --content-db dist/content/content.db --out-dir dist/content
+    dotnet build/dotnet/bin/npcabilities/Release/net8.0/npcabilities.dll looks [--out-dir dist/content] [--check]
+    pwsh -File src/tools/npcabilities/looks.ps1 --db dist/content/content.db --out dist/content/npc_appearances.tsv --names-out dist/content/npc_names.tsv [--check]
+    pwsh -File src/tools/npcabilities/targeting.ps1 --db dist/content/content.db --abilities dist/content/npc_abilities.tsv --montages dist/content/npc_montages.tsv --out dist/content/npc_targeting.tsv [--check]
 
-The same step (`-Only tools,npcabilities`) also writes four tables that dress and name the humanoid NPCs (about a minute more; worldd reads them from the folder of `npc_motion.tsv`):
+The same step (`-Only tools,npcabilities`) also writes four tables that dress and name the humanoid NPCs (about a minute more; `world` reads them from the folder of `npc_motion.tsv`):
 
 - `npc_looks.tsv` (`looks`, from the game's containers): one line per pawn Blueprint whose class defaults, or its parents', name an NPCAppearance record: the Blueprint (as `npc_motion.tsv`
   names it), the `appearance` record guid, the `name` the Blueprint carries, and the `race` and `gender` its BaseCharacterInfo sets (empty: the defaults, Kaelar and Male).
-- `npc_appearances.tsv` (`looks.py`, from content.db): the NPCAppearance records (shared appearance info, the outfit options and the curve that weighs them), the outfits (the item
-  appearance records of each slot and the curve that weighs them) and the races and genders each shared appearance info may make. `looks.py` documents the lines.
-- `npc_names.tsv` (`looks.py`): the display names of the population instances, asset sets and assets; the game's server takes the NPC's name from the first non-empty list of them.
+- `npc_appearances.tsv` (`src/tools/npcabilities/looks.ps1`, from `content.db`): the NPCAppearance records (shared appearance info, the outfit options and the curve that weighs them), the outfits (the item
+  appearance records of each slot and the curve that weighs them) and the races and genders each shared appearance info may make.
+- `npc_names.tsv` (`src/tools/npcabilities/looks.ps1`): the display names of the population instances, asset sets and assets; the game's server takes the NPC's name from the first non-empty list of them.
 - `npc_trees.tsv` (`looks`, from the game's containers): one line per pawn Blueprint that plays a state tree (its own reference, else the nearest parent's): the Blueprint, the `tree`, and whether
   the tree, or a tree one of its states plays, has a task that wanders (`wander`) and one that patrols (`patrol`), 1 or 0. A creature can only do what its tree has states for: the quest
-  givers' tree only idles, so they stand at their post whatever their population instance says (worldd reads the Blueprints whose tree has neither task as `standing` NPCs).
+  givers' tree only idles, so they stand at their post whatever their population instance says (`world` reads the Blueprints whose tree has neither task as `standing` NPCs).
 
 The tool is a project of its own (it builds on `src/tools/mapc`'s `Game` class) so that a change to it restamps only its own step.

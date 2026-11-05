@@ -45,15 +45,14 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
                 'tools/mapc/Program.cs'                    = 'class Mapc {}'
                 'services/cmd/contentc/main.go'            = 'package main'
                 'services/go.mod'                          = 'module sandal/services'
-                'tools/schemagen/gen_zoi_surface.py'       = 'print("zoi")'
-                'tools/schemagen/gen_region_rects.py'      = 'print("rects")'
-                'tools/schemagen/gen_region.py'            = 'print("region")'
-                'tools/schemagen/gen_node_constants.py'    = 'print("nodes")'
-                'tools/schemagen/gen_gm_garden.py'         = 'print("garden")'
-                'tools/schemagen/gen_tooltips.py'          = 'print("tooltips")'
-                'tools/schemagen/gen_gear_fixture.py'      = 'print("gear")'
-                'tools/schemagen/gen_talent_fixture.py'    = 'print("talent")'
-                'tools/schemagen/gen_town_layouts.py'      = 'print("layouts")'
+                'tools/schemagen/gen_zoi_surface.ps1'      = 'Write-Output "zoi"'
+                'tools/schemagen/gen_region_rects.ps1'     = 'Write-Output "rects"'
+                'tools/schemagen/gen_region.ps1'           = 'Write-Output "region"'
+                'tools/schemagen/gen_gm_garden.ps1'        = 'Write-Output "garden"'
+                'tools/schemagen/gen_tooltips.ps1'         = 'Write-Output "tooltips"'
+                'tools/schemagen/gen_gear_fixture.ps1'     = 'Write-Output "gear"'
+                'tools/schemagen/gen_talent_fixture.ps1'   = 'Write-Output "talent"'
+                'tools/schemagen/gen_town_layouts.ps1'     = 'Write-Output "layouts"'
                 'config/seeds/citynode_seed.json'          = '{"nodes":{"lionhold":{"level":3}}}'
                 'libs/aocnav/nav.cpp'                      = 'int nav = 1;'
                 'tools/navbuild/main.cpp'                  = 'int main() { return 0; }'
@@ -156,10 +155,10 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
         It 'Verifies fetch_cue4parse and schemagen generators target build/third_party and build/gen' {
             $cueScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src/tools/mapc/fetch_cue4parse.ps1') -Raw
             $cueScript | Should -Match 'build[\\/]third_party[\\/]CUE4Parse'
-            $gardenPy = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src/tools/schemagen/gen_gm_garden.py') -Raw
-            $gardenPy | Should -Match "'build',\s*'gen',\s*'world',\s*'spawns',\s*'garden_defs\.h'"
-            $nodePy = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src/tools/schemagen/gen_node_constants.py') -Raw
-            $nodePy | Should -Match "'build',\s*'gen',\s*'go',\s*'citynodeconsts',\s*'constants_gen\.go'"
+            $graph = Get-SandalStageGraph
+            @($graph['region'].Inputs | Where-Object { $_ -match 'gen_region\.ps1$' }).Count | Should -Be 1
+            $genScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/generators.ps1') -Raw
+            $genScript | Should -Match 'build[\\/]gen[\\/]go[\\/]citynodeconsts[\\/]constants_gen\.go'
         }
 
         It 'Propagates upstream hash invalidation to all transitive downstream stages while preserving independent branches' {

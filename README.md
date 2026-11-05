@@ -37,7 +37,7 @@ flowchart LR
         tether["tether (C++23 :50051)"]
     end
 
-    subgraph app_net["WSL2 Docker — Application Tier (app_net)"]
+    subgraph service_net["WSL2 Docker — Service Tier (service_net)"]
         gateway["gateway (Go :8081 / :50050 / :50061)"]
         auth["auth (Go :8081 / :50052)"]
         character["character (Go :50053)"]
@@ -80,20 +80,20 @@ flowchart LR
     quest -->|"TCP (:5432)"| postgres
 ```
 
-| # | Container | Runtime | Ports (Host / Container) | Role |
+| # | Service (`container_name`) | Runtime | Ports (Host / Container) | Role |
 |---:|---|---|---|---|
-| 1 | `ingress-proxy` | Envoy v1.31.2 | `:8080` HTTP/2 & Web Admin UI, `:9090` gRPC ingress, `:50061` ICS TLS, `:50051` Tether, `:9901` Envoy admin | Edge reverse proxy routing browser, launcher, and client traffic across `edge_net` and `app_net` |
-| 2 | `gateway` | Go | `:8081` HTTP, `:50050` gRPC, `:50061` ICS TLS | Client session & ICS TLS gateway, character screen, and world handoff tickets |
-| 3 | `auth` | Go | `:8081` HTTP, `:50052` gRPC | Account registration, login, and session token validation |
-| 4 | `character` | Go | `:50053` gRPC | Character creation, inventory, equipment, starting kits, and persistence |
-| 5 | `citynode` | Go | `:50056` gRPC | Intrepid Node progression, citizenship, workshops, and tax/mayoral state |
-| 6 | `quest` | Go | `:50057` gRPC | Quest state machine, objectives, and dialogue progression |
-| 7 | `mesh` | Go | `:50054` gRPC | World zone registry, server boundary authority, and handover coordinator |
-| 8 | `meshgw` | Go | `:8082` HTTP/SSE | Mesh HTTP/SSE gateway streaming live node, world, and GM state |
-| 9 | `web-admin` | Nginx + Admin UI/BFF | `http://127.0.0.1:8080/` via Envoy (`:8088` internal) | Browser control plane for realm status, accounts, nodes, and world telemetry |
-| 10 | `tether` | C++23 | `:50051` container (`:19021` standalone) | Fast UDP/TCP session tether handing client auth tokens to `AOCClient.exe` |
-| 11 | `world` | C++23 | `127.0.0.1:7777/udp`, `:50061` / `:50062` gRPC | Authoritative 30 Hz world simulation, replication, combat, NPC AI, and navmesh runtime |
-| 12 | `postgres` | PostgreSQL 17 | `127.0.0.1:5432` | Relational database isolated on `data_net` |
+| 1 | `ingress-proxy` (`aoc-ingress-proxy`) | Envoy v1.31.2 | `:8080` HTTP/2 & Web Admin UI, `:9090` gRPC ingress, `:50061` ICS TLS, `:50051` Tether, `:9901` Envoy admin | Edge reverse proxy routing browser, launcher, and client traffic across `edge_net` and `service_net` |
+| 2 | `gateway` (`aoc-gateway`) | Go | `:8081` HTTP, `:50050` gRPC, `:50061` ICS TLS | Client session & ICS TLS gateway, character screen, and world handoff tickets |
+| 3 | `auth` (`aoc-auth`) | Go | `:8081` HTTP, `:50052` gRPC | Account registration, login, and session token validation |
+| 4 | `character` (`aoc-character`) | Go | `:50053` gRPC | Character creation, inventory, equipment, starting kits, and persistence |
+| 5 | `citynode` (`aoc-citynode`) | Go | `:50056` gRPC | Intrepid Node progression, citizenship, workshops, and tax/mayoral state |
+| 6 | `quest` (`aoc-quest`) | Go | `:50057` gRPC | Quest state machine, objectives, and dialogue progression |
+| 7 | `mesh` (`aoc-mesh`) | Go | `:50054` gRPC | World zone registry, server boundary authority, and handover coordinator |
+| 8 | `meshgw` (`aoc-meshgw`) | Go | `:8082` HTTP/SSE | Mesh HTTP/SSE gateway streaming live node, world, and GM state |
+| 9 | `web-admin` (`aoc-web-admin`) | Nginx + Admin UI/BFF | `http://127.0.0.1:8080/` via Envoy (`:8088` internal) | Browser control plane for realm status, accounts, nodes, and world telemetry |
+| 10 | `tether` (`aoc-tether`) | C++23 | `:50051` container (`:50055` admin, `:19021` standalone) | Fast UDP/TCP session tether handing client auth tokens to `AOCClient.exe` |
+| 11 | `world` (`aoc-world`) | C++23 | `127.0.0.1:7777/udp`, `:50061` / `:50062` gRPC | Authoritative 30 Hz world simulation, replication, combat, NPC AI, and navmesh runtime |
+| 12 | `postgres` (`aoc-postgres`) | PostgreSQL 17 | `127.0.0.1:5432` | Relational database isolated on `data_net` |
 
 ---
 
@@ -129,38 +129,27 @@ You need a Windows 10/11 x64 PC with your own installed copy of Ashes of Creatio
 
 ### 1. What to install
 
-All C++ (`world`, `tether`) and Go (`auth`, `gateway`, `character`, `citynode`, `quest`, `mesh`, `meshgw`) server binaries compile inside multi-stage Linux Docker containers ([`src/deploy/docker/cpp.Dockerfile`](src/deploy/docker/cpp.Dockerfile) and [`src/deploy/docker/go.Dockerfile`](src/deploy/docker/go.Dockerfile)). **Visual Studio C++, CMake, `vcpkg`, Go, and Python are NOT required on Windows** to build and run the containerized server stack.
+All C++ (`world`, `tether`) and Go (`auth`, `gateway`, `character`, `citynode`, `quest`, `mesh`, `meshgw`) server binaries compile inside multi-stage Linux Docker containers ([`src/deploy/docker/cpp.Dockerfile`](src/deploy/docker/cpp.Dockerfile) and [`src/deploy/docker/go.Dockerfile`](src/deploy/docker/go.Dockerfile)), while **`SandalLauncher`** and the game-data extractors compile on Windows through the `.NET 8 SDK`. No host C++ or Go compiler toolchain is required on Windows.
 
 | What | Version | What it is for |
 |---|---|---|
 | **Ashes of Creation** (Steam) | the build of 2026-01-29 | the source of the game data; it has to be installed on this PC |
-| **WSL2 + Docker Engine / Docker CLI** | current | builds and runs all 12 Linux server containers (`postgres`, `ingress-proxy` Envoy, 7 Go services, `web-admin`, `tether`, and `world`); installed automatically via `pwsh -File sandal.ps1 install-wsl-docker` (standalone WSL2 engine) |
-| **.NET 8 SDK** | 8.0 (any 8.x; with the 8.0 runtime) | builds and runs `SandalLauncher.exe` and the game data extractor (`aoc-extractor`), restoring NuGet dependencies (including `CUE4Parse`) automatically via the `.NET SDK` |
+| **WSL2 + Docker Engine / Docker CLI** | current | builds and runs all 12 Linux server containers (`aoc-postgres`, `aoc-ingress-proxy`, 7 Go services, `aoc-web-admin`, `aoc-tether`, and `aoc-world`); provisioned via `pwsh -File sandal.ps1 install-wsl-docker` (detects an existing Docker daemon or installs standalone WSL2 Docker Engine across Ubuntu, Debian, Fedora, RHEL/Alma/Rocky, Arch, openSUSE, and Alpine distros, and sets `.wslconfig` `instanceIdleTimeout=-1` and `vmIdleTimeout=-1` non-destructively) |
+| **.NET 8 SDK** | 8.0 (any 8.x; with the 8.0 runtime) | builds and runs `SandalLauncher.exe` (`src/clients/launcher/SandalLauncher.csproj`) and the game data extractors (`src/tools/aoc-extractor`, `src/tools/mapc`, `src/tools/itemnames`, `src/tools/npcabilities`), restoring NuGet dependencies (including `CUE4Parse`) automatically |
 | **Git** | any current version | clones and updates the repository (and provides OpenSSL for local certificate generation) |
 
-> [!NOTE]
-> **Optional: Native Windows Host Build (`dist/` without containers)**
-> If you want to compile native Windows `.exe` server binaries directly on the host into `dist/` instead of running the Linux container stack (`scripts\install_dependencies.ps1` checks and installs these optional host tools via winget):
->
-> | Optional Host Tool | Version | Purpose |
-> |---|---|---|
-> | **Visual Studio 2022 Build Tools** ("Desktop development with C++") | MSVC v143 | Compiles native Windows `world.exe`, `tether.exe`, and C++ tests |
-> | **CMake** & **[vcpkg](https://github.com/microsoft/vcpkg)** | CMake 3.25+, current `vcpkg` | Configures the native Windows C++ build and Windows C++ libraries |
-> | **Go** | 1.27+ (`src/server/services/go.mod`) | Compiles native Windows Go service `.exe` binaries and `contentc` on the host |
-> | **Python** | 3.10+ | Runs offline header/schema generators on the host |
-
-Disk: allow about 10 GB free for the extracted game data (`1.5 GB`) and container images (or about 20 GB if also building native Windows C++ binaries on the host). Memory: at least 6 GB free while the game data is extracted (the map reader peaks near 4 GB).
+Disk: allow about 10 GB free for the extracted game data (`1.5 GB`) and container images. Memory: at least 6 GB free while the game data is extracted (the map reader peaks near 4 GB).
 
 ### 2. The commands, in this order
 
-1. `pwsh -File sandal.ps1 install-wsl-docker` (one-time setup if WSL2 + Docker Engine are not yet installed).
-2. `start.bat` (or `pwsh -File sandal.ps1 up` / `pwsh -File scripts\launch_all.ps1`): extracts the game data from your installed client if needed (about 10 minutes on the first run; seconds on later runs), generates your local ECDSA P-256 CA and SAN leaf certificates in `dist\certs\` and `deploy\certs\`, builds and starts the 12-container Linux server stack in WSL2 (`deploy/compose.yml` / `deploy/up.ps1`), and opens **`SandalLauncher`** (`dist\launcher\SandalLauncher.exe`). Sign in (or let "Keep me signed in" do it) and press **LAUNCH GAME**. Use `stop.bat` (or `pwsh -File sandal.ps1 down`) to stop the stack.
+1. `pwsh -File sandal.ps1 install-wsl-docker` (one-time setup if WSL2 + Docker Engine are not yet configured).
+2. `start.bat` (or `pwsh -File sandal.ps1 run` / `pwsh -File sandal.ps1 up -Detach`): extracts the game data from your installed client if needed (about 10 minutes on the first run; seconds on later runs), generates your local ECDSA P-256 CA and SAN leaf certificates in `dist\certs\` and `deploy\certs\`, builds and starts the 12-container Linux server stack in WSL2 (`deploy/compose.yml` / `deploy/up.ps1`), and opens **`SandalLauncher`** (`dist\launcher\SandalLauncher.exe`). Sign in (or let "Keep me signed in" do it) and press **LAUNCH GAME**. Use `build.bat` (or `pwsh -File sandal.ps1 build`) to build the stack and Windows launcher without starting, and `stop.bat` (or `pwsh -File sandal.ps1 down`) to stop the stack. (`start.bat`, `stop.bat`, and `build.bat` delegate through `scripts\ensure_pwsh.bat`, which checks for PowerShell 7 (`pwsh`) and prompts to install the latest PowerShell 7 via `winget` if not present.)
 
-To extract only the game data on its own, run `pwsh -File scripts\extract_game_data.ps1`. To compile native Windows `.exe` binaries on the host into `dist\`, run `pwsh -File scripts\build.ps1 -Target all`.
+To extract only the game data on its own, run `pwsh -File sandal.ps1 extract` (or `pwsh -File scripts\extract_game_data.ps1`).
 
 ### 3. The game data (`scripts\extract_game_data.ps1`)
 
-**Where the game is found**, in this order: `scripts\extract_game_data.ps1 -GameRoot "D:\...\Ashes of Creation\Game"`, the environment variable `GAME_ROOT`, `game_executable` in `src\config\paths.json` (the launcher's Auto-Detect and Browse buttons save the path in `dist\Release\config\paths.json`, which is read too), Steam's libraries (found through the registry and `libraryfolders.vdf`), then the usual folders on every fixed drive. The game folder is the one that holds `AOCClient.exe` and the `AOC` folder; with Steam it is `...\steamapps\common\Ashes of Creation\Game`. `-GameRoot` counts for that one run only (`scripts\build.ps1 -Target all` does not pass it on). If your game is in an unusual place, set `GAME_ROOT` once, with `setx GAME_ROOT "D:\...\Ashes of Creation\Game"`, and open a new window: then `scripts\extract_game_data.ps1`, `scripts\build.ps1 -Target all` and the launchers all find it.
+**Where the game is found**, in this order: `scripts\extract_game_data.ps1 -GameRoot "D:\...\Ashes of Creation\Game"`, the environment variable `GAME_ROOT`, `game_executable` in `src\config\paths.json` or `src\config\paths.local.json` (the launcher's Auto-Detect and Browse buttons save the path in `dist\config\paths.json`), Steam's libraries (found through the registry and `libraryfolders.vdf`), then the usual folders on every fixed drive. The game folder is the one that holds `AOCClient.exe` and the `AOC` folder; with Steam it is `...\steamapps\common\Ashes of Creation\Game`. `-GameRoot` counts for that one run only. If your game is in an unusual place, set `GAME_ROOT` once, with `setx GAME_ROOT "D:\...\Ashes of Creation\Game"`, and open a new window: then `scripts\extract_game_data.ps1`, `sandal.ps1`, `start.bat`, and `SandalLauncher` all find it.
 
 **What it makes** (all of it git-ignored; [`.gitignore`](.gitignore) lists the generated sources):
 - `dist\content\content.db` (323 MB): the game numbers the servers use (`contentc`, from the client's `CacheDB.dbc`);
@@ -169,18 +158,18 @@ To extract only the game data on its own, run `pwsh -File scripts\extract_game_d
 - `dist\content\npc_abilities.tsv`, `npc_montages.tsv`, `npc_targeting.tsv`, `npc_senses.tsv` and `npc_aggro_curves.tsv`: what the creatures attack with, how their attack animations carry them, where each hit lands, and what each creature notices and how far it follows (`src\tools\npcabilities`, from the game's containers and `content.db`);
 - `dist\content\npc_looks.tsv`, `npc_appearances.tsv`, `npc_names.tsv` and `npc_trees.tsv`: how the people (humanoid NPCs) look, what they are called, and whether they wander or patrol (`src\tools\npcabilities`, from the game's containers and `content.db`);
 - `dist\content\town_platforms.bin` (4 MB): the floor of the five towns (`src\tools\mapc`, from two of the game's map packages);
-- `dist\content\town_layout_items.tsv` (6 MB) and `town_layouts.bin` (13 MB): the buildings, walls and terraces of the five towns at the level each town starts at (a list made from the design data by `src\tools\schemagen\gen_town_layouts.py`, then their collision from the game's packages by `src\tools\mapc`);
+- `dist\content\town_layout_items.tsv` (6 MB) and `town_layouts.bin` (13 MB): the buildings, walls and terraces of the five towns at the level each town starts at (a list made from the design data by `scripts\generators.ps1` / `src\tools\schemagen\gen_*.ps1` and `aoc-extractor`, then their collision from the game's packages by `src\tools\mapc`);
 - `dist\content\area_nav.bin` (974 MB) and `area_geom.bin` (232 MB): the navigation mesh, with the towns' buildings in it (`src\tools\mapc` and `aoc_navbuild`);
-- `dist\content\client_config\` and `zoi_chunks\`: the game's config files and its zone grid, which the generators read;
+- `dist\content\client_config\` and `zoi_chunks\`: the game's config files and its zone grid, which the PowerShell 7 schema/table generators in `src\tools\schemagen\` (`gen_*.ps1`, invoked via `scripts\generators.ps1`) read;
 - the generated sources and test fixtures the build includes (for example `zoi_surface_table.h`, `node_constants.h`, `region_data.h`).
 
 **The towns' levels.** The navigation mesh holds each of the five towns with the buildings of the level the server starts that town at, the one `src\config\seeds\citynode_seed.json` gives it (Joeva 4, Town; Halcyon 3, Village; the other three 0, Wilderness). If a GM changes a town's level in the game (`nodectl set-level`), the town in the game changes with it, but the navigation mesh keeps the buildings of the level it was made for: people can then walk where a new house stands or stand on a floor that is gone, until the mesh is made again. To make it for other levels, change the levels in the seed file and run `scripts\extract_game_data.ps1` again (the buildings and navigation mesh steps run, about 10 minutes). A level change in the game that swaps the mesh by itself is a later update.
 
-**How long:** about 10 minutes the first time on a fast PC (24 threads, 31 GB: 10.3 minutes in all, of which the map read and the navigation mesh take 8); a slower PC takes longer. Every step is skipped when what it reads has not changed, so running it again takes about a second. `scripts\extract_game_data.ps1 -CheckOnly` says what would run, `-Only <step>` runs one step (the steps are `tools`, `config`, `curves`, `names`, `database`, `region`, `headers`, `fixtures`, `navbuild`, `roads`, `townfloors`, `townlayouts`, `npcabilities`, `navmesh`), `-Skip <step>` leaves one out and `-Force` runs everything again. The output of every program is kept in `dist\content\.extract\`; `last_run.log` has all of it.
+**How long:** about 10 minutes the first time on a fast PC (24 threads, 31 GB: 10.3 minutes in all, of which the map read and the navigation mesh take 8); a slower PC takes longer. Every step is skipped when what it reads has not changed, so running it again takes about a second. `scripts\extract_game_data.ps1 -CheckOnly` says what would run, `-Only <step>` runs one step (the steps are `tools`, `config`, `curves`, `names`, `database`, `region`, `headers`, `fixtures`, `navbuild`, `roads`, `townfloors`, `townlayouts`, `npcabilities`, `navmesh`), `-Skip <step>` leaves one out and `-Force` runs everything again. The output of every program is kept in `build\.extract\`; `last_run.log` has all of it.
 
 **Network:** the first build downloads NuGet packages for the .NET 8 tools (`aoc-extractor`, `SandalLauncher`, `mapc`) and container base layers / Go modules inside the Docker build. Nothing is downloaded at runtime after the initial build.
 
-**After a game patch:** run `scripts\extract_game_data.ps1` (or `scripts\build.ps1 -Target all`) again. It sees that the game files changed and rebuilds everything that depends on them, about 10 minutes. The code is made for the client build of 2026-01-29 (`AOCClient-Win64-Shipping.exe` 235,606,624 bytes, `CacheDB.dbc` 144,085,052 bytes). With any other build the script prints a warning and goes on; the data can then be wrong or a step can fail.
+**After a game patch:** run `pwsh -File sandal.ps1 extract` (or `scripts\extract_game_data.ps1`) again. It sees that the game files changed and rebuilds everything that depends on them, about 10 minutes. The code is made for the client build of 2026-01-29 (`AOCClient-Win64-Shipping.exe` 235,606,624 bytes, `CacheDB.dbc` 144,085,052 bytes). With any other build the script prints a warning and goes on; the data can then be wrong or a step can fail.
 
 **Navigation mesh (required for combat).** `world` starts its combat system only after `dist\content\area_nav.bin` loads; **without it every mob has 0 HP and damage does nothing** (see [KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)). The `navmesh` step builds it; `scripts\extract_game_data.ps1 -Skip navmesh` leaves it out.
 
@@ -193,26 +182,43 @@ To extract only the game data on its own, run `pwsh -File scripts\extract_game_d
 | `The Ashes of Creation client was not found` | the game is not installed on this PC, or it sits in an unusual folder | install it (Steam), or run `scripts\extract_game_data.ps1 -GameRoot "D:\...\Ashes of Creation\Game"` (that run only), or set `GAME_ROOT` to that folder for good (`setx GAME_ROOT "D:\...\Ashes of Creation\Game"`, then open a new window) |
 | `-GameRoot '...' is not the game's folder` | the folder has no `AOC\Content\Paks` or no `CacheDB.dbc` | give the folder that holds `AOCClient.exe` and `AOC` (the `Game` folder of the install), not the launcher folder; if the install is incomplete, let Steam verify the game files |
 | `WARNING: this client is not the build this code was made for` | the game was patched, or it is another build | the script goes on; the data may be wrong or a step may fail (see "After a game patch") |
-| `Missing: ...` followed by `Python 3.10 or newer`, `the .NET 8 SDK` or `Go` | that tool is not installed or not on `PATH` | run `scripts\install_dependencies.ps1`, open a new window (so the new `PATH` applies), run again |
-| CMake: `These files are made from your own Ashes of Creation install and are missing` | the C++ build ran before the game data was made | run `scripts\extract_game_data.ps1`, then build again |
-| `ERROR in step '...'` | a step failed | read `dist\content\.extract\last_run.log` and fix the cause; run again: finished steps are kept and the run continues at the failed one |
+| `.NET 8 SDK` not found (`dotnet` missing) | the .NET 8 SDK is not installed or not on `PATH` | install the .NET 8 SDK (`winget install Microsoft.DotNet.SDK.8`), open a new terminal window, and run `pwsh -File sandal.ps1 doctor` |
+| Docker / WSL2 daemon unreachable | WSL2 Docker Engine is stopped or not yet provisioned | run `pwsh -File sandal.ps1 install-wsl-docker` (configures WSL2 Docker Engine and `.wslconfig` `instanceIdleTimeout=-1` / `vmIdleTimeout=-1`), then `pwsh -File sandal.ps1 doctor` |
+| `ERROR in step '...'` | a step failed during extraction | read `build\.extract\last_run.log` and fix the cause; run `pwsh -File scripts\extract_game_data.ps1` again: finished steps are kept and the run continues at the failed one |
 | `waiting: ...` in the map step | the map read waits until at least 6 GB of memory are free and the game, a build and `aoc_navbuild` are not running | close them; it continues by itself and gives up after 40 minutes |
 | the CUE4Parse fetch fails | no network or no Git | connect and run again, or copy the folder yourself: `powershell -File src\tools\mapc\fetch_cue4parse.ps1 -From <folder with CUE4Parse>` |
-| every mob has 0 HP and damage does nothing | `dist\content\area_nav.bin` is missing | run `scripts\extract_game_data.ps1` (without `-Skip navmesh`) |
+| every mob has 0 HP and damage does nothing | `dist\content\area_nav.bin` is missing | run `pwsh -File scripts\extract_game_data.ps1` (without `-Skip navmesh`) |
 
-### 5. More build options
+### 5. Building from the command line
 
-- **Everything:** `scripts\build.ps1 -Target all` (the game data, then `powershell -File scripts\build.ps1 -Target all`).
-- **One program:** `powershell -File scripts\build.ps1 -Target world` (targets: `tether`, `launcher`, `world`). The game data has to be made first.
-- **Options:** `-Config Debug`, `-Clean`, `-Configure` (re-run CMake), `-Test`, `-Jobs N` (build at most N projects and at most N compiler processes at a time; without it the compilers use as many processors as the free memory allows); `scripts\build.ps1 -Target all` passes them on.
-- **Why it is fast:** the build compiles the files of one project in parallel, and it copies the libraries' DLLs into `dist\Release` once after the build instead of after every program. A `build\x64` folder made by an earlier version keeps working as it was; `build.ps1 -Configure` switches it over.
-- **Plain CMake** (it works, but it is slower: one file at a time inside a project, and the DLLs are copied after every program):
+- **Full Stack + Launcher Build (`build.bat` / `sandal.ps1 build`)**:
   ```bat
-  cmake -S src -B build\x64 -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows
-  cmake --build build\x64 --config Release
+  build.bat
   ```
-- **Go services** (`src/server/services/`): `go build ./...`, `go vet ./...`, `go test ./...` (the launch scripts build and start them for you).
-- **Tests:** `powershell -File scripts\run_tests.ps1` builds and runs every C++ test (add `-Jobs N` to limit the build); the Go tests are `go test ./...` in `src\server\services\`.
+  (Or run `pwsh -File sandal.ps1 build`.)
+- **Containerized 12-service server stack (`deploy/compose.yml`)**:
+  ```powershell
+  pwsh -File sandal.ps1 up -Detach
+  # or directly via Docker Compose:
+  docker compose -f deploy/compose.yml --env-file deploy/.env up -d --build --wait
+  ```
+- **Desktop Launcher (`SandalLauncher`)**:
+  ```powershell
+  dotnet publish src/clients/launcher/SandalLauncher.csproj -c Release -o dist/launcher
+  ```
+- **Game Data Extractor & `.NET 8` Tools (`aoc-extractor`, `mapc`, `itemnames`, `npcabilities`)**:
+  ```powershell
+  dotnet build src/tools/aoc-extractor/AoCExtractor.csproj -c Release
+  dotnet build src/tools/mapc/mapc.csproj -c Release
+  dotnet build src/tools/itemnames/itemnames.csproj -c Release
+  dotnet build src/tools/npcabilities/npcabilities.csproj -c Release
+  ```
+- **Diagnostics & Test Suites**:
+  ```powershell
+  pwsh -File sandal.ps1 doctor
+  pwsh -File sandal.ps1 status
+  pwsh -File sandal.ps1 test
+  ```
 
 ---
 
@@ -220,25 +226,31 @@ To extract only the game data on its own, run `pwsh -File scripts\extract_game_d
 
 SandalCore separates transient build intermediates from self-contained runtime bundles:
 
-- **`build/`**: Transient compiler intermediates, CMake/MSBuild state (`build/x64/`), vcpkg artifacts, C# `obj/`, test binaries (`build/tests/`), and `.pdb` debug symbols (`build/x64/pdb/`). Safe to delete without losing extracted game data or certificates.
-- **`dist/`**: Self-contained Windows runtime bundle (`dist/start_server.ps1`, `dist/stop_server.ps1`, `dist/launch_launcher.bat`, `dist/launcher/SandalLauncher.exe`, `dist/services/*.exe`, `dist/Release/*.exe`, `dist/content/`, `dist/nav/`, `dist/certs/`, `dist/config/`). Works standalone on Windows if copied anywhere.
-- **`deploy/`**: Self-contained container stack (`deploy/compose.yml`, `deploy/up.ps1`, `deploy/down.ps1`, `deploy/.env`, `deploy/content/`, `deploy/nav/`, `deploy/certs/`, `deploy/config/`). Works standalone if copied anywhere.
+- **`build/`**: Transient build staging, extraction stamps (`build/.extract/`), C# `obj/` and `bin/` intermediates (`build/dotnet/`), generated fixtures (`build/gen/`), and test outputs (`build/tests/`). Safe to delete without losing extracted game data or certificates.
+- **`dist/`**: Self-contained Windows runtime and launcher bundle (`dist/start_server.ps1`, `dist/stop_server.ps1`, `dist/launch_launcher.bat`, `dist/launcher/SandalLauncher.exe`, `dist/content/`, `dist/nav/`, `dist/certs/`, `dist/config/`). Works standalone on Windows if copied anywhere.
+- **`deploy/`**: Self-contained 12-container stack (`deploy/compose.yml`, `deploy/up.ps1`, `deploy/down.ps1`, `deploy/.env`, `deploy/content/`, `deploy/nav/`, `deploy/certs/`, `deploy/config/`). Works standalone if copied anywhere.
 
 Root entrypoints:
-- `start.bat` and `stop.bat`: One-click Windows wrappers to start and stop the local stack.
-- `sandal.ps1`: Unified CLI for building, staging, certificate generation, WSL2 Docker provisioning (`pwsh -File sandal.ps1 install-wsl-docker`), and stack lifecycle (`up`, `down`, `status`).
-- `scripts\build.ps1`, `scripts\extract_game_data.ps1`, and `scripts\launch_all.ps1`: Build, game-data extraction, and full local launch scripts.
+- `start.bat`, `stop.bat`, and `build.bat`: One-click Windows wrappers (`sandal.ps1 run`, `sandal.ps1 down`, and `sandal.ps1 build`) that delegate through `scripts\ensure_pwsh.bat` (which checks for PowerShell 7 `pwsh` and prompts to install the latest PowerShell 7 via `winget` if not present).
+- `sandal.ps1`: Unified CLI (`doctor`, `status`, `up`, `down`, `extract`, `certs`, `build`, `deploy`, `test`, `run`, `install-wsl-docker`, `help`).
+- `scripts\extract_game_data.ps1`, `scripts\generators.ps1` (`src\tools\schemagen\gen_*.ps1`), and `scripts\launch_all.ps1`: Game-data extraction, PowerShell 7 schema/table generation, and full local launch scripts.
 
 ---
 
 ## Running the Server
 
-### 1. Quickstart (`start.bat` / `stop.bat` or `pwsh -File sandal.ps1 up`)
+### 1. Quickstart (`start.bat` / `stop.bat` / `build.bat`, `sandal.ps1`, or `SandalLauncher.exe`)
 
 ```bat
 start.bat
 ```
-(Or run `pwsh -File sandal.ps1 up` / `pwsh -File scripts\launch_all.ps1`.) Extracts game data from your Ashes of Creation install if needed, generates local ECDSA P-256 TLS certificates, starts the 12-container Linux stack in WSL2 (`deploy/compose.yml` / `deploy/up.ps1`), and opens **`SandalLauncher`** (`dist\launcher\SandalLauncher.exe` / `dist\launch_launcher.bat`). Sign in there and press **LAUNCH GAME**, which starts the game client with `-UseEOS=false` (no game files are modified). With "Keep me signed in" ticked, the sign-in is saved in Windows Credential Manager (`SandalCore/LauncherSignIn`, for your Windows account only) and the launcher signs in by itself the next time; Logout forgets it.
+(Or run `pwsh -File sandal.ps1 run` / `pwsh -File sandal.ps1 up -Detach`, or launch `dist\launcher\SandalLauncher.exe` via `dist\launch_launcher.bat`.) Extracts game data from your Ashes of Creation install if needed, generates local ECDSA P-256 TLS certificates, starts the 12-container Linux stack in WSL2 (`deploy/compose.yml` / `deploy/up.ps1`), and opens **`SandalLauncher`** (`dist\launcher\SandalLauncher.exe`). Sign in there and press **LAUNCH GAME**, which starts the game client with `-UseEOS=false` (no game files are modified). With "Keep me signed in" ticked, the sign-in is saved in Windows Credential Manager (`SandalCore/LauncherSignIn`, for your Windows account only) and the launcher signs in by itself the next time; Logout forgets it.
+
+To build the server containers and Windows launcher without starting them:
+```bat
+build.bat
+```
+(Or run `pwsh -File sandal.ps1 build`.)
 
 To stop the stack:
 ```bat
@@ -246,7 +258,13 @@ stop.bat
 ```
 (Or run `pwsh -File sandal.ps1 down`.)
 
-### 2. Portable Deployment (`deploy/up.ps1` / `deploy/down.ps1`)
+### 2. WSL2 Docker Engine & Non-Destructive `.wslconfig` Management
+
+`pwsh -File sandal.ps1 install-wsl-docker` (`scripts\lib\wsl-docker.ps1` and `scripts\lib\wsl-config.ps1`) manages your container runtime without requiring a commercial desktop GUI:
+- **Automatic Daemon Detection & Multi-Distro Provisioning**: Automatically detects whether an existing Docker daemon/context is already active on the host, or provisions native WSL2 Docker Engine inside your chosen Linux distribution across **Ubuntu**, **Debian**, **Fedora**, **RHEL / AlmaLinux / Rocky Linux**, **Arch Linux**, **openSUSE**, and **Alpine Linux**.
+- **Non-Destructive `%USERPROFILE%\.wslconfig` Persistence**: Ensures `[general] instanceIdleTimeout=-1` and `[wsl2] vmIdleTimeout=-1` are set so the WSL2 VM and 12-container stack never terminate when Windows terminal windows close, while preserving your existing `.wslconfig` section ordering, custom keys, inline comments, and whitespace.
+
+### 3. Portable Deployment (`deploy/up.ps1` / `deploy/down.ps1`)
 
 The staged `deploy/` directory is a self-contained 12-container stack (`deploy/compose.yml`, `deploy/up.ps1`, `deploy/down.ps1`, `deploy/.env`, `deploy/content/`, `deploy/nav/`, `deploy/certs/`, `deploy/config/`) that works standalone if copied to another folder or machine:
 
@@ -255,22 +273,21 @@ pwsh -File deploy\up.ps1
 pwsh -File deploy\down.ps1
 ```
 
-### 3. Optional Standalone Windows Runtime (`dist/start_server.ps1` / `dist/stop_server.ps1`)
+### 4. Windows Client Launcher & Staged Assets (`dist/`)
 
-If you compiled the optional native Windows `.exe` server binaries (`pwsh -File scripts\build.ps1 -Target all`), `dist/` is a self-contained Windows runtime bundle (`dist/start_server.ps1`, `dist/stop_server.ps1`, `dist/launch_launcher.bat`, `dist/launcher/SandalLauncher.exe`, `dist/services/*.exe`, `dist/Release/*.exe`, `dist/content/`, `dist/nav/`, `dist/certs/`, `dist/config/`) that runs directly on Windows without containers (against a PostgreSQL 17 instance):
+The staged `dist/` directory holds the compiled Windows desktop launcher (`dist/launcher/SandalLauncher.exe`, `dist/launch_launcher.bat`), extracted game data (`dist/content/`, `dist/nav/`), generated ECDSA P-256 TLS certificates (`dist/certs/`), and merged runtime configuration (`dist/config/`):
 
-```powershell
-pwsh -File dist\start_server.ps1
-pwsh -File dist\stop_server.ps1
+```bat
+dist\launch_launcher.bat
 ```
 
-### 4. TLS Certificates
+### 5. TLS Certificates
 
-SandalCore ships no keys or certificates. On the first launch `scripts\sandal\certs.ps1` generates a local ECDSA P-256 CA (`dist\certs\ca.crt`, `ca.key`) and SAN leaf certificate (`server.crt`, `server.key`, `server.pem`) covering `localhost`, `127.0.0.1`, and any configured advertise IP or domain. `SandalLauncher` validates the server certificate directly against `ca.crt` via `X509ChainPolicy.CustomTrustStore` without modifying the Windows OS Root Certificate Store (no administrator prompt required).
+SandalCore ships no keys or certificates. On the first launch `scripts\sandal\certs.ps1` (`pwsh -File sandal.ps1 certs`) generates a local ECDSA P-256 CA (`dist\certs\ca.crt`, `ca.key`) and SAN leaf certificate (`server.crt`, `server.key`, `server.pem`) covering `localhost`, `127.0.0.1`, and any configured advertise IP or domain. `SandalLauncher` validates the server certificate directly against `ca.crt` via `X509ChainPolicy.CustomTrustStore` without modifying the Windows OS Root Certificate Store (no administrator prompt required).
 
-Run `pwsh -File scripts\sandal\certs.ps1 -Force` to regenerate certificates. Details: [`src/config/certs/README.md`](src/config/certs/README.md).
+Run `pwsh -File sandal.ps1 certs -Force` (`pwsh -File scripts\sandal\certs.ps1 -Force`) to regenerate certificates. Details: [`src/config/certs/README.md`](src/config/certs/README.md).
 
-### 5. Local Configuration Overrides, Environment Variables & Network Ports
+### 6. Local Configuration Overrides, Environment Variables & Network Ports
 
 Base tracked configuration files in `src/config/` (`server.json`, `realm.json`, `paths.json`, `launcher.json`, `sandal.env.example`, `profiles/*.env.example`) use safe loopback defaults (`127.0.0.1`, placeholder tokens) and are never committed with secrets. Personal settings and secrets belong in gitignored override files:
 - `src/config/*.local.json` (`server.local.json`, `realm.local.json`, `paths.local.json`)
@@ -282,21 +299,18 @@ Key runtime environment variables and settings include:
 - `GAME_ROOT`: The folder of your installed Ashes of Creation client that holds `AOCClient.exe` and `AOC\` (for example `C:\Program Files (x86)\Steam\steamapps\common\Ashes of Creation\Game`). `scripts\extract_game_data.ps1` and the launchers use it before they search for the game.
 - `AOC_CLIENT_CONFIG`: The game's `AOC\Config` folder (default `dist\content\client_config`, written by `scripts\extract_game_data.ps1`).
 - `AOC_ZOI_CHUNKS`: The zone-of-influence chunk folder (default `dist\content\zoi_chunks`, written by `scripts\extract_game_data.ps1`).
-- `AOC_CONTENT_DB`: Path to game content database fixtures (defaults to `dist\content`).
+- `AOC_CONTENT_DB`: Path to game content database fixtures (defaults to `dist\content` on host, `/app/content` inside containers).
 - `AOC_MIRROR_LOGS_ROOT`: Log mirror destination (defaults to `dist\logs\mirror`).
 - **Database Connection**: Configured via `deploy/compose.yml` (`deploy/.env`) or connection string (`postgres://aoc:<password>@127.0.0.1:5432/aoc?sslmode=disable`).
 - **Launcher Path**: Configured in `src/config/paths.json` or `src/config/paths.local.json` (auto-detected from `GAME_ROOT`).
-- **Network Ports**:
-  - **Containerized Stack (`deploy/compose.yml` & `src/deploy/envoy/envoy.yaml`)**:
-    - `http://127.0.0.1:8080`: Envoy HTTP/2 edge ingress & `web-admin` browser UI (`/` -> `web-admin:8088`, `/api/auth` & `/login` -> `auth:8081`, `/api/gateway` -> `gateway:8081`, `/api/mesh` -> `meshgw:8082`)
-    - `127.0.0.1:9090`: Envoy gRPC ingress (`auth.v1`, `character.v1`, `citynode.v1`, `quest.v1`, `mesh.v1`, `gateway.v1`, `ics.v1`, `worldadmin.v1`)
-    - `127.0.0.1:50061`: Envoy ICS TLS edge listener (forwarded to `gateway:50061`)
-    - `127.0.0.1:50051`: Envoy Tether listener (forwarded to `tether:50051`)
-    - `127.0.0.1:9901`: Envoy local admin interface
-    - `127.0.0.1:7777/udp`: `world` authoritative UE5 replication listener (`world --bind`)
-    - `127.0.0.1:5432`: PostgreSQL 17 (`postgres`)
-  - **Standalone `local-dev` Mode (`dist/start_server.ps1` / `scripts\services.ps1`)**:
-    - `127.0.0.1:8081` (auth HTTP), `127.0.0.1:8090` (gateway HTTP), `127.0.0.1:8443` / `:443` (gateway ICS TLS), `127.0.0.1:19021/udp` (`tether`), and `127.0.0.1:7777/udp` (`world`).
+- **Network Ports (`deploy/compose.yml` & `src/deploy/envoy/envoy.yaml`)**:
+  - `http://127.0.0.1:8080`: Envoy HTTP/2 edge ingress & `web-admin` browser UI (`/` -> `web-admin:8088`, `/api/auth` & `/login` -> `auth:8081`, `/api/gateway` -> `gateway:8081`, `/api/mesh` -> `meshgw:8082`)
+  - `127.0.0.1:9090`: Envoy gRPC ingress (`auth.v1`, `character.v1`, `citynode.v1`, `quest.v1`, `mesh.v1`, `gateway.v1`, `ics.v1`, `worldadmin.v1`)
+  - `127.0.0.1:50061`: Envoy ICS TLS edge listener (forwarded to `gateway:50061`)
+  - `127.0.0.1:50051`: Envoy Tether listener (forwarded to `tether:50051`)
+  - `127.0.0.1:9901`: Envoy local admin interface
+  - `127.0.0.1:7777/udp`: `world` (`aoc-world`) authoritative UE5 replication listener (`world --bind`)
+  - `127.0.0.1:5432`: PostgreSQL 17 (`postgres` / `aoc-postgres`)
 
 ---
 

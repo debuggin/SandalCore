@@ -364,12 +364,12 @@ networks:
             $goDf.Contains('--go_out=/workspace/build/gen/go') | Should -BeTrue
             $goDf.Contains('--go-grpc_out=/workspace/build/gen/go') | Should -BeTrue
             $goDf.Contains('/workspace/build/gen/go/citynodeconsts/constants_gen.go') | Should -BeTrue
-            $goDf.Contains('gen_node_constants.py') | Should -BeTrue
+            $goDf.Contains('gen-node-constants.sh') | Should -BeTrue
 
             $cppDf = [System.IO.File]::ReadAllText((Join-Path $script:DockerDir 'cpp.Dockerfile'), [System.Text.Encoding]::UTF8)
             $cppDf.Contains('cmake -S src -B build/linux') | Should -BeTrue
             $cppDf.Contains('-DAOC_PROTO_GEN_DIR=/workspace/build/gen/proto') | Should -BeTrue
-            $cppDf.Contains('gen_node_constants.py') | Should -BeTrue
+            $cppDf.Contains('gen-node-constants.sh') | Should -BeTrue
         }
 
         It 'Validates src/deploy/envoy/envoy.yaml ingress_http (0.0.0.0:8080 + WebSocket), ingress_grpc (0.0.0.0:9090 h2c + 7 gRPC packages), circuit breakers, and active health checks' {

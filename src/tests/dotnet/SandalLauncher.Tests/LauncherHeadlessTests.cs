@@ -7,8 +7,11 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using SandalCore.Config;
+using SandalLauncher.Config;
 using SandalLauncher.Models;
 using SandalLauncher.Security;
 using SandalLauncher.Services;
@@ -163,12 +166,88 @@ public sealed class LauncherHeadlessTests
         }
     }
 
+    [Fact]
+    public async Task EndToEndSixPhaseAutomationLifecycle_TransitionsPhasesSpawnsMockGameAndClosesLauncher()
+    {
+        LauncherCliOptions parsed = LauncherCliOptions.Parse(["--keep-alive", "--mock-game-client", "120", "--automation-port", "18089"]);
+        Assert.True(parsed.KeepAlive);
+        Assert.True(parsed.MockGameClient);
+        Assert.Equal(120, parsed.MockGameSleepSec);
+
+        using var gwHttp = new HttpClient(new StubGatewayHandler()) { BaseAddress = new Uri("http://127.0.0.1:8080") };
+        var gwClient = new MultiProtocolGatewayClient(gwHttp, new Uri("http://127.0.0.1:8080"));
+        var vm = new MainWindowViewModel(SandalConfigLoader.LoadLauncher(), gwClient, new InMemoryCredentialVault(), new ProfileStoreService());
+        var closeTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = new LauncherAutomationServer(vm, 0, () => closeTcs.TrySetResult(true));
+        using var client = new HttpClient { BaseAddress = server.BaseUri };
+
+        LauncherAutomationStateSnapshot s1 = await GetSnapshotAsync(client);
+        Assert.Equal("launcher_loaded", s1.LifecyclePhase);
+        Assert.True(s1.LauncherPid > 0);
+        Assert.False(s1.AshesProcessRunning);
+
+        LauncherAutomationStateSnapshot s2 = await PostSnapshotAsync(client, "/automation/launch", "{}");
+        Assert.Equal("game_started", s2.LifecyclePhase);
+        Assert.True(s2.AshesProcessRunning);
+        Assert.True(s2.AshesPid is > 0 && ClientLaunchService.IsProcessAlive(s2.AshesPid));
+        int spawnedPid = s2.AshesPid!.Value;
+
+        _ = await PostSnapshotAsync(client, "/automation/register-temp", "{\"createDefaultChar\":true,\"characterName\":\"Hero_Auto\"}");
+        LauncherAutomationStateSnapshot s3 = await PostSnapshotAsync(client, "/automation/char-select", "{\"characterName\":\"Hero_Auto\",\"characterIdOrName\":\"Hero_Auto\",\"spawnClient\":true}");
+        Assert.Equal("game_logged_in", s3.LifecyclePhase);
+        Assert.Equal("jtk_99", s3.LastJoinTicket);
+        Assert.Equal("127.0.0.1:7777", s3.WorldEndpoint);
+        Assert.DoesNotContain("_", s3.Characters[0].Name, StringComparison.Ordinal);
+        Assert.Equal(spawnedPid, s3.AshesPid);
+        Assert.True(ClientLaunchService.IsProcessAlive(spawnedPid));
+
+        LauncherAutomationStateSnapshot s4 = await PostSnapshotAsync(client, "/automation/terminate-ashes", "{\"killAllMatching\":false}");
+        Assert.Equal("game_closed", s4.LifecyclePhase);
+        Assert.False(s4.AshesProcessRunning);
+        Assert.Null(s4.AshesPid);
+        Assert.False(ClientLaunchService.IsProcessAlive(spawnedPid));
+
+        LauncherAutomationStateSnapshot s5 = await PostSnapshotAsync(client, "/automation/close-launcher", "{}");
+        Assert.Equal("launcher_closed", s5.LifecyclePhase);
+        Assert.True(await closeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    private static async Task<LauncherAutomationStateSnapshot> GetSnapshotAsync(HttpClient client)
+    {
+        string json = await client.GetStringAsync("/automation/state");
+        return JsonSerializer.Deserialize<LauncherAutomationStateSnapshot>(json)!;
+    }
+
+    private static async Task<LauncherAutomationStateSnapshot> PostSnapshotAsync(HttpClient client, string path, string body)
+    {
+        using var content = new StringContent(body, Encoding.UTF8, "application/json");
+        using HttpResponseMessage resp = await client.PostAsync(path, content);
+        resp.EnsureSuccessStatusCode();
+        string json = await resp.Content.ReadAsStringAsync();
+        return JsonSerializer.Deserialize<LauncherAutomationStateSnapshot>(json)!;
+    }
+
     private sealed class StubGatewayHandler : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            string path = request.RequestUri?.AbsolutePath ?? "/";
+            string body = path switch
             {
-                Content = new StringContent("{\"online_players\":64,\"max_players\":500}", Encoding.UTF8, "application/json")
+                "/api/v1/auth/register" or "/api/v1/auth/login" =>
+                    "{\"access_token\":\"tok_e2e_1\",\"username\":\"tmp_e2e\",\"is_temporary\":true}",
+                "/api/v1/characters" when request.Method == HttpMethod.Get => "[]",
+                "/api/v1/characters" =>
+                    "{\"character_id\":\"char-1\",\"name\":\"HeroAuto1234\",\"class_name\":\"Fighter\",\"level\":1,\"zone_name\":\"verra-01\"}",
+                _ when path.EndsWith("/select", StringComparison.OrdinalIgnoreCase) =>
+                    "{\"character_id\":\"char-1\",\"character_name\":\"HeroAuto1234\",\"join_ticket\":\"jtk_99\",\"world_endpoint\":\"world:7777\",\"world_enter_allowed\":true}",
+                "/api/v1/world/enter" => "{\"status\":\"ALLOW\",\"world_endpoint\":\"world:7777\"}",
+                _ => "{\"online_players\":64,\"max_players\":500}"
+            };
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
             });
+        }
     }
 }

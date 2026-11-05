@@ -5,7 +5,7 @@ Platform services for the live backend (architecture spec:
 
 | Binary / Container | Listens | Role |
 |---|---|---|
-| `ingress-proxy` (Envoy) | HTTP/2 & Web Admin `:8080`, gRPC `:9090`, ICS TLS `:50061`, Tether `:50051`, Envoy admin `:9901` | Edge reverse proxy (`src/deploy/envoy/envoy.yaml`) terminating client TLS and routing HTTP/2, gRPC, and `web-admin` traffic across `edge_net` and `app_net` |
+| `ingress-proxy` (Envoy) | HTTP/2 & Web Admin `:8080`, gRPC `:9090`, ICS TLS `:50061`, Tether `:50051`, Envoy admin `:9901` | Edge reverse proxy (`src/deploy/envoy/envoy.yaml`) terminating client TLS and routing HTTP/2, gRPC, and `web-admin` traffic across `edge_net` and `service_net` |
 | `auth` | HTTP `127.0.0.1:8081`, gRPC `127.0.0.1:50051` (`:50052` in container) | The launcher's login/register API; `AuthService.ValidateToken` for other services |
 | `character` | gRPC `127.0.0.1:50052` (`:50053` in container) | `CharacterService`: the runtime writer of character records (`charimport` is the offline exception); checks a new character's race, gender, class and customization against `content.db` (below), gives it its class's starting kit and saves its items ("Items and inventory") |
 | `citynode` | gRPC `127.0.0.1:50055` (`:50056` in container) | `CityNodeService` (Nodes 1): the live state of the game world's city nodes (level, XP, vassal link), the node clock and the stream of changes; API-first, see "City nodes" below |
@@ -26,15 +26,17 @@ gateway and `world` send it. The game client's ICS stream does not use it.
 ## Run
 
 ```powershell
-scripts\services.ps1 up      # Full 12-container stack in WSL2 Docker
-scripts\services.ps1 build   # build auth, character, citynode, quest, meshgw, nodectl, worldctl, charimport, mesh and gateway into dist\services
-scripts\services.ps1 run     # build, then start auth, character, citynode, mesh, gateway and dist\Release\world.exe hidden, logging to files
+pwsh -File sandal.ps1 up     # Start the 12-container stack in WSL2 Docker (src/deploy/compose.yml)
+scripts\services.ps1 up      # Start PostgreSQL in Docker
+scripts\services.ps1 test    # buf lint + generated-code check, go vet + go test
+scripts\services.ps1 build   # build auth, character, citynode, quest, meshgw, nodectl, questctl, worldctl, charimport, mesh, gateway and admin into dist\services
+scripts\services.ps1 run     # build, then start the Go services and world hidden, logging to files
 scripts\services.ps1 stop    # stop those processes (world included)
-scripts\services.ps1 login   # sign in with config\dev_login.local.json, save the token for tether
+scripts\services.ps1 login   # sign in with src\config\dev_login.local.json, save the token for tether
 scripts\services.ps1 down    # stop the containers (the data volume is kept)
 ```
 
-`run` starts auth, character, citynode, mesh, gateway and `world` without windows. Each writes its log (slog, on
+`run` starts auth, character, citynode, quests, mesh, gateway and `world` without windows. Each writes its log (slog, on
 stderr) to `dist\services\logs\<name>.log` and anything on stdout to `<name>.out.log`; the previous
 run's files are kept as `<name>.prev.log` and `<name>.out.prev.log`. It waits a moment and fails,
 naming the service, its exit code and its log, if one has already exited. It refuses to start
@@ -47,8 +49,7 @@ loses its session. `stop` needs neither Go nor Docker.
 whenever `world`'s heartbeats lapse, with tickets `world` could never redeem.
 
 The whole stack with the game client is `start.bat` (`scripts\launch_all.ps1` does the work and
-takes no arguments): the Go services and `world`, `tether` and the launcher window. Build `world`
-first (`scripts\build.ps1 -Target world`). It first stops any of them left running from this checkout.
+takes no arguments): the 12-container WSL2 Docker stack (or local services) and the launcher window. It first stops any processes left running from this checkout.
 `scripts\launch_all.ps1` checks that the process on each port it waits for (TCP, and the UDP ports of `world`, 7777,
 and `tether`, 19021) is the expected program running from this checkout. The same program from another
 checkout or worktree fails the launch, as does anything else, with `port N is held by <name> (pid P) at
@@ -153,7 +154,7 @@ primary_class 6}`.
 
 proto3 leaves a zero out of the wire, so a Kaelar male Bard (cyb) sends field 4 = 2 and nothing else. Until
 plan B1 the services read field 4 as the *race* and wrote it back at the field the client reads as the
-race, with the class's archetype record id there: the "races" 2, 7 and 8 that worldd accepted were the
+race, with the class's archetype record id there: the "races" 2, 7 and 8 that world accepted were the
 class ids of a Bard, a Tank and a Mage. Now:
 
 - The gateway reads gender (field 2), race (3) and class (4) from the create payload and passes them, with
@@ -163,7 +164,7 @@ class ids of a Bard, a Tank and a Mage. Now:
   4, race at 5, class at 6 of `CharacterInformation` (`internal/aocchar`).
 - The store keeps them in the columns `race`, `gender` and `class_id` of `characters`. `race_id` and
   `gender_id` of the first schema are the legacy backup (migration 0003): not read or written any more.
-- worldd takes race, gender and class as they are (`server/worldd/README.md`).
+- world takes race, gender and class as they are (`../world/README.md`).
 
 **Rules** (`internal/customization`, checked by the character service on every creation). The race is 0-7
 (Tulnar has no player appearance in the design data and is refused), the gender 0-1, the class 1-8; the
@@ -179,31 +180,31 @@ section limits are not enforced: the creator's own default Dunir male look break
 Entitlements (which options an account has bought) are ignored. All 125 customizations in the community's
 retail captures and the real client's own cyb pass (`testdata/retail_customizations.json`).
 
-**What worldd needs** (a character the service accepts must also join). worldd's `customization_from_json`
+**What world needs** (a character the service accepts must also join). world's `customization_from_json`
 refuses what the service's ranges and options do not look at, so `Check` also holds the stored text to it:
 `randomSeed` and `skinSet` are integers (`1.5`, `1.0`, `1e2` are not) that fit 32 bits; every float member,
 the three without a range (`eyelashLength`, the two normal detail strengths) included, is a number a float32
 holds (not `1e39`); no member is `null`; the decal data and blend groups are arrays of `null` and of objects
 with all their members of the right type (a decal's `slotIndex` an integer of 0-255); the body sections are
 the 30 of the client's enum (`chest`, not `Chest`); face morph names are unique once the first letter's case
-is folded (`noseBridge` and `NoseBridge` are one replicated morph); no number is past a double (worldd's
+is folded (`noseBridge` and `NoseBridge` are one replicated morph); no number is past a double (world's
 parser refuses the whole text for one, in an unknown member too); the text is within 64 KiB as the database
-stores it (jsonb text: a space after each `:` and `,`, numbers written out in full), which is what worldd
+stores it (jsonb text: a space after each `:` and `,`, numbers written out in full), which is what world
 reads; at most 256 morphs, 256 sections and 100 members nothing reads. A **creator preset** (a non-zero
 `presetGuid` that is one of the race's presets) is accepted and stored as `"presetGuid":"0"`
 (`customization.Normalize`; `create_info` stays as sent): the creator's JSON carries every member the
-preset resolved to, and worldd takes no real preset because the client's preset table
+preset resolved to, and world takes no real preset because the client's preset table
 is not decoded. The one corpus `fixtures/customization_cases.json` (cyb, the 125 retail
-customizations and the hostile cases, each with whether the service accepts it and whether worldd builds
-it) is run through `Check` and `Normalize` by `internal/customization` and through worldd's
-`customization_from_json` by `test_worldd_character_setup`: accepted must imply built, on both sides.
+customizations and the hostile cases, each with whether the service accepts it and whether world builds
+it) is run through `Check` and `Normalize` by `internal/customization` and through world's
+`customization_from_json` by `test_world_character_setup`: accepted must imply built, on both sides.
 
 **Without `content.db`.** The character service starts without one and serves everything else (list, get,
 delete, saving positions), and refuses every `CreateCharacter` with `FailedPrecondition` ("character
 creation is unavailable: the content.db ... cannot be used: build it with contentc ... and restart") rather
 than accept a customization it cannot check. It reads the file once, at start: build it (below) and restart
 the service. The path is `--content-db`, else `AOC_CONTENT_DB`, else `dist/content/content.db`;
-`scripts\services.ps1 run` passes it (the same file worldd gets) and warns when it is missing.
+`scripts\services.ps1 run` passes it (the same file world gets) and warns when it is missing.
 
 **Migration 0003** (runs when any service starts, like every migration: in its own transaction, under the
 advisory lock, with a 10 s `lock_timeout` so a locked table fails the start instead of waiting). It adds
@@ -254,11 +255,11 @@ is the client's own `EEquipSlot`: 2 Chest, 15 Primary ...) or Quest (0-99). `ite
 to 200 (an index into the item's quality curve), `durability` a float32 from 0 to 1e9, and `created_at` the creation time. PostgreSQL enforces all of it, whoever writes,
 and the rows go with their character (`ON DELETE CASCADE`).
 
-**Who writes.** The character service writes a character's items when it creates the character; from then on worldd is the only writer:
+**Who writes.** The character service writes a character's items when it creates the character; from then on world is the only writer:
 `SaveInventory(id, items)` replaces the character's whole set in one transaction under the character's row lock, so the latest save wins and a half-saved inventory is never read.
 It refuses, changing nothing, items that break the rules above, two items in one slot or with one guid, more than 253, and an empty set (a character keeps its items; saving none
 would erase its kit; part 2 of the complete character, which can destroy, sell and consume items, must add an explicit "replace with an empty set" before an inventory can become empty):
-`InvalidArgument`, and `NotFound` for a character that is not there. `GetCharacter` returns the items only when the request sets `include_items` (worldd's login does;
+`InvalidArgument`, and `NotFound` for a character that is not there. `GetCharacter` returns the items only when the request sets `include_items` (world's login does;
 the gateway's lists do not): the Backpack's by slot, then the Equipment's, then the Quest storage's. The reply of `CreateCharacter` carries the kit it made.
 
 **The starting kit.** A new character starts with its class's `StartingEquipmentRecord` (`internal/kit`, from `content.db`): the `EquippedItems` go to the Equipment in the
@@ -271,8 +272,8 @@ every creation like any unusable one.
 
 **The backfill** (what happens to the characters that exist). When the character service starts, before it serves, it gives every character that has no items its class's kit
 (`GrantMissingKits`). It never touches a character that has any item: each grant is its own transaction, locks the character, checks again that it has none and inserts the
-kit, so running it again (every start does) changes nothing and it cannot race a save of worldd's. It is logged: one `info` line per character granted (name, id, class, item count), one `warn` per character skipped
-with the reason (`class_id` NULL, or a kit that cannot be made, the same at every start; or a row that stayed locked for 5 s, `lock_timeout`, because a save of worldd's was in flight: the pass goes on with the others and the next start grants it) and a summary line (`characters_without_items`, `granted`, `items`, `skipped`). On the real database that
+kit, so running it again (every start does) changes nothing and it cannot race a save of world's. It is logged: one `info` line per character granted (name, id, class, item count), one `warn` per character skipped
+with the reason (`class_id` NULL, or a kit that cannot be made, the same at every start; or a row that stayed locked for 5 s, `lock_timeout`, because a save of world's was in flight: the pass goes on with the others and the next start grants it) and a summary line (`characters_without_items`, `granted`, `items`, `skipped`). On the real database that
 gives cyb (a Kaelar male Bard) the Bard's 13 items, and every other character without items its class's kit; a character with some items is left alone. Without a usable `content.db` it grants nothing and says
 so; `--no-kit-backfill` turns it off. A database error stops the pass, is logged and the service goes on (the next start runs it again). To see what it did:
 `SELECT c.name, count(i.*) FROM characters c LEFT JOIN character_items i ON i.character_id = c.id GROUP BY c.name`.
@@ -290,22 +291,22 @@ COMMIT;
 ```
 
 **Content.** contentc version 3 adds `equip_slot`, `item`, `item_equip_slot` and `starting_equipment` to `content.db` (see "Content"). A `content.db` built before B2 has none of them, so after pulling B2 **rebuild it with contentc (`cd src/server/services && go run ./cmd/contentc`) and restart both services**: with the old file
-the character service cannot make kits (it refuses every creation and skips the backfill with a warning) and **worldd refuses every login** (`ContentDb::open` fails on the missing item tables, like a missing file; see
-`server/worldd/README.md`, "Items and inventory"). `internal/kit`'s `TestLoadRefusesAContentDBBuiltBeforeB2` and worldd's `test_worldd_session` pin both.
+the character service cannot make kits (it refuses every creation and skips the backfill with a warning) and **world refuses every login** (`ContentDb::open` fails on the missing item tables, like a missing file; see
+`../world/README.md`, "Items and inventory"). `internal/kit`'s `TestLoadRefusesAContentDBBuiltBeforeB2` and world's `test_world_session` pin both.
 
-worldd's side (the inventory at the join, equip, unequip and move, saving) is in `server/worldd/README.md`.
+world's side (the inventory at the join, equip, unequip and move, saving) is in `../world/README.md`.
 
 ## Progress and the GM starter set (plan D1, stage 1; an uncommitted draft)
 
 **The table.** A character's XP is the rows of `character_experience` (migration 0005: one row per character and leveling type, the design database's
 `LevelingTypeDef` Guid, Adventuring 108651085518458; `xp` and `debt` are 0 or more; the rows go with the character). The level stays in `characters.level`
-(the character list shows it, worldd joins with it) and worldd keeps it consistent with the Adventuring row when it saves. A character with no row has the XP
+(the character list shows it, world joins with it) and world keeps it consistent with the Adventuring row when it saves. A character with no row has the XP
 of its level's threshold and no debt. The same migration adds `characters.gm_starter_set_granted_at`, NULL until the GM starter set was put into the bag. The weapon lines' totals are
-rows of the same table too, one per line that has XP, under the line's own leveling type (`Weapon_1H_Axe` ... `Weapon_Ranged_Wand`, 21 in all; no debt): worldd saves them with the rest of the
+rows of the same table too, one per line that has XP, under the line's own leveling type (`Weapon_1H_Axe` ... `Weapon_Ranged_Wand`, 21 in all; no debt): world saves them with the rest of the
 progress, no migration was needed.
 Nothing else is touched.
 
-**Who writes.** worldd saves a level, class or XP change at once with `SaveProgress(id, level, class_id, experience)`: one transaction under the character's row
+**Who writes.** world saves a level, class or XP change at once with `SaveProgress(id, level, class_id, experience)`: one transaction under the character's row
 lock; a zero level or class leaves that value, each experience row replaces the character's row of its type; the class's name and archetype id follow the class.
 Refused, changing nothing: a level outside 1-25, a class outside 1-8, a leveling type of 0, a negative XP or debt, a type given twice (`InvalidArgument`);
 an unknown character is `NotFound`. `GetCharacter` carries the rows with the items (`include_items`).
@@ -393,7 +394,7 @@ COMMIT;
 `citynode` (`cmd/citynode`, `internal/citynode`, `internal/citynodegrpc`, proto `proto/internal/aoc/citynode/v1/citynode.proto`) is the live state of the game world's
 city nodes, like retail's CityNodeService. It uses the same database (`AOC_DATABASE_URL`) and the same service token as the character service, listens on
 `127.0.0.1:50055` (`AOC_CITYNODE_GRPC_ADDR`) and runs migration 0009 at its start. **It is API-first:** every read and every control of the nodes is a
-`CityNodeService` method, and nothing is reachable only from inside worldd. worldd (later stages), `nodectl` and the admin app to come (a 3D viewer that controls
+`CityNodeService` method, and nothing is reachable only from inside world. world (later stages), `nodectl` and the admin app to come (a 3D viewer that controls
 the server) call the same methods.
 
 **The nodes.** The roster is the 46 city nodes the retail game state carries (`internal/citynode/roster.json`: guid, record name, display name; a test checks it
@@ -453,7 +454,7 @@ COMMIT;
 
 **Rolling back migration 0010.** Migration 0010 (Gathering stage 2) adds ONE table, `character_professions` (a character's certification tier, level and XP in each of the 22 professions), and
 backfills it with 22 Novice, level 1, XP 0 rows for every character that exists; it writes nowhere else. The rollback drops the table with whatever professions it holds (the characters
-are untouched, and the next start of the services migrates and backfills again, with every profession back at Novice level 1). Stop the character service and worldd first.
+are untouched, and the next start of the services migrates and backfills again, with every profession back at Novice level 1). Stop the character service and world first.
 
 ```sql
 -- rollback of migration 0010 (Gathering stage 2)
@@ -466,8 +467,8 @@ COMMIT;
 **Rolling back migration 0011.** Migration 0011 (Gathering stage 3, "Resource storage") adds ONE table, `character_resource_items` (the items a character keeps in its resource containers
 Resource0 to Resource2, which are the resource bags worn in Equipment slots 23 to 25), with the columns and constraints of `character_items`; it writes nowhere else, backfills nothing
 and does not touch `character_items` (whose container CHECK stays Backpack / Equipment / Quest). The rollback drops the table with whatever it holds: the resource items of the characters
-are gone (the characters and the rest of their items are untouched; a character that harvested after the migration loses those harvests). Stop the character service and worldd first.
-After the rollback an older worldd, which does not know the containers, plays the characters again; the next start of the services migrates again.
+are gone (the characters and the rest of their items are untouched; a character that harvested after the migration loses those harvests). Stop the character service and world first.
+After the rollback an older world, which does not know the containers, plays the characters again; the next start of the services migrates again.
 
 ```sql
 -- rollback of migration 0011 (Gathering stage 3, Resource storage)
@@ -479,8 +480,8 @@ COMMIT;
 
 **Rolling back migration 0012.** Migration 0012 (the vendors milestone, step 0) adds ONE table, `character_wallet` (the money a character carries, one row per currency in the currency's base unit:
 copper for money); it writes nowhere else, backfills nothing and touches no existing table. The character service gives a character with no wallet row its start purse ONCE, the
-first time its wallet is read: an empty one, or 210,000 copper (21 gold) on a server set up for testing and development (AOC_GM_STARTER_SET=1); worldd saves the wallet with the items. The rollback
-drops the table with whatever it holds: every character's money is gone, and the next start of the services gives each character its start purse again. The characters and their items are untouched. Stop the character service and worldd first.
+first time its wallet is read: an empty one, or 210,000 copper (21 gold) on a server set up for testing and development (AOC_GM_STARTER_SET=1); world saves the wallet with the items. The rollback
+drops the table with whatever it holds: every character's money is gone, and the next start of the services gives each character its start purse again. The characters and their items are untouched. Stop the character service and world first.
 
 ```sql
 -- rollback of migration 0012 (vendors, step 0: the wallet)
@@ -491,10 +492,10 @@ COMMIT;
 ```
 
 **Rolling back migration 0013.** Migration 0013 (the crafting milestone, step 1) adds ONE table, `character_processing_jobs` (the processing jobs a character started at the crafting stations, one
-row each, in the order they were queued, with the wall-clock time each began and how long it runs); it writes nowhere else, backfills nothing and touches no existing table. worldd keeps a
+row each, in the order they were queued, with the wall-clock time each began and how long it runs); it writes nowhere else, backfills nothing and touches no existing table. world keeps a
 character's jobs while it plays and saves them with the items and the wallet in the same call (`SaveInventory` with `replace_processing_jobs`). The rollback drops the table with whatever it
 holds: every job that is running or waiting is gone, and the materials and the coin they took do not come back. The characters, their items and their money are untouched. Stop the character
-service and worldd first.
+service and world first.
 
 ```sql
 -- rollback of migration 0013 (crafting, step 1: the processing jobs)
@@ -505,9 +506,9 @@ COMMIT;
 ```
 
 **Rolling back migration 0014.** Migration 0014 (the crafting milestone, step 3) adds ONE table, `character_known_recipes` (the recipes a character was taught although the game makes a player learn
-them, one row each); it writes nowhere else, backfills nothing and touches no existing table. worldd keeps a character's taught recipes while it plays, sends them to the client and saves them with
+them, one row each); it writes nowhere else, backfills nothing and touches no existing table. world keeps a character's taught recipes while it plays, sends them to the client and saves them with
 the items and the wallet in the same call (`SaveInventory` with `replace_known_recipes`). The rollback drops the table with whatever it holds: every taught recipe is forgotten (a recipe the game
-does not make a player learn is known to everybody and is not stored). The characters, their items, their money and their jobs are untouched. Stop the character service and worldd first.
+does not make a player learn is known to everybody and is not stored). The characters, their items, their money and their jobs are untouched. Stop the character service and world first.
 
 ```sql
 -- rollback of migration 0014 (crafting, step 3: the taught recipes)
@@ -518,9 +519,9 @@ COMMIT;
 ```
 
 **Rolling back migration 0015.** Migration 0015 (missing systems, step 0, "tutorials stay done") adds ONE table, `character_completed_ftues` (the tutorials a character finished, one row each with its place
-in the character's list); it writes nowhere else, backfills nothing and touches no existing table. worldd keeps a character's finished tutorials while it plays, sends them to the client and saves them
+in the character's list); it writes nowhere else, backfills nothing and touches no existing table. world keeps a character's finished tutorials while it plays, sends them to the client and saves them
 with the progress (`SaveProgress` with `replace_completed_ftues`). The rollback drops the table with whatever it holds: every finished tutorial is forgotten (the client then reports each hint again, once,
-as for a new character). The characters, their items, their progress and their jobs are untouched. Stop the character service and worldd first.
+as for a new character). The characters, their items, their progress and their jobs are untouched. Stop the character service and world first.
 
 ```sql
 -- rollback of migration 0015 (missing systems, step 0: the finished tutorials)
@@ -532,8 +533,8 @@ COMMIT;
 
 **Rolling back migration 0016.** Migration 0016 (quests, slice 1, "take a quest") adds FOUR tables, `character_quests` (the quests a character took, with the instance guid the client knows each by and
 its objectives as JSON), `character_quests_completed`, `character_quest_variables` and `character_quest_commands` (the inbox of GM commands); it writes nowhere else, backfills nothing and touches no
-existing table. worldd loads a character's log at login and saves it whenever it changes (`QuestService.SaveLog`). The rollback drops the four tables with whatever they hold: every quest a character
-took, finished or set is forgotten, and a command nobody took is lost. The characters, their items, their progress, their jobs and their tutorials are untouched. Stop the quest service and worldd first.
+existing table. world loads a character's log at login and saves it whenever it changes (`QuestService.SaveLog`). The rollback drops the four tables with whatever they hold: every quest a character
+took, finished or set is forgotten, and a command nobody took is lost. The characters, their items, their progress, their jobs and their tutorials are untouched. Stop the quest service and world first.
 
 ```sql
 -- rollback of migration 0016 (quests, slice 1: the quest log)
@@ -548,8 +549,8 @@ COMMIT;
 
 **Rolling back migration 0017.** Migration 0017 (storage clerks, step 0, "put it in, take it out") adds ONE table, `character_warehouse_items` (the items a character keeps in the item chunks, the material tabs
 and the cargo tab of the warehouse, one row each); it writes nowhere else, backfills nothing and touches no existing table.
-worldd keeps a character's warehouse while it plays and saves it with the items (`SaveInventory` with `replace_warehouse`). The rollback drops the table with
-whatever it holds: every stored item is lost. The characters, their bags, their money and their jobs are untouched. Stop the character service and worldd first.
+world keeps a character's warehouse while it plays and saves it with the items (`SaveInventory` with `replace_warehouse`). The rollback drops the table with
+whatever it holds: every stored item is lost. The characters, their bags, their money and their jobs are untouched. Stop the character service and world first.
 
 ```sql
 -- rollback of migration 0017 (storage clerks, step 0: the warehouse items)
@@ -561,9 +562,9 @@ COMMIT;
 
 **Rolling back migration 0018.** Migration 0018 (Embersprings, "respawn points a player discovers and attunes to") adds TWO tables, `character_attunements` (the places a character discovered, one row each
 with its place in the character's list) and `character_home_attunement` (the place it made its home and when its home respawn was last used); it writes nowhere else, backfills nothing and touches no
-existing table. worldd loads a character's places at login and saves them with the progress (`SaveProgress` with `replace_attunements`). The rollback drops the two tables with whatever they hold: every
+existing table. world loads a character's places at login and saves them with the progress (`SaveProgress` with `replace_attunements`). The rollback drops the two tables with whatever they hold: every
 discovered place and every home is forgotten (a character discovers the places again by walking up to them). The characters, their items, their progress, their jobs, their tutorials and their quests are
-untouched. Stop the character service and worldd first.
+untouched. Stop the character service and world first.
 
 ```sql
 -- rollback of migration 0018 (Embersprings: the discovered places and the home)
@@ -575,10 +576,10 @@ COMMIT;
 ```
 
 **Rolling back migration 0019.** Migration 0019 (crafting quality, "a job keeps the ratings it was queued with") adds THREE columns to `character_processing_jobs`, `rating_xp`, `rating_quantity` and `rating_rarity` (the crafter's artisan
-ratings for the job's formulas when it was queued: DOUBLE PRECISION, default 0, checked 0 to 1e9); it writes nowhere else, rewrites no row and touches no other table or column. worldd saves them with the job (`SaveInventory` with
+ratings for the job's formulas when it was queued: DOUBLE PRECISION, default 0, checked 0 to 1e9); it writes nowhere else, rewrites no row and touches no other table or column. world saves them with the job (`SaveInventory` with
 `replace_processing_jobs`) and reads them back at login. The rollback drops the three columns and their checks with the ratings they hold: a job that is running or waiting is then paid at the base tables (no extra unit, no unit one rarity higher,
-the base experience), the same as a job saved before 0019. The jobs themselves, the characters, their items and their money are untouched, and the migration applies again. A pre-0019 worldd or character service needs no rollback (it does not
-select the columns). Stop the character service and worldd first.
+the base experience), the same as a job saved before 0019. The jobs themselves, the characters, their items and their money are untouched, and the migration applies again. A pre-0019 world or character service needs no rollback (it does not
+select the columns). Stop the character service and world first.
 
 ```sql
 -- rollback of migration 0019 (crafting quality: the ratings a job was queued with)
@@ -597,29 +598,29 @@ COMMIT;
 **The quest service (quests, slice 1).** `quests` listens on gRPC `127.0.0.1:50058` (`AOC_QUESTS_GRPC_ADDR`) and serves `QuestService`: `LoadLog` and `SaveLog` (a character's whole log: the quests it took,
 the ones it finished and its quest variables, replaced in one transaction), and `QueueCommand` / `TakeCommands` (the inbox of GM commands for a character). `questctl give|finish|fail|abandon <character> <quest>`,
 `questctl clear <character> [quest]`, `questctl set-var <character> <name> <value>` and `questctl log <character>` call it; a quest is named by its record id or its design name, a character by its id or
-its name. worldd takes the commands of a character that plays every moment and does them in its session; a command for a character that is away waits for its next login. Content: contentc version 21 adds
+its name. world takes the commands of a character that plays every moment and does them in its session; a command for a character that is away waits for its next login. Content: contentc version 21 adds
 `quest`, `quest_objective`, `npc_offered_quest` and `dialogue_accept` (`internal/content/quests.go` says what each holds).
 
 **Content (storage, step 0).** contentc version 25 adds the warehouse tables (`internal/content/warehouse.go`): `warehouse_node` (the three defs a city node names), `warehouse_def` and `warehouse_def_tab` (the material and cargo tab defs and their tabs in order), `warehouse_tab` (kind, member, availability expression, costs), `warehouse_chunks_def`, `warehouse_chunks_def_chunk` and `warehouse_chunk` (the item chunks: slots, level, availability expression, costs). The dialogue lines' actions JSON also names the action response a clerk's line runs (`"r": "OpenPlayerWarehouse"`, `"sc"`: its access config).
 
 **Content (vendors, step 0).** contentc version 18 adds `npc_vendor_link` (which shop a shopkeeper's use opens), `vendor_def_data`, `vendor_def_modifier`, `vendor_def_sell_filter`, `vendor_modifier`, `vendor_sell_filter`, `base_item_value`, `item_base_value`, `vendor_offer`, `vendor_availability` and `vendor_price` (`internal/content/vendors.go` says what each holds; `cmd/contentc/vendors.go` writes them), and the `OpenWindow` actions of the dialogue tables carry the shop they open (`vd`). `vendor_price` holds, for every listing of every shop, its price per unit before the town's tax: the listing's value (the offer's, when it has one) rounded up, through the shop's buy modifiers, rounded up, evaluated with `aocexpr` (`Env.IntDivide` makes a division of two whole numbers truncate, as the formulas expect); a listing that needs more than the item gets no row. Rebuild `content.db` (the extractor's `database` step) after pulling it. The character service's `GetCharacter` (with items) also returns the wallet and gives a character with none its start purse once (empty, or 210,000 copper with AOC_GM_STARTER_SET=1, for testing); `SaveInventory` stores the wallet in the same transaction when `replace_wallet` is set.
 
-**Content (crafting, step 0).** contentc version 20 adds the crafting tables (`internal/content/crafting.go`): `craft_station_def` (the 130 station definitions: kind, title, certification tier, queue, tax tag, recipe set), `craft_station_asset` (which population asset is whose station, by name), `craft_recipe_set` with `craft_recipe_set_list`, `craft_recipe_list` with `craft_recipe_list_member`, `craft_pred` (the biome, node level, node and building-modification predicates of lists and recipes), `craft_recipe` (4,274 recipes: profession, tier, durations and formulas, cost, flags) with `craft_recipe_input` (what it takes), `craft_cost` and `craft_reward` (the reward tables the recipes name and the sub-tables they reach, as JSON). worldd reads the definitions and the asset link; the steps that start and collect a job read the rest.
+**Content (crafting, step 0).** contentc version 20 adds the crafting tables (`internal/content/crafting.go`): `craft_station_def` (the 130 station definitions: kind, title, certification tier, queue, tax tag, recipe set), `craft_station_asset` (which population asset is whose station, by name), `craft_recipe_set` with `craft_recipe_set_list`, `craft_recipe_list` with `craft_recipe_list_member`, `craft_pred` (the biome, node level, node and building-modification predicates of lists and recipes), `craft_recipe` (4,274 recipes: profession, tier, durations and formulas, cost, flags) with `craft_recipe_input` (what it takes), `craft_cost` and `craft_reward` (the reward tables the recipes name and the sub-tables they reach, as JSON). world reads the definitions and the asset link; the steps that start and collect a job read the rest.
 
-**Processing jobs (crafting, step 1).** Migration 0013 adds `character_processing_jobs`: the batches a player started at the processing stations, in the order they were queued, each with the station it is at (`station_key`, 16 hex digits made from the station's place in the world's data, the same on every start of the server), the recipe and quantity, what was paid (`resources`, JSON), when it was queued and began (`started_at`: queued, or the end of the job before it) and how long it runs. A job runs on the wall clock, so it goes on while its player is logged out. worldd reads the jobs with `GetCharacter` (with items) and saves them with the items and the wallet in the same transaction (`SaveInventory` with `replace_processing_jobs`): a job and the materials and coin it took are stored together or not at all. Migration 0019 adds the crafter's artisan ratings the job was queued with (`rating_xp`, `rating_quantity`, `rating_rarity`: the sums its formulas add up, 0 for a job saved before them), so a job pays what it was started with after any login. worldd prices and times a job from the recipes in `content.db`: one unit costs the recipe's copper plus the station's service tax, rounded half up, and takes the recipe's base duration.
+**Processing jobs (crafting, step 1).** Migration 0013 adds `character_processing_jobs`: the batches a player started at the processing stations, in the order they were queued, each with the station it is at (`station_key`, 16 hex digits made from the station's place in the world's data, the same on every start of the server), the recipe and quantity, what was paid (`resources`, JSON), when it was queued and began (`started_at`: queued, or the end of the job before it) and how long it runs. A job runs on the wall clock, so it goes on while its player is logged out. world reads the jobs with `GetCharacter` (with items) and saves them with the items and the wallet in the same transaction (`SaveInventory` with `replace_processing_jobs`): a job and the materials and coin it took are stored together or not at all. Migration 0019 adds the crafter's artisan ratings the job was queued with (`rating_xp`, `rating_quantity`, `rating_rarity`: the sums its formulas add up, 0 for a job saved before them), so a job pays what it was started with after any login. world prices and times a job from the recipes in `content.db`: one unit costs the recipe's copper plus the station's service tax, rounded half up, and takes the recipe's base duration.
 
-**Known recipes (crafting, step 3).** Migration 0014 adds `character_known_recipes`: the recipes a game master taught a character although the game makes a player learn them (a recipe the game does not make a player learn is known to everybody and has no row). worldd reads them with `GetCharacter` (with items) and saves them with the items and the wallet in the same transaction (`SaveInventory` with `replace_known_recipes`). The admin API's `TeachRecipe`, `ForgetRecipe` and `ListTaughtRecipes` (`worldctl craft teach`, `forget`, `taught`) change the list of a character in the world.
+**Known recipes (crafting, step 3).** Migration 0014 adds `character_known_recipes`: the recipes a game master taught a character although the game makes a player learn them (a recipe the game does not make a player learn is known to everybody and has no row). world reads them with `GetCharacter` (with items) and saves them with the items and the wallet in the same transaction (`SaveInventory` with `replace_known_recipes`). The admin API's `TeachRecipe`, `ForgetRecipe` and `ListTaughtRecipes` (`worldctl craft teach`, `forget`, `taught`) change the list of a character in the world.
 
-**Finished tutorials (missing systems, step 0).** Migration 0015 adds `character_completed_ftues`: the tutorials a character finished, in the order they were finished. worldd reads them with `GetCharacter` (with items) and saves them with the progress (`SaveProgress` with `replace_completed_ftues`: the list is replaced whole, at most 1,024 ids, each a positive record Guid once). The admin API's `ResetTutorials` (`worldctl tutorials reset <character>`) empties the list of a character in the world.
+**Finished tutorials (missing systems, step 0).** Migration 0015 adds `character_completed_ftues`: the tutorials a character finished, in the order they were finished. world reads them with `GetCharacter` (with items) and saves them with the progress (`SaveProgress` with `replace_completed_ftues`: the list is replaced whole, at most 1,024 ids, each a positive record Guid once). The admin API's `ResetTutorials` (`worldctl tutorials reset <character>`) empties the list of a character in the world.
 
 **Content (vendors, step 1).** contentc version 19 adds `item_vendor` (per item: Vendorable, Blacklisted and the range its rarity is held inside) and `item_sell_value` (per item with a base value, vendorable or not, rarity and currency: the item's base value for a sale or a repair, per unit, rounded up; the record's own sale expressions when it overrides them, else its buy expressions), evaluated with `aocexpr` like `vendor_price`; the shops' sell modifiers and filters are read from the step 0 tables. Rebuild `content.db` (the extractor does it) after pulling. **The test mounts of the GM starter set are given once:** the character service gives them to a character that had the set before the mounts existed (`gm_starter_set_granted_at` set, `gm_starter_mounts_granted_at` not), the ones it holds nowhere, and marks it in the same transaction, also when it held them all; a mount thrown away later stays gone (a character created with the set is marked at once).
 
 **Content.** contentc version 5 adds `item_use`, `item_action`, `action_response`, `action_reward`, `reward_table`, `reward_item`, `reward_xp`, `leveling_type`,
 `leveling_curve`, `skill_auto_grant` and `skill_rank_stat_mod` (`internal/content/schema.go` says what each holds; `cmd/contentc/progression.go` writes them).
-Version 5 is the oldest file this checkout reads (`RequireVersion`, and worldd's `ContentDb::open`): after pulling D1 rebuild `content.db` and restart both services.
+Version 5 is the oldest file this checkout reads (`RequireVersion`, and world's `ContentDb::open`): after pulling D1 rebuild `content.db` and restart both services.
 The level scrolls' `ExperienceValue` is resolved to its parameters (target level, curve, multiplier stat, margin) after contentc has checked, with `aocexpr`
 over the real curve, that the expression is `(curve(target) - curve(level) + debt_ratio * xp_of_level) / max(0.001, 1 + mult) + margin` at every level and several
-debts and multipliers; the Weapon rewards of the same scrolls are of another shape and are written with `target_level` 0 (worldd skips them and says so).
+debts and multipliers; the Weapon rewards of the same scrolls are of another shape and are written with `target_level` 0 (world skips them and says so).
 
 Stage 2 of D1 adds the talents to version 5 (it is not merged, so the version stays): `skill_point_type`, `leveling_point` (what reaching each level of a leveling type gives: an
 Archetype and a Stamina point for each Adventuring level from 2, a Weapon point for each level of a weapon line from 2), `skill_tree` (every tree with its kind: `class`,
@@ -636,8 +637,8 @@ ranks. A requirement that names a slot node is written in `skill_node_require` w
 ## Stats (plan B3)
 
 The stats of a character are not stored anywhere in the design data: they are a graph of formulas (`internal/statprog`, [README](internal/statprog/README.md)). **contentc version 4**
-compiles that graph into a stat program (`stat_program`: 473 stats, 8 classes, 166 programs; 50,205 bytes for the graph alone in format version 1, 70,091 in version 2 with the ability expressions of "Abilities (plan D2)") and writes what an item adds to the stats; worldd runs the program at the join and on
-every equip and unequip (`server/worldd/README.md`, "Stats"). The tables, all in `internal/content/schema.go`:
+compiles that graph into a stat program (`stat_program`: 473 stats, 8 classes, 166 programs; 50,205 bytes for the graph alone in format version 1, 70,091 in version 2 with the ability expressions of "Abilities (plan D2)") and writes what an item adds to the stats; world runs the program at the join and on
+every equip and unequip (`../world/README.md`, "Stats"). The tables, all in `internal/content/schema.go`:
 
 | Table | Rows (the real file) | What |
 |---|---|---|
@@ -654,8 +655,8 @@ contentc checks what the engine needs to hold: every curve an item names exists 
 
 **Rebuild and refusal.** Version 4 is the oldest `content.db` this checkout reads: `content.DB.RequireVersion` refuses an older file (and one with no `stat_program` row) with "built by contentc version 3, this checkout needs version 4 or later
 (the stat program and the item stat tables, plan B3): rebuild it with this checkout's contentc: cd src/server/services && go run ./cmd/contentc". The character service calls it when it loads the file (it then refuses every creation and skips the
-backfill, as for a missing file), and **worldd refuses every login** with an older file or a damaged stat program (`server/worldd/README.md`). After pulling B3 rebuild `content.db` and restart both services. Going back is safe: a version 4
-file only adds tables and one column (`item.quality_curve_guid`), so B2's worldd and character service read it as before.
+backfill, as for a missing file), and **world refuses every login** with an older file or a damaged stat program (`../world/README.md`). After pulling B3 rebuild `content.db` and restart both services. Going back is safe: a version 4
+file only adds tables and one column (`item.quality_curve_guid`), so B2's world and character service read it as before.
 
 ## Abilities (plan D2, contentc version 6)
 
@@ -677,7 +678,7 @@ other 10 are the songs of the slot nodes: stage 2):
 | `ab_expr` | 1,845 (1,308 of the abilities, `meta` `ab.exprs`; 537 of the reward tables, `loot.exprs`; D2: 924) | 1,531 compile to 1,371 programs; the other 314 hold the reason (D2: 638, 573 and 286) (an NPC function: `CalculateDamage`, `GetActiveTarget`, `GetCreatureOwner`, ...) |
 
 What a closure holds: the ranks' abilities (and the passives they grant), Sprint, Dodge and Rest and the Sprint's drain; per ability its own effects, hits, projectiles and zones; per hit the effects it applies, the projectiles it fires and the zones
-it spawns; per effect its hits in every phase. Reactions, cooldown modifiers and teleports are stored as guid lists (`extra`) and not followed; the exception is the zones: `ab_ability.extra.LingeringEffectsIds` lists the zones the ability spawns with its cast (a zone with no hit of its own, Mesmerizing's, has no `ab_ability_hit` row, so this is the only link) and `ab_hit.extra.LingeringZonesIds` the zones a hit spawns (the Saga's), which the worldd runtime reads to open a dance's actor. The tables are written in guid order and the expressions numbered as they are met: a build is deterministic
+it spawns; per effect its hits in every phase. Reactions, cooldown modifiers and teleports are stored as guid lists (`extra`) and not followed; the exception is the zones: `ab_ability.extra.LingeringEffectsIds` lists the zones the ability spawns with its cast (a zone with no hit of its own, Mesmerizing's, has no `ab_ability_hit` row, so this is the only link) and `ab_hit.extra.LingeringZonesIds` the zones a hit spawns (the Saga's), which the world runtime reads to open a dance's actor. The tables are written in guid order and the expressions numbered as they are met: a build is deterministic
 (`TestRealDeterministic` covers the new tables too). `statprog.LoadExprs` reads `ab_expr` and `CompileExprs` compiles it with the stat graph after the rows are committed; `meta` has `ab.*` counts and `statprog.exprs*`.
 
 **Named references.** An expression may name a record instead of numbering it (`$Skill:Bard_Passive_QuickWit_Jest$`, `$SkillTree:Bard$`): the compiler takes a reference as its type and guid, so a named one would compile as the null reference and the
@@ -685,7 +686,7 @@ expression could never be true. contentc writes the number form (`$#<type>:<guid
 was affected: Jest's Pep hit (`Bard_QuickWit_Jest`), whose requirement the retail Bard met (`TestNamedReferencesAreWrittenAsNumbers`, and the real test that no live named reference is left).
 
 **Format 2 and the refusal.** The stored bundle is format version 2 (the opcodes and the table of expression programs), which a build of this contentc writes and this checkout's engines read. A file built by contentc 4 or 5 has a version 1 bundle
-that the new `Decode` and `parse_bundle` refuse (worldd's `PlayerWorld` checks the row's version against `kBundleVersion`); `content.DB.RequireVersion` and worldd's `kMinContentcVersion` are 6, so every reader refuses an older file with the way to rebuild it
+that the new `Decode` and `parse_bundle` refuse (world's `PlayerWorld` checks the row's version against `kBundleVersion`); `content.DB.RequireVersion` and world's `kMinContentcVersion` are 6, so every reader refuses an older file with the way to rebuild it
 (`cd src/server/services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it.
 
 **Stage 2 (contentc still version 6).** Hits export `extra.HitFX` (OnHitFXId / OnActivateFXId set: the confirmation rule) and `MaxNumEffectsToRemove`; `GetAbilityRecordByName("X")` is rewritten to the ability's reference like a named one; `cmd/contentc/ability_names.tsv` is the name list of the captures' abilities that seeds the closure
@@ -693,7 +694,7 @@ that the new `Decode` and `parse_bundle` refuse (worldd's `PlayerWorld` checks t
 
 ## The population and the vendors (plan E1, contentc versions 7 and 8)
 
-**contentc version 7** writes the chain that says which NPC stands where, and the vendors (`internal/content/population.go` has the tables and `PopulationTables`, `cmd/contentc/population.go` the writer), plain data as the design DB holds it; worldd decides what a spawner draws and where (a seed, `server/worldd/spawns/population.h`):
+**contentc version 7** writes the chain that says which NPC stands where, and the vendors (`internal/content/population.go` has the tables and `PopulationTables`, `cmd/contentc/population.go` the writer), plain data as the design DB holds it; world decides what a spawner draws and where (a seed, `src/server/world/spawns/population.h`):
 
 | Table | Rows | What |
 |---|---|---|
@@ -703,10 +704,10 @@ that the new `Decode` and `parse_bundle` refuse (worldd's `PlayerWorld` checks t
 | `npc_set`, `npc_set_member` | 4,728 | a PopulationSet: instances at local offsets (cm, yaw in degrees) and its PopulationArea (0: none) |
 | `npc_world_spawn`, `npc_placement` | | a WorldSpawn: the sets it places, each at an origin and a yaw (15,179 placements; 74,778 absolute points by the offsets turned by the yaw) |
 | `npc_area`, `npc_area_circle` | 608 | a PopulationArea: the circles (centre, extent, weight) its set's instances spawn inside (stage 2) |
-| `npc_route` | 1,346 | a PathingRoute: the actor's transform and the spline's points (8,609 in all) and, from **version 8**, what a patrol walks: `waypoints` (a JSON array of [x, y, z]: 11,934 in 1,332 routes; 924 routes also carry the spline of the same points, 408 only the waypoints, 14 neither), `pauses` (seconds at each waypoint), `start_closest`, `relative_city_node`, `relative_encounter` (a route a city node or an encounter places) and `pathing_set`; 1,619 instances name a route, 142 of them within a kilometre of the login spot (stage 2 walks them: `server/worldd/npc/`) |
+| `npc_route` | 1,346 | a PathingRoute: the actor's transform and the spline's points (8,609 in all) and, from **version 8**, what a patrol walks: `waypoints` (a JSON array of [x, y, z]: 11,934 in 1,332 routes; 924 routes also carry the spline of the same points, 408 only the waypoints, 14 neither), `pauses` (seconds at each waypoint), `start_closest`, `relative_city_node`, `relative_encounter` (a route a city node or an encounter places) and `pathing_set`; 1,619 instances name a route, 142 of them within a kilometre of the login spot (stage 2 walks them: `src/server/world/npc/`) |
 | `vendor_def`, `vendor_def_inventory`, `vendor_inventory`, `vendor_listing` | 95; 469; 278; 9,704 | a VendorDef (its guid is what the server sends the client as `ClientOpenVendor`'s `MerchSetId`: the client draws the window from its own copy of the same data), its inventories (the window's tabs), and each inventory's listings: an item and the offers that price it (an empty list is free) |
 
-The 26 `PTR_ONLY_Vendor_*` defs are the public test realm's vendors: their listings are the GM and PTR items, free, and they are what worldd's GM vendors open (`server/worldd/vendor/gm_vendor.h`). `content.DB.RequireVersion` and worldd's `kMinContentcVersion` are **8** (stage 2 of E1 added the routes' waypoints and the instances' patrol settings: the v7 file has the spline points only, empty for 408 routes): every reader refuses an older file with the way to rebuild it (`cd src/server/services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it (the file is 303.1 MB).
+The 26 `PTR_ONLY_Vendor_*` defs are the public test realm's vendors: their listings are the GM and PTR items, free, and they are what world's GM vendors open (`src/server/world/vendor/gm_vendor.h`). `content.DB.RequireVersion` and world's `kMinContentcVersion` are **8** (stage 2 of E1 added the routes' waypoints and the instances' patrol settings: the v7 file has the spline points only, empty for 408 routes): every reader refuses an older file with the way to rebuild it (`cd src/server/services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it (the file is 303.1 MB).
 Tests: `cmd/contentc/population_test.go` (`TestArchetypePath`, `TestSyntheticPopulation`, `TestSyntheticPopulationRefuses`, `TestRealPopulation`: the real file's counts above) and `gear_real_test.go` (version 8: the waypoints and the instances' patrol settings on the synthetic rows, 1,332 routes with waypoints and 924 with both on the real file); `content_test.go` lists the new tables.
 
 ## Combat (plan E1, stage 3, contentc version 9)
@@ -720,18 +721,18 @@ Tests: `cmd/contentc/population_test.go` (`TestArchetypePath`, `TestSyntheticPop
 | `relationship`, `alignment_relation` | 25; 303 | the relationship records (`CombatPermissions`: 1 hostile, 2 friendly, 3 neutral) and every alignment's relationship to the others (`CharacterAlignment.RelationshipsIds`) |
 | `combat_config` | 9 | the numbers of `GameSettings`: the in-combat timer 6 s, the global damage and healing multipliers, the out-of-range distance, the hit distances |
 
-The source is `DefaultCombat.ini` of the client's Config directory (`--config`; `mapc export-config` writes it). The stat program is **format version 3** (`internal/statprog/README.md`): the NPC profile classes and the native damage functions. `npc_motion.tsv` (`tools/mapc`) gains the `lists`, `dist`, `elite` and `rewards` columns. Tests: `cmd/contentc/combat_test.go`. **Rebuild `content.db` with this contentc after pulling it**: worldd refuses an older file (no combat tables, a version 2 stat program).
+The source is `DefaultCombat.ini` of the client's Config directory (`--config`; `mapc export-config` writes it). The stat program is **format version 3** (`internal/statprog/README.md`): the NPC profile classes and the native damage functions. `npc_motion.tsv` (`tools/mapc`) gains the `lists`, `dist`, `elite` and `rewards` columns. Tests: `cmd/contentc/combat_test.go`. **Rebuild `content.db` with this contentc after pulling it**: world refuses an older file (no combat tables, a version 2 stat program).
 
 ## Rewards (plan E1, stage 3, part 2, contentc version 10)
 
-**contentc version 10** writes what a kill gives (`internal/content/loot.go` has the tables, `cmd/contentc/loot.go` the writer; read by worldd's `combat/rewards.h`):
+**contentc version 10** writes what a kill gives (`internal/content/loot.go` has the tables, `cmd/contentc/loot.go` the writer; read by world's `combat/rewards.h`):
 
 | Table | Rows | What |
 |---|---|---|
 | `loot_table` | 8,197 | every `RewardTable` record as `(guid, name, data)`: `data` is JSON, the table's predicate (an expression id: a quest or biome gate that does not compile reads as "no"), its selection algorithm (`All`, `None`, `PureRandom`, `PerElementWeightedRandom`, `PerElementWeightedExpressionRandom`, `RollEachByPercent`), the number of picks, and its entries: a reward (`xp` by leveling type, `items` with their quantities and variations, `currency`) or a sub-table, each with its weight, percentage or weight expression |
 | `xp_rule` | 1 | `adventuring_decay`: the expression of the Adventuring experience's decay by the level difference (`Experience_LevelDiff`) |
 
-The expressions compile into the stat program through the shared `exprSet` (`ab_expr`): 1,531 of the 1,845 the abilities and rewards hold, every one a kill reward uses. The compiler learned `Int` (a floor), `GetNPCLevel()` with no argument, `DoesNPCContainTag` (a bool host function), `GetPlayerLootMaxLevel`, `GetPlayerLootAvgLuck`, `GetPlayerLevel` and the `$F:Name$` named formulas (`internal/statprog/README.md`). **Rebuild `content.db` with this contentc after pulling it**: worldd refuses a file older than the version it reads (`MinContentcVersion`: 10 here, 11 with the mounts milestone). Tests: `internal/content` (the tables), `cmd/contentc` (the version table).
+The expressions compile into the stat program through the shared `exprSet` (`ab_expr`): 1,531 of the 1,845 the abilities and rewards hold, every one a kill reward uses. The compiler learned `Int` (a floor), `GetNPCLevel()` with no argument, `DoesNPCContainTag` (a bool host function), `GetPlayerLootMaxLevel`, `GetPlayerLootAvgLuck`, `GetPlayerLevel` and the `$F:Name$` named formulas (`internal/statprog/README.md`). **Rebuild `content.db` with this contentc after pulling it**: world refuses a file older than the version it reads (`MinContentcVersion`: 10 here, 11 with the mounts milestone). Tests: `internal/content` (the tables), `cmd/contentc` (the version table).
 
 ## Mounts (the mounts milestone, stage 1, contentc version 11)
 
@@ -748,21 +749,21 @@ The expressions compile into the stat program through the shared `exprSet` (`ab_
 
 **Where the data and the retail disagree** (kept, not resolved: stage 1's report lists them). The item text of the Drake of the Canopy and the Thundering Bolt Beast says 1000 % Maximum Health, the Blueprints' own stat lists (`Mount_DrakeOfTheCanopy`, `Mount_ThunderingBoltBeast`: `GetStatInitRunningTotal() * 5`) say x5, and retail's Drake has MaxHealth 24375, which is x5 of a level 25 owner's 4875: `health_pct` follows the text, as the design (the item tooltip is the truth) does.
 
-`content.DB.RequireVersion` and worldd's `kMinContentcVersion` are **11**: every reader refuses an older file with the way to rebuild it (`cd src/server/services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it. Tests: `cmd/contentc/mounts_test.go` (the text of an item, a synthetic design database: the four tables, the equations a stat list reads, what is refused), `mounts_real_test.go` (the real file's counts above, the golden items of the captures, the stat curve's values, the roads and the dash), `internal/content/mounts_test.go` (the readers).
+`content.DB.RequireVersion` and world's `kMinContentcVersion` are **11**: every reader refuses an older file with the way to rebuild it (`cd src/server/services && go run ./cmd/contentc`). Rebuild `content.db` with this contentc after pulling it. Tests: `cmd/contentc/mounts_test.go` (the text of an item, a synthetic design database: the four tables, the equations a stat list reads, what is refused), `mounts_real_test.go` (the real file's counts above, the golden items of the captures, the stat curve's values, the roads and the dash), `internal/content/mounts_test.go` (the readers).
 
-**The roads (stage 4; no schema change, contentc stays at version 11).** `contentc roads [--content content.db] [--raw roads_raw.tsv] [--out roads.tsv] [--node-level Wilderness] [--check]` (`cmd/contentc/roads.go`) resolves what the map's road splines are worth to a mount. `tools/mapc` (`mapc roads`) writes `dist/content/roads_raw.tsv`: each `BP_RoadActor_C` with its `RoadPresetRecord` and owner ZOI guids and its spline sampled every 200 cm. For every road this takes the preset's `RoadAppearancesIds[node level]` (`ENodeLevel`: Wilderness 0 to Metropolis 6; the level worldd's `--spawn-node-level` names, Wilderness by default), the appearance's `RoadBuffs` entry for `ECharacterClassification::Mount` (the effect `Road_Tn_Speed_Mount`, the `mount_effect` table's road rows) and its `RoadWidth`, and writes `dist/content/roads.tsv`: `road`, tier, half width (max(RoadWidth, 1000) / 2, modelled) and the points. A preset with no Mount buff at that level (a Vein or a Capillary below its levels, `Node_N3` at 0, the 6-level `LionsHold_Roads` at Metropolis) gives a mount nothing and its roads are left out, an inactive road too; a road whose preset is no record is an error. At Wilderness the E1 area's 49 road actors give 42 roads: 11 Riverlands Artery (T1, 6.6 km) and 31 Lions Hold (T2, 7.8 km). It reads the three record tables from `content.db` (`record`) and `mount_effect`; run it again after a new `roads_raw.tsv` or `content.db`. `contentc` itself and the schema are unchanged.
+**The roads (stage 4; no schema change, contentc stays at version 11).** `contentc roads [--content content.db] [--raw roads_raw.tsv] [--out roads.tsv] [--node-level Wilderness] [--check]` (`cmd/contentc/roads.go`) resolves what the map's road splines are worth to a mount. `tools/mapc` (`mapc roads`) writes `dist/content/roads_raw.tsv`: each `BP_RoadActor_C` with its `RoadPresetRecord` and owner ZOI guids and its spline sampled every 200 cm. For every road this takes the preset's `RoadAppearancesIds[node level]` (`ENodeLevel`: Wilderness 0 to Metropolis 6; the level world's `--spawn-node-level` names, Wilderness by default), the appearance's `RoadBuffs` entry for `ECharacterClassification::Mount` (the effect `Road_Tn_Speed_Mount`, the `mount_effect` table's road rows) and its `RoadWidth`, and writes `dist/content/roads.tsv`: `road`, tier, half width (max(RoadWidth, 1000) / 2, modelled) and the points. A preset with no Mount buff at that level (a Vein or a Capillary below its levels, `Node_N3` at 0, the 6-level `LionsHold_Roads` at Metropolis) gives a mount nothing and its roads are left out, an inactive road too; a road whose preset is no record is an error. At Wilderness the E1 area's 49 road actors give 42 roads: 11 Riverlands Artery (T1, 6.6 km) and 31 Lions Hold (T2, 7.8 km). It reads the three record tables from `content.db` (`record`) and `mount_effect`; run it again after a new `roads_raw.tsv` or `content.db`. `contentc` itself and the schema are unchanged.
 
-**Roads by node level (Nodes 1, stage 3b; no schema change).** `contentc roads --levels [--content content.db] [--raw roads_raw.tsv] [--out roads_levels.tsv] [--check]` resolves every road at ALL seven node levels and writes `dist/content/roads_levels.tsv`: `roadn`, the owner zone's guid (`roads_raw.tsv`'s third column), the seven tiers (`Road_Tn_Speed_Mount`, -1 where the road gives a mount nothing) and half widths (max(RoadWidth, 1000) / 2, 0 where none) as comma lists, and the points. Inactive roads and roads that give a mount nothing at any level are left out: 145 roads (91 of them are worth something at Wilderness, the rest only from Crossroads or Village up). worldd (`world/roads.h`) sets each road to the node level of its zone's node, and when a node's level changes the tier of its roads changes with it; `roads.tsv` stays the one-level file `--roads` reads when `roads_levels.tsv` is not there. `scripts\generators.ps1` runs `--levels --check`.
+**Roads by node level (Nodes 1, stage 3b; no schema change).** `contentc roads --levels [--content content.db] [--raw roads_raw.tsv] [--out roads_levels.tsv] [--check]` resolves every road at ALL seven node levels and writes `dist/content/roads_levels.tsv`: `roadn`, the owner zone's guid (`roads_raw.tsv`'s third column), the seven tiers (`Road_Tn_Speed_Mount`, -1 where the road gives a mount nothing) and half widths (max(RoadWidth, 1000) / 2, 0 where none) as comma lists, and the points. Inactive roads and roads that give a mount nothing at any level are left out: 145 roads (91 of them are worth something at Wilderness, the rest only from Crossroads or Village up). world (`world/roads.h`) sets each road to the node level of its zone's node, and when a node's level changes the tier of its roads changes with it; `roads.tsv` stays the one-level file `--roads` reads when `roads_levels.tsv` is not there. `scripts\generators.ps1` runs `--levels --check`.
 
 ## GM travel tools (teleport and run speed)
 
-"I need a faster way to get around": a GM moves a player to a city node or a point, and sets a character's run speed. **worldd serves an admin API for it, and `worldctl` is its
+"I need a faster way to get around": a GM moves a player to a city node or a point, and sets a character's run speed. **world serves an admin API for it, and `worldctl` is its
 command line.** It is API-first like `citynode`: the 3D admin viewer to come calls the same methods.
 
-**The API** is `WorldAdminService` (`proto/internal/aoc/worldadmin/v1/worldadmin.proto`, generated Go in `gen/aoc/worldadmin/v1`). worldd listens on `127.0.0.1:50056`
-(`AOC_WORLD_ADMIN_ADDR`, or `worldd --world-admin <addr>`; `--no-world-admin` turns it off; a non-loopback address is logged as a warning). Calls carry the service token
+**The API** is `WorldAdminService` (`proto/internal/aoc/worldadmin/v1/worldadmin.proto`, generated Go in `gen/aoc/worldadmin/v1`). world listens on `127.0.0.1:50056`
+(`AOC_WORLD_ADMIN_ADDR`, or `world --world-admin <addr>`; `--no-world-admin` turns it off; a non-loopback address is logged as a warning). Calls carry the service token
 (`authorization: Bearer <token>`, as every internal call does; without it, or with another, the call is refused with `Unauthenticated`, the refusal is counted and logged at
-most once a second, and the token is never logged or echoed). A call arrives on a gRPC thread and is **applied on worldd's network thread** through a queue that the main loop
+most once a second, and the token is never logged or echoed). A call arrives on a gRPC thread and is **applied on world's network thread** through a queue that the main loop
 drains between two ticks of the world: no session state is touched from another thread. A call the network thread does not take within 5 s ends with `Unavailable` and is
 never applied later.
 
@@ -785,7 +786,7 @@ never applied later.
   speed goes down while the client learns of it. It lasts until the character logs out or it is set to 1; a Sprint's own +0.2 rides on top.
 
 **`worldctl`** (`dist\services\worldctl.exe`, built by `scripts\services.ps1 build`; it finds `service.token` beside itself, or `--token-file` / `AOC_SERVICE_TOKEN_FILE`, and
-worldd at `--addr` / `AOC_WORLD_ADMIN_ADDR`):
+world at `--addr` / `AOC_WORLD_ADMIN_ADDR`):
 
 ```powershell
 dist\services\worldctl.exe players                       # name, guid, x y z, mounted, speed
@@ -805,36 +806,36 @@ dist\services\worldctl.exe npc despawn 16795192          # out of the world now;
 dist\services\worldctl.exe npc move 16795192 -777664 616578   # stood at a point (z: the ground; or give it as a fourth number); its leash is centred there, its spawn point stays
 ```
 
-Exit status: 0 done, 1 worldd refused it or could not be reached, 2 the command line is wrong.
+Exit status: 0 done, 1 world refused it or could not be reached, 2 the command line is wrong.
 
 **The client's own GM RPCs** on the PlayerController, `ServerTeleportXYZ` (rpc 967: `X`, `Y`, `Z` whole cm, `OptionalRadius`), `ServerTeleport` (964: `DestinationLookupKey`,
-`OptionalRadius`) and `ServerTeleportPlayer` (966: `CharacterNames`, `X`, `Y`, `Z`) are answered with the same teleport **only with the GM switch on**: `worldd --gm-commands`
+`OptionalRadius`) and `ServerTeleportPlayer` (966: `CharacterNames`, `X`, `Y`, `Z`) are answered with the same teleport **only with the GM switch on**: `world --gm-commands`
 or `AOC_GM_COMMANDS=1` (off by default; `scripts\launch_all.ps1` supports enabling it via environment/config). `ServerTeleport` takes a place's name (the table above; unknown keys are logged and moved nowhere);
-`ServerTeleportPlayer` names characters separated by commas, semicolons or spaces. **Whether the shipping client's console can send them at all is not known**: worldd logs
+`ServerTeleportPlayer` names characters separated by commas, semicolons or spaces. **Whether the shipping client's console can send them at all is not known**: world logs
 every one it receives, with its parameters, switch or no switch (`[gm] cyb: the client sent ServerTeleportXYZ (X=... Y=... Z=...): answering` or `refused: GM commands are off`),
 so a test settles it. The admin API does not depend on the switch.
 
 ## The world stream (a read-only view of the world for admin tools)
 
-worldd also serves a stream of the world for tools that watch it, `WorldStreamService` (`proto/internal/aoc/worldadmin/v1/worldadmin.proto`, generated Go in `gen/aoc/worldadmin/v1`). It is a gRPC server of its own on
-`127.0.0.1:50057` (`AOC_WORLD_STREAM_ADDR`, or `worldd --world-stream <addr>`; `--no-world-stream` turns it off; a non-loopback address is logged as a warning), so streams that hold threads cannot starve the admin API.
+world also serves a stream of the world for tools that watch it, `WorldStreamService` (`proto/internal/aoc/worldadmin/v1/worldadmin.proto`, generated Go in `gen/aoc/worldadmin/v1`). It is a gRPC server of its own on
+`127.0.0.1:50057` (`AOC_WORLD_STREAM_ADDR`, or `world --world-stream <addr>`; `--no-world-stream` turns it off; a non-loopback address is logged as a warning), so streams that hold threads cannot starve the admin API.
 Calls carry the service token exactly as the admin API's do (without it, or with another, the call is refused with `Unauthenticated`, counted and logged at most once a second). Nothing in it changes the world.
 
 - `Subscribe(area, detail, density_cell_cm, layers)`: a stream of frames, five a second at most. The area is a box in cm (min inclusive, max exclusive, at most 100 km on a side), the layers choose players, NPCs, resource nodes,
   mounts and loot piles (0: all). With `detail` entities the first frame is a full snapshot of the area (each entity: id, kind, x y z in cm, facing in 8 bits, state bits for in combat, dead and mounted, health in percent, level;
   a player's name once), and each later frame is a delta against what the subscriber was last sent: the entities that are new or differ and the ids that left the area or the world. A frame goes out when something changed and at
   least every 2 s (an empty delta). Frames are numbered from 1, and a reader that sees another seq than the one it expects subscribes again. With `detail` density the frames are counts per cell (players, NPCs that are not dead,
-  resource nodes) for cells of 200, 500 or 1,000 m, whole, when the counts changed. Every frame carries worldd's numbers (`StreamStats`).
-- `Inspect(id)`: one entity as worldd knows it now. An NPC, node, mount or pile: name, Blueprint, level, health, AI state, target and threat table, home (the leash centre) and spawn point, aggro and leash radius, respawn time and rule, loot tables, and for a dead creature its corpse and its respawn timer. A player:
+  resource nodes) for cells of 200, 500 or 1,000 m, whole, when the counts changed. Every frame carries world's numbers (`StreamStats`).
+- `Inspect(id)`: one entity as world knows it now. An NPC, node, mount or pile: name, Blueprint, level, health, AI state, target and threat table, home (the leash centre) and spawn point, aggro and leash radius, respawn time and rule, loot tables, and for a dead creature its corpse and its respawn timer. A player:
   name, character guid, level, mounted, dead and run speed. `NotFound` for an id that is not in the world.
 - `Search(query, limit)`: players, NPCs, nodes, mounts and piles by a case-insensitive part of the name (2 characters at least, at most 50 results, players first, then by name; `truncated` says there were more).
-- `GetStatus`: the counts (players, NPCs, resource nodes, mounts), the cost of a publish on worldd's network thread (smoothed, and the worst of the last minute or two), the loop's work, the publish count and the streams open.
+- `GetStatus`: the counts (players, NPCs, resource nodes, mounts), the cost of a publish on world's network thread (smoothed, and the worst of the last minute or two), the loop's work, the publish count and the streams open.
 
 A bad request is `InvalidArgument` with its reason (an empty or oversized area, a density cell that is not 20000, 50000 or 100000 cm, a grid of more than 65,536 cells, an unknown layer bit, a query that is too short). At most 8 streams
-are open at once (`ResourceExhausted` for the next). A stream that stops reading holds one gRPC thread and nothing else: worldd never waits for it.
+are open at once (`ResourceExhausted` for the next). A stream that stops reading holds one gRPC thread and nothing else: world never waits for it.
 
 **`worldctl watch`** subscribes and prints one line a second: the frames that came and what they changed, the entities it holds by kind, the stream's bandwidth, and the publish cost `GetStatus` reports. It checks the frames'
-sequence and subscribes again after a gap or when worldd goes away for a moment.
+sequence and subscribes again after a gap or when world goes away for a moment.
 
 ```powershell
 dist\services\worldctl.exe watch                                       # the whole world, until Ctrl+C
@@ -862,13 +863,13 @@ It finds the stream at `--addr` / `AOC_WORLD_STREAM_ADDR` and the token as the o
 
 Enums are stored as their text and, where the host answers with them, as the ordinal too (`internal/aocexpr/enums.go` has the ordinals, from the client's usmap). Tests: `cmd/contentc/nodes_test.go` (a synthetic design database) and `nodes_real_test.go` (the real one: the counts, the seven rank keys, the 26 nodes that grow, the Riverlands zones, the Village base modification, River_C's 78 props and plots per level ...).
 
-**The node reads of an expression.** `GetNodeBiome`, `GetCurrentNode`, `GetNodeRecord`, `Node_GetNodeType`, `Node_GetLevel`, `Node_InLevelRangeInclusive`, `Node_IsPlayerCitizen`, `Node_IsPlayerCitizenOfNode` and `Node_IsPlayerMayor` (with `GetPlayer`, `GetPlayerGuid` and `EnumInt` around them) are host functions 170 to 177 (`internal/aocexpr/hostfn.go`, `internal/statprog/nodes.go`, worldd's `stats/stat_program.h`). A node is its **rank** in a program (a guid does not fit a float32; `-1` for none), an enum answer is the value's ordinal, and the compiler turns a node reference (`$#<CityNodeRecord type>:<guid>$` or `$CityNode:<record name>$`) and an enum literal compared with an answer into the same numbers. `Node_InLevelRangeInclusive` is the level the host gives compared with the two bounds, in the program. The 12 expressions of the loot tables that read `GetNodeBiome` compile now (the 43 biome-gated reward tables roll in worldd: `BaseLoot_Melee_RVR`, `_TUR`, `_NONE` ...). The citizen and mayor reads answer false until the citizenship milestone. The Go side's model of the host is `statprog.NodeWorld`; the shared corpus (`server/worldd/stats/testdata/corpus.txt`) has `nodehost` blocks it writes and worldd's `world::node_host_fn` must answer the same (`test_worldd_city_nodes`), and the tiny graph's expressions run all of it on both engines.
+**The node reads of an expression.** `GetNodeBiome`, `GetCurrentNode`, `GetNodeRecord`, `Node_GetNodeType`, `Node_GetLevel`, `Node_InLevelRangeInclusive`, `Node_IsPlayerCitizen`, `Node_IsPlayerCitizenOfNode` and `Node_IsPlayerMayor` (with `GetPlayer`, `GetPlayerGuid` and `EnumInt` around them) are host functions 170 to 177 (`internal/aocexpr/hostfn.go`, `internal/statprog/nodes.go`, `world`'s `src/libs/aocstats/stat_program.h`). A node is its **rank** in a program (a guid does not fit a float32; `-1` for none), an enum answer is the value's ordinal, and the compiler turns a node reference (`$#<CityNodeRecord type>:<guid>$` or `$CityNode:<record name>$`) and an enum literal compared with an answer into the same numbers. `Node_InLevelRangeInclusive` is the level the host gives compared with the two bounds, in the program. The 12 expressions of the loot tables that read `GetNodeBiome` compile now (the 43 biome-gated reward tables roll in `world`: `BaseLoot_Melee_RVR`, `_TUR`, `_NONE` ...). The citizen and mayor reads answer false until the citizenship milestone. The Go side's model of the host is `statprog.NodeWorld`; the shared corpus (`build/gen/fixtures/corpus.txt`) has `nodehost` blocks it writes and `world`'s `world::node_host_fn` must answer the same (`test_world_city_nodes`), and the tiny graph's expressions run all of it on both engines.
 
-**The constants the design DB lacks.** `tools/capture/gen_node_constants.py` reads `DefaultAoCRecordConstants.ini` of the game's Config folder (`--ini`, or `AOC_CLIENT_CONFIG`; `mapc export-config` writes it) and writes `internal/citynode/constants_gen.go` and `server/worldd/world/node_constants.h`: `CityNodeExpToLevel`, `CityNodeReputationToLevel`, `MaxNodeLevel` (Town), `MinimumOperationalNodeLevel` (Village), the citizenship level, the vassalship switches, the building, mayor and siege timers and the records the ini selects. Files rather than a `content.db` table because citynode does not open `content.db`, worldd needs them as compile-time numbers and contentc stays a function of `CacheDB.dbc`. `--check` is part of `scripts\generators.ps1` (skipped when the ini is not there).
+**The constants the design DB lacks.** `scripts/generators.ps1 -Only node_constants` (`src/tools/capture/`) reads `DefaultAoCRecordConstants.ini` of the game's Config folder (`--ini`, or `AOC_CLIENT_CONFIG`; `mapc export-config` writes it) and writes `build/gen/go/citynodeconsts/constants_gen.go` and `build/gen/cpp/world/node_constants.h`: `CityNodeExpToLevel`, `CityNodeReputationToLevel`, `MaxNodeLevel` (Town), `MinimumOperationalNodeLevel` (Village), the citizenship level, the vassalship switches, the building, mayor and siege timers and the records the ini selects. Files rather than a `content.db` table because citynode does not open `content.db`, `world` needs them as compile-time numbers and contentc stays a function of `CacheDB.dbc`. `--check` is part of `scripts\generators.ps1` (skipped when the ini is not there).
 
-**The ZOI surface.** `tools/capture/gen_zoi_surface.py` decodes the ZOI chunk grid of the export (30,558 files) into `server/worldd/world/zoi_surface_table.h`: the owner of every 512 cm cell of the world at the surface height, run-length coded (4,635 chunk columns, 58 owners), so that `world::zoi_at(x, y)` gives the zone at a point for the whole world. See `server/worldd/README.md`.
+**The ZOI surface.** `scripts/generators.ps1 -Only zoi_surface` (`src/tools/capture/`) decodes the ZOI chunk grid of the export (30,558 files) into `build/gen/cpp/world/zoi_surface_table.h`: the owner of every 512 cm cell of the world at the surface height, run-length coded (4,635 chunk columns, 58 owners), so that `world::zoi_at(x, y)` gives the zone at a point for the whole world. See [`../world/README.md`](../world/README.md).
 
-**The transforms keep the sign of a zero (Nodes 1, stage 3a).** The town replicator sends the layouts' transforms bit for bit and retail's carry `-0.0` (29 of Joeva's 85 items). A `REAL` column of SQLite stores a whole-number float as an integer and reads it back as `+0.0`, so the ten transform columns (`qx` .. `sz`) of `node_layout_prop`, `node_layout_plot` and `node_asset_set_member` are declared with no type (`internal/content/nodes.go`, `TestNodeTransformColumnsKeepNegativeZero`). The version stays 12: every reader sees the same numbers. **Rebuild `content.db` with this contentc** for the signs to be kept (`cd src/server/services && go run ./cmd/contentc`, 30 s); a file built before has `+0.0` where retail has `-0.0`, which `test_worldd_node_layout` reports as a difference in the layout items.
+**The transforms keep the sign of a zero (Nodes 1, stage 3a).** The town replicator sends the layouts' transforms bit for bit and retail's carry `-0.0` (29 of Joeva's 85 items). A `REAL` column of SQLite stores a whole-number float as an integer and reads it back as `+0.0`, so the ten transform columns (`qx` .. `sz`) of `node_layout_prop`, `node_layout_plot` and `node_asset_set_member` are declared with no type (`internal/content/nodes.go`, `TestNodeTransformColumnsKeepNegativeZero`). The version stays 12: every reader sees the same numbers. **Rebuild `content.db` with this contentc** for the signs to be kept (`cd src/server/services && go run ./cmd/contentc`, 30 s); a file built before has `+0.0` where retail has `-0.0`, which `test_world_node_layout` reports as a difference in the layout items.
 
 ## Gathering data (Gathering stage 2, part "Gathering data"; contentc version 13; migration 0010)
 
@@ -892,9 +893,9 @@ that file (`--artisan-curves`, `AOC_ARTISAN_CURVES`, default `dist/content/artis
 for all three. Without the file the build logs a WARNING, keeps the placeholder and records `meta artisan_curves.status = missing`. The Level 9, 15 and 25 scrolls' `xp - cur + 1` lands a level 1 character on
 levels 9, 15 and 25 (32,400, 90,000 and 250,000 XP); a tier edge (10, 20, 30, 40, 50) is a key of the curve.
 
-**The host functions 180-184** (`internal/aocexpr/hostfn.go`, `server/worldd/stats/stat_program.h`, the same numbers on both engines): `GetArtisanshipModifiedStat(actor, stat)` (180; name = the stat's guid, args[0] =
+**The host functions 180-184** (`internal/aocexpr/hostfn.go`, `src/libs/aocstats/stat_program.h`, the same numbers on both engines): `GetArtisanshipModifiedStat(actor, stat)` (180; name = the stat's guid, args[0] =
 the role of the actor, the player is the caster; a rating, 0 for another actor), `GetRolledItemQuality()` (181), `GetItemRarity()` (182; `EItemRarity` 0 Common .. 6 Artifact), `GetSourceCertificationTier()` (183; 0 Novice ..
-4 GrandMaster) and `GetGatheringInteractionBaseDuration()` (184, seconds). The host fills a plain context: `statprog.GatherContext` in Go, `stats::GatherContext` with `gather_host_fn` (`server/worldd/stats/gather_host.h`) in
+4 GrandMaster) and `GetGatheringInteractionBaseDuration()` (184, seconds). The host fills a plain context: `statprog.GatherContext` in Go, `stats::GatherContext` with `gather_host_fn` (`src/libs/aocstats/gather_host.h`) in
 C++, and the shared corpus holds `gatherhost` blocks both answer the same. 24 of the 300 expressions that did not compile in version 12 compile now (the quantity, speed and experience formulas); 79 more compile because
 `GetPlayerProfessionLevel(GetPlayer(), "Mining")` (the scrolls' form) is accepted beside `GetPlayerProfessionLevel(GetActorGuid(GetInstigator()), ...)`; 198 of 1,875 do not (version 12: 300 of 1,845; the Hunting prototype's
 Quality formula is the one new failure). An equation's input term with no value (`"Value": ""`: the tool's term of the rarity, speed and experience equations of Mining, Lumberjacking and Herbalism) is no input: the term's
@@ -906,7 +907,7 @@ character that exists (the user's rule: every character holds Novice certificati
 profession's XP lives only there (nothing of it is in `character_experience`). The 22 guids are `character.ProfessionGuids`, the migration's SQL and `content.db`'s `profession` (tests hold the three together).
 `proto/internal/aoc/character/v1/character.proto`: `ProfessionState {profession_guid, certification_tier, level, xp}`, `Character.professions` (field 19, with `include_items` and in `SaveProgress`'s reply: always the 22 in guid
 order) and `SaveProgressRequest.professions` (field 9; each row replaces that profession's row; `InvalidArgument`, with nothing changed, for a profession that is none of the 22, one twice, a tier outside 0-4, a level outside
-1-50 or a negative XP). worldd's `svc::Character::professions` and `svc::Progress::professions` carry them.
+1-50 or a negative XP). world's `svc::Character::professions` and `svc::Progress::professions` carry them.
 
 ## Resource storage (Gathering stage 3, part "Resource storage"; contentc version 14; migration 0011)
 
@@ -921,18 +922,18 @@ order) and `SaveProgressRequest.professions` (field 9; each row replaces that pr
 
 `maximum_items` of a container is `columns x rows`, blocked cells included. The grids: `Bag_Resource_Sanctus` 6 x 4, `Bag_Resource_T1_Mining_0` 5 x 5 (9 blocked), `Bag_Resource_T1_Lumberjacking_0` 7 x 3 (9), `Bag_Resource_T2_Mining_0` 8 x 5 (16)
 and `Bag_Resource_T2_Lumberjacking_0` 6 x 5 (12) with exactly the OverrideMatrix the retail capture's client was sent, the 8 x 8 T3 bags (28 blocked), and `Bag_Resource_SandalsOfHolding` 8 x 30 = 240 (the most cells a bag has: a slot of the new table is below 256).
-`content.Item` has `InvW`, `InvH`, `Resource`; `DB.ResourceBag(item)` and `DB.ResourceBags()` read the grids. `MinContentcVersion` and worldd's `kMinContentcVersion` are 14.
+`content.Item` has `InvW`, `InvH`, `Resource`; `DB.ResourceBag(item)` and `DB.ResourceBags()` read the grids. `MinContentcVersion` and world's `kMinContentcVersion` are 14.
 
 **Migration 0011** adds ONE table, `character_resource_items`, with the columns and the constraints of `character_items` (migration 0004 and 0007's columns), `container IN ('Resource0', 'Resource1', 'Resource2')` and `slot` 0 to 255, the same primary key
 (`character_id, container, slot`), the instance guid unique per character in the table, and `ON DELETE CASCADE` on the character. `character_items` is not touched (its container CHECK stays Backpack / Equipment / Quest: every migration is add-only), nothing is
 backfilled, and nothing else changes (a test holds the schema of every other table). The resource items of a character live only in the new table. The instance guid is unique per character across BOTH tables: `character.ValidateItems` checks it
 over the whole set of a `SaveInventory`, because a table cannot hold a rule over two tables. `Inventory` returns the Backpack's items by slot, then the Equipment's, the Quest storage's and the three resource containers' (`character.Resource0..2`, `SlotCount` 256,
 `MaxItems` 70 + 83 + 100 + 3 x 256); `SaveInventory` deletes the rows of both tables and inserts the set in the table of each item's container in ONE transaction; `GrantMissingKits` and the GM starter set's backfill count the resource table too.
-`aoc.character.v1.ItemContainer` gets `ITEM_CONTAINER_RESOURCE0/1/2 = 4/5/6` (add-only; the numbers are the wire contract with worldd, a test pins them). The play database receives the migration when the services start.
+`aoc.character.v1.ItemContainer` gets `ITEM_CONTAINER_RESOURCE0/1/2 = 4/5/6` (add-only; the numbers are the wire contract with world, a test pins them). The play database receives the migration when the services start.
 
 ## Foliage data (Gathering stage 3, part "Foliage gathering"; contentc version 15)
 
-**contentc version 15** types what the design data says about the painted trees, plants and stones and about every gathering interaction (`internal/content/foliage.go` has the tables and the Go readers, `cmd/contentc/foliage.go` the writer; worldd's `foliage/` and `gather/gathering.*` read them). Four tables; the raw records stay in `record`:
+**contentc version 15** types what the design data says about the painted trees, plants and stones and about every gathering interaction (`internal/content/foliage.go` has the tables and the Go readers, `cmd/contentc/foliage.go` the writer; world's `foliage/` and `gather/gathering.*` read them). Four tables; the raw records stay in `record`:
 
 | Table | Rows | What |
 |---|---|---|
@@ -941,12 +942,12 @@ over the whole set of a `SaveInventory`, because a table cannot hold a rule over
 | `gather_interaction` | 236 | each `GatheringInteractionData`: the profession, certification and tier, the tool's equip slot (-1 when the data names none), `base_duration`, the compiled duration and wear formulas (`ab_expr` ids), the reward table, the state the harvest leaves the foliage in (Empty = 3) and the range of the `PlayerInteractionDef` named like it (radius, tolerance, combat) |
 | `gather_interaction_def` | 194 | each `PlayerInteractionDef` that names a `GatheringInteractionData`, by its own guid: the 53 `Hunting_<X>` defs a huntable creature's asset names, and the ranges of the nodes' and the foliage's |
 
-`EFoliageState` is Infancy 0, Juvenile 1, Adult 2, Empty 3 (the captured `IndexedStates` carry 3 for a harvested instance and 0 and 1 for a growing one). Stage 2's `gather_def` is untouched (the 339 placed nodes); the new `gather_interaction` holds every interaction, so the foliage and the Hunting corpses use the same rolls. The 5 formulas the interactions add join the expression set (`meta gather.exprs` is 35, `ab_expr` 1,880), so the stat program bundle in `stat_program` grew by 146 bytes and the shared stat corpus was rewritten (`go run ./internal/statprog/cmd/statprog corpus --out ..\server\worldd\stats\testdata\corpus.txt`; `TestCorpusUpToDate` and worldd's `test_worldd_content_db` on the real file hold it). Counts and the cross-references (every def's three state slots are rows of `foliage_state`, every state's interaction a row of `gather_interaction`, an interaction def's `gather_guid` a row or the 0 of "none") are pinned by `cmd/contentc/foliage_real_test.go`; `content.DB.FoliageDefs()`, `FoliageStates()`, `GatherInteractions()` and `GatherInteractionDefs()` read them. `MinContentcVersion` and worldd's `kMinContentcVersion` are **15**: every reader refuses an older file with the way to rebuild it (`cd src/server/services && go run ./cmd/contentc`), and nothing else needs a migration (no database table is added).
+`EFoliageState` is Infancy 0, Juvenile 1, Adult 2, Empty 3 (the captured `IndexedStates` carry 3 for a harvested instance and 0 and 1 for a growing one). Stage 2's `gather_def` is untouched (the 339 placed nodes); the new `gather_interaction` holds every interaction, so the foliage and the Hunting corpses use the same rolls. The 5 formulas the interactions add join the expression set (`meta gather.exprs` is 35, `ab_expr` 1,880), so the stat program bundle in `stat_program` grew by 146 bytes and the shared stat corpus was rewritten (`go run ./internal/statprog/cmd/statprog corpus --out ..\server\world\stats\testdata\corpus.txt`; `TestCorpusUpToDate` and world's `test_world_content_db` on the real file hold it). Counts and the cross-references (every def's three state slots are rows of `foliage_state`, every state's interaction a row of `gather_interaction`, an interaction def's `gather_guid` a row or the 0 of "none") are pinned by `cmd/contentc/foliage_real_test.go`; `content.DB.FoliageDefs()`, `FoliageStates()`, `GatherInteractions()` and `GatherInteractionDefs()` read them. `MinContentcVersion` and world's `kMinContentcVersion` are **15**: every reader refuses an older file with the way to rebuild it (`cd src/server/services && go run ./cmd/contentc`), and nothing else needs a migration (no database table is added).
 
 
 ## Item display names (Gathering stage 3, "the pick-up popup"; contentc version 16)
 
-**contentc version 16** adds one column to the item table: `item.display_name`, the record's `ItemName` source text as the player reads it ("Coconut Wood"), empty for the 78 of 10,568 records that have no name (`cmd/contentc/items.go`; `content.DB.Item` returns it as `DisplayName`). worldd puts it into the pick-up popup of a harvest ("Acquired <a ...> [Coconut Wood] </>x5", `server/worldd/items/acquired.h`); a content.db older than 16 still opens (the popup then shows the record name). `TestRealItemDisplayNames` checks the 17 items of the 24 retail harvest events against the names the retail text carries.
+**contentc version 16** adds one column to the item table: `item.display_name`, the record's `ItemName` source text as the player reads it ("Coconut Wood"), empty for the 78 of 10,568 records that have no name (`cmd/contentc/items.go`; `content.DB.Item` returns it as `DisplayName`). world puts it into the pick-up popup of a harvest ("Acquired <a ...> [Coconut Wood] </>x5", `src/server/world/items/acquired.h`); a content.db older than 16 still opens (the popup then shows the record name). `TestRealItemDisplayNames` checks the 17 items of the 24 retail harvest events against the names the retail text carries.
 
 ## Test
 
@@ -969,7 +970,7 @@ Protos).
 
 `contentc` (plan C1) decodes the client's design database into `content.db`, a SQLite file of the
 game numbers the services need (class attributes by level, stat definitions, the stamina rules of
-Sprint and Dodge, the numbers worldd's ability runtime runs for Sprint, Dodge and Rest). It is a build tool, not a service: `services.ps1 build`/`run` do not touch it.
+Sprint and Dodge, the numbers world's ability runtime runs for Sprint, Dodge and Rest). It is a build tool, not a service: `services.ps1 build`/`run` do not touch it.
 `internal/usmap` reads the mappings file, `internal/designdb` walks the `.dbc` (every table it
 decodes must end exactly on the table's last byte), `internal/aocexpr` runs the formulas, and
 `internal/content` defines the schema (one place: `schema.go`) and the typed queries over it.
@@ -1041,9 +1042,9 @@ What is in `content.db` (the schema is `internal/content/schema.go`):
   and `starting_equipment`, the 96 rows of the eight classes' `StartingEquipmentRecord`s. `bCanEquip` is not the rule of what is worn: the starter armor of every class has it 0 and is worn,
   and 374 gear records have it 0 and a slot. contentc refuses a kit item no `ItemRecord` has and a slot the enum does not know;
 - `stat_program`, `quality_curve`, `stat_block_stat`, `item_set`, `set_bonus`, `item_tag` and `item.quality_curve_guid` (plan B3, contentc version 4): see "Stats (plan B3)" above;
-- `ability_runtime`, `effect_runtime`, `effect_stat_runtime` (plan A7): what worldd's ability runtime runs, as
-  numbers, every formula already run by contentc (`internal/aocexpr`) so that worldd evaluates nothing. One
-  `ability_runtime` row per ability worldd handles: whether it is held (`Smart`) or a `Toggle`, whether it needs
+- `ability_runtime`, `effect_runtime`, `effect_stat_runtime` (plan A7): what world's ability runtime runs, as
+  numbers, every formula already run by contentc (`internal/aocexpr`) so that world evaluates nothing. One
+  `ability_runtime` row per ability world handles: whether it is held (`Smart`) or a `Toggle`, whether it needs
   the caster out of combat, the Stamina it needs to start (`min_stamina`, found by running the
   `ActivationRequirements` formula and bisecting the threshold), the cost (`cost_amount`, paid once or, with
   `charge_interval`, per charge, and only while moving when `cost_requires_moving`), the cooldown (run with no
@@ -1136,4 +1137,4 @@ cd src/server/services && buf lint ../proto/internal && buf generate
 
 Generated code in `services/gen/` is checked in.
 
-**The starter set's test mounts** (the mounts milestone, stage 3, changed in fix 2): after the gear scroll the set holds 8 mount items (`kit.StarterMountNames`: the two PTR Eagle Gryphons, the four aquatic mounts, the terror bird and the skinwalker), because the client's vendor window lists only 44 of the 101 mounts. The flyers are the two a client lets anyone summon: the 44 other flying items are mayor rewards whose activation requirement the client checks before it sends anything (`worldd/README.md`, "Stage 3 fix 2"). A name the content.db lacks is left out. `GrantMissingStarterMounts` is a TOP-UP, not a once-only grant: at every start each character with the set (`gm_starter_set_granted_at` set) is given the test mounts it holds nowhere (bag, worn, quest storage); a character holding them all is not written to, and one that threw a test mount away gets it back. Nothing is migrated: `gm_starter_mounts_granted_at` (migration 0008) stays, set the first time a top-up gives something; it is informational (the top-up looks at what the character holds, not at the column), and migration 0008 and its rollback are tested (`internal/db/migration0008_test.go`, which runs the README's block below as written). A top-up writes the whole bag through the character service while worldd may hold an older copy of a character that is in game: top-ups are for a character service started with nobody playing (the same holds for E1's set).
+**The starter set's test mounts** (the mounts milestone, stage 3, changed in fix 2): after the gear scroll the set holds 8 mount items (`kit.StarterMountNames`: the two PTR Eagle Gryphons, the four aquatic mounts, the terror bird and the skinwalker), because the client's vendor window lists only 44 of the 101 mounts. The flyers are the two a client lets anyone summon: the 44 other flying items are mayor rewards whose activation requirement the client checks before it sends anything (`world/README.md`, "Stage 3 fix 2"). A name the content.db lacks is left out. `GrantMissingStarterMounts` is a TOP-UP, not a once-only grant: at every start each character with the set (`gm_starter_set_granted_at` set) is given the test mounts it holds nowhere (bag, worn, quest storage); a character holding them all is not written to, and one that threw a test mount away gets it back. Nothing is migrated: `gm_starter_mounts_granted_at` (migration 0008) stays, set the first time a top-up gives something; it is informational (the top-up looks at what the character holds, not at the column), and migration 0008 and its rollback are tested (`internal/db/migration0008_test.go`, which runs the README's block below as written). A top-up writes the whole bag through the character service while world may hold an older copy of a character that is in game: top-ups are for a character service started with nobody playing (the same holds for E1's set).

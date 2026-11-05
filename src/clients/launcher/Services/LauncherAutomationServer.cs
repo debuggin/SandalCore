@@ -28,21 +28,28 @@ public sealed record LauncherAutomationStateSnapshot(
     [property: JsonPropertyName("worldEndpoint")] string WorldEndpoint,
     [property: JsonPropertyName("ashesProcessRunning")] bool AshesProcessRunning,
     [property: JsonPropertyName("ashesPid")] int? AshesPid,
-    [property: JsonPropertyName("statusBanner")] string StatusBanner);
+    [property: JsonPropertyName("statusBanner")] string StatusBanner,
+    [property: JsonPropertyName("launcherPid")] int LauncherPid = 0,
+    [property: JsonPropertyName("lifecyclePhase")] string LifecyclePhase = "launcher_loaded");
 
 public sealed record AutomationHttpResponse(int StatusCode, string Body, string? ETag = null);
 
 public sealed class LauncherAutomationController
 {
     private readonly MainWindowViewModel _viewModel;
+    private readonly Action? _onCloseLauncher;
 
-    public LauncherAutomationController(MainWindowViewModel viewModel)
+    public LauncherAutomationController(MainWindowViewModel viewModel, Action? onCloseLauncher = null)
     {
         ArgumentNullException.ThrowIfNull(viewModel);
         _viewModel = viewModel;
+        _onCloseLauncher = onCloseLauncher;
     }
 
     public MainWindowViewModel ViewModel => _viewModel;
+    public bool IsCloseRequested { get; private set; }
+
+    public void NotifyCloseLauncher() => _onCloseLauncher?.Invoke();
 
     public LauncherAutomationStateSnapshot GetStateSnapshot()
     {
@@ -61,7 +68,9 @@ public sealed class LauncherAutomationController
             _viewModel.WorldEndpoint,
             isRunning,
             pid,
-            _viewModel.StatusBannerMessage);
+            _viewModel.StatusBannerMessage,
+            Environment.ProcessId,
+            _viewModel.LifecyclePhase);
     }
 
     public static string ComputeETag(string jsonPayload)
@@ -119,10 +128,33 @@ public sealed class LauncherAutomationController
             "/automation/login" => await HandleLoginAsync(root, ct).ConfigureAwait(false),
             "/automation/characters/create" => await HandleCreateCharacterAsync(root, ct).ConfigureAwait(false),
             "/automation/char-select" => await HandleCharSelectAsync(root, ct).ConfigureAwait(false),
+            "/automation/launch" => HandleLaunch(),
             "/automation/terminate-ashes" => await HandleTerminateAshesAsync(root, ct).ConfigureAwait(false),
+            "/automation/close-launcher" => await HandleCloseLauncherAsync(root, ct).ConfigureAwait(false),
             "/automation/delete-account" => await HandleDeleteAccountAsync(ct).ConfigureAwait(false),
             _ => ErrorResponse(404, $"POST route '{path}' not found.")
         };
+    }
+
+    private AutomationHttpResponse HandleLaunch()
+    {
+        _viewModel.LaunchClient();
+        return HandleGetState(null);
+    }
+
+    private async Task<AutomationHttpResponse> HandleCloseLauncherAsync(JsonElement root, CancellationToken ct)
+    {
+        if (ReadBool(root, "terminateAshes", true) && _viewModel.TrackedAshesPid is > 0)
+            await _viewModel.TerminateAshesWithPolicyAsync(killAllMatching: false, ct).ConfigureAwait(false);
+        _viewModel.CloseLauncher();
+        IsCloseRequested = true;
+        AutomationHttpResponse resp = HandleGetState(null);
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(25, CancellationToken.None).ConfigureAwait(false);
+            NotifyCloseLauncher();
+        });
+        return resp;
     }
 
     private async Task<AutomationHttpResponse> HandleRegisterTempAsync(JsonElement root, CancellationToken ct)
@@ -132,7 +164,8 @@ public sealed class LauncherAutomationController
         await _viewModel.RegisterTempAsync(ct).ConfigureAwait(false);
         if (ReadBool(root, "createDefaultChar", false) && _viewModel.Characters.Count == 0)
         {
-            _viewModel.NewCharacterName = ReadStr(root, "characterName", LauncherCliOptions.DefaultHeroName);
+            string rawName = ReadStr(root, "characterName", ReadStr(root, "name", string.Empty));
+            _viewModel.NewCharacterName = MainWindowViewModel.SanitizeAutoCharacterName(rawName);
             await _viewModel.CreateCharacterAsync(ct).ConfigureAwait(false);
         }
         return HandleGetState(null);
@@ -158,7 +191,7 @@ public sealed class LauncherAutomationController
 
     private async Task<AutomationHttpResponse> HandleCharSelectAsync(JsonElement root, CancellationToken ct)
     {
-        string target = ReadStr(root, "characterIdOrName", ReadStr(root, "characterId", ReadStr(root, "name", _viewModel.SelectedCharacterId)));
+        string target = ReadStr(root, "characterIdOrName", ReadStr(root, "characterName", ReadStr(root, "characterId", ReadStr(root, "name", _viewModel.SelectedCharacterId))));
         bool spawn = ReadBool(root, "spawnClient", false);
         await _viewModel.SelectCharacterByNameOrIdAsync(target, spawn, ct).ConfigureAwait(false);
         return HandleGetState(null);
@@ -220,8 +253,8 @@ public sealed class LauncherAutomationServer : IAsyncDisposable, IDisposable
         _acceptLoopTask = Task.Run(() => AcceptLoopAsync(_cts.Token));
     }
 
-    public LauncherAutomationServer(MainWindowViewModel viewModel, int port = 0)
-        : this(new LauncherAutomationController(viewModel), port)
+    public LauncherAutomationServer(MainWindowViewModel viewModel, int port = 0, Action? onCloseLauncher = null)
+        : this(new LauncherAutomationController(viewModel, onCloseLauncher), port)
     {
     }
 
@@ -261,8 +294,13 @@ public sealed class LauncherAutomationServer : IAsyncDisposable, IDisposable
                 string body = contentLen > 0 ? await ReadBodyAsync(reader, contentLen, ct).ConfigureAwait(false) : string.Empty;
                 AutomationHttpResponse resp = await _controller.HandleRequestAsync(method, path, body, ifNoneMatch, ct).ConfigureAwait(false);
                 await WriteHttpResponseAsync(stream, resp, ct).ConfigureAwait(false);
+                if (_controller.IsCloseRequested)
+                    _controller.NotifyCloseLauncher();
             }
-            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException) { }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
+            {
+                System.Diagnostics.Trace.WriteLine(ex.Message);
+            }
         }
     }
 
@@ -329,7 +367,7 @@ public sealed class LauncherAutomationServer : IAsyncDisposable, IDisposable
         _cts.Cancel();
         _listener.Stop();
         try { await _acceptLoopTask.ConfigureAwait(false); }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
         _cts.Dispose();
     }
 }

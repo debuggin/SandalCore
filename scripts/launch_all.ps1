@@ -62,6 +62,27 @@ function Resolve-GameClientPaths {
     return [pscustomobject]@{ GameRoot = $gameRoot; GameExe = $gameExe }
 }
 
+function Resolve-DistBinaryPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DistDirPath,
+        [Parameter(Mandatory)][string]$PrimaryName,
+        [AllowEmptyString()][string]$FallbackName = '',
+        [AllowEmptyString()][string]$ExeExtension = ''
+    )
+    $primaryPath = Join-Path $DistDirPath "$PrimaryName$ExeExtension"
+    if (Test-Path -LiteralPath $primaryPath -PathType Leaf) {
+        return $primaryPath
+    }
+    if ($FallbackName) {
+        $fallbackPath = Join-Path $DistDirPath "$FallbackName$ExeExtension"
+        if (Test-Path -LiteralPath $fallbackPath -PathType Leaf) {
+            return $fallbackPath
+        }
+    }
+    return $primaryPath
+}
+
 function Assert-LaunchDistBinaries {
     [CmdletBinding()]
     param(
@@ -72,14 +93,50 @@ function Assert-LaunchDistBinaries {
         throw "Build output directory not found: $DistDirPath. Build the stack first via pwsh -NoProfile -File scripts/build.ps1 -Configure."
     }
     $missing = [System.Collections.Generic.List[string]]::new()
-    foreach ($name in @('tether_server', 'launcher', 'worldd')) {
-        $binPath = Join-Path $DistDirPath "$name$ExeExtension"
+    $specs = @(
+        @{ Primary = 'tether';   Fallback = 'tether_server' },
+        @{ Primary = 'launcher'; Fallback = '' },
+        @{ Primary = 'world';    Fallback = 'worldd' }
+    )
+    foreach ($spec in $specs) {
+        $binPath = Resolve-DistBinaryPath -DistDirPath $DistDirPath -PrimaryName $spec.Primary -FallbackName $spec.Fallback -ExeExtension $ExeExtension
         if (-not (Test-Path -LiteralPath $binPath -PathType Leaf)) {
             $missing.Add($binPath)
         }
     }
     if ($missing.Count -gt 0) {
         throw "Required binaries are missing from ${DistDirPath}: $($missing -join ', '). Build the stack first via pwsh -NoProfile -File scripts/build.ps1."
+    }
+}
+
+function Merge-LaunchConfigJsonFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.IO.FileInfo]$SourceFile,
+        [Parameter(Mandatory)][string]$DestPath
+    )
+    if (-not (Test-Path -LiteralPath $DestPath -PathType Leaf)) {
+        Copy-Item -LiteralPath $SourceFile.FullName -Destination $DestPath -Force
+    } elseif ($SourceFile.Extension -ieq '.json') {
+        $tplObj = Get-Content -LiteralPath $SourceFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        $dstObj = Get-Content -LiteralPath $DestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($null -ne $tplObj -and $null -ne $dstObj -and $tplObj -isnot [System.Array] -and $dstObj -isnot [System.Array]) {
+            foreach ($prop in $dstObj.PSObject.Properties) {
+                $tplObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
+            }
+            [System.IO.File]::WriteAllText($DestPath, (($tplObj | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
+        }
+    }
+    if ($SourceFile.Extension -ieq '.json') {
+        $localJson = Join-Path $SourceFile.DirectoryName "$($SourceFile.BaseName).local.json"
+        if (Test-Path -LiteralPath $localJson -PathType Leaf) {
+            $baseObj = Get-Content -LiteralPath $DestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $localObj = Get-Content -LiteralPath $localJson -Raw -Encoding UTF8 | ConvertFrom-Json
+            foreach ($prop in $localObj.PSObject.Properties) {
+                $baseObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
+            }
+            [System.IO.File]::WriteAllText($DestPath, (($baseObj | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
+        }
     }
 }
 
@@ -104,29 +161,7 @@ function Sync-LaunchDistConfig {
             if ($destParent -and -not (Test-Path -LiteralPath $destParent -PathType Container)) {
                 $null = New-Item -ItemType Directory -Path $destParent -Force
             }
-            if (-not (Test-Path -LiteralPath $dest -PathType Leaf)) {
-                Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
-            } elseif ($_.Extension -ieq '.json') {
-                $tplObj = Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-                $dstObj = Get-Content -LiteralPath $dest -Raw -Encoding UTF8 | ConvertFrom-Json
-                if ($null -ne $tplObj -and $null -ne $dstObj -and $tplObj -isnot [System.Array] -and $dstObj -isnot [System.Array]) {
-                    foreach ($prop in $dstObj.PSObject.Properties) {
-                        $tplObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
-                    }
-                    [System.IO.File]::WriteAllText($dest, (($tplObj | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
-                }
-            }
-            if ($_.Extension -ieq '.json') {
-                $localJson = Join-Path $_.DirectoryName "$($_.BaseName).local.json"
-                if (Test-Path -LiteralPath $localJson -PathType Leaf) {
-                    $baseObj = Get-Content -LiteralPath $dest -Raw -Encoding UTF8 | ConvertFrom-Json
-                    $localObj = Get-Content -LiteralPath $localJson -Raw -Encoding UTF8 | ConvertFrom-Json
-                    foreach ($prop in $localObj.PSObject.Properties) {
-                        $baseObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
-                    }
-                    [System.IO.File]::WriteAllText($dest, (($baseObj | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
-                }
-            }
+            Merge-LaunchConfigJsonFile -SourceFile $_ -DestPath $dest
         }
     }
     Get-ChildItem -LiteralPath $targetConfigDir -Filter '*.local.json' -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force
@@ -157,9 +192,14 @@ function Wait-LaunchEndpoint {
         return ($LASTEXITCODE -eq 0)
     }
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $names = switch ($ServiceName) {
+        'world'  { @('world', 'worldd') }
+        'tether' { @('tether', 'tether_server') }
+        default  { @($ServiceName) }
+    }
     while ((Get-Date) -lt $deadline) {
         if ($Protocol -eq 'UDP') {
-            $proc = Get-Process -Name $ServiceName -ErrorAction SilentlyContinue
+            $proc = Get-Process -Name $names -ErrorAction SilentlyContinue
             if ($null -ne $proc) { return $true }
         } else {
             $client = [System.Net.Sockets.TcpClient]::new()
@@ -180,11 +220,11 @@ function Wait-LaunchEndpoint {
 function Stop-StaleDistProcesses {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param([Parameter(Mandatory)][string]$DistDirPath)
-    if (-not $PSCmdlet.ShouldProcess($DistDirPath, 'Stop stale tether_server and launcher processes')) {
+    if (-not $PSCmdlet.ShouldProcess($DistDirPath, 'Stop stale tether and launcher processes')) {
         return
     }
     $resolvedDist = (Resolve-Path -LiteralPath $DistDirPath).Path
-    Get-Process -Name @('tether_server', 'launcher') -ErrorAction SilentlyContinue | Where-Object {
+    Get-Process -Name @('tether', 'tether_server', 'launcher') -ErrorAction SilentlyContinue | Where-Object {
         $_.Path -and $_.Path.StartsWith($resolvedDist, [System.StringComparison]::OrdinalIgnoreCase)
     } | Stop-Process -Force
 }
@@ -192,7 +232,7 @@ function Stop-StaleDistProcesses {
 function Start-LaunchServicesAndVerify {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param([Parameter(Mandatory)][string]$RootDirPath)
-    if (-not $PSCmdlet.ShouldProcess($RootDirPath, 'Extract data, ensure certs, and start Go services + worldd')) {
+    if (-not $PSCmdlet.ShouldProcess($RootDirPath, 'Extract data, ensure certs, and start Go services + world')) {
         return
     }
     & pwsh -NoProfile -File (Join-Path $RootDirPath 'scripts/extract_game_data.ps1')
@@ -209,7 +249,7 @@ function Start-LaunchServicesAndVerify {
         @{ Proto = 'TCP'; Port = 443;   Name = 'gateway' },
         @{ Proto = 'TCP'; Port = 50055; Name = 'citynode' },
         @{ Proto = 'TCP'; Port = 50058; Name = 'quests' },
-        @{ Proto = 'UDP'; Port = 7777;  Name = 'worldd' }
+        @{ Proto = 'UDP'; Port = 7777;  Name = 'world' }
     )
     foreach ($chk in $checks) {
         if (-not (Wait-LaunchEndpoint -Protocol $chk.Proto -Port $chk.Port -ServiceName $chk.Name -TimeoutSeconds 15 -RootDirPath $RootDirPath)) {
@@ -225,12 +265,13 @@ function Start-LaunchClientCompanions {
         [Parameter(Mandatory)][string]$DistDirPath,
         [Parameter(Mandatory)][AllowEmptyString()][string]$ExeExtension
     )
-    if (-not $PSCmdlet.ShouldProcess($DistDirPath, 'Start tether_server, launcher, and auto_logger')) {
+    if (-not $PSCmdlet.ShouldProcess($DistDirPath, 'Start tether, launcher, and auto_logger')) {
         return
     }
-    $tetherExe = Join-Path $DistDirPath "tether_server$ExeExtension"
+    $tetherExe = Resolve-DistBinaryPath -DistDirPath $DistDirPath -PrimaryName 'tether' -FallbackName 'tether_server' -ExeExtension $ExeExtension
+    $tetherSvcName = [System.IO.Path]::GetFileNameWithoutExtension($tetherExe)
     $null = Start-Process -FilePath $tetherExe -ArgumentList @('--login-token-file') -WorkingDirectory $DistDirPath
-    $null = Wait-LaunchEndpoint -Protocol 'UDP' -Port 19021 -ServiceName 'tether_server' -TimeoutSeconds 15 -RootDirPath $RootDirPath
+    $null = Wait-LaunchEndpoint -Protocol 'UDP' -Port 19021 -ServiceName $tetherSvcName -TimeoutSeconds 15 -RootDirPath $RootDirPath
     $tokenFile = Join-Path $DistDirPath 'data/ics_auth_token.txt'
     if (Test-Path -LiteralPath $tokenFile -PathType Leaf) {
         Remove-Item -LiteralPath $tokenFile -Force

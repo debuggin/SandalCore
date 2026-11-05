@@ -121,11 +121,12 @@ if (-not $opts.DryRun) {
             }
         }
         if ($normFilter -notin @('', 'cpp', 'go', 'powershell', 'pester')) {
-            Get-ChildItem (Join-Path $rootPath 'src/tests/go/*_test.go') | Where-Object { $_.Name -match $opts.Filter } | ForEach-Object {
+            $pattern = if ($normFilter -in @('e2e', 'e2e_user_journey', 'e2euserjourney')) { 'E2EUserJourney' } else { $opts.Filter }
+            Get-ChildItem (Join-Path $rootPath 'src/tests/go/*_test.go') | Where-Object { $_.Name -match $pattern } | ForEach-Object {
                 if ($opts.Json) { & go test $_.FullName 6>&1 | Out-Host } else { & go test $_.FullName }
                 if ($LASTEXITCODE -ne 0) { throw "go test failed for $($_.Name)" }
             }
-            $pesterMatches = @(Get-ChildItem (Join-Path $rootPath 'src/tests/powershell/*.Tests.ps1') | Where-Object { $_.Name -match $opts.Filter })
+            $pesterMatches = @(Get-ChildItem (Join-Path $rootPath 'src/tests/powershell/*.Tests.ps1') | Where-Object { $_.Name -match $pattern })
             if ($pesterMatches.Count -gt 0) {
                 $paths = @($pesterMatches | ForEach-Object { $_.FullName })
                 $res = if ($opts.Json) { Invoke-Pester -Path $paths -PassThru 6>$null } else { Invoke-Pester -Path $paths -PassThru }

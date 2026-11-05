@@ -33,6 +33,9 @@ public sealed record LauncherCliOptions
     public bool TerminateAfterCharSelect { get; init; }
     public bool KillExistingClient { get; init; }
     public bool DeleteTempAccountOnExit { get; init; }
+    public bool KeepAlive { get; init; }
+    public bool MockGameClient { get; init; }
+    public int MockGameSleepSec { get; init; } = 300;
     public int? AutomationPort { get; init; }
     public int TimeoutSec { get; init; } = DefaultTimeoutSeconds;
 
@@ -55,7 +58,7 @@ public sealed record LauncherCliOptions
 
     [JsonIgnore]
     public bool HasAutomationFlags =>
-        RegisterTemp || AutoLogin || VerifyCharSelect || !string.IsNullOrWhiteSpace(SelectCharacter) ||
+        KeepAlive || RegisterTemp || AutoLogin || VerifyCharSelect || !string.IsNullOrWhiteSpace(SelectCharacter) ||
         CreateCharacterIfMissing || SpawnClient || TerminateAfterCharSelect || KillExistingClient || DeleteTempAccountOnExit;
 
     public static string GenerateTempUsername() =>
@@ -82,6 +85,8 @@ public sealed record LauncherCliOptions
         "  --terminate-after-char-select      Terminate client after character select (AOC_LAUNCHER_TERMINATE_AFTER_CHAR_SELECT=1)\n" +
         "  --kill-existing-client             Kill any running Ashes client processes (AOC_LAUNCHER_KILL_EXISTING_CLIENT=1)\n" +
         "  --delete-temp-account-on-exit      Delete temporary account and purge creds on exit (AOC_LAUNCHER_DELETE_TEMP_ON_EXIT=1)\n" +
+        "  --keep-alive                       Keep automation server alive until /automation/close-launcher (AOC_LAUNCHER_KEEP_ALIVE=1)\n" +
+        "  --mock-game-client [sec]           Run headless mock game client process (AOC_LAUNCHER_MOCK_GAME_CLIENT=1)\n" +
         "  --automation-port <port>           Automation listener TCP port (AOC_LAUNCHER_AUTOMATION_PORT)\n" +
         "  --timeout-sec <sec>                Operation timeout in seconds (default 30)";
 
@@ -112,6 +117,8 @@ public sealed record LauncherCliOptions
     {
         public bool ShowHelp, ShowVersion, JsonOutput, DryRun, RegisterTemp, AutoLogin;
         public bool CreateCharIfMissing, VerifyCharSelect, SpawnClient, TerminateAfterCharSelect, KillExistingClient, DeleteTempOnExit;
+        public bool KeepAlive, MockGameClient;
+        public int MockGameSleepSec = 300;
         public string GatewayUrl, Username, Password, SelectCharacter;
         public int? AutomationPort;
         public int TimeoutSec = DefaultTimeoutSeconds;
@@ -130,6 +137,8 @@ public sealed record LauncherCliOptions
             TerminateAfterCharSelect = ReadBoolEnv(env, "AOC_LAUNCHER_TERMINATE_AFTER_CHAR_SELECT");
             KillExistingClient = ReadBoolEnv(env, "AOC_LAUNCHER_KILL_EXISTING_CLIENT");
             DeleteTempOnExit = ReadBoolEnv(env, "AOC_LAUNCHER_DELETE_TEMP_ON_EXIT");
+            KeepAlive = ReadBoolEnv(env, "AOC_LAUNCHER_KEEP_ALIVE");
+            MockGameClient = ReadBoolEnv(env, "AOC_LAUNCHER_MOCK_GAME_CLIENT");
             if (int.TryParse(ReadEnv(env, "AOC_LAUNCHER_AUTOMATION_PORT"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int port) && port is > 0 and <= 65535)
                 AutomationPort = port;
             if (int.TryParse(ReadEnv(env, "AOC_LAUNCHER_TIMEOUT_SEC"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int timeout) && timeout > 0)
@@ -141,10 +150,32 @@ public sealed record LauncherCliOptions
             for (int i = 0; i < args.Length; i++)
             {
                 (string flag, string? inlineVal) = SplitFlag(args[i]);
+                if (TryApplyLifecycleFlag(flag, inlineVal, args, ref i)) continue;
                 if (TryApplyBooleanFlag(flag, inlineVal)) continue;
                 string val = inlineVal ?? (i + 1 < args.Length ? args[++i] : string.Empty);
                 ApplyValueFlag(flag, val);
             }
+        }
+
+        private bool TryApplyLifecycleFlag(string flag, string? inlineVal, string[] args, ref int i)
+        {
+            if (flag == "--keep-alive")
+            {
+                KeepAlive = inlineVal is null || ParseBool(inlineVal, true);
+                return true;
+            }
+            if (flag == "--mock-game-client")
+            {
+                MockGameClient = true;
+                string? next = inlineVal ?? (i + 1 < args.Length && !args[i + 1].StartsWith('-') ? args[i + 1] : null);
+                if (next is not null && int.TryParse(next, NumberStyles.Integer, CultureInfo.InvariantCulture, out int sec) && sec > 0)
+                {
+                    MockGameSleepSec = sec;
+                    if (inlineVal is null) i++;
+                }
+                return true;
+            }
+            return false;
         }
 
         private bool TryApplyBooleanFlag(string flag, string? inlineVal)
@@ -207,6 +238,7 @@ public sealed record LauncherCliOptions
                 CreateCharacterIfMissing = CreateCharIfMissing, VerifyCharSelect = VerifyCharSelect,
                 SpawnClient = SpawnClient, TerminateAfterCharSelect = TerminateAfterCharSelect,
                 KillExistingClient = KillExistingClient, DeleteTempAccountOnExit = DeleteTempOnExit,
+                KeepAlive = KeepAlive, MockGameClient = MockGameClient, MockGameSleepSec = Math.Max(1, MockGameSleepSec),
                 AutomationPort = AutomationPort, TimeoutSec = Math.Max(1, TimeoutSec)
             };
         }

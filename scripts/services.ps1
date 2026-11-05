@@ -75,11 +75,10 @@ function Ensure-GoProtoGen {
     [System.IO.File]::WriteAllText($goModPath, $goModContent, [System.Text.UTF8Encoding]::new($false))
     $nodeConsts = Join-Path $genDir 'citynodeconsts' 'constants_gen.go'
     if (-not (Test-Path -LiteralPath $nodeConsts)) {
-        $env:PYTHONPYCACHEPREFIX = Join-Path $root 'build' 'pycache'
         $ini = Join-Path $root 'dist' 'content' 'client_config' 'DefaultAoCRecordConstants.ini'
         if (Test-Path -LiteralPath $ini) {
-            & python (Join-Path $root 'src' 'tools' 'schemagen' 'gen_node_constants.py') --ini $ini
-            if ($LASTEXITCODE -ne 0) { throw "gen_node_constants.py failed (exit $LASTEXITCODE)" }
+            & pwsh -NoProfile -File (Join-Path $root 'scripts' 'generators.ps1') -Only node_constants
+            if ($LASTEXITCODE -ne 0) { throw "scripts/generators.ps1 -Only node_constants failed (exit $LASTEXITCODE)" }
         }
     }
 }
@@ -99,23 +98,31 @@ function Build {
 }
 # [C O A + Cyb]
 
-$worldd = Join-Path $root 'dist' 'Release' "worldd$exeExt"
+$worldPrimary = Join-Path $root 'dist' 'Release' "world$exeExt"
+$worldFallback = Join-Path $root 'dist' 'Release' "worldd$exeExt"
+$worldd = if (Test-Path -LiteralPath $worldPrimary -PathType Leaf) {
+    $worldPrimary
+} elseif (Test-Path -LiteralPath $worldFallback -PathType Leaf) {
+    $worldFallback
+} else {
+    $worldPrimary
+}
 $tokenFile = Join-Path $out 'service.token'
 # content.db, the file worldd values characters from and the character service checks new characters against
 # (plan C1's contentc, src\server\services\README.md "Content").
 $contentDb = if ($env:AOC_CONTENT_DB) { $env:AOC_CONTENT_DB } else { Join-Path $root 'dist' 'content' 'content.db' }
 
-# The auth, character, citynode, quests, mesh, gateway and worldd processes running from this
+# The auth, character, citynode, quests, mesh, gateway and world processes running from this
 # checkout (not another checkout's copy).
 function Get-ServiceProcess {
-    $exes = @('auth', 'character', 'citynode', 'quests', 'mesh', 'gateway' | ForEach-Object { Join-Path $out "$_$exeExt" }) + $worldd
-    Get-Process -Name auth, character, citynode, quests, mesh, gateway, worldd -ErrorAction SilentlyContinue |
+    $exes = @('auth', 'character', 'citynode', 'quests', 'mesh', 'gateway' | ForEach-Object { Join-Path $out "$_$exeExt" }) + @($worldPrimary, $worldFallback)
+    Get-Process -Name auth, character, citynode, quests, mesh, gateway, world, worldd -ErrorAction SilentlyContinue |
         Where-Object { $exes -contains $_.Path }
 }
 
-function Stop-ServiceProcesses($procs) { # WHY: stop worldd first so its gRPC streams close from its side
-    $worlds = @($procs | Where-Object { $_.Name -eq 'worldd' })
-    $others = @($procs | Where-Object { $_.Name -ne 'worldd' })
+function Stop-ServiceProcesses($procs) { # WHY: stop world first so its gRPC streams close from its side
+    $worlds = @($procs | Where-Object { $_.Name -in @('world', 'worldd') })
+    $others = @($procs | Where-Object { $_.Name -notin @('world', 'worldd') })
     $worlds | Stop-Process -Force -ErrorAction SilentlyContinue
     $worlds | ForEach-Object { $null = $_.WaitForExit(5000) }
     $others | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -239,14 +246,15 @@ try {
         }
         'build' { Build }
         'run' {
+            $worldd = if (Test-Path -LiteralPath $worldPrimary -PathType Leaf) { $worldPrimary } elseif (Test-Path -LiteralPath $worldFallback -PathType Leaf) { $worldFallback } else { $worldPrimary }
             if (-not (Test-Path $worldd)) {
-                throw "$worldd is missing: build it with scripts\build.ps1 -Target worldd"
+                throw "$worldd is missing: build it with scripts\build.ps1 -Target world"
             }
             if (-not (Test-Path $contentDb)) {
                 & (Join-Path $root 'scripts' 'extract_game_data.ps1')
             }
             if (-not (Test-Path $contentDb)) {
-                $who = 'the character service will refuse to create characters and worldd every login'
+                $who = 'the character service will refuse to create characters and world every login'
                 Write-Host "warning: $contentDb does not exist: $who. Build it: cd src\server\services; go run ./cmd/contentc (src\server\services\README.md, 'Content')" -ForegroundColor Yellow
             }
             $serverCrt = Join-Path $root 'dist' 'certs' 'server.crt'
@@ -266,7 +274,7 @@ try {
 
             New-ServiceToken
             $started = [System.Collections.Generic.List[object]]::new()
-            $names = @('auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'worldd')
+            $names = @('auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'world')
             $savedStatic = $env:AOC_MESH_STATIC_WORLD
             $env:AOC_MESH_STATIC_WORLD = ''
 
@@ -274,15 +282,16 @@ try {
 
             try {
                 foreach ($name in $names) {
-                    $exe = if ($name -eq 'worldd') { $worldd } else { Join-Path $out "$name$exeExt" }
+                    $isWorld = ($name -in @('world', 'worldd'))
+                    $exe = if ($isWorld) { $worldd } else { Join-Path $out "$name$exeExt" }
 
-                    $alreadyRunning = $runningProcs | Where-Object { $_.Path -eq $exe -and -not $_.HasExited }
+                    $alreadyRunning = $runningProcs | Where-Object { ($_.Path -eq $exe -or ($isWorld -and $_.Name -in @('world', 'worldd'))) -and -not $_.HasExited }
                     if ($alreadyRunning) {
                         Write-Host "Skipping $name (PID $($alreadyRunning.Id) is already running)" -ForegroundColor Yellow
                         continue
                     }
 
-                    $exeArgs = if ($name -eq 'worldd' -or $name -eq 'character') { " --content-db `"$contentDb`"" } else { '' }
+                    $exeArgs = if ($isWorld -or $name -eq 'character') { " --content-db `"$contentDb`"" } else { '' }
                     $log = Join-Path $logs "$name.log"
                     $outLog = Join-Path $logs "$name.out.log"
                     foreach ($f in $log, $outLog) {
@@ -305,7 +314,7 @@ try {
                         }
                         $p = Get-Process -Id $result.ProcessId -ErrorAction SilentlyContinue
                     } else {
-                        $argList = if ($name -eq 'worldd' -or $name -eq 'character') { @('--content-db', $contentDb) } else { @() }
+                        $argList = if ($isWorld -or $name -eq 'character') { @('--content-db', $contentDb) } else { @() }
                         $p = Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory $root -RedirectStandardOutput $outLog -RedirectStandardError $log -PassThru
                     }
                     $started.Add([pscustomobject]@{ Name = $name; Process = $p; Log = $log })
@@ -331,7 +340,7 @@ try {
         'stop' {
             $procs = @(Get-ServiceProcess)
             if ($procs.Count -eq 0) {
-                Write-Host "nothing to stop: no auth, character, citynode, quests, mesh, gateway or worldd running from this checkout"
+                Write-Host "nothing to stop: no auth, character, citynode, quests, mesh, gateway or world running from this checkout"
             } else {
                 $what = Format-Process $procs
                 Stop-ServiceProcesses $procs

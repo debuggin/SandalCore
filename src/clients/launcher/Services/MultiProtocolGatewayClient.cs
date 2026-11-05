@@ -205,8 +205,8 @@ public sealed class MultiProtocolGatewayClient
         if (string.IsNullOrWhiteSpace(accessToken)) throw new ArgumentException("Access token is required.", nameof(accessToken));
         if (string.IsNullOrWhiteSpace(characterIdOrName)) throw new ArgumentException("Character identifier is required.", nameof(characterIdOrName));
         string target = characterIdOrName.Trim();
-        string? effectiveIfMatch = ifMatchETag ?? (TryGetCachedETag("/api/v1/characters", out string cachedETag) ? cachedETag : null);
         string selectPath = $"/api/v1/characters/{Uri.EscapeDataString(target)}/select";
+        string? effectiveIfMatch = ifMatchETag ?? (TryGetCachedETag(selectPath, out string cachedETag) ? cachedETag : null);
         string selectReq = JsonSerializer.Serialize(new { character_id = target, name = target });
         using var req = CreateRequest(HttpMethod.Post, selectPath, accessToken, effectiveIfMatch);
         string selectResp = await SendJsonAsync(req, selectPath, selectReq, ct).ConfigureAwait(false);
@@ -345,7 +345,7 @@ public sealed class MultiProtocolGatewayClient
                 string msg = ReadString(doc.RootElement, "message", ReadString(doc.RootElement, "detail", ReadString(doc.RootElement, "error", string.Empty)));
                 if (!string.IsNullOrWhiteSpace(msg)) return $"HTTP {statusCode}: {msg}";
             }
-            catch (JsonException) { }
+            catch (JsonException ex) { Trace.WriteLine(ex.Message); }
         }
         return $"Gateway HTTP {statusCode} request failed.";
     }

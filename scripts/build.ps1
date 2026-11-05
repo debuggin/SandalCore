@@ -114,11 +114,10 @@ function Ensure-GoProtoGen {
     [System.IO.File]::WriteAllText($goModPath, $goModContent, [System.Text.UTF8Encoding]::new($false))
     $nodeConsts = Join-Path $genDir 'citynodeconsts' 'constants_gen.go'
     if (-not (Test-Path -LiteralPath $nodeConsts)) {
-        $env:PYTHONPYCACHEPREFIX = Join-Path $repoRoot 'build' 'pycache'
         $ini = Join-Path $repoRoot 'dist' 'content' 'client_config' 'DefaultAoCRecordConstants.ini'
         if (Test-Path -LiteralPath $ini) {
-            & python (Join-Path $repoRoot 'src' 'tools' 'schemagen' 'gen_node_constants.py') --ini $ini
-            if ($LASTEXITCODE -ne 0) { throw "gen_node_constants.py failed (exit $LASTEXITCODE)" }
+            & pwsh -NoProfile -File (Join-Path $repoRoot 'scripts\generators.ps1') -Only node_constants
+            if ($LASTEXITCODE -ne 0) { throw "scripts/generators.ps1 -Only node_constants failed (exit $LASTEXITCODE)" }
         }
     }
 }

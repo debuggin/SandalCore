@@ -110,6 +110,12 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                 if ($envViolations.Count -ne 2) {
                     throw "Expected 2 env template violations (key count + prod-mesh dev creds), got $($envViolations.Count)"
                 }
+
+                foreach ($canonicalBat in @('start.bat', 'stop.bat', 'build.bat', 'scripts\ensure_pwsh.bat', 'dist\launch_launcher.bat')) {
+                    if (-not (Test-Path -LiteralPath (Join-Path $script:RepoRoot $canonicalBat) -PathType Leaf)) {
+                        throw "Expected canonical batch script '$canonicalBat' to exist."
+                    }
+                }
             } finally {
                 if (Test-Path -LiteralPath $tmpRoot) {
                     Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue

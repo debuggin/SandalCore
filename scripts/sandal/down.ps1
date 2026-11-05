@@ -44,25 +44,51 @@ function Build-ComposeDownArguments {
     return $cmdArgs.ToArray()
 }
 
+function Stop-SandalHostClientProcesses {
+    [CmdletBinding()]
+    param([string]$RootDirPath = '')
+    $targetNames = @('SandalLauncher', 'tether', 'tether_server', 'AOCClient-Win64-Shipping')
+    $stoppedPids = [System.Collections.Generic.List[int]]::new()
+    foreach ($proc in @(Get-Process -Name $targetNames -ErrorAction SilentlyContinue)) {
+        try {
+            if (-not $proc.HasExited) {
+                $procId = [int]$proc.Id
+                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+                $null = $proc.WaitForExit(2000)
+                $stoppedPids.Add($procId)
+            }
+        } catch {
+            $null = $_
+        }
+    }
+    return $stoppedPids.ToArray()
+}
+
 $inheritedJson = [bool](Get-Variable -Name AsJson -ValueOnly -ErrorAction SilentlyContinue)
 $inheritedDryRun = [bool](Get-Variable -Name IsDryRun -ValueOnly -ErrorAction SilentlyContinue)
 $inheritedNoColor = [bool](Get-Variable -Name UseNoColor -ValueOnly -ErrorAction SilentlyContinue)
 $useNoColor = [bool]($NoColor -or $inheritedNoColor -or -not [string]::IsNullOrEmpty($env:NO_COLOR))
 
-$rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
+$rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path }
 if (-not (Get-Command Get-SandalStageOrder -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $rootPath 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
+    Import-Module (Join-Path $rootPath 'scripts/lib/SandalCore.psd1') -Force -DisableNameChecking
+}
+if (-not (Get-Command Ensure-SandalDockerDaemon -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSScriptRoot '../lib/Env.psm1') -Force -DisableNameChecking
 }
 
 $opts = Resolve-DownOptions -BaseVolumes ([bool]$Volumes) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
-$composeFile = Join-Path $rootPath 'deploy\compose.yml'
-$envFile = Join-Path $rootPath 'deploy\.env'
+$composeFile = Join-Path $rootPath 'deploy/compose.yml'
+$envFile = Join-Path $rootPath 'deploy/.env'
 $composeArgs = Build-ComposeDownArguments -ComposeFile $composeFile -EnvFile $envFile -IncludeVolumes $opts.Volumes
 
+$stoppedHostPids = @()
 if (-not $opts.DryRun) {
+    $stoppedHostPids = @(Stop-SandalHostClientProcesses -RootDirPath $rootPath)
     if (-not (Test-Path -LiteralPath $composeFile -PathType Leaf)) {
         $null = Sync-SandalDeployStage -RepoRoot $rootPath
     }
+    $null = Ensure-SandalDockerDaemon
     Push-Location $rootPath
     try {
         & docker @composeArgs
@@ -85,6 +111,7 @@ $payload = [ordered]@{
     env_path          = $envFile
     compose_file      = $composeFile
     docker_args       = $composeArgs
+    stopped_host_pids = $stoppedHostPids
 }
 
 if ($opts.Json) {

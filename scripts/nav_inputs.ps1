@@ -44,14 +44,17 @@ function Read-NavRowsWithSqliteCli {
     return $rows.ToArray()
 }
 
-function Initialize-ManagedSqlite {
-    if ('Microsoft.Data.Sqlite.SqliteConnection' -as [type]) { return $true }
-    $repoRoot = Split-Path $PSScriptRoot -Parent
-    $rid = if ($IsWindows) { 'win-x64' } elseif ($IsLinux) { 'linux-x64' } else { 'osx-x64' }
-    $binDir = Get-ChildItem -Path (Join-Path $repoRoot 'build/dotnet/bin') -Recurse -Filter 'Microsoft.Data.Sqlite.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($binDir) {
-        $dir = $binDir.DirectoryName
-        $native = Get-ChildItem -Path (Join-Path $dir "runtimes/$rid/native") -Filter '*e_sqlite3*' -ErrorAction SilentlyContinue | Select-Object -First 1
+function Import-ManagedSqliteFromBin {
+    param([string]$RepoRoot, [string]$Rid)
+    $searchDirs = @(
+        (Join-Path $RepoRoot 'src/tools/aoc-extractor/bin'),
+        (Join-Path $RepoRoot 'build/dotnet/bin')
+    ) | Where-Object { Test-Path -LiteralPath $_ }
+    foreach ($baseDir in $searchDirs) {
+        $binDll = Get-ChildItem -Path $baseDir -Recurse -Filter 'Microsoft.Data.Sqlite.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $binDll) { continue }
+        $dir = $binDll.DirectoryName
+        $native = Get-ChildItem -Path (Join-Path $dir "runtimes/$Rid/native") -Filter '*e_sqlite3*' -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $native) { $native = Get-ChildItem -Path $dir -Recurse -Filter '*e_sqlite3*' -ErrorAction SilentlyContinue | Select-Object -First 1 }
         if ($native) { [void][System.Runtime.InteropServices.NativeLibrary]::Load($native.FullName) }
         foreach ($dll in @('SQLitePCLRaw.core.dll', 'SQLitePCLRaw.provider.e_sqlite3.dll', 'SQLitePCLRaw.batteries_v2.dll', 'Microsoft.Data.Sqlite.dll')) {
@@ -61,10 +64,15 @@ function Initialize-ManagedSqlite {
         [SQLitePCL.Batteries_V2]::Init()
         return $true
     }
-    $nugetCandidates = @($env:NUGET_PACKAGES, (Join-Path $HOME '.nuget/packages'), (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.nuget/packages')) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    return $false
+}
+
+function Import-ManagedSqliteFromNuget {
+    param([string]$Rid)
+    $nugetCandidates = @($env:NUGET_PACKAGES, (Join-Path $env:USERPROFILE '.nuget\packages'), (Join-Path $HOME '.nuget/packages')) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
     $nuget = $nugetCandidates | Select-Object -First 1
     if (-not $nuget) { return $false }
-    $nativePkg = Get-ChildItem -Path (Join-Path $nuget 'sqlitepclraw.lib.e_sqlite3') -Recurse -Filter '*e_sqlite3*' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match $rid } | Select-Object -Last 1
+    $nativePkg = Get-ChildItem -Path (Join-Path $nuget 'sqlitepclraw.lib.e_sqlite3') -Recurse -Filter '*e_sqlite3*' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match $Rid } | Select-Object -Last 1
     $corePkg = Get-ChildItem -Path (Join-Path $nuget 'sqlitepclraw.core') -Recurse -Filter 'SQLitePCLRaw.core.dll' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'netstandard2\.0|net8\.0' } | Select-Object -Last 1
     $provPkg = Get-ChildItem -Path (Join-Path $nuget 'sqlitepclraw.provider.e_sqlite3') -Recurse -Filter 'SQLitePCLRaw.provider.e_sqlite3.dll' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'netstandard2\.0|net8\.0' } | Select-Object -Last 1
     $batPkg = Get-ChildItem -Path (Join-Path $nuget 'sqlitepclraw.bundle_e_sqlite3') -Recurse -Filter 'SQLitePCLRaw.batteries_v2.dll' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'netstandard2\.0|net8\.0' } | Select-Object -Last 1
@@ -76,6 +84,14 @@ function Initialize-ManagedSqlite {
         return $true
     }
     return $false
+}
+
+function Initialize-ManagedSqlite {
+    if ('Microsoft.Data.Sqlite.SqliteConnection' -as [type]) { return $true }
+    $repoRoot = Split-Path $PSScriptRoot -Parent
+    $rid = if ($IsWindows) { 'win-x64' } elseif ($IsLinux) { 'linux-x64' } else { 'osx-x64' }
+    if (Import-ManagedSqliteFromBin -RepoRoot $repoRoot -Rid $rid) { return $true }
+    return (Import-ManagedSqliteFromNuget -Rid $rid)
 }
 
 function Read-NavRowsWithManagedSqlite {
@@ -99,31 +115,16 @@ function Read-NavRowsWithManagedSqlite {
     }
 }
 
-function Read-NavRowsWithPythonFallback {
+function Read-NavRowsFromSqlite {
     param([string]$DbPath)
-    $pyCmd = $null
-    foreach ($candidate in @('python3', 'python', 'py')) {
-        $found = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($found) { $pyCmd = $found.Source; break }
+    $sqliteCli = if ($env:SANDAL_DISABLE_SQLITE3_CLI -eq '1') { $null } else { Get-Command sqlite3 -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    if ($null -ne $sqliteCli) {
+        return @(Read-NavRowsWithSqliteCli -SqliteExe $sqliteCli.Source -DbPath $DbPath)
     }
-    if (-not $pyCmd -and $env:LOCALAPPDATA) {
-        $winPy = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Programs/Python/Python*/python.exe') -ErrorAction SilentlyContinue | Select-Object -Last 1
-        if ($winPy) { $pyCmd = $winPy.FullName }
+    if (Initialize-ManagedSqlite) {
+        return @(Read-NavRowsWithManagedSqlite -DbPath $DbPath)
     }
-    if (-not $pyCmd -and (Test-Path -LiteralPath '/usr/bin/python3')) { $pyCmd = '/usr/bin/python3' }
-    if (-not $pyCmd) { throw 'Neither sqlite3 CLI, Microsoft.Data.Sqlite, nor python3 is available.' }
-    $pyScript = 'import pathlib,sqlite3,sys; p=pathlib.Path(sys.argv[1]).resolve(); c=sqlite3.connect("file:"+str(p).replace("\\","/")+"?mode=ro",uri=True); [sys.stdout.write("\t".join(str(v) for v in r)+"\n") for r in c.execute("SELECT guid, x, y, z, yaw FROM city_node ORDER BY guid")]; c.close()'
-    $pyArgs = if ([System.IO.Path]::GetFileNameWithoutExtension($pyCmd) -eq 'py') { @('-3', '-I', '-c', $pyScript, $DbPath) } else { @('-I', '-c', $pyScript, $DbPath) }
-    $raw = @(& $pyCmd @pyArgs 2>&1)
-    if ($LASTEXITCODE -ne 0) { throw (($raw | ForEach-Object { "$_" }) -join ' ').Trim() }
-    $rows = [System.Collections.Generic.List[string]]::new()
-    foreach ($line in $raw) {
-        $text = "$line".TrimEnd("`r", "`n")
-        if ([string]::IsNullOrWhiteSpace($text)) { continue }
-        $parts = $text -split "`t"
-        $rows.Add((Format-NavInputRow -Fields $parts[0..4]))
-    }
-    return $rows.ToArray()
+    throw 'Neither sqlite3 CLI nor Microsoft.Data.Sqlite is available.'
 }
 
 if ($args.Count -ne 1 -or [string]::IsNullOrWhiteSpace("$($args[0])")) {
@@ -138,14 +139,7 @@ if (-not (Test-Path -LiteralPath $dbPath -PathType Leaf)) {
 try {
     $fileInfo = Get-Item -LiteralPath $dbPath
     if ($fileInfo.Length -lt 100) { throw 'file is not a valid SQLite database' }
-    $sqliteCli = if ($env:SANDAL_DISABLE_SQLITE3_CLI -eq '1') { $null } else { Get-Command sqlite3 -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
-    $lines = if ($null -ne $sqliteCli) {
-        @(Read-NavRowsWithSqliteCli -SqliteExe $sqliteCli.Source -DbPath $dbPath)
-    } elseif (Initialize-ManagedSqlite) {
-        @(Read-NavRowsWithManagedSqlite -DbPath $dbPath)
-    } else {
-        @(Read-NavRowsWithPythonFallback -DbPath $dbPath)
-    }
+    $lines = @(Read-NavRowsFromSqlite -DbPath $dbPath)
     foreach ($outLine in $lines) {
         [Console]::Out.WriteLine($outLine)
     }

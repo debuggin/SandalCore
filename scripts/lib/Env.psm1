@@ -276,6 +276,10 @@ function Write-SandalLauncherScripts {
 function Sync-SandalLauncherStage {
     param([string]$RepoRoot, [string]$DistDir, [string]$Config)
     $configDir = Join-Path $DistDir $Config
+    $launcherDir = Join-Path $DistDir 'launcher'
+    foreach ($d in @($launcherDir, $configDir)) {
+        if (Test-Path -LiteralPath $d -PathType Container) { Get-ChildItem -LiteralPath $d -Filter '*.pdb' -Recurse -File -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+    }
     if (Test-Path -LiteralPath $configDir -PathType Container) {
         foreach ($pair in @(@('world.exe', 'worldd.exe'), @('tether.exe', 'tether_server.exe'))) {
             $srcExe = Join-Path $configDir $pair[0]
@@ -287,13 +291,13 @@ function Sync-SandalLauncherStage {
     }
     $buildOut = Join-Path $RepoRoot "build\dotnet\bin\SandalLauncher\$Config\net8.0"
     if (-not (Test-Path -LiteralPath $buildOut -PathType Container)) { return }
-    $srcBin = Join-Path $buildOut 'SandalLauncher.exe'
-    if (-not (Test-Path -LiteralPath $srcBin -PathType Leaf)) { $srcBin = Join-Path $buildOut 'SandalLauncher.dll' }
-    if (-not (Test-Path -LiteralPath $srcBin -PathType Leaf)) { return }
-    $launcherDir = Join-Path $DistDir 'launcher'
+    $srcPrimary = @('SandalLauncher.dll', 'SandalLauncher.exe', 'SandalLauncher') | ForEach-Object { Join-Path $buildOut $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    if (-not $srcPrimary) { return }
     $null = New-Item -ItemType Directory -Path $launcherDir, $configDir -Force
-    $destBin = Join-Path $launcherDir (Split-Path $srcBin -Leaf)
-    if ((-not (Test-Path -LiteralPath $destBin -PathType Leaf)) -or ((Get-Item -LiteralPath $srcBin).LastWriteTimeUtc -gt (Get-Item -LiteralPath $destBin).LastWriteTimeUtc)) {
+    $destPrimary = Join-Path $launcherDir (Split-Path -Leaf $srcPrimary)
+    $srcItem = Get-Item -LiteralPath $srcPrimary
+    $destItem = Get-Item -LiteralPath $destPrimary -ErrorAction SilentlyContinue
+    if ($null -eq $destItem -or $srcItem.LastWriteTimeUtc -gt $destItem.LastWriteTimeUtc -or $srcItem.Length -ne $destItem.Length) {
         foreach ($f in @(Get-ChildItem -LiteralPath $buildOut -Recurse -File -Force)) {
             if ($f.Extension -in @('.pdb', '.xml') -or $f.Name -like '*.deps.json') { continue }
             $rel = [System.IO.Path]::GetRelativePath($buildOut, $f.FullName)
@@ -370,7 +374,7 @@ function Write-SandalDeployScripts {
     param([Parameter(Mandatory)][string]$DeployDir)
     $wakeLines = @(
         '$null = & docker info *> $null',
-        'if ($LASTEXITCODE -ne 0 -and $IsWindows -and $env:DOCKER_HOST -in @(''tcp://[::1]:2375'', ''tcp://127.0.0.1:2375'')) {',
+        'if ($LASTEXITCODE -ne 0 -and $IsWindows -and $env:DOCKER_HOST -in @(''tcp://[::1]:2375'', ''tcp://127.0.0.1:2375'') -and ([System.IO.File]::Exists(''\\.\pipe\docker_engine'') -or ($null -ne (Get-Process -Name ''Docker Desktop'' -ErrorAction SilentlyContinue)))) {',
         '    $null = & docker --host npipe:////./pipe/docker_engine info *> $null',
         '    if ($LASTEXITCODE -eq 0) { Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue }',
         '}',
@@ -381,8 +385,16 @@ function Write-SandalDeployScripts {
         '    $distro = @($allDistros | Where-Object { $_ -like ''Ubuntu*'' -or $_ -like ''Debian*'' } | Select-Object -First 1)[0]',
         '    if (-not $distro) { $distro = if ($allDistros.Count -gt 0) { $allDistros[0] } else { ''Ubuntu'' } }',
         '    $null = & wsl.exe -d $distro -u root -- sh -c "systemctl start docker.socket docker.service >/dev/null 2>&1 || service docker start >/dev/null 2>&1"',
-        '    $env:DOCKER_HOST = ''tcp://[::1]:2375''; $null = & docker info *> $null',
-        '    if ($LASTEXITCODE -ne 0) { $env:DOCKER_HOST = ''tcp://127.0.0.1:2375''; $null = & docker info *> $null }',
+        '    for ($w = 0; $w -lt 10; $w++) {',
+        '        $env:DOCKER_HOST = ''tcp://[::1]:2375''; $null = & docker info *> $null; if ($LASTEXITCODE -eq 0) { break }',
+        '        $env:DOCKER_HOST = ''tcp://127.0.0.1:2375''; $null = & docker info *> $null; if ($LASTEXITCODE -eq 0) { break }',
+        '        Start-Sleep -Milliseconds 500',
+        '    }',
+        '}',
+        'if ($IsWindows -and $env:DOCKER_HOST -in @(''tcp://[::1]:2375'', ''tcp://127.0.0.1:2375'')) {',
+        '    $normDeploy = ([System.IO.Path]::GetFullPath($PSScriptRoot)).Replace(''\'', ''/'').TrimEnd(''/'')',
+        '    $wslDeploy = if ($normDeploy -match ''^([A-Za-z]):/(.*)$'') { "/mnt/$($Matches[1].ToLowerInvariant())/$($Matches[2])" } else { $normDeploy }',
+        '    $env:AOC_DIST_CONTENT_DIR = "$wslDeploy/content"; $env:AOC_DIST_CERTS_DIR = "$wslDeploy/certs"; $env:AOC_DIST_NAV_DIR = "$wslDeploy/nav"; $env:AOC_DIST_CONFIG_DIR = "$wslDeploy/config"',
         '}'
     )
     $upLines = @(
@@ -491,7 +503,12 @@ function Test-SandalDockerDaemonReady {
     if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) {
         return @{ Ready = $true; Mode = 'current'; Endpoint = [string]$env:DOCKER_HOST }
     }
-    if ($null -eq $CommandRunner -and $IsWindows -and $env:DOCKER_HOST -in @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
+    $hasDesktopPipe = $IsWindows -and (
+        ($null -ne (Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue)) -or
+        [System.IO.File]::Exists('\\.\pipe\docker_engine') -or
+        [System.IO.File]::Exists('\\.\pipe\dockerDesktopLinuxEngine')
+    )
+    if ($null -eq $CommandRunner -and $hasDesktopPipe -and $env:DOCKER_HOST -in @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
         $pipeOk = ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('--host', 'npipe:////./pipe/docker_engine', 'info')) -eq 0) -or
                   ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('--context', 'desktop-linux', 'info')) -eq 0)
         if ($pipeOk) {
@@ -534,6 +551,69 @@ function Start-SandalDockerDesktopIfInstalled {
     return $false
 }
 
+function Wait-SandalWslTcpDockerReady {
+    param(
+        [int]$MaxAttempts = 8,
+        [int]$DelayMs = 500,
+        [scriptblock]$CommandRunner = $null
+    )
+    for ($i = 0; $i -lt $MaxAttempts; $i++) {
+        $env:DOCKER_HOST = 'tcp://[::1]:2375'
+        if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) { return $true }
+        if ($null -eq $CommandRunner) {
+            $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
+            if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info')) -eq 0) { return $true }
+            $env:DOCKER_HOST = 'tcp://[::1]:2375'
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+    return $false
+}
+
+function ConvertTo-SandalWslPath {
+    param([string]$WinPath, [string]$Distro = 'Ubuntu-24.04', [scriptblock]$CommandRunner = $null)
+    $norm = $WinPath.Replace('\', '/')
+    $fallback = if ($norm -match '^([A-Za-z]):/(.*)$') { "/mnt/$($Matches[1].ToLowerInvariant())/$($Matches[2])" } else { $norm }
+    if ($null -ne $CommandRunner) { return $fallback }
+    $out = @(& wsl.exe -d $Distro -- wslpath -u $WinPath 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $out.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace("$($out[0])")) {
+        return ("$($out[0])").Trim()
+    }
+    return $fallback
+}
+
+function Sync-SandalWorldImageAlias {
+    param([scriptblock]$CommandRunner = $null)
+    if ($null -ne $CommandRunner) { return }
+    if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('image', 'inspect', 'sandal-world:local')) -ne 0 -and
+        (Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('image', 'inspect', 'sandal-worldd:local')) -eq 0) {
+        $null = Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('tag', 'sandal-worldd:local', 'sandal-world:local')
+    }
+}
+
+function Set-SandalWslComposeMountEnv {
+    param(
+        [string]$DeployDir = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'deploy')
+    )
+    $vars = @{
+        AOC_DIST_CONTENT_DIR = 'content'
+        AOC_DIST_CERTS_DIR   = 'certs'
+        AOC_DIST_NAV_DIR     = 'nav'
+        AOC_DIST_CONFIG_DIR  = 'config'
+    }
+    if ($IsWindows -and $env:DOCKER_HOST -in @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
+        $baseNorm = ([System.IO.Path]::GetFullPath($DeployDir)).Replace('\', '/').TrimEnd('/')
+        $wslBase = if ($baseNorm -match '^([A-Za-z]):/(.*)$') { "/mnt/$($Matches[1].ToLowerInvariant())/$($Matches[2])" } else { $baseNorm }
+        foreach ($kv in $vars.GetEnumerator()) {
+            [System.Environment]::SetEnvironmentVariable($kv.Key, "$wslBase/$($kv.Value)", 'Process')
+        }
+        return
+    }
+    foreach ($key in $vars.Keys) {
+        Remove-Item "Env:\$key" -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-SandalWslDockerBootstrap {
     param(
         [string]$Distro = 'Ubuntu-24.04',
@@ -547,30 +627,25 @@ function Invoke-SandalWslDockerBootstrap {
         $wslRunner = if ($null -ne $CommandRunner) { { param([string[]]$WslArgs) [pscustomobject]@{ ExitCode = (Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList $WslArgs -CommandRunner $CommandRunner); Output = '' } } } else { $null }
         $resolvedDistro = Resolve-WslDockerDistro -Distro $Distro -Runner $wslRunner
     }
-    $null = Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $resolvedDistro, '-u', 'root', '--', 'systemctl', 'start', 'docker.socket', 'docker.service') -CommandRunner $CommandRunner
-    $env:DOCKER_HOST = 'tcp://[::1]:2375'
+    $wakeCmd = 'systemctl start docker.socket docker.service >/dev/null 2>&1 || service docker start >/dev/null 2>&1'
+    $null = Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $resolvedDistro, '-u', 'root', '--', 'sh', '-c', $wakeCmd) -CommandRunner $CommandRunner
+    $ready = Wait-SandalWslTcpDockerReady -MaxAttempts $(if ($null -ne $CommandRunner) { 1 } else { 8 }) -DelayMs 500 -CommandRunner $CommandRunner
     $provScript = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path 'scripts\wsl\provision-docker.sh'
-    if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -ne 0 -and (Test-Path -LiteralPath $provScript -PathType Leaf)) {
-        $provExit = Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $resolvedDistro, '-u', 'root', '--', 'bash', 'scripts/wsl/provision-docker.sh') -CommandRunner $CommandRunner
+    if (-not $ready -and (Test-Path -LiteralPath $provScript -PathType Leaf)) {
+        $wslProvPath = ConvertTo-SandalWslPath -WinPath $provScript -Distro $resolvedDistro -CommandRunner $CommandRunner
+        $provExit = Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $resolvedDistro, '-u', 'root', '--', 'bash', $wslProvPath) -CommandRunner $CommandRunner
         if ($provExit -eq 42) {
             Write-Host "INFO: Restarting WSL2 distro '$resolvedDistro' to activate systemd..."
             $null = Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList @('--terminate', $resolvedDistro) -CommandRunner $CommandRunner
-            $null = Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $resolvedDistro, '-u', 'root', '--', 'bash', 'scripts/wsl/provision-docker.sh') -CommandRunner $CommandRunner
+            $null = Invoke-SandalDaemonCommand -FilePath 'wsl.exe' -ArgumentList @('-d', $resolvedDistro, '-u', 'root', '--', 'bash', $wslProvPath) -CommandRunner $CommandRunner
         }
+        $ready = Wait-SandalWslTcpDockerReady -MaxAttempts $(if ($null -ne $CommandRunner) { 2 } else { 15 }) -DelayMs 1000 -CommandRunner $CommandRunner
     }
-    $ready = $false
-    $maxPolls = if ($null -ne $CommandRunner) { 3 } else { 15 }
-    for ($i = 0; $i -lt $maxPolls; $i++) {
-        $env:DOCKER_HOST = 'tcp://[::1]:2375'
-        if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) { $ready = $true; break }
-        if ($null -eq $CommandRunner) {
-            $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
-            if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info')) -eq 0) { $ready = $true; break }
-            $env:DOCKER_HOST = 'tcp://[::1]:2375'
-            Start-Sleep -Seconds 1
-        }
+    if ($ready) {
+        Set-SandalUserDockerHost $env:DOCKER_HOST -CommandRunner $CommandRunner
+        Sync-SandalWorldImageAlias -CommandRunner $CommandRunner
+        Set-SandalWslComposeMountEnv
     }
-    if ($ready) { Set-SandalUserDockerHost 'tcp://[::1]:2375' -CommandRunner $CommandRunner }
     return [pscustomobject]@{ Ready = $ready; DryRun = $false; Distro = $resolvedDistro; Started = $true }
 }
 
@@ -592,28 +667,26 @@ function Ensure-SandalDockerDaemon {
         if ($env:DOCKER_HOST -in @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
             Set-SandalUserDockerHost $env:DOCKER_HOST -CommandRunner $CommandRunner
         }
+        Sync-SandalWorldImageAlias -CommandRunner $CommandRunner
+        Set-SandalWslComposeMountEnv
         return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $false }
     }
-    $env:DOCKER_HOST = 'tcp://[::1]:2375'
-    if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) {
-        Set-SandalUserDockerHost 'tcp://[::1]:2375' -CommandRunner $CommandRunner
+    if (Wait-SandalWslTcpDockerReady -MaxAttempts 1 -DelayMs 0 -CommandRunner $CommandRunner) {
+        Set-SandalUserDockerHost $env:DOCKER_HOST -CommandRunner $CommandRunner
+        Sync-SandalWorldImageAlias -CommandRunner $CommandRunner
+        Set-SandalWslComposeMountEnv
         return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $false }
-    }
-    if ($null -eq $CommandRunner) {
-        $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
-        if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info')) -eq 0) {
-            Set-SandalUserDockerHost 'tcp://127.0.0.1:2375'
-            return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $false }
-        }
-        $env:DOCKER_HOST = 'tcp://[::1]:2375'
     }
     if (Start-SandalDockerDesktopIfInstalled -CommandRunner $CommandRunner) {
+        Sync-SandalWorldImageAlias -CommandRunner $CommandRunner
+        Set-SandalWslComposeMountEnv
         return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $true }
     }
     if ($IsWindows -and ($null -ne $CommandRunner -or $null -ne (Get-Command wsl.exe -ErrorAction SilentlyContinue))) {
         return (Invoke-SandalWslDockerBootstrap -Distro $Distro -CommandRunner $CommandRunner)
     }
     $finalExit = Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner
+    Set-SandalWslComposeMountEnv
     return [pscustomobject]@{ Ready = ($finalExit -eq 0); DryRun = $false; Distro = $Distro; Started = $false }
 }
 
@@ -662,6 +735,7 @@ Export-ModuleMember -Function @(
     'Sync-SandalDeployStage',
     'Test-SandalDockerDaemonReady',
     'Start-SandalDockerDesktopIfInstalled',
+    'Set-SandalWslComposeMountEnv',
     'Ensure-SandalDockerDaemon',
     'Ensure-SandalGameData'
 )

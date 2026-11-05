@@ -6,11 +6,11 @@ This directory indexes the clean-room bit-stream wire specifications for Unreal 
 
 ## 1. Clean-Room 3-Way Wire Protocol Verification Pipeline
 
-The reverse-engineering workbench (`src/tools/re-workbench/`) reconciles three independent sources before a codec enters `src/libs/aocnet/`:
+The reverse-engineering workbench (`scripts/re_workbench.ps1`) reconciles three independent sources before a codec enters `src/libs/aocnet/`:
 
-1. **Static Schema (`S` — Rizin CFG + USMAP)**: Extracts `UScriptStruct::ICppStructOps` trait flags (`WithNetSerializer`, `WithNetSharedSerialization`) and property handles pinned by `(ExecSHA256, PdbGUID, EngineNetVer, GameNetVer)` in `re_workbench/static_rizin_usmap.py` and `re_workbench/manifest_verifier.py`.
-2. **Runtime Instrumentation (`R` — Frida `CModule` Ring Hook)**: Captures pre- and post-call `FArchive` bit-cursor positions (`BitTraceSlot`, `< 150 ns` hot-path budget) via a 65,536-slot lock-free SPSC ring buffer in `cmodule/ring_hook.c` and `re_workbench/frida_session.py`.
-3. **Differential Bit-Oracle & 3-Way Reconciler (`I` — `0`-Residue Verification)**: Cross-joins static schemas, runtime bit deltas, and server codecs in `re_workbench/bit_oracle.py`, `re_workbench/reconcile_3way.py`, `re_workbench/gap_correlator.py`, and `re_workbench/spec_generator.py`, requiring `is_error == False` and `leftover_bits == 0` across all captured bunches.
+1. **Static Schema (`S` — Rizin CFG + USMAP)**: Extracts `UScriptStruct::ICppStructOps` trait flags (`WithNetSerializer`, `WithNetSharedSerialization`) and property handles pinned by `(ExecSHA256, PdbGUID, EngineNetVer, GameNetVer)` via `scripts/re_workbench.ps1` (`static_rizin_usmap` and `manifest_verifier` stages).
+2. **Runtime Instrumentation (`R` — Frida `CModule` Ring Hook)**: Captures pre- and post-call `FArchive` bit-cursor positions (`BitTraceSlot`, `< 150 ns` hot-path budget) via a 65,536-slot lock-free SPSC ring buffer in `cmodule/ring_hook.c` (`frida_session` stage in `scripts/re_workbench.ps1`).
+3. **Differential Bit-Oracle & 3-Way Reconciler (`I` — `0`-Residue Verification)**: Cross-joins static schemas, runtime bit deltas, and server codecs via `scripts/re_workbench.ps1` (`bit_oracle`, `reconcile_3way`, `gap_correlator`, and `spec_generator` stages), requiring `is_error == False` and `leftover_bits == 0` across all captured bunches.
 
 ## 2. P0 `NetSerializeStruct` Wire Codecs & `PropType::Unknown` Guard
 
@@ -34,7 +34,7 @@ The reverse-engineering workbench (`src/tools/re-workbench/`) reconciles three i
 
 Run the hermetic workbench and clean-room firewall verification suite from the repository root:
 
-```bash
-uv run --project src/tools/re-workbench pytest
+```powershell
+pwsh -NoProfile -File scripts/re_workbench.ps1
 pwsh -NoProfile -File scripts/checks/public_check.ps1
 ```

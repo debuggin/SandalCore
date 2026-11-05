@@ -3,6 +3,8 @@
 param(
     [ValidateSet('default', 'dev', 'admin', 'full')]
     [string]$Profile = 'default',
+    [switch]$SpawnLauncher,
+    [int]$AutomationPort = 0,
     [switch]$DryRun,
     [switch]$Json,
     [switch]$NoColor,
@@ -25,18 +27,69 @@ function Resolve-RunOptions {
     $dry = $BaseDryRun
     $jsn = $BaseJson
     $nc = $BaseNoColor
+    $spawn = [bool]$SpawnLauncher -or ($env:SANDAL_SPAWN_LAUNCHER -eq '1')
+    $autoPort = if ($AutomationPort -gt 0) { $AutomationPort } elseif ($env:SANDAL_AUTOMATION_PORT -match '^\d+$') { [int]$env:SANDAL_AUTOMATION_PORT } else { 0 }
     for ($i = 0; $i -lt $RawArgs.Count; $i++) {
         $arg = [string]$RawArgs[$i]
         switch -Regex ($arg) {
             '^(-Profile|--profile)$' {
                 if (($i + 1) -lt $RawArgs.Count) { $i++; $prof = $RawArgs[$i] }
             }
+            '^(-SpawnLauncher|--spawn-launcher)$' { $spawn = $true }
+            '^(-AutomationPort|--automation-port)$' {
+                if (($i + 1) -lt $RawArgs.Count -and $RawArgs[$i + 1] -match '^\d+$') {
+                    $i++
+                    $autoPort = [int]$RawArgs[$i]
+                }
+            }
             '^(-DryRun|--dry-run)$'   { $dry = $true }
             '^(-Json|--json)$'        { $jsn = $true }
             '^(-NoColor|--no-color)$' { $nc = $true }
         }
     }
-    return [pscustomobject]@{ Profile = $prof; DryRun = $dry; Json = $jsn; NoColor = $nc }
+    return [pscustomobject]@{
+        Profile        = $prof
+        DryRun         = $dry
+        Json           = $jsn
+        NoColor        = $nc
+        SpawnLauncher  = $spawn
+        AutomationPort = $autoPort
+    }
+}
+
+function Start-SandalLauncherProcess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RootDirPath,
+        [AllowEmptyString()][string]$ExeExtension = '',
+        [int]$Port = 0
+    )
+    $primary = Join-Path $RootDirPath "dist/launcher/SandalLauncher$ExeExtension"
+    $fallback = Join-Path $RootDirPath "dist/Release/SandalLauncher$ExeExtension"
+    $exePath = if (Test-Path -LiteralPath $primary -PathType Leaf) {
+        $primary
+    } elseif (Test-Path -LiteralPath $fallback -PathType Leaf) {
+        $fallback
+    } else {
+        throw "SandalLauncher binary not found at '$primary' or '$fallback'."
+    }
+    $launchArgs = [System.Collections.Generic.List[string]]::new()
+    if ($Port -gt 0) {
+        $launchArgs.AddRange([string[]]@(
+            '--automation-port', "$Port",
+            '--keep-alive',
+            '--timeout-sec', '120',
+            '--gateway-url', 'http://127.0.0.1:8080',
+            '--world-endpoint', '127.0.0.1:7777'
+        ))
+    }
+    $workDir = Split-Path -Parent $exePath
+    $proc = if ($launchArgs.Count -gt 0) {
+        Start-Process -FilePath $exePath -ArgumentList $launchArgs.ToArray() -WorkingDirectory $workDir -PassThru
+    } else {
+        Start-Process -FilePath $exePath -WorkingDirectory $workDir -PassThru
+    }
+    return [int]$proc.Id
 }
 
 $inheritedJson = [bool](Get-Variable -Name AsJson -ValueOnly -ErrorAction SilentlyContinue)
@@ -72,6 +125,7 @@ function Out-Host {
     end {}
 }
 
+$launcherPid = $null
 if (-not $opts.DryRun) {
     $distRelDir = Join-Path $rootPath 'dist/Release'
     $distSvcDir = Join-Path $rootPath 'dist/services'
@@ -122,19 +176,25 @@ if (-not $opts.DryRun) {
         }
         $null = Ensure-SandalDockerDaemon
         $null = & (Join-Path $rootPath 'scripts/sandal/up.ps1') -Profile $opts.Profile -Detach -RepoRoot $rootPath -Json:$opts.Json
+        if ($opts.SpawnLauncher) {
+            $launcherPid = Start-SandalLauncherProcess -RootDirPath $rootPath -ExeExtension $exeExt -Port $opts.AutomationPort
+        }
     } finally {
         $env:PATH = $prevPath
     }
 }
 
 $payload = [ordered]@{
-    ok       = $true
-    command  = 'run'
-    status   = if ($opts.DryRun) { 'dry-run' } else { 'ready' }
-    profile  = $opts.Profile
-    dry_run  = [bool]$opts.DryRun
-    no_color = [bool]$opts.NoColor
-    pipeline = @('extract', 'build', 'deploy', 'up')
+    ok              = $true
+    command         = 'run'
+    status          = if ($opts.DryRun) { 'dry-run' } else { 'ready' }
+    profile         = $opts.Profile
+    dry_run         = [bool]$opts.DryRun
+    no_color        = [bool]$opts.NoColor
+    spawn_launcher  = [bool]$opts.SpawnLauncher
+    launcher_pid    = $launcherPid
+    automation_port = if ($opts.AutomationPort -gt 0) { [int]$opts.AutomationPort } else { $null }
+    pipeline        = @('extract', 'build', 'deploy', 'up')
 }
 
 if ($opts.Json) {

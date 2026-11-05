@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 FROM golang:1.27-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS builder
-RUN apk add --no-cache git protobuf protobuf-dev protoc python3
+RUN apk add --no-cache git protobuf protobuf-dev protoc
 
 WORKDIR /workspace
 COPY build/gen/go/ ./build/gen/go/
@@ -13,6 +13,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 WORKDIR /workspace
+COPY scripts/wsl/gen-node-constants.sh ./scripts/wsl/gen-node-constants.sh
 COPY src/ ./src/
 
 RUN --mount=type=cache,target=/go/pkg/mod \
@@ -34,7 +35,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     fi && \
     if [ ! -f "/workspace/build/gen/world/world/node_constants.h" ] && [ ! -f "/workspace/build/gen/go/citynodeconsts/constants_gen.go" ]; then \
         mkdir -p /workspace/build/gen/world/world /workspace/build/gen/go/aoc/nodeconstants /workspace/build/gen/go/citynodeconsts && \
-        python3 /workspace/src/tools/schemagen/gen_node_constants.py \
+        sh /workspace/scripts/wsl/gen-node-constants.sh \
             --cpp-out /workspace/build/gen/world/world/node_constants.h \
             --go-out /workspace/build/gen/go/aoc/nodeconstants/node_constants.go && \
         cp /workspace/build/gen/go/aoc/nodeconstants/node_constants.go /workspace/build/gen/go/citynodeconsts/constants_gen.go; \

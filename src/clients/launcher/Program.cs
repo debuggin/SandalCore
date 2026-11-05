@@ -24,6 +24,8 @@ namespace SandalLauncher
 {
     public static class Program
     {
+        public static LauncherCliOptions? CliOptions { get; private set; }
+
         [STAThread]
         public static int Main(string[] args)
         {
@@ -32,6 +34,12 @@ namespace SandalLauncher
                 return exitCode;
             }
             LauncherCliOptions cliOptions = LauncherCliOptions.Parse(args);
+            CliOptions = cliOptions;
+            if (cliOptions.MockGameClient)
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(Math.Max(1, cliOptions.MockGameSleepSec)));
+                return 0;
+            }
             if (cliOptions.HasAutomationFlags || cliOptions.AutomationPort.HasValue)
             {
                 return RunSyncBounded(() => RunCliAutomationAsync(cliOptions), cliOptions.TimeoutSec);
@@ -55,13 +63,14 @@ namespace SandalLauncher
             ArgumentNullException.ThrowIfNull(options);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, options.TimeoutSec)));
-            CancellationToken linked = timeoutCts.Token;
+            using var closeCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token);
+            CancellationToken linked = closeCts.Token;
 
             LauncherConfig cfg = SandalConfigLoader.LoadLauncher();
             MultiProtocolGatewayClient gw = gatewayClient ?? new MultiProtocolGatewayClient(options.GatewayUrl);
             var vm = new MainWindowViewModel(cfg, gw, vault, profileStore);
             using LauncherAutomationServer? autoServer = options.AutomationPort is > 0
-                ? new LauncherAutomationServer(vm, options.AutomationPort.Value)
+                ? new LauncherAutomationServer(vm, options.AutomationPort.Value, () => closeCts.Cancel())
                 : null;
 
             try
@@ -69,13 +78,23 @@ namespace SandalLauncher
                 await ExecuteCliWorkflowStepsAsync(options, vm, linked).ConfigureAwait(false);
                 if (options.JsonOutput)
                     Console.Out.WriteLine(JsonSerializer.Serialize(new LauncherAutomationController(vm).GetStateSnapshot()));
+                if (options.KeepAlive && autoServer is not null && !autoServer.Controller.IsCloseRequested)
+                    await WaitUntilCanceledAsync(linked).ConfigureAwait(false);
                 return 0;
             }
             finally
             {
+                if (options.KeepAlive && vm.TrackedAshesPid is > 0)
+                    _ = await vm.TerminateAshesWithPolicyAsync(killAllMatching: false, CancellationToken.None).ConfigureAwait(false);
                 if (options.DeleteTempAccountOnExit && vm.IsAuthenticated && vm.IsTemporaryAccount)
                     await vm.DeleteAccountAsync(CancellationToken.None).ConfigureAwait(false);
             }
+        }
+
+        private static async Task WaitUntilCanceledAsync(CancellationToken ct)
+        {
+            try { await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
         }
 
         private static async Task ExecuteCliWorkflowStepsAsync(
@@ -107,6 +126,10 @@ namespace SandalLauncher
             {
                 string target = !string.IsNullOrWhiteSpace(options.SelectCharacter) ? options.SelectCharacter : LauncherCliOptions.DefaultHeroName;
                 await vm.SelectCharacterByNameOrIdAsync(target, options.SpawnClient, ct).ConfigureAwait(false);
+            }
+            else if (options.SpawnClient && !vm.IsAshesProcessRunning)
+            {
+                vm.LaunchClient();
             }
             if (options.TerminateAfterCharSelect)
                 await vm.TerminateAshesAsync(ct).ConfigureAwait(false);
@@ -166,6 +189,8 @@ namespace SandalLauncher
 
     public partial class App : Application
     {
+        private LauncherAutomationServer? _automationServer;
+
         public override void Initialize()
         {
             AvaloniaXamlLoader.Load(this);
@@ -175,10 +200,19 @@ namespace SandalLauncher
         {
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
+                var vm = new MainWindowViewModel();
                 desktop.MainWindow = new MainWindow
                 {
-                    DataContext = new MainWindowViewModel()
+                    DataContext = vm
                 };
+                if (Program.CliOptions?.AutomationPort is > 0)
+                {
+                    _automationServer = new LauncherAutomationServer(
+                        vm,
+                        Program.CliOptions.AutomationPort.Value,
+                        () => Avalonia.Threading.Dispatcher.UIThread.Post(() => desktop.Shutdown(0)));
+                    desktop.Exit += (_, _) => _automationServer?.Dispose();
+                }
             }
             base.OnFrameworkInitializationCompleted();
         }
@@ -304,6 +338,7 @@ namespace SandalLauncher.ViewModels
         [ObservableProperty] private string _joinTicketBadgeText = "No active join ticket";
         [ObservableProperty] private bool _isAshesProcessRunning;
         [ObservableProperty] private int? _trackedAshesPid;
+        [ObservableProperty] private string _lifecyclePhase = "launcher_loaded";
 
         public ObservableCollection<LauncherCharacterSummary> Characters { get; } = [];
         public MultiProtocolGatewayClient GatewayClient { get; }
@@ -451,9 +486,30 @@ namespace SandalLauncher.ViewModels
         }
 
         [RelayCommand]
-        private void LaunchClient()
+        public void LaunchClient()
         {
-            StatusBannerMessage = $"Ready to launch client: {LaunchCommandLinePreview}";
+            EnsureGameProcessStarted();
+            LifecyclePhase = !string.IsNullOrWhiteSpace(LastJoinTicket) ? "game_logged_in" : "game_started";
+            StatusBannerMessage = $"Launched client (PID {TrackedAshesPid}): {LaunchCommandLinePreview}";
+        }
+
+        [RelayCommand]
+        public void CloseLauncher()
+        {
+            LifecyclePhase = "launcher_closed";
+            StatusBannerMessage = "Launcher closed via automation.";
+        }
+
+        private void EnsureGameProcessStarted()
+        {
+            if (TrackedAshesPid is int existingPid && ClientLaunchService.IsProcessAlive(existingPid))
+            {
+                IsAshesProcessRunning = true;
+                return;
+            }
+            using System.Diagnostics.Process proc = ClientLaunchService.StartGameOrMockProcess(_config, allowMockFallback: true);
+            TrackedAshesPid = proc.Id;
+            IsAshesProcessRunning = true;
         }
 
         [RelayCommand]
@@ -487,10 +543,41 @@ namespace SandalLauncher.ViewModels
         public Task CreateCharacterAsync(CancellationToken ct = default) =>
             CreateCharacterWithIdsAsync(NewCharacterName, 1, 1, ct);
 
+        public static string SanitizeAutoCharacterName(string? raw)
+        {
+            string uniqueHero = $"Hero{Guid.NewGuid():N}"[..12];
+            if (string.IsNullOrWhiteSpace(raw) || raw.Contains('_', StringComparison.Ordinal))
+                return uniqueHero;
+            string trimmed = new(raw.Trim().Where(char.IsLetterOrDigit).ToArray());
+            if (trimmed.Length is < 3 or > 20 || !char.IsLetter(trimmed[0]))
+                return uniqueHero;
+            return trimmed;
+        }
+
+        public static string NormalizeWorldEndpoint(string? worldEndpoint, Uri? gatewayUri)
+        {
+            if (string.IsNullOrWhiteSpace(worldEndpoint)) return "127.0.0.1:7777";
+            string trimmed = worldEndpoint.Trim();
+            bool isLoopbackGateway = gatewayUri is null || gatewayUri.IsLoopback;
+            if (!isLoopbackGateway) return trimmed;
+            int colon = trimmed.LastIndexOf(':');
+            if (colon <= 0) return trimmed;
+            string host = trimmed[..colon];
+            if (host.Equals("world", StringComparison.OrdinalIgnoreCase) ||
+                host.Equals("aoc-world", StringComparison.OrdinalIgnoreCase) ||
+                host.Equals("0.0.0.0", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"127.0.0.1{trimmed[colon..]}";
+            }
+            return trimmed;
+        }
+
         public async Task<LauncherCharacterSummary> CreateCharacterWithIdsAsync(
             string name, int classId = 1, int raceId = 1, CancellationToken ct = default)
         {
-            string targetName = string.IsNullOrWhiteSpace(name) ? LauncherCliOptions.DefaultHeroName : name.Trim();
+            string targetName = string.IsNullOrWhiteSpace(name)
+                ? LauncherCliOptions.DefaultHeroName
+                : (name.Contains('_', StringComparison.Ordinal) ? SanitizeAutoCharacterName(name) : name.Trim());
             LauncherCharacterSummary created = await GatewayClient.CreateCharacterAsync(AccessToken, targetName, classId, raceId, ct).ConfigureAwait(false);
             Characters.Add(created);
             SelectedCharacter = created;
@@ -511,20 +598,42 @@ namespace SandalLauncher.ViewModels
         public async Task<CharacterSelectTicket> SelectCharacterByNameOrIdAsync(
             string characterIdOrName, bool spawnClient = false, CancellationToken ct = default)
         {
-            LauncherCharacterSummary? matched = Characters.FirstOrDefault(c =>
-                string.Equals(c.CharacterId, characterIdOrName, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(c.Name, characterIdOrName, StringComparison.OrdinalIgnoreCase));
+            LauncherCharacterSummary? matched = ResolveTargetCharacter(characterIdOrName);
             string resolvedTarget = matched?.CharacterId ?? characterIdOrName.Trim();
-            CharacterSelectTicket ticket = await GatewayClient.SelectCharacterAsync(AccessToken, resolvedTarget, verifyWorldEnter: true, ct).ConfigureAwait(false);
+            CharacterSelectTicket rawTicket = await GatewayClient.SelectCharacterAsync(AccessToken, resolvedTarget, verifyWorldEnter: true, ct).ConfigureAwait(false);
+            string normalizedWorld = NormalizeWorldEndpoint(rawTicket.WorldEndpoint, GatewayClient.BaseUri);
+            CharacterSelectTicket ticket = rawTicket with { WorldEndpoint = normalizedWorld };
             if (matched is not null) SelectedCharacter = matched;
             SelectedCharacterId = ticket.CharacterId;
             LastCharacterSelectTicket = ticket;
             LastJoinTicket = ticket.JoinTicket;
-            WorldEndpoint = ticket.WorldEndpoint;
-            JoinTicketBadgeText = $"Ticket: {ticket.JoinTicket} -> {ticket.WorldEndpoint} (Enter={ticket.WorldEnterAllowed})";
-            if (spawnClient) IsAshesProcessRunning = true;
-            StatusBannerMessage = $"Character '{ticket.CharacterName}' selected; join ticket ready for {ticket.WorldEndpoint}.";
+            WorldEndpoint = normalizedWorld;
+            JoinTicketBadgeText = $"Ticket: {ticket.JoinTicket} -> {normalizedWorld} (Enter={ticket.WorldEnterAllowed})";
+            if (spawnClient)
+            {
+                EnsureGameProcessStarted();
+                LifecyclePhase = "game_logged_in";
+            }
+            else if (IsAshesProcessRunning)
+            {
+                LifecyclePhase = "game_logged_in";
+            }
+            StatusBannerMessage = $"Character '{ticket.CharacterName}' selected; join ticket ready for {normalizedWorld}.";
             return ticket;
+        }
+
+        private LauncherCharacterSummary? ResolveTargetCharacter(string? characterIdOrName)
+        {
+            if (!string.IsNullOrWhiteSpace(characterIdOrName))
+            {
+                LauncherCharacterSummary? exact = Characters.FirstOrDefault(c =>
+                    string.Equals(c.CharacterId, characterIdOrName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(c.Name, characterIdOrName, StringComparison.OrdinalIgnoreCase));
+                if (exact is not null) return exact;
+                if (characterIdOrName.Contains('_', StringComparison.Ordinal))
+                    return SelectedCharacter ?? (Characters.Count > 0 ? Characters[0] : null);
+            }
+            return SelectedCharacter ?? (Characters.Count > 0 ? Characters[0] : null);
         }
 
         [RelayCommand]
@@ -537,6 +646,7 @@ namespace SandalLauncher.ViewModels
             AshesTerminationResult res = await ClientLaunchService.TerminateAshesProcessesAsync(TrackedAshesPid, killAllMatching, ct).ConfigureAwait(false);
             IsAshesProcessRunning = false;
             TrackedAshesPid = null;
+            LifecyclePhase = "game_closed";
             StatusBannerMessage = $"Terminated {res.TerminatedCount} Ashes client process(es).";
             return res;
         }
@@ -554,7 +664,7 @@ namespace SandalLauncher.ViewModels
             if (!string.IsNullOrWhiteSpace(user))
             {
                 try { _ = await ProfileStore.DeleteProfileAsync(tempProfileId, ct).ConfigureAwait(false); }
-                catch (Exception) { }
+                catch (Exception ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
             }
             ClearAuthenticatedSessionState();
             ApplyViewState("empty");
@@ -602,7 +712,10 @@ namespace SandalLauncher.ViewModels
                 };
                 await ProfileStore.UpsertProfileAsync(tempProfile, ct).ConfigureAwait(false);
             }
-            catch (Exception) { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine(ex.Message);
+            }
         }
 
         private void ClearAuthenticatedSessionState()

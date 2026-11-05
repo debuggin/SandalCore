@@ -12,6 +12,8 @@
     <RootNamespace>SandalLauncher</RootNamespace>
     <AssemblyName>SandalLauncher</AssemblyName>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
 
   <ItemGroup>
