@@ -14,7 +14,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_completed_ftues (
+CREATE TABLE IF NOT EXISTS character_completed_ftues (
     character_id TEXT    NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     ftue_guid    BIGINT  NOT NULL
                  CONSTRAINT character_completed_ftues_guid CHECK (ftue_guid > 0),

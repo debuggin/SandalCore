@@ -16,7 +16,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_skill_ranks (
+CREATE TABLE IF NOT EXISTS character_skill_ranks (
     character_id TEXT   NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     tree_guid    BIGINT NOT NULL
                  CONSTRAINT character_skill_ranks_tree_positive CHECK (tree_guid > 0),
@@ -30,7 +30,7 @@ CREATE TABLE character_skill_ranks (
 
 COMMENT ON TABLE character_skill_ranks IS 'Plan D1 stage 2: the skill ranks a character bought, per tree in purchase order. worldd saves them (SaveProgress).';
 
-CREATE TABLE character_action_bar (
+CREATE TABLE IF NOT EXISTS character_action_bar (
     character_id   TEXT     NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     bank           SMALLINT NOT NULL
                    CONSTRAINT character_action_bar_bank CHECK (bank BETWEEN 0 AND 19),

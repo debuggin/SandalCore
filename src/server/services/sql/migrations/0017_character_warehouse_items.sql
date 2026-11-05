@@ -19,7 +19,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_warehouse_items (
+CREATE TABLE IF NOT EXISTS character_warehouse_items (
     character_id   TEXT        NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     area           TEXT        NOT NULL
                    CONSTRAINT character_warehouse_items_area CHECK (area IN ('Items', 'Materials', 'Cargo')),

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"aocrop/services/internal/dbtest"
 
@@ -690,3 +691,47 @@ func verifyLiveHotfixOverlays(t *testing.T) {
 		t.Fatalf("QueryActiveHotfixOverlays = %+v, err = %v", rows, err)
 	}
 }
+
+func TestConfigurePoolBounds(t *testing.T) {
+	t.Setenv("AOC_DB_MAX_CONNS", "")
+	t.Setenv("AOC_DB_MIN_CONNS", "")
+	t.Setenv("AOC_DB_MAX_CONN_LIFETIME", "")
+	t.Setenv("AOC_DB_MAX_CONN_IDLE_TIME", "")
+
+	cfg, err := pgxpool.ParseConfig("postgres://aoc:aoc@127.0.0.1:5432/aoc?sslmode=disable")
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	configurePoolBounds(cfg)
+	if cfg.MaxConns != 16 || cfg.MinConns != 2 {
+		t.Fatalf("default Conns = (%d, %d), want (16, 2)", cfg.MaxConns, cfg.MinConns)
+	}
+	if cfg.MaxConnLifetime != 30*time.Minute || cfg.MaxConnIdleTime != 5*time.Minute {
+		t.Fatalf("default lifetimes = (%v, %v), want (30m, 5m)", cfg.MaxConnLifetime, cfg.MaxConnIdleTime)
+	}
+	if cfg.HealthCheckPeriod != 30*time.Second || cfg.MaxConnLifetimeJitter != 2*time.Minute {
+		t.Fatalf("health/jitter = (%v, %v), want (30s, 2m)", cfg.HealthCheckPeriod, cfg.MaxConnLifetimeJitter)
+	}
+
+	t.Setenv("AOC_DB_MAX_CONNS", "24")
+	t.Setenv("AOC_DB_MIN_CONNS", "6")
+	t.Setenv("AOC_DB_MAX_CONN_LIFETIME", "45m")
+	t.Setenv("AOC_DB_MAX_CONN_IDLE_TIME", "10m")
+	cfgEnv, err := pgxpool.ParseConfig("postgres://aoc:aoc@127.0.0.1:5432/aoc?sslmode=disable")
+	if err != nil {
+		t.Fatalf("ParseConfig env: %v", err)
+	}
+	configurePoolBounds(cfgEnv)
+	if cfgEnv.MaxConns != 24 || cfgEnv.MinConns != 6 || cfgEnv.MaxConnLifetime != 45*time.Minute || cfgEnv.MaxConnIdleTime != 10*time.Minute {
+		t.Fatalf("env bounds = (%d, %d, %v, %v)", cfgEnv.MaxConns, cfgEnv.MinConns, cfgEnv.MaxConnLifetime, cfgEnv.MaxConnIdleTime)
+	}
+
+	t.Setenv("AOC_DB_MAX_CONNS", "999")
+	t.Setenv("AOC_DB_MIN_CONNS", "999")
+	cfgClamp, _ := pgxpool.ParseConfig("postgres://aoc:aoc@127.0.0.1:5432/aoc?sslmode=disable")
+	configurePoolBounds(cfgClamp)
+	if cfgClamp.MaxConns != 64 || cfgClamp.MinConns != 64 {
+		t.Fatalf("clamped Conns = (%d, %d), want (64, 64)", cfgClamp.MaxConns, cfgClamp.MinConns)
+	}
+}
+

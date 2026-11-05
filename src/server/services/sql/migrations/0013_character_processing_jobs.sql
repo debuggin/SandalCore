@@ -18,7 +18,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_processing_jobs (
+CREATE TABLE IF NOT EXISTS character_processing_jobs (
     character_id    TEXT        NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     job_guid        TEXT        NOT NULL
                     CONSTRAINT character_processing_jobs_guid CHECK (job_guid ~ '^[0-9a-f]{32}$' AND job_guid <> '00000000000000000000000000000000'),
@@ -44,7 +44,7 @@ CREATE TABLE character_processing_jobs (
     CONSTRAINT character_processing_jobs_pkey PRIMARY KEY (character_id, job_guid)
 );
 
-CREATE INDEX character_processing_jobs_order ON character_processing_jobs (character_id, ordinal);
+CREATE INDEX IF NOT EXISTS character_processing_jobs_order ON character_processing_jobs (character_id, ordinal);
 
 COMMENT ON TABLE character_processing_jobs IS 'The crafting milestone, step 1: the processing jobs of a character, in the order they were queued. worldd saves them with the items and the wallet (SaveInventory).';
 COMMENT ON COLUMN character_processing_jobs.station_key IS '16 lowercase hex digits: the station the job is at, the same on every start of the server.';

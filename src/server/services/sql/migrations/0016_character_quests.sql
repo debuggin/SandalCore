@@ -16,7 +16,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_quests (
+CREATE TABLE IF NOT EXISTS character_quests (
     character_id  TEXT             NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     instance_guid TEXT             NOT NULL
                   CONSTRAINT character_quests_guid_hex CHECK (instance_guid ~ '^[0-9a-f]{32}$' AND instance_guid <> repeat('0', 32)),
@@ -37,7 +37,7 @@ CREATE TABLE character_quests (
     CONSTRAINT character_quests_order UNIQUE (character_id, position)
 );
 
-CREATE TABLE character_quests_completed (
+CREATE TABLE IF NOT EXISTS character_quests_completed (
     character_id TEXT    NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     record_id    BIGINT  NOT NULL
                  CONSTRAINT character_quests_completed_record_positive CHECK (record_id > 0),
@@ -46,7 +46,7 @@ CREATE TABLE character_quests_completed (
     CONSTRAINT character_quests_completed_pkey PRIMARY KEY (character_id, record_id)
 );
 
-CREATE TABLE character_quest_variables (
+CREATE TABLE IF NOT EXISTS character_quest_variables (
     character_id TEXT   NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     name         TEXT   NOT NULL
                  CONSTRAINT character_quest_variables_name CHECK (name <> '' AND length(name) <= 128),
@@ -54,7 +54,7 @@ CREATE TABLE character_quest_variables (
     CONSTRAINT character_quest_variables_pkey PRIMARY KEY (character_id, name)
 );
 
-CREATE TABLE character_quest_commands (
+CREATE TABLE IF NOT EXISTS character_quest_commands (
     id           BIGSERIAL   PRIMARY KEY,
     character_id TEXT        NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     kind         TEXT        NOT NULL
@@ -66,7 +66,7 @@ CREATE TABLE character_quest_commands (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX character_quest_commands_character ON character_quest_commands (character_id, id);
+CREATE INDEX IF NOT EXISTS character_quest_commands_character ON character_quest_commands (character_id, id);
 
 COMMENT ON TABLE character_quests IS 'Quests slice 1: the quests a character took and has not finished, in the order they were taken. worldd saves the whole log whenever it changes.';
 COMMENT ON COLUMN character_quests.instance_guid IS 'The four words of the FGuid the client knows the quest instance by, 32 lower-case hex digits.';

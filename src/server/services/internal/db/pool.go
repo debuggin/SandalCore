@@ -76,6 +76,17 @@ const cleanupTimeout = 5 * time.Second
 // a non-empty description.
 var migrationName = regexp.MustCompile(`^(\d{4})_.+\.sql$`)
 
+const (
+	defaultPoolMaxConns    = 16
+	minAllowedPoolMaxConns = 2
+	maxAllowedPoolMaxConns = 64
+	defaultPoolMinConns    = 2
+	defaultConnLifetime    = 30 * time.Minute
+	defaultConnIdleTime    = 5 * time.Minute
+	defaultHealthCheck     = 30 * time.Second
+	defaultLifetimeJitter  = 2 * time.Minute
+)
+
 // Open connects to the PostgreSQL server at url and checks the connection with
 // a ping. Errors from pgx never include the password, so they are safe to log.
 // The server's warnings, and the notices a migration raises (their text starts
@@ -85,6 +96,7 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, err
 	}
+	configurePoolBounds(cfg)
 	cfg.ConnConfig.OnNotice = logNotice
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -95,6 +107,59 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("database ping: %w", err)
 	}
 	return pool, nil
+}
+
+func configurePoolBounds(cfg *pgxpool.Config) {
+	if cfg == nil {
+		return
+	}
+	connStr := cfg.ConnString()
+	if !strings.Contains(connStr, "pool_max_conns=") {
+		maxConns := parseEnvInt32("AOC_DB_MAX_CONNS", defaultPoolMaxConns)
+		cfg.MaxConns = min(max(maxConns, minAllowedPoolMaxConns), maxAllowedPoolMaxConns)
+	}
+	if !strings.Contains(connStr, "pool_min_conns=") {
+		minConns := parseEnvInt32("AOC_DB_MIN_CONNS", defaultPoolMinConns)
+		cfg.MinConns = min(max(minConns, 0), cfg.MaxConns)
+	}
+	if !strings.Contains(connStr, "pool_max_conn_lifetime=") {
+		cfg.MaxConnLifetime = parseEnvDuration("AOC_DB_MAX_CONN_LIFETIME", defaultConnLifetime)
+	}
+	if !strings.Contains(connStr, "pool_max_conn_idle_time=") {
+		cfg.MaxConnIdleTime = parseEnvDuration("AOC_DB_MAX_CONN_IDLE_TIME", defaultConnIdleTime)
+	}
+	if !strings.Contains(connStr, "pool_health_check_period=") {
+		cfg.HealthCheckPeriod = defaultHealthCheck
+	}
+	if !strings.Contains(connStr, "pool_max_conn_lifetime_jitter=") {
+		cfg.MaxConnLifetimeJitter = defaultLifetimeJitter
+	}
+}
+
+func parseEnvInt32(key string, fallback int32) int32 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return fallback
+	}
+	return int32(n)
+}
+
+func parseEnvDuration(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if secs, err := strconv.ParseInt(raw, 10, 64); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return fallback
 }
 
 // logNotice logs what PostgreSQL says outside a result: a warning at WARN, a
@@ -196,20 +261,37 @@ func migrate(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) error {
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
 		return err
 	}
+	applied, err := loadAppliedVersions(ctx, conn)
+	if err != nil {
+		return err
+	}
 	for _, m := range list {
-		var done bool
-		if err := conn.QueryRow(ctx,
-			"SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)", m.version).Scan(&done); err != nil {
-			return err
-		}
-		if done {
+		if applied[m.version] {
 			continue
 		}
 		if err := apply(ctx, conn, m); err != nil {
 			return err
 		}
+		applied[m.version] = true
 	}
 	return nil
+}
+
+func loadAppliedVersions(ctx context.Context, conn *pgxpool.Conn) (map[int]bool, error) {
+	rows, err := conn.Query(ctx, "SELECT version FROM schema_migrations")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	applied := make(map[int]bool)
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		applied[v] = true
+	}
+	return applied, rows.Err()
 }
 
 // apply runs one migration and records its version in a single transaction.
@@ -222,12 +304,13 @@ func apply(ctx context.Context, conn *pgxpool.Conn, m migration) error {
 	if _, err := tx.Exec(ctx, m.sql); err != nil {
 		return fmt.Errorf("migration %s: %w", m.name, err)
 	}
-	if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", m.version); err != nil {
+	if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING", m.version); err != nil {
 		return fmt.Errorf("migration %s: record version: %w", m.name, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("migration %s: commit: %w", m.name, err)
 	}
+	slog.Info("postgres: applied migration", "version", m.version, "name", m.name)
 	return nil
 }
 

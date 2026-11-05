@@ -17,7 +17,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_wallet (
+CREATE TABLE IF NOT EXISTS character_wallet (
     character_id  TEXT        NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     currency_guid BIGINT      NOT NULL
                   CONSTRAINT character_wallet_guid_positive CHECK (currency_guid > 0),

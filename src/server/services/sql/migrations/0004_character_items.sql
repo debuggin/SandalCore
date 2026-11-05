@@ -18,7 +18,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_items (
+CREATE TABLE IF NOT EXISTS character_items (
     character_id   TEXT        NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     container      TEXT        NOT NULL
                    CONSTRAINT character_items_container CHECK (container IN ('Backpack', 'Equipment', 'Quest')),

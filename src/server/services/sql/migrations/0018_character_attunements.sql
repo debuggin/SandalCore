@@ -15,7 +15,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_attunements (
+CREATE TABLE IF NOT EXISTS character_attunements (
     character_id TEXT    NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     attune_index INTEGER NOT NULL
                  CONSTRAINT character_attunements_index CHECK (attune_index BETWEEN 1 AND 255),
@@ -25,7 +25,7 @@ CREATE TABLE character_attunements (
     CONSTRAINT character_attunements_order UNIQUE (character_id, position)
 );
 
-CREATE TABLE character_home_attunement (
+CREATE TABLE IF NOT EXISTS character_home_attunement (
     character_id TEXT    NOT NULL PRIMARY KEY REFERENCES characters (id) ON DELETE CASCADE,
     attune_index INTEGER NOT NULL
                  CONSTRAINT character_home_attunement_index CHECK (attune_index BETWEEN 0 AND 255),

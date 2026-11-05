@@ -49,8 +49,8 @@ func TestMigrationCatalog0022And0023(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InspectMigrationCatalog: %v", err)
 	}
-	if len(report.Versions) < 23 {
-		t.Fatalf("migration count = %d, want >= 23", len(report.Versions))
+	if len(report.Versions) < 24 {
+		t.Fatalf("migration count = %d, want >= 24", len(report.Versions))
 	}
 	for i, v := range report.Versions {
 		if v != i+1 {
@@ -60,6 +60,7 @@ func TestMigrationCatalog0022And0023(t *testing.T) {
 	for _, wantName := range []string{
 		"0022_diff_save_procedures.sql",
 		"0023_rbac_audit_and_idempotency.sql",
+		"0024_query_covering_indexes_and_fencing.sql",
 	} {
 		if !slices.Contains(report.Names, wantName) {
 			t.Errorf("missing migration %q in %v", wantName, report.Names)
@@ -100,6 +101,18 @@ func assertCatalogTablesAndIndexes(t *testing.T, report *db.MigrationCatalogRepo
 		"idx_command_idempotency_actor_account",
 		"idx_command_idempotency_audit_id",
 		"idx_command_idempotency_expires_at",
+		"idx_characters_account_created_id",
+		"idx_characters_ungranted_starter_set",
+		"idx_characters_ungranted_starter_mounts",
+		"idx_world_servers_heartbeat_server_id",
+		"idx_character_items_char_order_id",
+		"idx_character_resource_items_char_order_id",
+		"idx_character_skill_ranks_tree",
+		"idx_character_known_recipes_taught",
+		"idx_hotfix_overlays_active_order",
+		"idx_hotfix_audit_log_recorded_at",
+		"idx_gm_audit_log_created_at",
+		"idx_gm_audit_log_command_created",
 	} {
 		if !slices.Contains(report.Indexes, idx) {
 			t.Errorf("missing index %q in catalog report %v", idx, report.Indexes)
@@ -197,6 +210,9 @@ func seedLiveTestAccount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) 
 
 func verifyLiveFencingTokenGuard(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
+	if _, err := pool.Exec(ctx, "DELETE FROM characters.character_save_fencing WHERE character_id = 101"); err != nil {
+		t.Fatalf("reset fencing token for 101: %v", err)
+	}
 	if _, err := pool.Exec(ctx, "SELECT characters.fn_check_and_advance_fencing_token(101, 10)"); err != nil {
 		t.Fatalf("advance fencing token to 10: %v", err)
 	}
@@ -228,24 +244,32 @@ func verifyLiveRBACHierarchy(t *testing.T, ctx context.Context, pool *pgxpool.Po
 	}
 	_, err := pool.Exec(ctx, `
 		INSERT INTO auth.rbac_permissions (permission_id, min_tier, description)
-		VALUES ('gm.teleport', 2, 'Teleport character');
+		VALUES ('gm.teleport', 2, 'Teleport character')
+		ON CONFLICT (permission_id) DO NOTHING;
 		INSERT INTO auth.rbac_role_permissions (role_id, permission_id)
-		VALUES (2, 'gm.teleport');
-		INSERT INTO auth.rbac_account_permissions (account_id, role_id, permission_id, granted, granted_by)
-		VALUES ($1, 2, 'gm.teleport', TRUE, $1)`, accountID)
+		VALUES (2, 'gm.teleport')
+		ON CONFLICT (role_id, permission_id) DO NOTHING`)
 	if err != nil {
-		t.Fatalf("seed RBAC permission graph: %v", err)
+		t.Fatalf("seed RBAC permission catalog: %v", err)
+	}
+	_, err = pool.Exec(ctx, `
+		INSERT INTO auth.rbac_account_permissions (account_id, role_id, permission_id, granted, granted_by)
+		VALUES ($1, 2, 'gm.teleport', TRUE, $1)
+		ON CONFLICT (account_id, permission_id) DO NOTHING`, accountID)
+	if err != nil {
+		t.Fatalf("seed RBAC account permission: %v", err)
 	}
 }
 
 func verifyLiveGMAuditLogImmutability(t *testing.T, ctx context.Context, pool *pgxpool.Pool, accountID int64) string {
 	t.Helper()
-	const auditUUID = "018f4a7c-8d10-7000-8000-000000000001"
-	_, err := pool.Exec(ctx, `
+	var auditUUID string
+	err := pool.QueryRow(ctx, `
 		INSERT INTO realm_state.gm_audit_log
 			(audit_id, actor_account_id, actor_role, command_name, before_state, after_state)
-		VALUES ($1::uuid, $2, 2, 'gm.teleport', '{"x":0}'::jsonb, '{"x":100}'::jsonb)`,
-		auditUUID, accountID)
+		VALUES (overlay(gen_random_uuid()::text placing '7' from 15 for 1)::uuid, $1, 2, 'gm.teleport', '{"x":0}'::jsonb, '{"x":100}'::jsonb)
+		RETURNING audit_id::text`,
+		accountID).Scan(&auditUUID)
 	if err != nil {
 		t.Fatalf("insert gm_audit_log: %v", err)
 	}
@@ -267,15 +291,14 @@ func verifyLiveIdempotencyLedger(
 	auditUUID string,
 ) {
 	t.Helper()
-	const validUUIDv7 = "018f4a7c-8d10-7123-9abc-def012345678"
 	const invalidUUIDv4 = "018f4a7c-8d10-4123-9abc-def012345678"
 	digest := make([]byte, 32)
 
 	_, err := pool.Exec(ctx, `
 		INSERT INTO realm_state.command_idempotency_ledger
 			(command_id, actor_account_id, command_name, payload_sha256, status, audit_id)
-		VALUES ($1::uuid, $2, 'gm.teleport', $3, 1, $4::uuid)`,
-		validUUIDv7, accountID, digest, auditUUID)
+		VALUES (overlay(gen_random_uuid()::text placing '7' from 15 for 1)::uuid, $1, 'gm.teleport', $2, 1, $3::uuid)`,
+		accountID, digest, auditUUID)
 	if err != nil {
 		t.Fatalf("insert valid UUIDv7 idempotency record: %v", err)
 	}
@@ -295,3 +318,63 @@ func assertPGErrorCode(t *testing.T, label string, err error, wantCode string) {
 		t.Fatalf("%s: got err=%v, want SQLSTATE %s", label, err, wantCode)
 	}
 }
+
+func TestMigration0024CoveringIndexesAndIdempotentDDL(t *testing.T) {
+	sql0024 := readMigrationSQL(t, "0024_query_covering_indexes_and_fencing.sql")
+	for _, token := range []string{
+		"ALTER TABLE characters ADD COLUMN IF NOT EXISTS fencing_token BIGINT NOT NULL DEFAULT 0;",
+		"idx_characters_account_created_id",
+		"idx_characters_ungranted_starter_set",
+		"idx_characters_ungranted_starter_mounts",
+		"idx_world_servers_heartbeat_server_id",
+		"idx_character_items_char_order_id",
+		"idx_character_resource_items_char_order_id",
+		"idx_character_skill_ranks_tree",
+		"idx_character_known_recipes_taught",
+		"idx_hotfix_overlays_active_order",
+		"idx_hotfix_audit_log_recorded_at",
+		"idx_gm_audit_log_created_at",
+		"idx_gm_audit_log_command_created",
+	} {
+		if !strings.Contains(sql0024, token) {
+			t.Errorf("0024_query_covering_indexes_and_fencing.sql missing token %q", token)
+		}
+	}
+	report, err := db.InspectMigrationCatalog()
+	if err != nil {
+		t.Fatalf("InspectMigrationCatalog: %v", err)
+	}
+	for _, name := range report.Names {
+		if name >= "0020_" {
+			continue
+		}
+		raw := readMigrationSQL(t, name)
+		if strings.Contains(raw, "CREATE TABLE ") && !strings.Contains(raw, "CREATE TABLE IF NOT EXISTS ") {
+			t.Errorf("%s contains non-idempotent CREATE TABLE without IF NOT EXISTS", name)
+		}
+	}
+}
+
+func TestLiveMigrateExistingCatalogDatabase(t *testing.T) {
+	dsn := os.Getenv("AOC_MIGRATE_DATABASE_URL")
+	if dsn == "" {
+		return
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer pool.Close()
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("idempotent db.Migrate: %v", err)
+	}
+	var maxVersion int
+	if err := pool.QueryRow(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&maxVersion); err != nil {
+		t.Fatalf("query schema_migrations: %v", err)
+	}
+	if maxVersion < 24 {
+		t.Fatalf("maxVersion = %d, want >= 24", maxVersion)
+	}
+}
+

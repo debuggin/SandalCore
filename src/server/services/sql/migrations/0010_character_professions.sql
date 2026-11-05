@@ -16,7 +16,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_professions (
+CREATE TABLE IF NOT EXISTS character_professions (
     character_id       TEXT        NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     profession_guid    BIGINT      NOT NULL
                        CONSTRAINT character_professions_guid_positive CHECK (profession_guid > 0),

@@ -18,7 +18,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_experience (
+CREATE TABLE IF NOT EXISTS character_experience (
     character_id       TEXT        NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     leveling_type_guid BIGINT      NOT NULL
                        CONSTRAINT character_experience_type_positive CHECK (leveling_type_guid > 0),

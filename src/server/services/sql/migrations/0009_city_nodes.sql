@@ -12,7 +12,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE city_node_state (
+CREATE TABLE IF NOT EXISTS city_node_state (
     node_guid   BIGINT      PRIMARY KEY,                       -- the CityNodeRecordBase guid (content.db)
     level       SMALLINT    NOT NULL CHECK (level >= 0),       -- ENodeLevel: 0 Wilderness ... 4 Town (citynode bounds it by the data's MaxNodeLevel)
     experience  BIGINT      NOT NULL DEFAULT 0 CHECK (experience >= 0),
@@ -22,7 +22,7 @@ CREATE TABLE city_node_state (
 
 COMMENT ON TABLE city_node_state IS 'Nodes 1: the live state of each city node (citynode owns it).  node_guid is a CityNodeRecordBase guid; parent_guid is the vassal link.';
 
-CREATE TABLE city_node_clock (
+CREATE TABLE IF NOT EXISTS city_node_clock (
     id             BOOLEAN          PRIMARY KEY DEFAULT TRUE CHECK (id),   -- one row
     offset_seconds BIGINT           NOT NULL DEFAULT 0,
     speed          DOUBLE PRECISION NOT NULL DEFAULT 1 CHECK (speed > 0)   -- the speed knob (1: real time)
@@ -32,7 +32,7 @@ INSERT INTO city_node_clock (id) VALUES (TRUE);
 
 COMMENT ON TABLE city_node_clock IS 'Nodes 1: the node clock, one row.  Node time (unix seconds) = real time x speed + offset_seconds.';
 
-CREATE TABLE city_node_seed (
+CREATE TABLE IF NOT EXISTS city_node_seed (
     id         BOOLEAN     PRIMARY KEY DEFAULT TRUE CHECK (id),             -- one row
     applied_at TIMESTAMPTZ NULL
 );

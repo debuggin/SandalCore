@@ -15,7 +15,7 @@
 
 SET LOCAL lock_timeout = '10s';
 
-CREATE TABLE character_known_recipes (
+CREATE TABLE IF NOT EXISTS character_known_recipes (
     character_id TEXT        NOT NULL REFERENCES characters (id) ON DELETE CASCADE,
     recipe_guid  BIGINT      NOT NULL
                  CONSTRAINT character_known_recipes_recipe CHECK (recipe_guid > 0),
