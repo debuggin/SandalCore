@@ -1,76 +1,44 @@
 package go_test
 
 import (
-	"bytes"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
-	"crypto/tls"
-	"encoding/binary"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"math"
-	"net"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strings"
-	"sync"
-	"testing"
-	"time"
+	"bytes"; "crypto/hmac"; "crypto/rand"; "crypto/sha256"; "crypto/subtle"; "crypto/tls"
+	"encoding/binary"; "encoding/hex"; "encoding/json"; "errors"; "fmt"; "io"; "math"
+	"net"; "net/http"; "net/http/httptest"; "os"; "path/filepath"; "runtime"; "strings"; "sync"; "testing"; "time"
 )
 
 func repoRootDir(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
+	if !ok { t.Fatal("runtime.Caller failed") }
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
 }
 func readRepoFile(t *testing.T, relPath string) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(repoRootDir(t), filepath.FromSlash(relPath)))
-	if err != nil {
-		t.Fatalf("failed to read %s: %v", relPath, err)
-	}
+	if err != nil { t.Fatalf("failed to read %s: %v", relPath, err) }
 	return string(raw)
 }
 func isLowerHex(s string, wantLen int) bool {
-	if len(s) != wantLen {
-		return false
-	}
+	if len(s) != wantLen { return false }
 	for i := 0; i < len(s); i++ {
-		if (s[i] < '0' || s[i] > '9') && (s[i] < 'a' || s[i] > 'f') {
-			return false
-		}
+		if (s[i] < '0' || s[i] > '9') && (s[i] < 'a' || s[i] > 'f') { return false }
 	}
 	return true
 }
-
-type authSession struct {
-	AccountID int64
-	Username  string
-	ExpiresAt time.Time
-}
+type authSession struct { AccountID int64; Username string; ExpiresAt time.Time }
 type authFlowHarness struct {
-	mu           sync.Mutex
-	serviceToken string
-	hmacSecret   []byte
-	now          func() time.Time
-	nextID       int64
-	users        map[string]string
-	userIDs      map[string]int64
-	sessions     map[string]authSession
+	mu             sync.Mutex
+	serviceToken   string
+	hmacSecret     []byte
+	now            func() time.Time
+	nextID         int64
+	users          map[string]string
+	userIDs        map[string]int64
+	sessions       map[string]authSession
+	charsByAccount map[int64][]map[string]any
 }
 func newAuthFlowHarness(serviceToken string, nowFn func() time.Time) *authFlowHarness {
-	return &authFlowHarness{serviceToken: serviceToken, hmacSecret: []byte("sandalcore-e2e-token-hmac-key-v1"), now: nowFn, nextID: 1000, users: make(map[string]string), userIDs: make(map[string]int64), sessions: make(map[string]authSession)}
+	return &authFlowHarness{serviceToken: serviceToken, hmacSecret: []byte("sandalcore-e2e-token-hmac-key-v1"), now: nowFn, nextID: 1000, users: make(map[string]string), userIDs: make(map[string]int64), sessions: make(map[string]authSession), charsByAccount: make(map[int64][]map[string]any)}
 }
 func (a *authFlowHarness) checkServiceToken(authHeader string) error {
 	const prefix = "Bearer "
@@ -100,15 +68,11 @@ func (a *authFlowHarness) validateSessionToken(authHeader, token string) (authSe
 	return sess, nil
 }
 func decodeStrictCredentials(r *http.Request) (string, string, error) {
-	if r.Method != http.MethodPost {
-		return "", "", errors.New("method not allowed")
-	}
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete { return "", "", errors.New("method not allowed") }
 	var creds struct{ Username, Password string }
 	dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&creds); err != nil {
-		return "", "", err
-	}
+	if err := dec.Decode(&creds); err != nil { return "", "", err }
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) || len(creds.Username) < 3 || len(creds.Username) > 32 || len(creds.Password) < 8 {
 		return "", "", errors.New("trailing data or invalid username/password bounds")
 	}
@@ -116,16 +80,10 @@ func decodeStrictCredentials(r *http.Request) (string, string, error) {
 }
 func (a *authFlowHarness) registerHTTP(w http.ResponseWriter, r *http.Request) {
 	user, pass, err := decodeStrictCredentials(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	if err != nil { http.Error(w, err.Error(), http.StatusBadRequest); return }
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, exists := a.users[user]; exists {
-		http.Error(w, "username already taken", http.StatusConflict)
-		return
-	}
+	if _, exists := a.users[user]; exists { http.Error(w, "username already taken", http.StatusConflict); return }
 	a.nextID++
 	id := a.nextID
 	a.users[user], a.userIDs[user] = pass, id
@@ -133,14 +91,11 @@ func (a *authFlowHarness) registerHTTP(w http.ResponseWriter, r *http.Request) {
 	a.sessions[tok] = authSession{AccountID: id, Username: user, ExpiresAt: a.now().Add(15 * time.Minute)}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(map[string]any{"account_id": id, "username": user, "token": tok})
+	_ = json.NewEncoder(w).Encode(map[string]any{"account_id": id, "username": user, "token": tok, "access_token": tok})
 }
 func (a *authFlowHarness) loginHTTP(w http.ResponseWriter, r *http.Request) {
 	user, pass, err := decodeStrictCredentials(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	if err != nil { http.Error(w, err.Error(), http.StatusBadRequest); return }
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if wantPass, ok := a.users[user]; !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(wantPass)) != 1 {
@@ -151,346 +106,240 @@ func (a *authFlowHarness) loginHTTP(w http.ResponseWriter, r *http.Request) {
 	tok := a.issueSessionToken(id, user)
 	a.sessions[tok] = authSession{AccountID: id, Username: user, ExpiresAt: a.now().Add(15 * time.Minute)}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"account_id": id, "username": user, "token": tok})
+	_ = json.NewEncoder(w).Encode(map[string]any{"account_id": id, "username": user, "token": tok, "access_token": tok})
 }
-func postAuthJSON(t *testing.T, url, body string) (*http.Response, map[string]any) {
-	t.Helper()
-	resp, err := http.Post(url, "application/json", strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST %s failed: %v", url, err)
+func (a *authFlowHarness) deleteAccountHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete && r.Method != http.MethodPost { http.Error(w, "method not allowed", http.StatusMethodNotAllowed); return }
+	bearer := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var targetUser string
+	var targetID int64
+	if sess, ok := a.sessions[bearer]; ok && a.now().Before(sess.ExpiresAt) {
+		targetUser, targetID = sess.Username, sess.AccountID
+	} else if user, pass, err := decodeStrictCredentials(r); err == nil {
+		if wantPass, ok := a.users[user]; ok && subtle.ConstantTimeCompare([]byte(pass), []byte(wantPass)) == 1 {
+			targetUser, targetID = user, a.userIDs[user]
+		}
 	}
+	if targetUser == "" { http.Error(w, "invalid credentials or token", http.StatusUnauthorized); return }
+	delete(a.users, targetUser); delete(a.userIDs, targetUser); delete(a.charsByAccount, targetID)
+	for k, s := range a.sessions {
+		if s.AccountID == targetID || s.Username == targetUser { delete(a.sessions, k) }
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"deleted": true, "status": "deleted"})
+}
+func doAuthReqJSON(t *testing.T, method, url, bearer, body string) (*http.Response, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	if err != nil { t.Fatalf("%s %s build failed: %v", method, url, err) }
+	req.Header.Set("Content-Type", "application/json")
+	if bearer != "" { req.Header.Set("Authorization", "Bearer "+bearer) }
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil { t.Fatalf("%s %s failed: %v", method, url, err) }
 	defer resp.Body.Close()
 	var payload map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&payload)
 	return resp, payload
 }
+func postAuthJSON(t *testing.T, url, body string) (*http.Response, map[string]any) {
+	return doAuthReqJSON(t, http.MethodPost, url, "", body)
+}
 func TestFlow1_AuthAndTokenSecurityE2E(t *testing.T) {
 	authGrpcSrc, authHttpSrc, svcAuthSrc := readRepoFile(t, "src/server/services/internal/authgrpc/server.go"), readRepoFile(t, "src/server/services/internal/authhttp/handler.go"), readRepoFile(t, "src/server/services/internal/svcauth/interceptor.go")
 	for _, snippet := range []string{"ValidateToken", "account.ErrInvalidToken", "codes.Unauthenticated"} {
-		if !strings.Contains(authGrpcSrc, snippet) {
-			t.Fatalf("authgrpc/server.go missing contract snippet %q", snippet)
-		}
+		if !strings.Contains(authGrpcSrc, snippet) { t.Fatalf("authgrpc/server.go missing contract snippet %q", snippet) }
 	}
-	if !strings.Contains(authHttpSrc, "/api/v1/auth/register") || !strings.Contains(authHttpSrc, "/api/v1/auth/login") || !strings.Contains(svcAuthSrc, "subtle.ConstantTimeCompare") {
-		t.Fatal("authhttp/handler.go or svcauth/interceptor.go missing auth contract")
+	if !strings.Contains(authHttpSrc, "/api/v1/auth/register") || !strings.Contains(authHttpSrc, "/api/v1/auth/account") || !strings.Contains(svcAuthSrc, "subtle.ConstantTimeCompare") {
+		t.Fatal("authhttp/handler.go or svcauth/interceptor.go missing auth or account deletion contract")
 	}
-	clockNow := time.Date(2026, 11, 4, 16, 0, 0, 0, time.UTC)
-	svcTok := strings.Repeat("a1", 32)
+	clockNow, svcTok := time.Date(2026, 11, 4, 16, 0, 0, 0, time.UTC), strings.Repeat("a1", 32)
 	harness := newAuthFlowHarness(svcTok, func() time.Time { return clockNow })
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/auth/register", harness.registerHTTP)
 	mux.HandleFunc("/api/v1/auth/login", harness.loginHTTP)
+	mux.HandleFunc("/api/v1/auth/account", harness.deleteAccountHTTP)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	resp, regBody := postAuthJSON(t, srv.URL+"/api/v1/auth/register", `{"username":"aelindra","password":"correct-horse-battery"}`)
 	tok, _ := regBody["token"].(string)
-	if resp.StatusCode != http.StatusCreated || !isLowerHex(tok, 64) {
-		t.Fatalf("expected 201 Created and 64-hex token, got %d / %q", resp.StatusCode, tok)
-	}
+	if resp.StatusCode != http.StatusCreated || !isLowerHex(tok, 64) { t.Fatalf("expected 201 Created and 64-hex token, got %d / %q", resp.StatusCode, tok) }
 	if sess, err := harness.validateSessionToken("Bearer "+svcTok, tok); err != nil || sess.Username != "aelindra" || sess.AccountID != 1001 {
 		t.Fatalf("ValidateToken positive flow failed: sess=%+v err=%v", sess, err)
 	}
 	verifyFlow1NegativeCases(t, srv.URL, harness, svcTok, tok, &clockNow)
+	if delResp, delBody := doAuthReqJSON(t, http.MethodDelete, srv.URL+"/api/v1/auth/account", "", `{"username":"aelindra","password":"correct-horse-battery"}`); delResp.StatusCode != http.StatusOK || delBody["deleted"] != true {
+		t.Fatalf("expected 200 OK deleting temporary account aelindra, got %d (%v)", delResp.StatusCode, delBody)
+	}
+	if loginAfterDel, _ := postAuthJSON(t, srv.URL+"/api/v1/auth/login", `{"username":"aelindra","password":"correct-horse-battery"}`); loginAfterDel.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized after account deletion, got %d", loginAfterDel.StatusCode)
+	}
 }
 func verifyFlow1NegativeCases(t *testing.T, baseURL string, h *authFlowHarness, svcTok, validTok string, clockNow *time.Time) {
 	t.Helper()
 	tampered := validTok[:63] + "0"
-	if validTok[63] == '0' {
-		tampered = validTok[:63] + "1"
-	}
+	if validTok[63] == '0' { tampered = validTok[:63] + "1" }
 	for _, tc := range []struct{ name, header, token string }{
 		{"missing_bearer", "", validTok}, {"wrong_service_token", "Bearer " + strings.Repeat("ff", 32), validTok},
 		{"tampered_session_token", "Bearer " + svcTok, tampered}, {"short_session_token", "Bearer " + svcTok, validTok[:32]},
 		{"uppercase_hex_token", "Bearer " + svcTok, strings.ToUpper(validTok)},
 	} {
-		if _, err := h.validateSessionToken(tc.header, tc.token); err == nil {
-			t.Fatalf("expected negative auth case %q to fail validation", tc.name)
-		}
+		if _, err := h.validateSessionToken(tc.header, tc.token); err == nil { t.Fatalf("expected negative auth case %q to fail validation", tc.name) }
 	}
 	*clockNow = clockNow.Add(16 * time.Minute)
-	if _, err := h.validateSessionToken("Bearer "+svcTok, validTok); err == nil {
-		t.Fatal("expected expired session token to be rejected")
-	}
-	for _, badBody := range []string{
-		`{"username":"aelindra","password":"correct-horse-battery"}`, `{"username":"ae","password":"correct-horse-battery"}`,
-		`{"username":"aelindra","password":"short"}`, `{"username":"aelindra","password":"correct-horse-battery","role":"admin"}`,
-		`{"username":"aelindra","password":"correct-horse-battery"}{"extra":1}`,
-	} {
+	if _, err := h.validateSessionToken("Bearer "+svcTok, validTok); err == nil { t.Fatal("expected expired session token to be rejected") }
+	for _, badBody := range []string{`{"username":"aelindra","password":"correct-horse-battery"}`, `{"username":"ae","password":"correct-horse-battery"}`, `{"username":"aelindra","password":"short"}`, `{"username":"aelindra","password":"correct-horse-battery","role":"admin"}`, `{"username":"aelindra","password":"correct-horse-battery"}{"extra":1}`} {
 		if resp, _ := postAuthJSON(t, baseURL+"/api/v1/auth/register", badBody); resp.StatusCode < 400 {
 			t.Fatalf("expected HTTP >= 400 for negative payload %s, got %d", badBody, resp.StatusCode)
 		}
 	}
 }
-type characterRecord struct {
-	ID, Name, Race, Archetype string
-	AccountID, Experience     int64
-	Level                     int32
-	X, Y, Z                   float64
-	FencingToken              uint64
-}
+type characterRecord struct { ID, Name, Race, Archetype string; AccountID, Experience int64; Level int32; X, Y, Z float64; FencingToken uint64 }
 var allowedArchetypes = map[string]bool{"bard": true, "cleric": true, "fighter": true, "mage": true, "ranger": true, "rogue": true, "summoner": true, "tank": true}
 func validateCharacterNameAndClass(name, archetype string) error {
-	if len(name) < 3 || len(name) > 16 {
-		return errors.New("invalid character name length")
-	}
+	if len(name) < 3 || len(name) > 16 { return errors.New("invalid character name length") }
 	for i := 0; i < len(name); i++ {
-		if (name[i] < 'a' || name[i] > 'z') && (name[i] < 'A' || name[i] > 'Z') {
-			return errors.New("character name must contain ASCII letters only")
-		}
+		if (name[i] < 'a' || name[i] > 'z') && (name[i] < 'A' || name[i] > 'Z') { return errors.New("character name must contain ASCII letters only") }
 	}
-	if !allowedArchetypes[strings.ToLower(archetype)] {
-		return errors.New("invalid character archetype")
-	}
+	if !allowedArchetypes[strings.ToLower(archetype)] { return errors.New("invalid character archetype") }
 	return nil
 }
-type characterStoreHarness struct {
-	byID   map[string]characterRecord
-	byName map[string]string
-}
+type characterStoreHarness struct { byID map[string]characterRecord; byName map[string]string }
 func newCharacterStoreHarness() *characterStoreHarness {
 	return &characterStoreHarness{byID: make(map[string]characterRecord), byName: make(map[string]string)}
 }
 func (s *characterStoreHarness) create(accountID int64, name, race, archetype string) (characterRecord, error) {
-	if accountID <= 0 || race == "" {
-		return characterRecord{}, errors.New("invalid account or race")
-	}
-	if err := validateCharacterNameAndClass(name, archetype); err != nil {
-		return characterRecord{}, err
-	}
+	if accountID <= 0 || race == "" { return characterRecord{}, errors.New("invalid account or race") }
+	if err := validateCharacterNameAndClass(name, archetype); err != nil { return characterRecord{}, err }
 	lowerName := strings.ToLower(name)
-	if _, exists := s.byName[lowerName]; exists {
-		return characterRecord{}, errors.New("character name already exists")
-	}
+	if _, exists := s.byName[lowerName]; exists { return characterRecord{}, errors.New("character name already exists") }
 	id := fmt.Sprintf("%032x", len(s.byID)+1)
 	rec := characterRecord{ID: id, AccountID: accountID, Name: name, Race: race, Archetype: strings.ToLower(archetype), Level: 1, Experience: 0, X: -45200.5, Y: 18400.25, Z: 1250.0, FencingToken: 1}
 	s.byID[id], s.byName[lowerName] = rec, id
 	return rec, nil
 }
 func (s *characterStoreHarness) saveState(next characterRecord) error {
-	if !isLowerHex(next.ID, 32) || next.Level <= 0 || next.Level > 50 || next.Experience < 0 {
-		return errors.New("invalid character state bounds")
-	}
-	if math.IsNaN(next.X) || math.IsInf(next.X, 0) || math.IsNaN(next.Y) || math.IsInf(next.Y, 0) || math.IsNaN(next.Z) || math.IsInf(next.Z, 0) {
-		return errors.New("non-finite position coordinates")
-	}
+	if !isLowerHex(next.ID, 32) || next.Level <= 0 || next.Level > 50 || next.Experience < 0 { return errors.New("invalid character state bounds") }
+	if math.IsNaN(next.X) || math.IsInf(next.X, 0) || math.IsNaN(next.Y) || math.IsInf(next.Y, 0) || math.IsNaN(next.Z) || math.IsInf(next.Z, 0) { return errors.New("non-finite position coordinates") }
 	curr, ok := s.byID[next.ID]
-	if !ok {
-		return errors.New("character not found")
-	}
-	if next.FencingToken < curr.FencingToken {
-		return errors.New("SQLSTATE 55000: stale fencing token")
-	}
+	if !ok { return errors.New("character not found") }
+	if next.FencingToken < curr.FencingToken { return errors.New("SQLSTATE 55000: stale fencing token") }
 	s.byID[next.ID] = next
 	return nil
 }
 func (s *characterStoreHarness) listByAccount(accountID int64) []characterRecord {
 	var out []characterRecord
 	for _, rec := range s.byID {
-		if rec.AccountID == accountID {
-			out = append(out, rec)
-		}
+		if rec.AccountID == accountID { out = append(out, rec) }
 	}
 	return out
 }
 func TestFlow2_CharacterLifecycleAndPersistenceContractsE2E(t *testing.T) {
 	charGrpcSrc := readRepoFile(t, "src/server/services/internal/charactergrpc/server.go")
 	for _, method := range []string{"ListCharacters", "CreateCharacter", "DeleteCharacter", "GetCharacter", "SaveCharacterState"} {
-		if !strings.Contains(charGrpcSrc, method) {
-			t.Fatalf("charactergrpc/server.go missing %s handler", method)
-		}
+		if !strings.Contains(charGrpcSrc, method) { t.Fatalf("charactergrpc/server.go missing %s handler", method) }
 	}
 	store := newCharacterStoreHarness()
 	created, err := store.create(1001, "Aelindra", "Aelan", "mage")
-	if err != nil || !isLowerHex(created.ID, 32) || created.Level != 1 {
-		t.Fatalf("character create failed: rec=%+v err=%v", created, err)
-	}
-	created.Level, created.Experience, created.FencingToken = 12, 48500, 2
-	created.X, created.Y, created.Z = 12050.0, -34000.0, 980.5
-	if err := store.saveState(created); err != nil {
-		t.Fatalf("saveState failed: %v", err)
-	}
-	wire, err := json.Marshal(store.byID[created.ID])
-	if err != nil {
-		t.Fatalf("marshal character state failed: %v", err)
-	}
+	if err != nil || !isLowerHex(created.ID, 32) || created.Level != 1 { t.Fatalf("character create failed: rec=%+v err=%v", created, err) }
+	created.Level, created.Experience, created.FencingToken, created.X, created.Y, created.Z = 12, 48500, 2, 12050.0, -34000.0, 980.5
+	if err := store.saveState(created); err != nil { t.Fatalf("saveState failed: %v", err) }
+	wire, _ := json.Marshal(store.byID[created.ID])
 	var roundTrip characterRecord
 	if err := json.Unmarshal(wire, &roundTrip); err != nil || roundTrip.Level != 12 || roundTrip.Experience != 48500 || roundTrip.FencingToken != 2 {
 		t.Fatalf("character state round-trip mismatch: %+v err=%v", roundTrip, err)
 	}
-	if list := store.listByAccount(1001); len(list) != 1 || list[0].Name != "Aelindra" {
-		t.Fatalf("listByAccount mismatch: %+v", list)
-	}
-	for _, bad := range []struct{ name, class string }{
-		{"", "mage"}, {"Al", "mage"}, {"NameWayTooLongForLimit", "mage"},
-		{"Bad_Name1", "mage"}, {"Aelindra", "mage"}, {"Kaelen", "necromancer_invalid"}, {"Kaelen", ""},
-	} {
-		if _, err := store.create(1001, bad.name, "Aelan", bad.class); err == nil {
-			t.Fatalf("expected invalid character create (%q, %q) to fail", bad.name, bad.class)
-		}
+	if list := store.listByAccount(1001); len(list) != 1 || list[0].Name != "Aelindra" { t.Fatalf("listByAccount mismatch: %+v", list) }
+	for _, bad := range []struct{ name, class string }{{"", "mage"}, {"Al", "mage"}, {"NameWayTooLongForLimit", "mage"}, {"Bad_Name1", "mage"}, {"Aelindra", "mage"}, {"Kaelen", "necromancer_invalid"}, {"Kaelen", ""}} {
+		if _, err := store.create(1001, bad.name, "Aelan", bad.class); err == nil { t.Fatalf("expected invalid character create (%q, %q) to fail", bad.name, bad.class) }
 	}
 	stale, nanPos := roundTrip, roundTrip
 	stale.FencingToken, nanPos.X = 1, math.NaN()
-	if store.saveState(stale) == nil || store.saveState(nanPos) == nil {
-		t.Fatal("expected stale fencing token or NaN coordinate save to fail")
-	}
+	if store.saveState(stale) == nil || store.saveState(nanPos) == nil { t.Fatal("expected stale fencing token or NaN coordinate save to fail") }
 }
 var canonicalNodeExpThresholds = [7]int64{0, 2636934, 10547736, 31643207, 73834150, 538730690, 1162745780}
-type cityNodeState struct {
-	GUID, ZOIGUID, Experience, ParentGUID int64
-	Name, MayorID                         string
-	Stage, TaxRateBps                     int
-}
+type cityNodeState struct { GUID, ZOIGUID, Experience, ParentGUID int64; Name, MayorID string; Stage, TaxRateBps int }
 type cityNodeEngine struct{ nodes map[int64]*cityNodeState }
 func newCityNodeEngine() *cityNodeEngine {
-	return &cityNodeEngine{nodes: map[int64]*cityNodeState{
-		101: {GUID: 101, Name: "Verra_RVR_Joeva", ZOIGUID: 9001, Stage: 0},
-		102: {GUID: 102, Name: "Verra_RVR_Halcyon", ZOIGUID: 9001, Stage: 0},
-	}}
+	return &cityNodeEngine{nodes: map[int64]*cityNodeState{101: {GUID: 101, Name: "Verra_RVR_Joeva", ZOIGUID: 9001}, 102: {GUID: 102, Name: "Verra_RVR_Halcyon", ZOIGUID: 9001}}}
 }
 func nodeProgress(stage int, xp int64) (int, int64) {
-	if stage < 0 || stage >= 6 {
-		return 0, 0
-	}
+	if stage < 0 || stage >= 6 { return 0, 0 }
 	lo, hi := canonicalNodeExpThresholds[stage], canonicalNodeExpThresholds[stage+1]
-	if xp <= lo {
-		return 0, hi - xp
-	}
-	if xp >= hi {
-		return 100, 0
-	}
+	if xp <= lo { return 0, hi - xp }
+	if xp >= hi { return 100, 0 }
 	return int((xp - lo) * 100 / (hi - lo)), hi - xp
 }
 func (e *cityNodeEngine) addXPAndPromote(guid int64, deltaXP int64, targetStage int) error {
 	n, ok := e.nodes[guid]
-	if !ok || deltaXP <= 0 || targetStage < 0 || targetStage > 6 {
-		return errors.New("invalid node or XP/stage parameter")
-	}
-	if n.Experience+deltaXP < n.Experience || targetStage > n.Stage+1 {
-		return errors.New("XP overflow or non-sequential stage jump")
-	}
-	if n.ParentGUID != 0 && targetStage >= e.nodes[n.ParentGUID].Stage {
-		return errors.New("ZOI exclusivity: vassal node cannot reach or exceed parent stage")
-	}
+	if !ok || deltaXP <= 0 || targetStage < 0 || targetStage > 6 { return errors.New("invalid node or XP/stage parameter") }
+	if n.Experience+deltaXP < n.Experience || targetStage > n.Stage+1 { return errors.New("XP overflow or non-sequential stage jump") }
+	if n.ParentGUID != 0 && targetStage >= e.nodes[n.ParentGUID].Stage { return errors.New("ZOI exclusivity: vassal node cannot reach or exceed parent stage") }
 	n.Experience += deltaXP
-	if n.Experience < canonicalNodeExpThresholds[targetStage] {
-		return errors.New("insufficient XP for target stage")
-	}
+	if n.Experience < canonicalNodeExpThresholds[targetStage] { return errors.New("insufficient XP for target stage") }
 	n.Stage = targetStage
 	if targetStage >= 3 {
 		for _, other := range e.nodes {
-			if other.GUID != n.GUID && other.ZOIGUID == n.ZOIGUID && other.ParentGUID == 0 {
-				other.ParentGUID = n.GUID
-			}
+			if other.GUID != n.GUID && other.ZOIGUID == n.ZOIGUID && other.ParentGUID == 0 { other.ParentGUID = n.GUID }
 		}
 	}
 	return nil
 }
 func (e *cityNodeEngine) setMayorAndTaxRate(guid int64, mayorCharID string, taxBps int) (int64, error) {
 	n, ok := e.nodes[guid]
-	if !ok || n.Stage < 3 {
-		return 0, errors.New("node not found or below Village stage (3)")
-	}
-	if !isLowerHex(mayorCharID, 32) || taxBps < 0 || taxBps > 5000 {
-		return 0, errors.New("tax rate out of bounds [0, 5000] bps or invalid mayor ID")
-	}
+	if !ok || n.Stage < 3 { return 0, errors.New("node not found or below Village stage (3)") }
+	if !isLowerHex(mayorCharID, 32) || taxBps < 0 || taxBps > 5000 { return 0, errors.New("tax rate out of bounds [0, 5000] bps or invalid mayor ID") }
 	n.MayorID, n.TaxRateBps = mayorCharID, taxBps
 	return (int64(10000)*int64(taxBps) + 9999) / 10000, nil
 }
 func TestFlow3_CityNodeProgressionAndTaxMayoraltyMechanicsE2E(t *testing.T) {
-	constsSrc := readRepoFile(t, "build/gen/go/citynodeconsts/constants_gen.go")
-	levelsSrc := readRepoFile(t, "src/server/services/internal/citynode/levels.go")
-	citizenshipSrc := readRepoFile(t, "src/server/services/internal/citynode/citizenship.go")
+	constsSrc, levelsSrc, citizenshipSrc := readRepoFile(t, "build/gen/go/citynodeconsts/constants_gen.go"), readRepoFile(t, "src/server/services/internal/citynode/levels.go"), readRepoFile(t, "src/server/services/internal/citynode/citizenship.go")
 	for _, token := range []string{"2636934", "10547736", "31643207", "73834150", "538730690", "1162745780"} {
-		if !strings.Contains(constsSrc, token) {
-			t.Fatalf("constants_gen.go missing canonical threshold %s", token)
-		}
+		if !strings.Contains(constsSrc, token) { t.Fatalf("constants_gen.go missing canonical threshold %s", token) }
 	}
 	if !strings.Contains(levelsSrc, "Progress(level int, experience int64)") || !strings.Contains(citizenshipSrc, "BuyOrderEscrow") {
 		t.Fatal("citynode package missing Progress or BuyOrderEscrow contract")
 	}
 	eng := newCityNodeEngine()
-	if pct, toNext := nodeProgress(0, 1318467); pct != 50 || toNext != 1318467 {
-		t.Fatalf("expected 50%% and 1318467 toNext at stage 0, got pct=%d toNext=%d", pct, toNext)
+	if pct, toNext := nodeProgress(0, 1318467); pct != 50 || toNext != 1318467 { t.Fatalf("expected 50%% and 1318467 toNext at stage 0, got pct=%d toNext=%d", pct, toNext) }
+	for _, st := range []struct{ stage int; xp int64 }{{1, 2636934}, {2, 7910802}, {3, 21095471}} {
+		if err := eng.addXPAndPromote(101, st.xp, st.stage); err != nil { t.Fatalf("promote Joeva to stage %d failed: %v", st.stage, err) }
 	}
-	for _, st := range []struct {
-		stage int
-		xp    int64
-	}{{1, 2636934}, {2, 7910802}, {3, 21095471}} {
-		if err := eng.addXPAndPromote(101, st.xp, st.stage); err != nil {
-			t.Fatalf("promote Joeva to stage %d failed: %v", st.stage, err)
-		}
-	}
-	if eng.nodes[101].Stage != 3 || eng.nodes[102].ParentGUID != 101 {
-		t.Fatalf("expected Joeva at Stage 3 and Halcyon as ZOI vassal, got %+v / %+v", eng.nodes[101], eng.nodes[102])
-	}
-	if eng.addXPAndPromote(102, 2636934, 1) != nil || eng.addXPAndPromote(102, 7910802, 2) != nil {
-		t.Fatal("vassal stage 1 or 2 promotion failed")
-	}
-	if err := eng.addXPAndPromote(102, 21095471, 3); err == nil {
-		t.Fatal("expected ZOI exclusivity to reject vassal reaching parent stage 3")
+	if eng.nodes[101].Stage != 3 || eng.nodes[102].ParentGUID != 101 { t.Fatalf("expected Joeva at Stage 3 and Halcyon as ZOI vassal, got %+v / %+v", eng.nodes[101], eng.nodes[102]) }
+	if eng.addXPAndPromote(102, 2636934, 1) != nil || eng.addXPAndPromote(102, 7910802, 2) != nil || eng.addXPAndPromote(102, 21095471, 3) == nil {
+		t.Fatal("vassal promotion or ZOI exclusivity check failed")
 	}
 	mayorID := fmt.Sprintf("%032x", 1)
 	for _, bps := range []int{0, 250, 5000} {
-		if tax, err := eng.setMayorAndTaxRate(101, mayorID, bps); err != nil || tax != int64(bps) {
-			t.Fatalf("valid tax rate %d bps failed: tax=%d err=%v", bps, tax, err)
-		}
+		if tax, err := eng.setMayorAndTaxRate(101, mayorID, bps); err != nil || tax != int64(bps) { t.Fatalf("valid tax rate %d bps failed: tax=%d err=%v", bps, tax, err) }
 	}
 	for _, badBps := range []int{-1, -500, 5001, 10000} {
-		if _, err := eng.setMayorAndTaxRate(101, mayorID, badBps); err == nil {
-			t.Fatalf("expected out-of-range tax rate %d bps to be rejected", badBps)
-		}
+		if _, err := eng.setMayorAndTaxRate(101, mayorID, badBps); err == nil { t.Fatalf("expected out-of-range tax rate %d bps to be rejected", badBps) }
 	}
-	if _, err := eng.setMayorAndTaxRate(102, mayorID, 500); err == nil {
-		t.Fatal("expected stage 2 node below Village (3) to reject mayoral tax configuration")
-	}
+	if _, err := eng.setMayorAndTaxRate(102, mayorID, 500); err == nil { t.Fatal("expected stage 2 node below Village (3) to reject mayoral tax configuration") }
 }
-const (
-	questStatusNone       uint8 = 0
-	questStatusInProgress uint8 = 1
-	questStatusCompleted  uint8 = 2
-)
-type questInstance struct {
-	GUID                 string
-	Record               int64
-	Status               uint8
-	ComplCount           uint32
-	Objectives, Required []uint32
-}
+const ( questStatusNone uint8 = 0; questStatusInProgress uint8 = 1; questStatusCompleted uint8 = 2 )
+type questInstance struct { GUID string; Record int64; Status uint8; ComplCount uint32; Objectives, Required []uint32 }
 type questStateMachine struct{ byRecord map[int64]*questInstance }
-func newQuestStateMachine() *questStateMachine {
-	return &questStateMachine{byRecord: make(map[int64]*questInstance)}
-}
+func newQuestStateMachine() *questStateMachine { return &questStateMachine{byRecord: make(map[int64]*questInstance)} }
 func (q *questStateMachine) acceptQuest(guid string, record int64, required []uint32) error {
-	if !isLowerHex(guid, 32) || record <= 0 || len(required) == 0 || len(required) > 64 || len(q.byRecord) >= 600 {
-		return errors.New("invalid quest guid, record, objective count, or instance cap")
-	}
-	if existing, exists := q.byRecord[record]; exists && existing.Status != questStatusNone {
-		return errors.New("quest already accepted or completed")
-	}
+	if !isLowerHex(guid, 32) || record <= 0 || len(required) == 0 || len(required) > 64 || len(q.byRecord) >= 600 { return errors.New("invalid quest guid, record, objective count, or instance cap") }
+	if existing, exists := q.byRecord[record]; exists && existing.Status != questStatusNone { return errors.New("quest already accepted or completed") }
 	q.byRecord[record] = &questInstance{GUID: guid, Record: record, Status: questStatusInProgress, Objectives: make([]uint32, len(required)), Required: append([]uint32(nil), required...)}
 	return nil
 }
 func (q *questStateMachine) advanceObjective(record int64, objIndex int, delta uint32) error {
 	inst, ok := q.byRecord[record]
-	if !ok || inst.Status != questStatusInProgress || objIndex < 0 || objIndex >= len(inst.Objectives) || delta == 0 {
-		return errors.New("quest not in progress or invalid objective delta")
-	}
-	next := inst.Objectives[objIndex] + delta
-	if next > inst.Required[objIndex] {
-		next = inst.Required[objIndex]
-	}
-	inst.Objectives[objIndex] = next
+	if !ok || inst.Status != questStatusInProgress || objIndex < 0 || objIndex >= len(inst.Objectives) || delta == 0 { return errors.New("quest not in progress or invalid objective delta") }
+	inst.Objectives[objIndex] = min(inst.Objectives[objIndex]+delta, inst.Required[objIndex])
 	return nil
 }
 func (q *questStateMachine) completeQuest(record int64) error {
 	inst, ok := q.byRecord[record]
-	if !ok || inst.Status != questStatusInProgress {
-		return errors.New("cannot complete quest not in progress")
-	}
+	if !ok || inst.Status != questStatusInProgress { return errors.New("cannot complete quest not in progress") }
 	for i, got := range inst.Objectives {
-		if got < inst.Required[i] {
-			return errors.New("cannot complete quest with incomplete objectives")
-		}
+		if got < inst.Required[i] { return errors.New("cannot complete quest with incomplete objectives") }
 	}
 	inst.Status, inst.ComplCount = questStatusCompleted, inst.ComplCount+1
 	return nil
@@ -498,40 +347,16 @@ func (q *questStateMachine) completeQuest(record int64) error {
 func TestFlow4_QuestAndObjectiveStateMachineE2E(t *testing.T) {
 	questSrc := readRepoFile(t, "src/server/services/internal/quest/service.go")
 	for _, token := range []string{"MaxInstances  = 600", "MaxObjectives = 64", "q.GetStatus() < 0 || q.GetStatus() > 3", `case "give", "finish", "fail", "abandon":`} {
-		if !strings.Contains(questSrc, token) {
-			t.Fatalf("quest/service.go missing contract token %q", token)
-		}
+		if !strings.Contains(questSrc, token) { t.Fatalf("quest/service.go missing contract token %q", token) }
 	}
-	sm := newQuestStateMachine()
-	qGUID := fmt.Sprintf("%032x", 901)
+	sm, qGUID := newQuestStateMachine(), fmt.Sprintf("%032x", 901)
 	const qRec = int64(6064631000000000001)
-	if sm.advanceObjective(qRec, 0, 1) == nil || sm.completeQuest(qRec) == nil {
-		t.Fatal("expected advancing or completing unaccepted quest to fail")
-	}
-	if err := sm.acceptQuest(qGUID, qRec, []uint32{3, 1}); err != nil {
-		t.Fatalf("acceptQuest failed: %v", err)
-	}
-	if sm.acceptQuest(qGUID, qRec, []uint32{3, 1}) == nil {
-		t.Fatal("expected duplicate acceptQuest to fail")
-	}
-	if err := sm.advanceObjective(qRec, 0, 2); err != nil {
-		t.Fatalf("advanceObjective(0, 2) failed: %v", err)
-	}
-	if sm.completeQuest(qRec) == nil {
-		t.Fatal("expected completeQuest with incomplete objectives to fail")
-	}
-	if sm.advanceObjective(qRec, 0, 1) != nil || sm.advanceObjective(qRec, 1, 1) != nil {
-		t.Fatal("advanceObjective to completion failed")
-	}
-	if err := sm.completeQuest(qRec); err != nil {
-		t.Fatalf("completeQuest after all objectives met failed: %v", err)
-	}
-	if got := sm.byRecord[qRec]; got.Status != questStatusCompleted || got.ComplCount != 1 {
-		t.Fatalf("unexpected completed quest state: %+v", got)
-	}
-	if sm.advanceObjective(qRec, 0, 1) == nil || sm.completeQuest(qRec) == nil || sm.acceptQuest("bad-guid", 77, []uint32{1}) == nil {
-		t.Fatal("expected post-completion transitions or invalid GUID to fail")
-	}
+	if sm.advanceObjective(qRec, 0, 1) == nil || sm.completeQuest(qRec) == nil { t.Fatal("expected advancing or completing unaccepted quest to fail") }
+	if sm.acceptQuest(qGUID, qRec, []uint32{3, 1}) != nil || sm.acceptQuest(qGUID, qRec, []uint32{3, 1}) == nil { t.Fatal("acceptQuest or duplicate check failed") }
+	if sm.advanceObjective(qRec, 0, 2) != nil || sm.completeQuest(qRec) == nil { t.Fatal("partial objective or premature completeQuest check failed") }
+	if sm.advanceObjective(qRec, 0, 1) != nil || sm.advanceObjective(qRec, 1, 1) != nil || sm.completeQuest(qRec) != nil { t.Fatal("objective completion or completeQuest failed") }
+	if got := sm.byRecord[qRec]; got.Status != questStatusCompleted || got.ComplCount != 1 { t.Fatalf("unexpected completed quest state: %+v", got) }
+	if sm.advanceObjective(qRec, 0, 1) == nil || sm.completeQuest(qRec) == nil || sm.acceptQuest("bad-guid", 77, []uint32{1}) == nil { t.Fatal("expected post-completion transitions or invalid GUID to fail") }
 }
 type joinTicketEntry struct {
 	AccountID   int64
@@ -650,12 +475,10 @@ func verifyEnvoyAndComposeGrpcContractParity(t *testing.T) {
 func TestFlow5_MeshRoutingGatewayEnterWorldAndEnvoyComposeParityE2E(t *testing.T) {
 	verifyEnvoyAndComposeGrpcContractParity(t)
 	mg := newMeshGatewayHarness()
-	if mg.registerZone(1, 1, "127.0.0.1:7777", [4]float64{-100000, 0, -100000, 100000}, 1) != nil ||
-		mg.registerZone(2, 2, "127.0.0.1:7778", [4]float64{0, 100000, -100000, 100000}, 1) != nil {
+	if mg.registerZone(1, 1, "127.0.0.1:7777", [4]float64{-100000, 0, -100000, 100000}, 1) != nil || mg.registerZone(2, 2, "127.0.0.1:7778", [4]float64{0, 100000, -100000, 100000}, 1) != nil {
 		t.Fatal("registerZone 1 or 2 failed")
 	}
-	if mg.registerZone(1, 1, "0.0.0.0:7777", [4]float64{-100000, 0, -100000, 100000}, 2) == nil ||
-		mg.registerZone(1, 1, "127.0.0.1:7777", [4]float64{-100000, 0, -100000, 100000}, 1) == nil {
+	if mg.registerZone(1, 1, "0.0.0.0:7777", [4]float64{-100000, 0, -100000, 100000}, 2) == nil || mg.registerZone(1, 1, "127.0.0.1:7777", [4]float64{-100000, 0, -100000, 100000}, 1) == nil {
 		t.Fatal("expected unspecified bind address or stale authority epoch to be rejected")
 	}
 	if z, band, err := mg.resolveZoneWithHysteresis(1, -50000, 0, 20000); err != nil || z != 1 || band != "interior" {
@@ -674,11 +497,11 @@ func TestFlow5_MeshRoutingGatewayEnterWorldAndEnvoyComposeParityE2E(t *testing.T
 	gwMux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"status":"ok"}`)) })
 	gwSrv := httptest.NewServer(gwMux)
 	defer gwSrv.Close()
-	resp, err := http.Get(gwSrv.URL + "/healthz")
-	if err != nil || resp.StatusCode != http.StatusOK {
+	if resp, err := http.Get(gwSrv.URL + "/healthz"); err != nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("gateway /healthz failed: resp=%v err=%v", resp, err)
+	} else {
+		_ = resp.Body.Close()
 	}
-	_ = resp.Body.Close()
 	charID := fmt.Sprintf("%032x", 42)
 	ticket, addr, err := mg.enterWorld(1001, charID, 1)
 	if err != nil || addr != "127.0.0.1:7777" || !isLowerHex(ticket, 32) {
@@ -691,9 +514,157 @@ func TestFlow5_MeshRoutingGatewayEnterWorldAndEnvoyComposeParityE2E(t *testing.T
 		t.Fatal("expected replay of single-use join ticket to be rejected")
 	}
 }
-func TestFlow5_ComposeAndEnvoyIngressContract(t *testing.T) {
-	TestLiveComposeFunctionalAPIs(t)
+func wrapE2EETagAndAltSvc(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Alt-Svc", `h3=":8080"; ma=86400, h2c=":8080"; ma=86400`)
+		rec := httptest.NewRecorder()
+		next.ServeHTTP(rec, r)
+		for k, vals := range rec.Header() {
+			w.Header()[k] = vals
+		}
+		sum := sha256.Sum256(rec.Body.Bytes())
+		etag := fmt.Sprintf(`"sha256-%x"`, sum[:8])
+		if rec.Code == http.StatusOK {
+			w.Header().Set("ETag", etag)
+		}
+		if ifm := strings.TrimSpace(r.Header.Get("If-Match")); ifm != "" && ifm != "*" && ifm != etag {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
+		if inm := strings.TrimSpace(r.Header.Get("If-None-Match")); (r.Method == http.MethodGet || r.Method == http.MethodHead) && inm == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+	})
 }
+func mountE2ECharacterAndEnterRoutes(mux *http.ServeMux, h *authFlowHarness) {
+	authAcct := func(w http.ResponseWriter, r *http.Request) (int64, bool) {
+		tok := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		s, ok := h.sessions[tok]
+		if !ok || !h.now().Before(s.ExpiresAt) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return 0, false
+		}
+		return s.AccountID, true
+	}
+	mux.HandleFunc("/api/v1/characters", func(w http.ResponseWriter, r *http.Request) {
+		acctID, ok := authAcct(w, r)
+		if !ok {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			h.mu.Lock()
+			list := h.charsByAccount[acctID]
+			h.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{"characters": list})
+			return
+		}
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		id := fmt.Sprintf("%032x", acctID)
+		entry := map[string]any{"id": id, "character_id": id, "name": req["name"], "class_id": 1, "level": 1, "zone": "verra-01"}
+		h.mu.Lock()
+		h.charsByAccount[acctID] = append(h.charsByAccount[acctID], entry)
+		h.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(entry)
+	})
+	mux.HandleFunc("/api/v1/characters/", func(w http.ResponseWriter, r *http.Request) {
+		acctID, ok := authAcct(w, r)
+		if !ok {
+			return
+		}
+		ticket := fmt.Sprintf("%032x", acctID+9000)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"character_id": fmt.Sprintf("%032x", acctID), "join_ticket": ticket, "ticket": ticket, "world_endpoint": "127.0.0.1:7777", "zone_key": "verra-01"})
+	})
+	mux.HandleFunc("/api/v1/world/enter", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		if body["join_ticket"] == nil && body["ticket"] == nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ALLOW", "world_endpoint": "127.0.0.1:7777", "zone_key": "verra-01"})
+	})
+}
+func TestFlow6_ETagH2CCharacterSelectAndEphemeralAccountDeletionE2E(t *testing.T) {
+	etagSrc, mpSrc, gwSrc, charHttpSrc := readRepoFile(t, "src/server/services/internal/telemetry/etag_middleware.go"), readRepoFile(t, "src/server/services/internal/telemetry/multiprotocol_server.go"), readRepoFile(t, "src/server/services/cmd/gateway/main.go"), readRepoFile(t, "src/server/services/cmd/gateway/characters_http.go")
+	if !strings.Contains(etagSrc, "ETagMiddleware") || !strings.Contains(mpSrc, "NewH2CClient") || !strings.Contains(gwSrc, "ETagMiddleware") || !strings.Contains(gwSrc, "/api/v1/auth/account") || !strings.Contains(charHttpSrc, "/api/v1/characters") {
+		t.Fatal("missing ETagMiddleware, NewH2CClient, account deletion proxy, or character HTTP bridge contract")
+	}
+	h := newAuthFlowHarness(strings.Repeat("b2", 32), time.Now)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"status":"ok"}`)) })
+	mux.HandleFunc("/api/v1/auth/register", h.registerHTTP)
+	mux.HandleFunc("/api/v1/auth/login", h.loginHTTP)
+	mux.HandleFunc("/api/v1/auth/account", h.deleteAccountHTTP)
+	mountE2ECharacterAndEnterRoutes(mux, h)
+	srv := httptest.NewServer(wrapE2EETagAndAltSvc(mux))
+	defer srv.Close()
+
+	hzResp, _ := http.Get(srv.URL + "/healthz")
+	etag, altSvc := hzResp.Header.Get("ETag"), hzResp.Header.Get("Alt-Svc")
+	_ = hzResp.Body.Close()
+	if !strings.HasPrefix(etag, `"sha256-`) || !strings.Contains(altSvc, "h2c=") {
+		t.Fatalf("expected strong ETag and Alt-Svc h2c header, got etag=%q altSvc=%q", etag, altSvc)
+	}
+	req304, _ := http.NewRequest(http.MethodGet, srv.URL+"/healthz", nil)
+	req304.Header.Set("If-None-Match", etag)
+	if resp304, err := http.DefaultClient.Do(req304); err != nil || resp304.StatusCode != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified on If-None-Match, got %v %v", resp304, err)
+	} else {
+		_ = resp304.Body.Close()
+	}
+	req412, _ := http.NewRequest(http.MethodGet, srv.URL+"/healthz", nil)
+	req412.Header.Set("If-Match", `"sha256-mismatch"`)
+	if resp412, err := http.DefaultClient.Do(req412); err != nil || resp412.StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412 Precondition Failed on If-Match mismatch, got %v %v", resp412, err)
+	} else {
+		_ = resp412.Body.Close()
+	}
+	verifyEphemeralCharacterSelectAndDeleteFlow(t, srv.URL)
+}
+func verifyEphemeralCharacterSelectAndDeleteFlow(t *testing.T, baseURL string) {
+	t.Helper()
+	_, _ = postAuthJSON(t, baseURL+"/api/v1/auth/register", `{"username":"ephem_hero","password":"correct-horse-battery"}`)
+	loginResp, loginMap := postAuthJSON(t, baseURL+"/api/v1/auth/login", `{"username":"ephem_hero","password":"correct-horse-battery"}`)
+	tok := extractLiveToken(loginMap)
+	if loginResp.StatusCode != http.StatusOK || tok == "" {
+		t.Fatalf("ephemeral login failed: %d %v", loginResp.StatusCode, loginMap)
+	}
+	cResp, cMap := doAuthReqJSON(t, http.MethodPost, baseURL+"/api/v1/characters", tok, `{"name":"Kaelen","class_id":1,"race_id":1}`)
+	charID, _ := cMap["id"].(string)
+	if cResp.StatusCode != http.StatusCreated || charID == "" {
+		t.Fatalf("create character failed: %d %v", cResp.StatusCode, cMap)
+	}
+	sResp, sMap := doAuthReqJSON(t, http.MethodPost, baseURL+"/api/v1/characters/"+charID+"/select", tok, `{}`)
+	joinTicket, _ := sMap["join_ticket"].(string)
+	if sResp.StatusCode != http.StatusOK || !isLowerHex(joinTicket, 32) {
+		t.Fatalf("select character failed: %d %v", sResp.StatusCode, sMap)
+	}
+	eResp, eMap := doAuthReqJSON(t, http.MethodPost, baseURL+"/api/v1/world/enter", tok, fmt.Sprintf(`{"join_ticket":%q}`, joinTicket))
+	if eResp.StatusCode != http.StatusOK || eMap["status"] != "ALLOW" {
+		t.Fatalf("world/enter failed: %d %v", eResp.StatusCode, eMap)
+	}
+	dResp, dMap := doAuthReqJSON(t, http.MethodDelete, baseURL+"/api/v1/auth/account", tok, `{"username":"ephem_hero","password":"correct-horse-battery"}`)
+	if dResp.StatusCode != http.StatusOK || dMap["deleted"] != true {
+		t.Fatalf("DELETE /api/v1/auth/account failed: %d %v", dResp.StatusCode, dMap)
+	}
+	if reLogin, _ := postAuthJSON(t, baseURL+"/api/v1/auth/login", `{"username":"ephem_hero","password":"correct-horse-battery"}`); reLogin.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized after deleting ephemeral account, got %d", reLogin.StatusCode)
+	}
+	if chAfter, _ := doAuthReqJSON(t, http.MethodGet, baseURL+"/api/v1/characters", tok, ""); chAfter.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized on /api/v1/characters with deleted account token, got %d", chAfter.StatusCode)
+	}
+}
+func TestFlow5_ComposeAndEnvoyIngressContract(t *testing.T) { TestLiveComposeFunctionalAPIs(t) }
 func TestLiveComposeFunctionalAPIs(t *testing.T) {
 	verifyEnvoyAndComposeGrpcContractParity(t)
 	if os.Getenv("AOC_LIVE_COMPOSE_E2E") == "1" || isLiveComposeReady() {
@@ -702,8 +673,7 @@ func TestLiveComposeFunctionalAPIs(t *testing.T) {
 	}
 }
 func isLiveComposeReady() bool {
-	client := &http.Client{Timeout: 750 * time.Millisecond}
-	resp, err := client.Get("http://127.0.0.1:8080/healthz")
+	resp, err := (&http.Client{Timeout: 750 * time.Millisecond}).Get("http://127.0.0.1:8080/healthz")
 	if err != nil {
 		return false
 	}
@@ -746,6 +716,9 @@ func probeLiveComposeIngress(t *testing.T) {
 	if loginResp.StatusCode != http.StatusOK || tok == "" {
 		t.Fatalf("login expected 200 with valid JWT token, got %d (%v)", loginResp.StatusCode, loginMap)
 	}
+	defer func() {
+		_, _ = doAuthReqJSON(t, http.MethodDelete, "http://127.0.0.1:8080/api/v1/auth/account", tok, fmt.Sprintf(`{"username":%q,"password":%q}`, user, pass))
+	}()
 	realmsResp, err := client.Get("http://127.0.0.1:8080/api/v1/catalog/realms")
 	if err != nil || realmsResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/v1/catalog/realms failed: resp=%v err=%v", realmsResp, err)

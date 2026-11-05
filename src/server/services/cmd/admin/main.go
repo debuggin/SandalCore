@@ -19,6 +19,7 @@ import (
 	"aocrop/services/internal/admincatalog"
 	"aocrop/services/internal/admingw"
 	"aocrop/services/internal/config"
+	"aocrop/services/internal/telemetry"
 	"aocrop/services/internal/worldstream"
 )
 
@@ -54,12 +55,7 @@ func run(parent context.Context) error {
 		return err
 	}
 
-	httpSrv := &http.Server{
-		Handler:           router,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
+	httpSrv := telemetry.NewCleartextHTTPServer(addr, telemetry.ETagMiddleware(router))
 
 	go coalescer.Run(ctx)
 

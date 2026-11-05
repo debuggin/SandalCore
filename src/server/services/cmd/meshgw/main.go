@@ -19,13 +19,14 @@ import (
 
 	"aocrop/services/internal/config"
 	"aocrop/services/internal/mesh"
-	"aocrop/services/pkg/telemetry"
+	"aocrop/services/internal/telemetry"
+	pkgtelemetry "aocrop/services/pkg/telemetry"
 )
 
 type Gateway struct {
 	registry  *mesh.Registry
 	router    *mesh.ZoneRouter
-	readiness *telemetry.ReadinessGate
+	readiness *pkgtelemetry.ReadinessGate
 }
 
 func newGateway(reg *mesh.Registry, router *mesh.ZoneRouter, serverID string) (*Gateway, error) {
@@ -40,7 +41,7 @@ func newGateway(reg *mesh.Registry, router *mesh.ZoneRouter, serverID string) (*
 			return nil, err
 		}
 	}
-	gate := telemetry.NewReadinessGate(serverID, 60)
+	gate := pkgtelemetry.NewReadinessGate(serverID, 60)
 	gate.SetReady(true, true)
 	return &Gateway{
 		registry:  reg,
@@ -83,7 +84,7 @@ func seedDefaultZones(router *mesh.ZoneRouter) error {
 }
 
 func (g *Gateway) Handler() http.Handler {
-	return g.readiness.Handler()
+	return telemetry.ETagMiddleware(g.readiness.Handler())
 }
 
 func (g *Gateway) RouteForwardPacket(
@@ -153,10 +154,7 @@ func runWithContext(ctx context.Context, probeAddr string) error {
 	if err != nil {
 		return err
 	}
-	httpSrv := &http.Server{
-		Handler:           gw.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	httpSrv := telemetry.NewCleartextHTTPServer(probeAddr, gw.Handler())
 	errc := make(chan error, 1)
 	go func() {
 		if serveErr := httpSrv.Serve(lis); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {

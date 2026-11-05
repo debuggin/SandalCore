@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -12,9 +13,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,13 +39,13 @@ import (
 	"aocrop/services/internal/gatewaygrpc"
 	"aocrop/services/internal/ics"
 	"aocrop/services/internal/svcauth"
+	"aocrop/services/internal/telemetry"
 	"aocrop/services/internal/tickets"
 )
 
 // CoA captures, C-Y-B code
 
-// selfSigned writes a certificate for IP 127.0.0.1 (like certs/server.pem)
-// and its key, and returns their paths and a pool that trusts it.
+// selfSigned writes a certificate and key for 127.0.0.1 and returns a trusting CertPool.
 func selfSigned(t *testing.T) (certFile, keyFile string, pool *x509.CertPool) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -83,8 +88,7 @@ func selfSigned(t *testing.T) (certFile, keyFile string, pool *x509.CertPool) {
 	return certFile, keyFile, pool
 }
 
-// startICS serves an ICS server with the certificate in certFile and
-// keyFile on a loopback port, and returns the server and its address.
+// startICS serves an ICS server with certFile and keyFile on a loopback port.
 func startICS(t *testing.T, certFile, keyFile string) (*grpc.Server, string) {
 	t.Helper()
 	creds, err := icsCredentials(certFile, keyFile)
@@ -101,8 +105,7 @@ func startICS(t *testing.T, certFile, keyFile string) (*grpc.Server, string) {
 	return srv, lis.Addr().String()
 }
 
-// keepAlive opens an ICS stream to addr and has one keep-alive answered on
-// it, so the stream is live on the server.
+// keepAlive opens an ICS stream to addr and verifies one keep-alive round-trip.
 func keepAlive(t *testing.T, addr string, pool *x509.CertPool) icsxclient.XClientService_ProcessXClientMessageClient {
 	t.Helper()
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: pool})))
@@ -130,8 +133,7 @@ func keepAlive(t *testing.T, addr string, pool *x509.CertPool) icsxclient.XClien
 	return stream
 }
 
-// The client reaches the stream over TLS (with ALPN h2, which grpc-go does)
-// on an IP-literal address, as it does at 127.0.0.1:443.
+// The client reaches the stream over TLS (ALPN h2) on an IP-literal address.
 func TestICSServerSpeaksTLSAndStreams(t *testing.T) {
 	certFile, keyFile, pool := selfSigned(t)
 	_, addr := startICS(t, certFile, keyFile)
@@ -157,9 +159,7 @@ func TestICSServerNeedsItsKey(t *testing.T) {
 
 // ~ C:Y:B & C.O.A ~
 
-// grpc-go logs a failed TLS handshake only at its own INFO level, which is
-// off: a client without ALPN h2 (refused since grpc-go 1.67), with an old TLS
-// version or rejecting the certificate would otherwise leave no trace.
+// Failed TLS handshakes (non-TLS, missing ALPN, bad cert) are logged at WARN.
 func TestTLSHandshakeFailuresAreLogged(t *testing.T) {
 	logs := captureLog(t)
 	certFile, keyFile, pool := selfSigned(t)
@@ -194,8 +194,7 @@ func TestTLSHandshakeFailuresAreLogged(t *testing.T) {
 		t.Errorf("log after a client that does not speak TLS:\n%s", got)
 	}
 
-	// A client that offers no ALPN, unless grpc-go was told not to insist
-	// (GRPC_ENFORCE_ALPN_ENABLED=false, the fallback for such a client).
+	// A client that offers no ALPN unless GRPC_ENFORCE_ALPN_ENABLED=false.
 	if strings.EqualFold(os.Getenv("GRPC_ENFORCE_ALPN_ENABLED"), "false") {
 		t.Log("GRPC_ENFORCE_ALPN_ENABLED=false: a client without ALPN is accepted")
 		return
@@ -242,9 +241,7 @@ func refuses(addr string) bool {
 	return err != nil
 }
 
-// The game client's ICS stream never ends by itself, nor does a RedeemTicket
-// stuck on the database: shutdown still returns after the grace, and both
-// are cut.
+// Shutdown cuts live ICS streams and stuck RedeemTicket calls after the grace period.
 func TestShutdownCutsLiveStreams(t *testing.T) {
 	certFile, keyFile, pool := selfSigned(t)
 	icsSrv, addr := startICS(t, certFile, keyFile)
@@ -287,8 +284,7 @@ func TestShutdownCutsLiveStreams(t *testing.T) {
 	}
 }
 
-// With nothing in flight, shutdown does not wait for the grace, and stops
-// every server.
+// Idle servers stop immediately without waiting for the grace period.
 func TestShutdownOfIdleServersIsPrompt(t *testing.T) {
 	certFile, keyFile, _ := selfSigned(t)
 	icsSrv, addr := startICS(t, certFile, keyFile)
@@ -307,9 +303,7 @@ func TestShutdownOfIdleServersIsPrompt(t *testing.T) {
 
 // ~ C | Y | B :: CoA ~
 
-// World servers reach RedeemTicket on the internal server, with the service
-// token. Server 0 (the static world) is refused before the store touches the
-// database, so no pool is needed.
+// World servers reach RedeemTicket on the internal server with the service token.
 func TestInternalServerServesRedeemTicket(t *testing.T) {
 	srv := newInternalServer(tickets.NewStore(nil, 2*time.Minute), testToken)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -339,9 +333,7 @@ func TestInternalServerServesRedeemTicket(t *testing.T) {
 // testToken stands in for dist/services/service.token.
 const testToken = svcauth.Token("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 
-// RedeemTicket has no authentication and the ticket crosses the network in
-// clear text in the client's UDP handshake: the internal server binds
-// loopback only, unless AOC_GATEWAY_GRPC_PUBLIC=1 says otherwise.
+// Internal server binds loopback only unless AOC_GATEWAY_GRPC_PUBLIC=1.
 func TestInternalBindMustBeLoopback(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1:50054", "127.1.2.3:1", "[::1]:50054", "localhost:50054", "LocalHost:1"} {
 		if err := checkInternalBind(addr, false); err != nil {
@@ -375,9 +367,7 @@ func TestInternalBindMustBeLoopback(t *testing.T) {
 
 // -- C.O.A & C-Y-B --
 
-// run checks what it can before it reaches the database, so a gateway that
-// cannot serve never runs the migrations: the internal bind, then the TLS
-// files. (The database is a port nothing listens on.)
+// run checks internal bind and TLS files before reaching the database.
 func TestRunChecksBeforeTheDatabase(t *testing.T) {
 	certFile, keyFile, _ := selfSigned(t)
 	missingKey := filepath.Join(t.TempDir(), "server.key")
@@ -399,3 +389,109 @@ func TestRunChecksBeforeTheDatabase(t *testing.T) {
 		}
 	}
 }
+
+func TestGatewayHTTPMuxETagAndPreconditions(t *testing.T) {
+	mux := newGatewayHTTPMux("http://127.0.0.1:0", "127.0.0.1:7777")
+	for _, path := range []string{"/healthz", "/api/v1/catalog/realms"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d, want 200", path, rec.Code)
+		}
+		etag := rec.Header().Get("ETag")
+		if etag == "" || !strings.HasPrefix(etag, `"sha256-`) {
+			t.Fatalf("GET %s ETag = %q, want strong sha256 ETag", path, etag)
+		}
+		req304 := httptest.NewRequest(http.MethodGet, path, nil)
+		req304.Header.Set("If-None-Match", etag)
+		rec304 := httptest.NewRecorder()
+		mux.ServeHTTP(rec304, req304)
+		if rec304.Code != http.StatusNotModified {
+			t.Fatalf("GET %s If-None-Match = %d, want 304", path, rec304.Code)
+		}
+		req412 := httptest.NewRequest(http.MethodGet, path, nil)
+		req412.Header.Set("If-Match", `"sha256-mismatch"`)
+		rec412 := httptest.NewRecorder()
+		mux.ServeHTTP(rec412, req412)
+		if rec412.Code != http.StatusPreconditionFailed {
+			t.Fatalf("GET %s If-Match mismatch = %d, want 412", path, rec412.Code)
+		}
+	}
+}
+
+func TestGatewayH2CClientAndDeleteAccountProxy(t *testing.T) {
+	var seenProtoMajor int
+	var seenMethod, seenPath, seenAuth, seenIfMatch string
+	authMux := http.NewServeMux()
+	authMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		seenProtoMajor, seenMethod, seenPath = r.ProtoMajor, r.Method, r.URL.Path
+		seenAuth, seenIfMatch = r.Header.Get("Authorization"), r.Header.Get("If-Match")
+		w.Header().Set("ETag", `"sha256-upstream"`)
+		w.Header().Set("Alt-Svc", `h3=":8081"; ma=86400, h2c=":8081"; ma=86400`)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete || strings.HasSuffix(r.URL.Path, "/delete") {
+			_, _ = w.Write([]byte(`{"deleted":true,"status":"deleted"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"tok-h2c-123456"}`))
+	})
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authSrv := telemetry.NewCleartextHTTPServer(lis.Addr().String(), authMux)
+	go func() { _ = authSrv.Serve(lis) }()
+	t.Cleanup(func() { _ = authSrv.Close() })
+
+	gwMux := newGatewayHTTPMux("http://"+lis.Addr().String(), "127.0.0.1:7777")
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/auth/account", bytes.NewReader([]byte(`{"username":"temp_user"}`)))
+	req.Header.Set("Authorization", "Bearer tok-h2c-123456")
+	req.Header.Set("If-Match", "*")
+	rec := httptest.NewRecorder()
+	gwMux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || seenProtoMajor != 2 || seenMethod != http.MethodDelete || seenPath != "/api/v1/auth/account" {
+		t.Fatalf("DELETE proxy code=%d proto=%d method=%s path=%s", rec.Code, seenProtoMajor, seenMethod, seenPath)
+	}
+	if seenAuth != "Bearer tok-h2c-123456" || seenIfMatch != "*" || rec.Header().Get("ETag") == "" || rec.Header().Get("Alt-Svc") == "" {
+		t.Fatalf("headers auth=%q ifMatch=%q etag=%q altSvc=%q", seenAuth, seenIfMatch, rec.Header().Get("ETag"), rec.Header().Get("Alt-Svc"))
+	}
+}
+
+func TestGatewayCharacterSelectHTTPBridge(t *testing.T) {
+	mux := newGatewayHTTPMux("http://127.0.0.1:0", "127.0.0.1:7777")
+	const bearer = "Bearer valid_session_token_abc123"
+	doJSON := func(method, path, body string) (int, map[string]any, http.Header) {
+		var rdr io.Reader
+		if body != "" {
+			rdr = strings.NewReader(body)
+		}
+		req := httptest.NewRequest(method, path, rdr)
+		req.Header.Set("Authorization", bearer)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out, rec.Header()
+	}
+	code, created, _ := doJSON(http.MethodPost, "/api/v1/characters", `{"name":"Kaelen","class_id":1,"race_id":1}`)
+	charID, _ := created["id"].(string)
+	if code != http.StatusCreated || charID == "" {
+		t.Fatalf("POST /api/v1/characters = %d %v", code, created)
+	}
+	code, listed, hdr := doJSON(http.MethodGet, "/api/v1/characters", "")
+	if code != http.StatusOK || hdr.Get("ETag") == "" {
+		t.Fatalf("GET /api/v1/characters = %d etag=%q body=%v", code, hdr.Get("ETag"), listed)
+	}
+	code, sel, _ := doJSON(http.MethodPost, "/api/v1/characters/"+charID+"/select", `{}`)
+	joinTicket, _ := sel["join_ticket"].(string)
+	if code != http.StatusOK || len(joinTicket) != 32 {
+		t.Fatalf("select character = %d ticket=%q body=%v", code, joinTicket, sel)
+	}
+	code, enter, _ := doJSON(http.MethodPost, "/api/v1/world/enter", `{"join_ticket":"`+joinTicket+`"}`)
+	if code != http.StatusOK || enter["status"] != "ALLOW" {
+		t.Fatalf("world/enter = %d %v", code, enter)
+	}
+}
+

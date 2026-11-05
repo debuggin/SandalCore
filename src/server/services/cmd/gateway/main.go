@@ -40,6 +40,7 @@ import (
 	gatewayv1 "aocrop/services/gen/aoc/gateway/v1"
 	meshv1 "aocrop/services/gen/aoc/mesh/v1"
 	icsxclient "aocrop/services/gen/ics/xclient"
+	"aocrop/services/internal/character"
 	"aocrop/services/internal/config"
 	"aocrop/services/internal/db"
 	"aocrop/services/internal/gatewaygrpc"
@@ -50,6 +51,13 @@ import (
 )
 
 const shutdownGrace = 10 * time.Second
+
+var (
+	gatewayH2CClient   = telemetry.NewH2CClient(5 * time.Second)
+	gatewayHTTP1Client = &http.Client{Timeout: 5 * time.Second}
+	gatewayLiveDeps    *ics.Deps
+	gatewayLiveChars   *character.Store
+)
 
 // -- C | O | A . C_Y_B --
 
@@ -108,12 +116,15 @@ func run() error {
 	}
 	defer conns.close()
 
-	icsSrv := newICSServer(creds, ics.New(ics.Deps{
+	deps := ics.Deps{
 		Accounts:   accounts{authv1.NewAuthServiceClient(conns.auth)},
 		Characters: characters{characterv1.NewCharacterServiceClient(conns.character)},
 		Placer:     placer{meshv1.NewMeshServiceClient(conns.mesh)},
 		Tickets:    issuer{ticketStore},
-	}, ics.DefaultConfig()))
+	}
+	gatewayLiveDeps = &deps
+	gatewayLiveChars = character.NewStore(pool)
+	icsSrv := newICSServer(creds, ics.New(deps, ics.DefaultConfig()))
 	internal := newInternalServer(ticketStore, token)
 	go purgeTickets(ctx, ticketStore)
 	return serveGateway(ctx, stop, cfg, icsSrv, internal)
@@ -207,20 +218,31 @@ func resolveWorldEndpoint() string {
 }
 
 func newGatewayHTTPMux(authBaseURL, worldEndpoint string) http.Handler {
+	return newGatewayHTTPMuxWithDeps(authBaseURL, worldEndpoint, gatewayLiveDeps, gatewayLiveChars)
+}
+
+func newGatewayHTTPMuxWithDeps(authBaseURL, worldEndpoint string, deps *ics.Deps, charStore *character.Store) http.Handler {
 	mux := http.NewServeMux()
+	bridge := newCharacterHTTPBridge(worldEndpoint, deps, charStore)
 	health := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}
-	mux.HandleFunc("/healthz", health)
-	mux.HandleFunc("/livez", health)
-	mux.HandleFunc("/readyz", health)
-	mux.HandleFunc("/api/v1/auth/register", func(w http.ResponseWriter, r *http.Request) {
-		handleGatewayAuthProxy(w, r, authBaseURL)
-	})
-	mux.HandleFunc("/api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
-		handleGatewayAuthProxy(w, r, authBaseURL)
-	})
+	for _, p := range []string{"/healthz", "/livez", "/readyz"} {
+		mux.HandleFunc(p, health)
+	}
+	proxy := func(w http.ResponseWriter, r *http.Request) {
+		proxyAuthHTTP(w, r, authBaseURL, bridge)
+	}
+	for _, p := range []string{
+		"/api/v1/auth/register", "/v1/register",
+		"/api/v1/auth/login", "/v1/login",
+		"/api/v1/auth/account", "/v1/account",
+		"/api/v1/auth/account/delete", "/v1/account/delete",
+	} {
+		mux.HandleFunc(p, proxy)
+	}
+	bridge.registerRoutes(mux)
 	mux.HandleFunc("/api/v1/catalog/realms", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -232,37 +254,92 @@ func newGatewayHTTPMux(authBaseURL, worldEndpoint string) http.Handler {
 	mux.HandleFunc("/api/v1/world/enter", func(w http.ResponseWriter, r *http.Request) {
 		handleGatewayWorldEnter(w, r, worldEndpoint)
 	})
-	return mux
+	return telemetry.ETagMiddleware(mux)
 }
 
 func handleGatewayAuthProxy(w http.ResponseWriter, r *http.Request, authBaseURL string) {
-	if r.Method != http.MethodPost {
+	proxyAuthHTTP(w, r, authBaseURL, nil)
+}
+
+func proxyAuthHTTP(w http.ResponseWriter, r *http.Request, authBaseURL string, bridge *characterHTTPBridge) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	rawBody, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
+	var rawBody []byte
+	if r.Body != nil {
+		var err error
+		rawBody, err = io.ReadAll(io.LimitReader(r.Body, 64*1024))
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 	}
 	bodyToSend, username := normalizeAuthRequestBody(rawBody)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, authBaseURL+r.URL.Path, bytes.NewReader(bodyToSend))
-	if err != nil {
-		w.WriteHeader(http.StatusBadGateway)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := doAuthProxyRequest(r.Context(), r.Method, authBaseURL+r.URL.Path, bodyToSend, r.Header)
 	if err != nil {
 		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 	respBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	outBytes := enrichAuthResponseBody(resp.StatusCode, respBytes, username)
+	syncBridgeAuthState(bridge, r, resp.StatusCode, outBytes, username)
+	for _, hdr := range []string{"ETag", "Alt-Svc", "Cache-Control", "Idempotent-Replayed"} {
+		if v := resp.Header.Get(hdr); v != "" {
+			w.Header().Set(hdr, v)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(enrichAuthResponseBody(resp.StatusCode, respBytes, username))
+	_, _ = w.Write(outBytes)
+}
+
+func doAuthProxyRequest(ctx context.Context, method, targetURL string, body []byte, srcHeader http.Header) (*http.Response, error) {
+	buildReq := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for _, hdr := range []string{"Authorization", "If-None-Match", "If-Match", "Idempotency-Key"} {
+			if v := srcHeader.Get(hdr); v != "" {
+				req.Header.Set(hdr, v)
+			}
+		}
+		return req, nil
+	}
+	req, err := buildReq()
+	if err != nil {
+		return nil, err
+	}
+	if resp, derr := gatewayH2CClient.Do(req); derr == nil {
+		return resp, nil
+	} else if reqFallback, ferr := buildReq(); ferr == nil {
+		return gatewayHTTP1Client.Do(reqFallback)
+	} else {
+		return nil, derr
+	}
+}
+
+func syncBridgeAuthState(bridge *characterHTTPBridge, r *http.Request, status int, outBytes []byte, username string) {
+	if bridge == nil || status < 200 || status >= 300 {
+		return
+	}
+	path := r.URL.Path
+	if r.Method == http.MethodDelete || strings.HasSuffix(path, "/account") || strings.HasSuffix(path, "/account/delete") {
+		bridge.revokeAccountOrToken(r.Header.Get("Authorization"), username)
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(outBytes, &payload); err != nil {
+		return
+	}
+	for _, k := range []string{"access_token", "token"} {
+		if tok, ok := payload[k].(string); ok && strings.TrimSpace(tok) != "" {
+			bridge.recordIssuedToken(tok, username)
+		}
+	}
 }
 
 func normalizeAuthRequestBody(raw []byte) ([]byte, string) {
@@ -317,7 +394,7 @@ func handleGatewayWorldEnter(w http.ResponseWriter, r *http.Request, worldEndpoi
 	if tok == "" {
 		var body map[string]any
 		_ = json.NewDecoder(io.LimitReader(r.Body, 16*1024)).Decode(&body)
-		for _, k := range []string{"ticket", "token", "access_token"} {
+		for _, k := range []string{"join_ticket", "ticket", "token", "access_token"} {
 			if v, ok := body[k].(string); ok && strings.TrimSpace(v) != "" {
 				tok = strings.TrimSpace(v)
 				break

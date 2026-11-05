@@ -21,9 +21,12 @@ import (
 // fakeAccounts is an in-memory Accounts for handler tests.
 type fakeAccounts struct {
 	users       map[string]string // lower(username) -> password
-	registerErr error             // when set, Register fails with it after validation
-	authErr     error             // when set, Authenticate fails with it
-	tokenErr    error             // when set, IssueToken fails with it
+	tokens      map[string]string // token -> lower(username)
+	lastUser    string
+	registerErr error // when set, Register fails with it after validation
+	authErr     error // when set, Authenticate fails with it
+	tokenErr    error // when set, IssueToken fails with it
+	deleteErr   error // when set, DeleteAccount / DeleteAccountByToken fails with it
 }
 
 func (f *fakeAccounts) Register(_ context.Context, u, p string) (account.Account, error) {
@@ -33,10 +36,12 @@ func (f *fakeAccounts) Register(_ context.Context, u, p string) (account.Account
 	if f.registerErr != nil {
 		return account.Account{}, f.registerErr
 	}
-	if _, ok := f.users[strings.ToLower(u)]; ok {
+	key := strings.ToLower(u)
+	if _, ok := f.users[key]; ok {
 		return account.Account{}, account.ErrUsernameTaken
 	}
-	f.users[strings.ToLower(u)] = p
+	f.users[key] = p
+	f.lastUser = key
 	return account.Account{ID: int64(len(f.users)), Username: u}, nil
 }
 
@@ -46,7 +51,9 @@ func (f *fakeAccounts) Authenticate(_ context.Context, u, p string) (account.Acc
 	if f.authErr != nil {
 		return account.Account{}, f.authErr
 	}
-	if pw, ok := f.users[strings.ToLower(u)]; ok && pw == p {
+	key := strings.ToLower(u)
+	if pw, ok := f.users[key]; ok && pw == p {
+		f.lastUser = key
 		return account.Account{ID: 1, Username: u}, nil
 	}
 	return account.Account{}, account.ErrInvalidCredentials
@@ -56,10 +63,52 @@ func (f *fakeAccounts) IssueToken(_ context.Context, _ int64) (account.Token, er
 	if f.tokenErr != nil {
 		return account.Token{}, f.tokenErr
 	}
+	if f.tokens == nil {
+		f.tokens = make(map[string]string)
+	}
+	if f.lastUser != "" {
+		f.tokens["aoc_test"] = f.lastUser
+	}
 	return account.Token{Value: "aoc_test", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
 func (f *fakeAccounts) TokenTTL() time.Duration { return 24 * time.Hour }
+
+func (f *fakeAccounts) DeleteAccount(_ context.Context, u, p string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	key := strings.ToLower(u)
+	pw, ok := f.users[key]
+	if !ok || pw != p {
+		return account.ErrInvalidCredentials
+	}
+	delete(f.users, key)
+	for tok, owner := range f.tokens {
+		if owner == key {
+			delete(f.tokens, tok)
+		}
+	}
+	return nil
+}
+
+func (f *fakeAccounts) DeleteAccountByToken(_ context.Context, rawToken string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	tok := strings.TrimSpace(rawToken)
+	key, ok := f.tokens[tok]
+	if !ok {
+		return account.ErrInvalidToken
+	}
+	if _, exists := f.users[key]; !exists {
+		delete(f.tokens, tok)
+		return account.ErrInvalidToken
+	}
+	delete(f.users, key)
+	delete(f.tokens, tok)
+	return nil
+}
 
 // postFull posts body to path and returns the recorder (status, headers, raw
 // body) along with the decoded JSON body.
@@ -221,5 +270,135 @@ func TestHealth(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"ok"`) {
 		t.Errorf("health: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+type deleteReq struct {
+	path, body, bearer, ifMatch string
+}
+
+func doDeleteAccount(t *testing.T, h http.Handler, d deleteReq) *httptest.ResponseRecorder {
+	t.Helper()
+	var req *http.Request
+	if d.body != "" {
+		req = httptest.NewRequest(http.MethodDelete, d.path, strings.NewReader(d.body))
+		req.Header.Set("Content-Type", "application/json")
+	} else {
+		req = httptest.NewRequest(http.MethodDelete, d.path, nil)
+	}
+	if d.bearer != "" {
+		req.Header.Set("Authorization", d.bearer)
+	}
+	if d.ifMatch != "" {
+		req.Header.Set("If-Match", d.ifMatch)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestRegisterLoginDeleteAccountByToken(t *testing.T) {
+	h := Handler(&fakeAccounts{users: map[string]string{}})
+
+	regRec, regOut := postFull(t, h, "/v1/register", `{"username":"temp_user","password":"secret1"}`)
+	if regRec.Code != http.StatusOK || regOut["access_token"] != "aoc_test" {
+		t.Fatalf("POST /v1/register: %d %v", regRec.Code, regOut)
+	}
+	if etag := regRec.Header().Get("ETag"); !strings.HasPrefix(etag, `"acct-`) {
+		t.Fatalf("register ETag = %q, want strong ETag", etag)
+	}
+
+	loginRec, loginOut := postFull(t, h, "/v1/login", `{"username":"temp_user","password":"secret1"}`)
+	if loginRec.Code != http.StatusOK || loginOut["access_token"] != "aoc_test" {
+		t.Fatalf("POST /v1/login: %d %v", loginRec.Code, loginOut)
+	}
+	etag := loginRec.Header().Get("ETag")
+
+	delRec := doDeleteAccount(t, h, deleteReq{path: "/v1/account", bearer: "Bearer aoc_test", ifMatch: etag})
+	if delRec.Code != http.StatusOK || !strings.Contains(delRec.Body.String(), `"deleted":true`) {
+		t.Fatalf("DELETE /v1/account (Bearer): %d %q", delRec.Code, delRec.Body.String())
+	}
+
+	code, out := post(t, h, "/v1/login", `{"username":"temp_user","password":"secret1"}`)
+	if code != http.StatusUnauthorized || out["error"] != "invalid_credentials" {
+		t.Fatalf("POST /v1/login after delete: %d %v, want 401 invalid_credentials", code, out)
+	}
+	delAgain := doDeleteAccount(t, h, deleteReq{path: "/v1/account", bearer: "Bearer aoc_test"})
+	if delAgain.Code != http.StatusUnauthorized {
+		t.Fatalf("second DELETE /v1/account: %d, want 401", delAgain.Code)
+	}
+}
+
+func TestRegisterLoginDeleteAccountByCredentials(t *testing.T) {
+	h := Handler(&fakeAccounts{users: map[string]string{}})
+
+	if code, _ := post(t, h, "/v1/register", `{"username":"cred_user","password":"secret1"}`); code != http.StatusOK {
+		t.Fatalf("POST /v1/register: %d", code)
+	}
+	loginRec, _ := postFull(t, h, "/v1/login", `{"username":"cred_user","password":"secret1"}`)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/login: %d", loginRec.Code)
+	}
+
+	delRec := doDeleteAccount(t, h, deleteReq{
+		path:    "/api/v1/auth/account",
+		body:    `{"username":"cred_user","password":"secret1"}`,
+		ifMatch: `"*"`,
+	})
+	if delRec.Code != http.StatusOK || !strings.Contains(delRec.Body.String(), `"deleted":true`) {
+		t.Fatalf("DELETE /api/v1/auth/account (JSON): %d %q", delRec.Code, delRec.Body.String())
+	}
+
+	if code, _ := post(t, h, "/v1/login", `{"username":"cred_user","password":"secret1"}`); code != http.StatusUnauthorized {
+		t.Fatalf("POST /v1/login after credential delete: %d, want 401", code)
+	}
+
+	if code, _ := post(t, h, "/v1/register", `{"username":"nocontent_user","password":"secret1"}`); code != http.StatusOK {
+		t.Fatalf("POST /v1/register nocontent_user: %d", code)
+	}
+	ncRec := doDeleteAccount(t, h, deleteReq{
+		path: "/v1/account?no_content=1",
+		body: `{"username":"nocontent_user","password":"secret1"}`,
+	})
+	if ncRec.Code != http.StatusNoContent || ncRec.Body.Len() != 0 {
+		t.Fatalf("DELETE /v1/account?no_content=1: %d %q, want 204 empty", ncRec.Code, ncRec.Body.String())
+	}
+}
+
+func TestDeleteAccountPreconditionAndAuthErrors(t *testing.T) {
+	h := Handler(&fakeAccounts{users: map[string]string{}})
+	if code, _ := post(t, h, "/v1/register", `{"username":"guard_user","password":"secret1"}`); code != http.StatusOK {
+		t.Fatalf("POST /v1/register: %d", code)
+	}
+
+	preRec := doDeleteAccount(t, h, deleteReq{path: "/v1/account", bearer: "Bearer aoc_test", ifMatch: `"wrong-etag"`})
+	if preRec.Code != http.StatusPreconditionFailed || preRec.Header().Get("Content-Type") != "application/problem+json" {
+		t.Fatalf("mismatched If-Match (Bearer): %d %q %q, want 412 application/problem+json",
+			preRec.Code, preRec.Header().Get("Content-Type"), preRec.Body.String())
+	}
+	preCredRec := doDeleteAccount(t, h, deleteReq{
+		path:    "/v1/account",
+		body:    `{"username":"guard_user","password":"secret1"}`,
+		ifMatch: `W/"weak-etag"`,
+	})
+	if preCredRec.Code != http.StatusPreconditionFailed || preCredRec.Header().Get("Content-Type") != "application/problem+json" {
+		t.Fatalf("mismatched If-Match (JSON): %d, want 412", preCredRec.Code)
+	}
+
+	badTokRec := doDeleteAccount(t, h, deleteReq{path: "/v1/account", bearer: "Bearer aoc_invalid"})
+	if badTokRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid bearer token: %d, want 401", badTokRec.Code)
+	}
+	badCredRec := doDeleteAccount(t, h, deleteReq{path: "/v1/account", body: `{"username":"guard_user","password":"wrong"}`})
+	if badCredRec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password: %d, want 401", badCredRec.Code)
+	}
+	badJSONRec := doDeleteAccount(t, h, deleteReq{path: "/v1/account", body: `not json`})
+	if badJSONRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid JSON: %d, want 400", badJSONRec.Code)
+	}
+
+	if code, _ := post(t, h, "/v1/login", `{"username":"guard_user","password":"secret1"}`); code != http.StatusOK {
+		t.Fatalf("guard_user should still exist after failed deletes, got %d", code)
 	}
 }

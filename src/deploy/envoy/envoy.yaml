@@ -33,8 +33,22 @@ static_resources:
                   virtual_hosts:
                     - name: sandal_http_vhost
                       domains: ["*"]
+                      typed_per_filter_config:
+                        envoy.filters.http.cors:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.CorsPolicy
+                          allow_origin_string_match:
+                            - safe_regex:
+                                regex: ".*"
+                          allow_methods: "DELETE, GET, POST, PUT, PATCH, OPTIONS"
+                          allow_headers: "Authorization, Content-Type, X-Service-Token, X-Idempotency-Key, Idempotency-Key, ETag, If-None-Match, If-Match, Alt-Svc"
+                          expose_headers: "ETag, If-None-Match, If-Match, Alt-Svc, Retry-After"
                       routes:
-                        # /api/v1/auth/* -> gateway_http (gateway:8081)
+                        # /api/v1/auth/* & /v1/account -> gateway_http (gateway:8081)
+                        - match:
+                            prefix: "/api/v1/auth/account"
+                          route:
+                            cluster: gateway_http
+                            timeout: 15s
                         - match:
                             prefix: "/api/v1/auth/"
                           route:
@@ -42,6 +56,22 @@ static_resources:
                             timeout: 15s
                         - match:
                             prefix: "/api/v1/auth"
+                          route:
+                            cluster: gateway_http
+                            timeout: 15s
+                        - match:
+                            prefix: "/v1/account"
+                          route:
+                            cluster: gateway_http
+                            timeout: 15s
+                        # /api/v1/characters/* -> gateway_http (gateway:8081)
+                        - match:
+                            prefix: "/api/v1/characters/"
+                          route:
+                            cluster: gateway_http
+                            timeout: 15s
+                        - match:
+                            prefix: "/api/v1/characters"
                           route:
                             cluster: gateway_http
                             timeout: 15s
@@ -85,6 +115,9 @@ static_resources:
                             cluster: web_admin_http
                             timeout: 30s
                 http_filters:
+                  - name: envoy.filters.http.cors
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -189,6 +222,7 @@ static_resources:
       connect_timeout: 2s
       type: STRICT_DNS
       lb_policy: ROUND_ROBIN
+      http2_protocol_options: {}
       circuit_breakers:
         thresholds:
           - max_connections: 10000
@@ -214,6 +248,7 @@ static_resources:
       connect_timeout: 2s
       type: STRICT_DNS
       lb_policy: ROUND_ROBIN
+      http2_protocol_options: {}
       circuit_breakers:
         thresholds:
           - max_connections: 10000

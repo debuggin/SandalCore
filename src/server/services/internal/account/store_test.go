@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -466,5 +467,120 @@ func TestPurgeExpiredTokens(t *testing.T) {
 	}
 	if _, err := s.ValidateToken(ctx, live.Value); err != nil {
 		t.Errorf("live token after purge: %v", err)
+	}
+}
+
+func newStoreOrMem(t *testing.T) *Store {
+	t.Helper()
+	if os.Getenv("AOC_TEST_DATABASE_URL") != "" {
+		return newStore(t)
+	}
+	return NewStore(nil, time.Hour)
+}
+
+func TestDeleteAccountByCredentials(t *testing.T) {
+	s := newStoreOrMem(t)
+	ctx := context.Background()
+
+	acc, err := s.Register(ctx, "TempUser", "secret1")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if _, err := s.Login(ctx, "tempuser", "secret1"); err != nil {
+		t.Fatalf("Login before delete: %v", err)
+	}
+	tok, err := s.IssueToken(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if _, err := s.VerifyToken(ctx, tok.Value); err != nil {
+		t.Fatalf("VerifyToken before delete: %v", err)
+	}
+
+	if err := s.DeleteAccount(ctx, "TempUser", "wrong-pass"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("DeleteAccount wrong password = %v, want ErrInvalidCredentials", err)
+	}
+	if err := s.DeleteAccount(ctx, "no_such_user", "secret1"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("DeleteAccount unknown user = %v, want ErrInvalidCredentials", err)
+	}
+
+	if err := s.DeleteAccount(ctx, "tempuser", "secret1"); err != nil {
+		t.Fatalf("DeleteAccount valid credentials: %v", err)
+	}
+	if _, err := s.Login(ctx, "TempUser", "secret1"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("Login after DeleteAccount = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := s.VerifyToken(ctx, tok.Value); !errors.Is(err, ErrInvalidCredentials) || !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("VerifyToken after DeleteAccount = %v, want ErrInvalidCredentials/ErrInvalidToken", err)
+	}
+	if err := s.DeleteAccount(ctx, "TempUser", "secret1"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("second DeleteAccount = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+func TestDeleteAccountByToken(t *testing.T) {
+	s := newStoreOrMem(t)
+	ctx := context.Background()
+
+	acc, err := s.Register(ctx, "TokenUser", "secret1")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	tok, err := s.IssueToken(ctx, acc.ID)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+
+	for _, bad := range []string{"", "aoc_unknown", "Bearer aoc_unknown"} {
+		if err := s.DeleteAccountByToken(ctx, bad); !errors.Is(err, ErrInvalidCredentials) || !errors.Is(err, ErrInvalidToken) {
+			t.Fatalf("DeleteAccountByToken(%q) = %v, want ErrInvalidCredentials/ErrInvalidToken", bad, err)
+		}
+	}
+
+	if err := s.DeleteAccountByToken(ctx, "Bearer "+tok.Value); err != nil {
+		t.Fatalf("DeleteAccountByToken valid token: %v", err)
+	}
+	if _, err := s.Login(ctx, "TokenUser", "secret1"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("Login after DeleteAccountByToken = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := s.VerifyToken(ctx, tok.Value); !errors.Is(err, ErrInvalidCredentials) || !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("VerifyToken after DeleteAccountByToken = %v, want ErrInvalidCredentials/ErrInvalidToken", err)
+	}
+	if err := s.DeleteAccountByToken(ctx, tok.Value); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("second DeleteAccountByToken = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+func TestDeleteAccountCascadesDBRows(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	acc, err := s.Register(ctx, "CascadeUser", "secret1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := s.IssueToken(ctx, acc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const charID = "0123456789abcdef0123456789abcdef"
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO characters (id, account_id, name, race_id, gender_id, archetype_id, class_name)
+		 VALUES ($1, $2, 'CascChar', 1, 1, 1, 'Fighter')`, charID, acc.ID); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO sessions (ticket, account_id, character_id, target_server_id, created_at, expires_at)
+		 VALUES ('fedcba9876543210fedcba9876543210', $1, $2, 0, $3, $4)`,
+		acc.ID, charID, now, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteAccountByToken(ctx, tok.Value); err != nil {
+		t.Fatalf("DeleteAccountByToken: %v", err)
+	}
+	for _, tbl := range []string{"accounts", "login_tokens", "characters", "sessions"} {
+		if n := countRows(t, s, tbl); n != 0 {
+			t.Errorf("%s rows after DeleteAccountByToken = %d, want 0", tbl, n)
+		}
 	}
 }

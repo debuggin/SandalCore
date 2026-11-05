@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"aocrop/services/internal/admincatalog"
+	"aocrop/services/internal/telemetry"
 	"aocrop/services/internal/worldstream"
 )
 
@@ -110,6 +111,7 @@ type Server struct {
 	overlayState                                map[string]HotfixRowDiff
 	auditLog                                    []AuditEntry
 	mux                                         *http.ServeMux
+	etagHandler                                 http.Handler
 }
 type authedHandler func(w http.ResponseWriter, r *http.Request, role Role)
 
@@ -137,6 +139,7 @@ func NewRouter(cfg Config) *Server {
 	s.ready.Store(true)
 	s.snapshotEpoch.Store(1)
 	s.registerRoutes()
+	s.etagHandler = telemetry.ETagMiddleware(s.mux)
 	return s
 }
 func (s *Server) SetReady(ready bool)   { s.ready.Store(ready) }
@@ -145,7 +148,43 @@ func (s *Server) ReloadCount() uint64   { return s.reloadCount.Load() }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
-	s.mux.ServeHTTP(w, r)
+	w.Header().Set("Alt-Svc", `h3=":8443"; ma=86400`)
+	if r.URL.Path == "/api/v1/world/stream" {
+		s.mux.ServeHTTP(w, r)
+		return
+	}
+	if !s.checkMutatingIfMatch(w, r) {
+		return
+	}
+	s.etagHandler.ServeHTTP(canonicalHeaderWriter{w}, r)
+}
+
+type canonicalHeaderWriter struct{ http.ResponseWriter }
+
+func (c canonicalHeaderWriter) WriteHeader(code int) {
+	hdr := c.Header()
+	for k, vals := range hdr {
+		if canon := http.CanonicalHeaderKey(k); canon != k {
+			delete(hdr, k)
+			hdr[canon] = vals
+		}
+	}
+	c.ResponseWriter.WriteHeader(code)
+}
+func (s *Server) checkMutatingIfMatch(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch && r.Method != http.MethodDelete {
+		return true
+	}
+	ifMatch := strings.TrimSpace(r.Header.Get("If-Match"))
+	if ifMatch == "" {
+		return true
+	}
+	if ifMatch == "*" || ifMatch == s.currentAuditETag() || ifMatch == s.currentCommandsETag() {
+		r.Header.Del("If-Match")
+		return true
+	}
+	writeProblem(w, r, http.StatusPreconditionFailed, "precondition-failed", fmt.Sprintf("If-Match %s did not match current representation ETag.", ifMatch))
+	return false
 }
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /livez", s.handleLivez)
@@ -154,6 +193,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/v1/catalog/search", s.requireRole(RoleObserver, s.handleCatalogSearch))
 	s.mux.HandleFunc("GET /api/v1/world/entities", s.requireRole(RoleObserver, s.handleWorldEntities))
 	s.mux.HandleFunc("GET /api/v1/world/stream", s.requireRole(RoleObserver, s.handleWorldStream))
+	s.mux.HandleFunc("GET /api/v1/gm/commands", s.requireRole(RoleObserver, s.wrapHandler(s.HandleCommandList)))
 	s.mux.HandleFunc("POST /api/v1/gm/command", s.requireRole(RoleOperator, s.handleGMCommand))
 	s.mux.HandleFunc("POST /api/v1/gm/hotfix/dry-run", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleHotfixDryRun)))
 	s.mux.HandleFunc("POST /api/v1/gm/hotfix/apply", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleHotfixApply)))
@@ -163,11 +203,41 @@ func (s *Server) registerRoutes() {
 func (s *Server) wrapHandler(fn http.HandlerFunc) authedHandler {
 	return func(w http.ResponseWriter, r *http.Request, _ Role) { fn(w, r) }
 }
+func (s *Server) HandleCommandList(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.buildCommandsPayload())
+}
+func (s *Server) buildCommandsPayload() map[string]any {
+	s.mu.Lock()
+	executed := len(s.idemStore)
+	s.mu.Unlock()
+	cmds := []map[string]any{
+		{"command": "spawn_npc", "min_role": RoleOperator},
+		{"command": "despawn_entity", "min_role": RoleOperator},
+		{"command": "teleport_player", "min_role": RoleOperator},
+		{"command": "grant_item", "min_role": RoleOperator},
+		{"command": "set_node_level", "min_role": RoleArchitect},
+		{"command": "world_broadcast", "min_role": RoleArchitect},
+		{"command": "reset_encounter", "min_role": RoleArchitect},
+		{"command": "shutdown_zone", "min_role": RoleArchitect},
+	}
+	return map[string]any{"count": len(cmds), "executed_count": executed, "commands": cmds}
+}
+func (s *Server) currentCommandsETag() string {
+	b, _ := json.Marshal(s.buildCommandsPayload())
+	return telemetry.ComputeStrongETag(append(b, '\n'))
+}
 func (s *Server) HandleAuditList(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.buildAuditPayload())
+}
+func (s *Server) buildAuditPayload() map[string]any {
 	s.mu.Lock()
 	entries, epoch := append([]AuditEntry(nil), s.auditLog...), s.snapshotEpoch.Load()
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"snapshot_epoch": epoch, "count": len(entries), "entries": entries})
+	return map[string]any{"snapshot_epoch": epoch, "count": len(entries), "entries": entries}
+}
+func (s *Server) currentAuditETag() string {
+	b, _ := json.Marshal(s.buildAuditPayload())
+	return telemetry.ComputeStrongETag(append(b, '\n'))
 }
 func (s *Server) requireRole(min Role, next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -242,6 +312,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, http.StatusServiceUnavailable, "unhealthy", "Admin gateway is shutting down.")
 		return
 	}
+	w.Header().Set("ETag", telemetry.ComputeStrongETag([]byte(fmt.Sprintf("healthy:%d:%d:%d", s.catalog.Count(), s.coalescer.EntityCount(), s.snapshotEpoch.Load()))))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "healthy", "probe": "healthz", "uptimeMs": s.now().Sub(s.startedAt).Milliseconds(), "catalogEntries": s.catalog.Count(), "worldEntities": s.coalescer.EntityCount(), "activeSubscribers": s.coalescer.SubscriberCount(), "serverTimeMs": s.now().UnixMilli()})
 }
 func (s *Server) handleCatalogSearch(w http.ResponseWriter, r *http.Request, _ Role) {

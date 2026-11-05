@@ -24,6 +24,7 @@ import (
 	"aocrop/services/internal/config"
 	"aocrop/services/internal/db"
 	"aocrop/services/internal/svcauth"
+	"aocrop/services/internal/telemetry"
 )
 
 func main() {
@@ -67,13 +68,7 @@ func run() error {
 		httpLis.Close()
 		return err
 	}
-	httpSrv := &http.Server{
-		Handler:           authhttp.Handler(store),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
+	httpSrv := newHTTPServer(cfg.AuthHTTPAddr, authhttp.Handler(store))
 	grpcSrv := newGRPCServer(token, store)
 
 	errc := make(chan error, 2)
@@ -97,6 +92,10 @@ func run() error {
 	<-drained
 	force.Stop()
 	return err
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return telemetry.NewCleartextHTTPServer(addr, telemetry.ETagMiddleware(handler))
 }
 
 // newGRPCServer is the token-validation server the gateway calls. It requires
