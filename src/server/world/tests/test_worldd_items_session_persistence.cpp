@@ -550,6 +550,45 @@ static void test_review_saves_after_equip() {
     h.step(seconds(61));
     CHECK(h.sink.inventories.size() == n, "a request after finish is not saved (a new session carries what it has)");
 }
+static BunchWriter ranged_rpc(bool ranged) {
+    const schema::ClassSchema &pawn = class_named("PlayerPawn_C");
+    const schema::RpcSchema *rpc = pawn.rpc("ServerSetUseRangedWeapon");
+    const auto params = repl::set_use_ranged_weapon_params(*rpc, ranged);
+    return params ? actor_rpc(pawn, "ServerSetUseRangedWeapon", *params) : BunchWriter();
+}
+static int64_t weapon_line_in_hand(const Harness &h) {
+    const repl::Subobject *info = h.s->bootstrap().pawn().find(h.s->bootstrap().setup().guids.owner_info);
+    const repl::Value *v = info ? info->obj.state.get(*info->obj.schema, "WeaponSkillLineId.Guid") : nullptr;
+    return v && v->get_if<int64_t>() ? *v->get_if<int64_t>() : 0;
+}
+static bool same_skill_ranks(const std::vector<sg::SkillRank> &a, const std::vector<sg::SkillRank> &b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (!(a[i].cls == b[i].cls) || !(a[i].skill == b[i].skill)) return false;
+    }
+    return true;
+}
+static void test_weapon_ranks_follow_the_hand() {
+    std::printf("the ranks the stats hold follow the weapon in hand\n");
+    constexpr int64_t kScepterLineType = 6064632150851584017ll, kBookLineType = 6064632150850207758ll, kBookLine = 6064631670991093890ll, kMaxLineXp = 5718160;
+    svc::Character record = bard_at(1);
+    record.experience.push_back({kScepterLineType, kMaxLineXp, 0});
+    record.experience.push_back({kBookLineType, kMaxLineXp, 0});
+    Harness h(record);
+    const tl::Book *book = h.s->talents();
+    const auto stats_hold = [&](int64_t line) { return book && h.s->character_stats() && same_skill_ranks(h.s->character_stats()->ranks(), book->held_ranks(line)); };
+    const int64_t scepter_line = weapon_line_in_hand(h);
+    CHECK(book && scepter_line != 0 && scepter_line != kBookLine, "(the Scepter's weapon line is in hand)");
+    if (!book || scepter_line == 0) return;
+    CHECK(!same_skill_ranks(book->held_ranks(scepter_line), book->held_ranks(kBookLine)) && !same_skill_ranks(book->held_ranks(scepter_line), book->held_ranks(0)),
+          "(the Scepter's weapon tree grants ranks that neither the Book's tree nor an empty hand holds, so the stats show which weapon is in hand)");
+    CHECK(stats_hold(scepter_line), "at the join the stats hold the ranks of the weapon line in hand (the Scepter's)");
+    h.request(ranged_rpc(true), h.pawn_ch);
+    CHECK(weapon_line_in_hand(h) == kBookLine && stats_hold(kBookLine) && !stats_hold(scepter_line), "after the swap to the Book the stats hold the Book's ranks and no longer the Scepter's");
+    h.step(milliseconds(120));
+    h.request(ranged_rpc(false), h.pawn_ch);
+    CHECK(weapon_line_in_hand(h) == scepter_line && stats_hold(scepter_line), "...and after the swap back the Scepter's again");
+}
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
@@ -564,6 +603,7 @@ int main() {
     test_review_empty_character();
     test_review_saves_after_equip();
     test_real_content_db();
+    test_weapon_ranks_follow_the_hand();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

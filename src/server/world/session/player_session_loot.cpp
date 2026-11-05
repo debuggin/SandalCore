@@ -605,6 +605,8 @@ void PlayerSession::die(Connection& conn, Clock::time_point now) {
   cancel_quick_make(&conn, "the player died");
   cancel_gather(&conn, "the player died", Interrupt::Death);
   if (pipeline_) pipeline_->set_dead(true);
+  dismiss_pet(now);
+  item_reserved_.clear();
   if (mounted()) dismount(conn, now, DismountWhy::PlayerDied);
   if (mounts_ && abilities_) mounts_->desummon(ability_seconds(now));
   const GoodPosition at = checker_.good();

@@ -382,14 +382,54 @@ void test_hostile(Fixture& f) {
 
 // ---- a huntable creature's corpse (Gathering stage 3, "Hunting") ------------------------------------------------------------------------------------
 
+constexpr int64_t kHuntDef = 777000111;
+
+uint64_t make_huntable(Scene& s, int level, double x) {
+    const uint64_t id = s.wolf(level, x);
+    if (id) s.w.registry.modify(id, world::Change::State, [&](world::WorldActor& a) { a.npc.interact_def = kHuntDef; });
+    return id;
+}
+
+void check_late_and_disabled_hunts(Fixture& f) {
+    {
+        Scene l(f, 12);
+        if (!l.ok()) {
+            CHECK(false, "the scene");
+            return;
+        }
+        l.after->set_huntable([](const world::NpcInfo& i) { return i.interact_def == kHuntDef; });
+        const uint64_t id = make_huntable(l, 10, 15000.0);   // (150 m from the player: out of any creature's notice)
+        CHECK(id != 0 && l.after->hunt_started(id, l.now, 14.0), "a hunt starts on a living huntable");
+        l.run(25.0);
+        CHECK(l.after->corpse_of(id) == nullptr && l.w.registry.find(id) != nullptr, "25 s on, its record is gone and the creature still stands");
+        CHECK(l.after->hunt_done(id, l.now), "the hunt completes 6 s late and is still done");
+        const combat::Corpse* late = l.after->corpse_of(id);
+        CHECK(late && late->hunted && !late->living && near(late->close_at, l.now + 4.0, 0.01), "the creature is a hunted corpse that goes 4 s later");
+        l.run(4.5);
+        CHECK(l.w.registry.find(id) == nullptr && l.after->corpse_of(id) == nullptr, "4.5 s on it is gone");
+        l.run(10.0);
+        CHECK(l.respawns.size() == 1 && l.respawns[0] == 5, "and its spawn point refilled it");
+    }
+
+    // the kill switch: the corpse is still hunted
+    {
+        combat::AftermathConfig cfg;
+        cfg.enabled = false;
+        Scene d(f, 20, cfg);
+        if (!d.ok()) {
+            CHECK(false, "the scene");
+            return;
+        }
+        d.after->set_huntable([](const world::NpcInfo& i) { return i.interact_def == kHuntDef; });
+        const uint64_t id = make_huntable(d, 10, 100);
+        d.kill(id);
+        const combat::Corpse* cd = d.after->corpse_of(id);
+        CHECK(cd && cd->huntable && near(cd->close_at - cd->died_at, 120.0, 1e-6) && d.player->kills.empty(), "--no-loot: no experience, the corpse still waits for the hunter");
+    }
+}
+
 void test_huntable(Fixture& f) {
     std::printf("a huntable creature: no loot, the experience, a corpse that waits for the hunter\n");
-    constexpr int64_t kHuntDef = 777000111;
-    const auto make_huntable = [&](Scene& s, int level, double x) {
-        const uint64_t id = s.wolf(level, x);
-        if (id) s.w.registry.modify(id, world::Change::State, [&](world::WorldActor& a) { a.npc.interact_def = kHuntDef; });
-        return id;
-    };
     Scene s(f, 12);   // the Glint falloff lets a level-10 Wolf drop for a level-12 player: a plain Wolf leaves loot about 38 times in a hundred
     CHECKF(s.ok(), "the scene: %s %s", s.rig.problem.c_str(), s.w.problem.c_str());
     if (!s.ok()) return;
@@ -438,22 +478,7 @@ void test_huntable(Fixture& f) {
     CHECK(s.w.registry.find(huntable) == nullptr && s.after->corpse_of(huntable) == nullptr, "4.5 s on it is gone");
     // a hunt that never comes: the 120 s
     CHECK(s.w.registry.find(plain) == nullptr, "(the plain corpses are long gone)");
-
-    // the kill switch: the corpse is still hunted
-    {
-        combat::AftermathConfig cfg;
-        cfg.enabled = false;
-        Scene d(f, 20, cfg);
-        if (!d.ok()) {
-            CHECK(false, "the scene");
-            return;
-        }
-        d.after->set_huntable([](const world::NpcInfo& i) { return i.interact_def == kHuntDef; });
-        const uint64_t id = make_huntable(d, 10, 100);
-        d.kill(id);
-        const combat::Corpse* cd = d.after->corpse_of(id);
-        CHECK(cd && cd->huntable && near(cd->close_at - cd->died_at, 120.0, 1e-6) && d.player->kills.empty(), "--no-loot: no experience, the corpse still waits for the hunter");
-    }
+    check_late_and_disabled_hunts(f);
 }
 
 }  // namespace

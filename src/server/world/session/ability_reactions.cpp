@@ -1,24 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  session/ability_reactions.cpp  (see ability_pipeline.h)
-//
-//  The game's reactions (contentc version 35): a small rule an effect carries while it is on its holder. When an event of a kind it is bound to happens to
-//  the holder (a hit the holder made lands, an ability's cost is paid) and its trigger expression is true, the reaction applies its hits: to the holder
-//  (Owner) or to the targets of the hit that raised the event (Targets), under the reaction's own source so that the client takes them as the server's.
-//
-//  How the game does it [the client's code, which shares the logic with the server]:
-//    - the holder's effects that are registered for the kind of the event are walked in the order they were added, and each one's reactions in the order they
-//      are listed: the binding is tested first (one byte of bits per event kind), then the trigger;
-//    - a reaction's hits are applied in order through the ordinary hit path; a hit that a reaction made raises no reaction (the data repeats it in its triggers);
-//    - a hit raises its event only when its record has event tags or stat mods;
-//    - a limit on how often a reaction may fire (GlobalProcLimit, InstigatorProcLimit) is counted per reaction here (one holder), and a carrier that is a
-//      pipeline effect is taken off when its reaction reached it.
-//
-//  What this file serves: the events Hit (OwnerHits) and Ability (Consume), the instigator Owner, and the targets Owner (the holder) and Targets (the hit's).
-//  The rest of the bindings, instigators and targets of the 335 records are left alone and said once in the log when a reaction would need them.
-// ============================================================================
+// Reaction dispatch for Hit (OwnerHits), Ability (Consume), and hit-carried ReactionsIds.
 #include "session/ability_pipeline.h"
 
 #include "combat/combat_world.h"
@@ -38,11 +21,11 @@ using bootstrap::AbilityChange;
 
 namespace {
 
-// The EReactionTarget bits of a reaction's TargetsBitmask.
 constexpr int kTargetOwner = 1;
 constexpr int kTargetTargets = 8;
+constexpr int kTargetInstigator = 2;
+constexpr int kTargetInstigatorsPet = 8192;
 
-// The event kinds (the byte of the binding the reaction listens with) and the bits this file serves.
 constexpr int kKindHit = 0;
 constexpr int kKindAbility = 2;
 constexpr int kBitOwnerHits = 4;
@@ -62,11 +45,52 @@ void AbilityPipeline::set_reaction_carriers(std::vector<int64_t> effect_guids) {
     reaction_carriers_ = std::move(effect_guids);
 }
 
+void AbilityPipeline::fire_carried_reactions(AbilityChange& c, const HitEvent& ev, double t) {
+    if (!reactions_enabled_ || carried_depth_ >= 2 || !catalog_ || !ev.hit || ev.hit->reactions.empty() || (ev.targets.empty() && !ev.on_self)) return;
+    ReactionContext rc;
+    rc.hit = &ev;
+    for (const int64_t guid : ev.hit->reactions) {
+        const ReactionDef* r = catalog_->reaction(guid);
+        if (!r) continue;
+        const content::ReactionRow& row = r->row;
+        if (row.trigger_expr != 0) {
+            double v = 0;
+            std::string why;
+            if (!eval_in_event(row.trigger_expr, rc, v, why)) {
+                if (reaction_noted_.insert(guid).second) spdlog::info("[abilities] the reaction {} stays inert: {}", row.name, why);
+                continue;
+            }
+            if (v == 0) continue;
+        }
+        HitSource src;
+        src.type = content::kSourceTypeReaction;
+        src.guid = guid;
+        src.actor = false;
+        src.confirm = true;
+        ++carried_depth_;
+        const ReactionContext* const outer = active_reaction_;
+        active_reaction_ = &rc;
+        for (const int64_t hit_guid : row.hits) {
+            const HitDef* hit = catalog_->hit(hit_guid);
+            if (!hit) continue;
+            if ((row.targets_mask & (kTargetOwner | kTargetInstigator)) != 0) apply_hit_here(c, *hit, t, true, src);
+            if ((row.targets_mask & kTargetTargets) != 0 && !ev.targets.empty()) apply_hit_on_targets(c, *hit, ev.targets, t, src, nullptr);
+            if ((row.targets_mask & kTargetInstigatorsPet) != 0 && combat_) {
+                if (const uint64_t pet = combat_->own_pet()) apply_hit_on_targets(c, *hit, {pet}, t, src, nullptr);
+            }
+        }
+        active_reaction_ = outer;
+        drop_evaluation();
+        --carried_depth_;
+        ++reactions_fired_;
+        spdlog::log(reactions_fired_ <= 40 ? spdlog::level::info : spdlog::level::debug, "[abilities] the reaction {} of the hit {} fired", row.name, ev.hit->row.name);
+    }
+}
+
 void AbilityPipeline::raise_hit_event(AbilityChange& c, const HitEvent& ev, double t) {
+    fire_carried_reactions(c, ev, t);
     if (!reactions_enabled_ || !combat::can_trigger_proc_at_depth(reaction_depth_) || !catalog_ || catalog_->reactions() == 0 || !ev.hit) return;
-    // a hit with no event tags and no stat mods raises no event [the game's code: the hit's record is tested for tags, mods and the force flag]
     if (ev.hit->tags.empty() && ev.hit->mods.empty()) return;
-    // a hit a reaction made raises no reaction
     if (ev.src.type == content::kSourceTypeReaction) return;
     ReactionContext rc;
     rc.hit = &ev;

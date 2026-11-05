@@ -602,8 +602,63 @@ static void test_real_content_db() {
   }
 }
 
+static void test_combat_settings_echo_pkt620() {
+  std::printf("the combat-settings echo carries all 50 values of the request (pkt#620)\n");
+  Harness h;
+  h.join();
+  h.settle();
+  const schema::ClassSchema &pc_cls = class_named("AoCPlayerControllerBP_C");
+  const uint32_t pc_ch = h.s->channel_of(bs::Role::PlayerController);
+  const size_t before = h.got.size();
+  const BunchWriter possession = hex_bits(capture_blocks::kClientBunchPossession);
+  h.client_sends({h.client.actor(pc_ch, possession, true)});
+  h.settle();
+  const auto pc = h.on_channel(pc_ch, before);
+  if (pc.empty()) {
+    CHECK(false, "the possession bunch produces the combat-settings echo");
+    return;
+  }
+  const auto blocks = repl::read_content_blocks(pc[0]->content.data(), pc[0]->content.bit_pos(), 0);
+  std::optional<repl::RepState> echo;
+  if (blocks && blocks->size() == 1) {
+    size_t p = (*blocks)[0].payload_pos;
+    echo = repl::read_rep_block(pc_cls, pc[0]->content.data(), (*blocks)[0].payload_pos + (*blocks)[0].payload_bits, p);
+  }
+  const BunchWriter original = hex_bits(capture_bootstrap::kCombatEcho);
+  const auto ob = repl::read_content_blocks(original.data(), original.bit_pos(), 0);
+  std::optional<repl::RepState> orig;
+  if (ob && ob->size() == 1) {
+    size_t p = (*ob)[0].payload_pos;
+    orig = repl::read_rep_block(pc_cls, original.data(), (*ob)[0].payload_pos + (*ob)[0].payload_bits, p);
+  }
+  CHECK(echo && orig && echo->values().size() == 50 && pc[0]->reliable && pc[0]->exports.empty(),
+        "the echo is one reliable PlayerController block of the request's 50 values");
+  if (!echo || !orig) return;
+  constexpr std::array<std::string_view, 9> k_pkt620 = {
+      "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.MayHarmAngle",
+      "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.ProximityRadius",
+      "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.MaxDistance",
+      "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.ForwardOffset",
+      "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.TabTargetMethod",
+      "CharacterInGameSettings.CombatSettings.Targeting.bEnableHoverCasting",
+      "CharacterInGameSettings.CombatSettings.Targeting.SoftLock.VisualsMask",
+      "CharacterInGameSettings.CombatSettings.Input.BufferDuration",
+      "CharacterInGameSettings.CombatSettings.Rendering.PartyVFX",
+  };
+  int equal = 0, party_vfx_differs = 0;
+  for (const std::string_view path : k_pkt620) {
+    const repl::Value *mine = echo->get(pc_cls, path);
+    const repl::Value *theirs = orig->get(pc_cls, path);
+    if (mine && theirs && *mine == *theirs) ++equal;
+    else if (path.find("PartyVFX") != std::string_view::npos && mine && theirs) ++party_vfx_differs;
+  }
+  CHECK(equal == 8 && party_vfx_differs == 1,
+        "eight of the nine values equal the original's (pkt#620); PartyVFX is the client's own");
+}
+
 void run_session_lifecycle() {
   test_client_driven_log_lines();
+  test_combat_settings_echo_pkt620();
   test_two_players();
   test_kicked_session_answers_nothing();
   test_unsendable_join();

@@ -327,6 +327,11 @@ static void check_artisan_band_shares() {
                   cr::quality_from(8.5347) == 9, cr::quality_from(0.2) == 0}),
         "the whole quality is the nearest whole number to the exact one, a "
         "half up (9.98 is 10, 9.4 is 9)");
+  CHECK(all_true({cr::quality_from(std::nan("")) == 0,
+                  cr::quality_from(1.0e300) == 1000000000,
+                  cr::quality_from(-1.0e300) == -1000000000}),
+        "a NaN rating is quality 0 and an enormous one is cut off, neither is "
+        "an undefined conversion");
   const std::vector<cr::PaidUnits> two_records = {
       {1, 1, 37, 0}, {1, 6, 37, 1}, {2, 1, 25, 0}};
   const std::vector<cr::PaidUnits> two_slots = {

@@ -315,11 +315,11 @@ void PlayerWorld::log_spawn_filter() const {
 void PlayerWorld::log_huntables() const {
     const std::set<int64_t>& defs = generic_config_.hunting_defs;
     if (!generic_config_.hunting) {
-        spdlog::info("[hunt] --no-gathering: no creature is huntable");
+        spdlog::info("[hunt] --no-gathering: no mob is huntable");
         return;
     }
     if (defs.empty()) {
-        spdlog::info("[hunt] no huntable creatures: content.db has no hunting interactions (rebuild it with contentc 15 or later)");
+        spdlog::info("[hunt] no huntable mobs: content.db has no hunting interactions (rebuild it with contentc 15 or later)");
         return;
     }
     std::map<int64_t, size_t> by_def;
@@ -340,7 +340,7 @@ void PlayerWorld::log_huntables() const {
     }
     std::vector<std::pair<std::string, size_t>> counts;
     for (const auto& [def, n] : by_def) counts.emplace_back(names.count(def) ? names[def] : std::to_string(def), n);
-    spdlog::info("[hunt] huntable creatures in the area: {} of {} NPCs ({} kinds, eight blocks with the hunting interactable{}); a Bow in Equipment slot 38 hunts a corpse for a carcass or a trainable and Hunter XP",
+    spdlog::info("[hunt] huntable mobs in the area: {} of {} NPCs ({} kinds, eight blocks with the hunting interactable{}); a Bow in Equipment slot 38 hunts a corpse for a carcass or a trainable and Hunter XP",
                  total, registry_.count(world::ActorKind::Npc), by_def.size(), generic_ && !generic_->has_hunting_block() ? "; NOT: the Raven's captured open is missing, so they are plain creatures" : "");
     log_counts("[hunt] by kind: ", counts);
 }

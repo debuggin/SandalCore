@@ -335,6 +335,11 @@ void PlayerSession::unlock_foliage_client(Connection &conn, uint32_t index, cons
 }
 void PlayerSession::on_foliage_interact(Connection &conn, const repl::ClientRpc &rpc, Clock::time_point now) {
     ++foliage_interacts_;
+    if (!within_budget(foliage_budget_, "ServerStartInteractionWithFoliage", now)) {
+        ++foliage_refused_;
+        ++foliage_refusals_["over the request budget"];
+        return;
+    }
     foliage::Foliage *f = npc_world_ ? npc_world_->foliage() : nullptr;
     gather::Gathering *g = npc_world_ ? npc_world_->gathering() : nullptr;
     const FoliageRpcParams p = parse_foliage_rpc_params(rpc);
@@ -373,23 +378,9 @@ void PlayerSession::on_foliage_interact(Connection &conn, const repl::ClientRpc 
     }
     const Clock::time_point data_at = now + kFoliageDataDelay;
     const Clock::time_point completes = data_at + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(attempt.seconds));
-    foliage_ = {attempt.pre.row,
-                p.state,
-                p.index,
-                p.owner,
-                p.component,
-                attempt.pre.interaction,
-                attempt.pre.def->name,
-                attempt.pre.interaction->tool_slot,
-                attempt.pre.worn->instance_guid,
-                attempt.pre.worn->item_record_id,
-                now,
-                data_at,
-                completes,
-                attempt.seconds,
-                at.x,
-                at.y,
-                false};
+    foliage_ = {attempt.pre.row, p.state, p.index, p.owner, p.component, attempt.pre.interaction, attempt.pre.def->name,
+                attempt.pre.interaction->tool_slot, attempt.pre.worn->instance_guid, attempt.pre.worn->item_record_id,
+                now, data_at, completes, attempt.seconds, at.x, at.y, false};
     ++foliage_started_;
     spdlog::log(level_for(foliage_logged_, 20), "[foliage] {}: {}", name(), format_foliage_start_log(*f, p, attempt.pre, professions_, attempt.seconds));
 }
@@ -476,6 +467,26 @@ void PlayerSession::cancel_foliage(Connection *conn, const std::string &why, Int
         send_interrupt_callout(*conn, interrupt, last_now_);
     if (interrupt != Interrupt::None || !run.data_sent)
         unlock_foliage_client(*conn, run.index, run.owner, run.component);
+}
+void PlayerSession::on_foliage_start(Connection &conn, const repl::ClientRpc &rpc, Clock::time_point now) {
+    if (!rpc.call.decoded && ++foliage_unreadable_logged_ <= kLoggedPerKind) {
+        spdlog::warn("[session] {}: ServerStartInteractionWithFoliage arrived and its parameters do not decode: no "
+                     "cutting starts, and the client is told to end its own (ClientInterruptInteractionWithFoliage)",
+                     name());
+    }
+    on_foliage_interact(conn, rpc, now);
+}
+void PlayerSession::end_gathering(const char *why) {
+    cancel_gather(nullptr, why);
+    while (!gather_piles_.empty()) {
+        GatherPile pile = std::move(gather_piles_.front());
+        gather_piles_.pop_front();
+        make_gather_pile(pile);
+    }
+}
+void PlayerSession::register_foliage_rpcs(RpcTable &t) {
+    t.add(RpcScope::PlayerController, "ServerStartInteractionWithFoliage",
+          [](PlayerSession &s, const RpcContext &c) { s.on_foliage_start(c.conn, c.rpc, c.now); });
 }
 } // namespace worldd
 } // namespace aoc

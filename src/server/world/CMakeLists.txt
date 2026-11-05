@@ -63,16 +63,21 @@ add_library(world_core STATIC
     bootstrap/constants.h
     bootstrap/gather_wire.cpp
     bootstrap/mount_ride.cpp
+    bootstrap/observer_actor.cpp
     bootstrap/player_setup.cpp
     bootstrap/player_setup.h
     combat/aftermath.cpp
     combat/aftermath.h
     combat/combat_data.cpp
     combat/combat_data.h
+    combat/combat_dots.cpp
+    combat/combat_pets.cpp
+    combat/combat_reactions.cpp
     combat/combat_world.cpp
     combat/combat_world.h
     combat/combat_world_ai.cpp
     combat/combat_world_attacks.cpp
+    combat/combat_world_npc.h
     combat/fighter.h
     combat/hit_context.cpp
     combat/hit_context.h
@@ -128,6 +133,9 @@ add_library(world_core STATIC
     net/cookie.h
     net/endpoint.cpp
     net/endpoint.h
+    net/endpoint_phases.cpp
+    net/tick_loop.h
+    net/tick_profile.h
     net/udp_socket.cpp
     net/udp_socket.h
     quest/bootstrap_objects.cpp
@@ -147,6 +155,7 @@ add_library(world_core STATIC
     session/abilities.h
     session/actor_view.cpp
     session/actor_view.h
+    session/actor_view_shared.cpp
     session/ability_catalog.cpp
     session/ability_catalog.h
     session/ability_pipeline.cpp
@@ -156,6 +165,8 @@ add_library(world_core STATIC
     session/ability_pipeline_hits.cpp
     session/ability_pipeline_host.cpp
     session/ability_pipeline_internal.h
+    session/ability_pipeline_pets.cpp
+    session/ability_pipeline_projectiles.cpp
     session/ability_pipeline_zones.cpp
     session/ability_reactions.cpp
     session/action_bar.cpp
@@ -170,8 +181,11 @@ add_library(world_core STATIC
     session/mounts.h
     session/move_checker.cpp
     session/move_checker.h
+    session/player_based_move.cpp
     session/player_foliage.cpp
     session/player_gather.cpp
+    session/player_pets.cpp
+    session/player_presence.cpp
     session/player_session.cpp
     session/player_session.h
     session/player_session_artisan.cpp
@@ -187,6 +201,7 @@ add_library(world_core STATIC
     session/player_session_types.h
     session/player_session_vendor.cpp
     session/player_session_zone.cpp
+    session/player_view_phases.cpp
     session/player_world.cpp
     session/player_world.h
     session/player_world_relevancy.cpp
@@ -197,8 +212,14 @@ add_library(world_core STATIC
     session/professions.h
     session/riding.cpp
     session/riding.h
+    session/shared_updates.cpp
+    session/shared_updates.h
     session/talents.cpp
     session/talents.h
+    session/view_phases.h
+    session/view_pool.cpp
+    session/view_pool.h
+    session/view_worker.h
     svc/city_node_control.cpp
     svc/city_node_control.h
     svc/city_node_feed.cpp
@@ -231,6 +252,8 @@ add_library(world_core STATIC
     spawns/node_population.h
     spawns/node_populations.cpp
     spawns/node_populations.h
+    spawns/npc_looks.cpp
+    spawns/npc_looks.h
     spawns/population.cpp
     spawns/population.h
     ${CMAKE_BINARY_DIR}/../gen/world/spawns/region_data.h
@@ -284,6 +307,8 @@ add_library(world_core STATIC
     npc/npc_world.cpp
     npc/npc_world.h
     npc/npc_world_orders.cpp
+    worldd_loop.cpp
+    worldd_loop.h
 )
 target_include_directories(world_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/../gen/world")
 target_link_libraries(world_core PUBLIC
@@ -305,6 +330,7 @@ if(MSVC)
         NOMINMAX
         _WIN32_WINNT=0x0A00
     )
+    target_compile_options(world_core PRIVATE /bigobj)
 endif()
 set_target_properties(world_core PROPERTIES FOLDER "Servers/world")
 
@@ -340,6 +366,7 @@ function(world_add_test name)
         STATS_CORPUS_PATH="${CMAKE_BINARY_DIR}/../gen/fixtures/corpus.txt"
         TALENT_FIXTURE_PATH="${CMAKE_BINARY_DIR}/../gen/world/tests/talent_fixture.sql")
     set_target_properties(${name} PROPERTIES FOLDER "Tests/world")
+    target_compile_options(${name} PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 endfunction()
 
 if(AOC_BUILD_TESTS)
@@ -377,6 +404,12 @@ foreach(t
 )
     world_add_test(${t})
 endforeach()
+target_sources(test_world_ability_session PRIVATE tests/test_worldd_ability_session_pets.cpp)
+target_sources(test_world_actor_view PRIVATE
+    tests/test_worldd_actor_view_players.cpp
+    tests/test_worldd_actor_view_shared.cpp
+    tests/test_worldd_actor_view_threads.cpp
+)
 target_sources(test_world_area_session PRIVATE
     tests/test_worldd_area_dialogue.cpp
     tests/test_worldd_quest_offer_lifecycle.cpp
@@ -384,8 +417,13 @@ target_sources(test_world_area_session PRIVATE
 )
 target_sources(test_world_bootstrap PRIVATE tests/test_worldd_bootstrap_sequence.cpp)
 target_sources(test_world_character_setup PRIVATE tests/test_worldd_character_setup_stats.cpp)
+target_sources(test_world_endpoint PRIVATE tests/test_worldd_endpoint_tick.cpp)
 target_sources(test_world_items PRIVATE tests/test_worldd_items_equip.cpp)
-target_sources(test_world_movement PRIVATE tests/test_worldd_movement_saver.cpp)
+target_sources(test_world_movement PRIVATE
+    tests/test_worldd_movement_saver.cpp
+    tests/test_worldd_movement_presence.cpp
+    tests/test_worldd_movement_based.cpp
+)
 target_sources(test_world_nav_window PRIVATE tests/test_worldd_nav_window_npcs.cpp)
 target_sources(test_world_session PRIVATE
     tests/test_worldd_session_relog.cpp
@@ -597,7 +635,9 @@ target_compile_definitions(test_world_spawn_filter PRIVATE
 # the combat core (plan E1, stage 3): NPC stats, damage and the hit rules on the real content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB)
 world_add_test(test_world_combat)
 target_sources(test_world_combat PRIVATE
+    tests/test_worldd_combat_burn.cpp
     tests/test_worldd_combat_cast_grem.cpp
+    tests/test_worldd_combat_dots.cpp
     tests/test_worldd_combat_gates.cpp
     tests/test_worldd_combat_lunge_chase.cpp
     tests/test_worldd_combat_projectiles.cpp
@@ -639,6 +679,10 @@ target_compile_definitions(test_world_tooltips PRIVATE
     ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
 # the class abilities that need another actor against the retail captures, on a creature of the world (plan E1, stage 3, part 2)
 world_add_test(test_world_ability_npc)
+target_sources(test_world_ability_npc PRIVATE
+    tests/test_worldd_ability_npc_pets.cpp
+    tests/test_worldd_ability_npc_pets_cmds.cpp
+)
 target_compile_definitions(test_world_ability_npc PRIVATE
     ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db"
     NPC_MOTION_PATH="${AOC_DIST_ROOT}/content/npc_motion.tsv")

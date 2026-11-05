@@ -549,6 +549,51 @@ void test_pace_bank_survives_a_dismount() {
     CHECK(h.s->moves_refused() == refused + 1, "so the first move of the pawn cannot claim the first-move second: 2,000 cm in an instant is refused");
 }
 
+const world::WorldActor* rider_pawn(const Harness& h, uint64_t id) {
+    const world::WorldActor* found = nullptr;
+    h.fx.world->registry().for_each([&](const world::WorldActor& a) {
+        if (a.kind == world::ActorKind::Player && a.owner == id) found = &a;
+    });
+    return found;
+}
+
+bool rider_pawn_walks(const world::WorldActor& a) {
+    const repl::ObjectState& o = a.actor.obj;
+    const repl::Value* v = o.schema ? o.state.get(*o.schema, "CurrentMovementInput") : nullptr;
+    const auto* input = v ? v->get_if<repl::PlayerMovementInput>() : nullptr;
+    return input && input->bits != 0;
+}
+
+void test_presence_a_riders_pawn_stays_where_the_player_got_on() {
+    std::printf("players seeing each other: the pawn other players are shown stays where its player got on, and follows again after the dismount\n");
+    Harness h(cyb_record());
+    h.play();
+    const uint64_t id = static_cast<uint64_t>(h.s->bootstrap().setup().player_id);
+    CHECK(rider_pawn(h, id) != nullptr, "(the player's pawn is in the registry after the phase-in)");
+    CHECK(ride_on(h), "(the player rides)");
+    if (!h.s->mounted() || !rider_pawn(h, id)) return;
+    h.run(milliseconds(400));
+    const double got_on_x = rider_pawn(h, id)->x, got_on_y = rider_pawn(h, id)->y;
+    Rider r = start_riding(h);
+    for (int i = 0; i < 20; ++i) ride_step(h, r, 99, 0);
+    h.run(milliseconds(400));
+    const world::WorldActor* pawn = rider_pawn(h, id);
+    const world::WorldActor* mount = h.mount();
+    CHECK(pawn && mount && std::fabs(mount->x - got_on_x) > 1500.0, "(the mount carried the rider more than 15 m)");
+    CHECK(pawn && std::fabs(pawn->x - got_on_x) < 1.0 && std::fabs(pawn->y - got_on_y) < 1.0,
+          "20 moves on the mount later the registry's pawn is where the player got on (within a centimetre), not where the mount is");
+    CHECK(pawn && !rider_pawn_walks(*pawn), "...and shows no walking input (it stands, it does not run in place)");
+    get_off(h);
+    h.run(milliseconds(100));
+    const GoodPosition landed = h.s->movement().good();
+    g_pawn_ts = 0.05f;
+    move_pawn(h, falling_move_at(g_pawn_ts, landed.x, landed.y, landed.z - 20, yaw16_of(landed.yaw_degrees)));
+    h.run(milliseconds(300));
+    pawn = rider_pawn(h, id);
+    CHECK(pawn && std::fabs(pawn->x - landed.x) < 600.0 && std::fabs(pawn->y - landed.y) < 600.0 && std::fabs(pawn->x - got_on_x) > 1500.0,
+          "after the dismount the pawn is where the player landed (beside the mount, more than 15 m from where it got on)");
+}
+
 } // namespace
 
 int main() {
@@ -574,6 +619,7 @@ int main() {
     test_dash_gate();
     test_dash_survives_a_resummon();
     test_pace_bank_survives_a_dismount();
+    test_presence_a_riders_pawn_stays_where_the_player_got_on();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

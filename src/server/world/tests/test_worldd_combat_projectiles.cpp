@@ -1,7 +1,26 @@
 #include "combat_test_fixture.h"
 
+#include <filesystem>
+
 namespace sandal::worldd::tests {
 namespace {
+
+bool load_creature_tables(TestHarness& h, combat::NpcAbilityData& tables) {
+    std::string dir = NPC_MOTION_PATH;
+    dir.erase(dir.find_last_of("/\\") + 1);
+    const std::string files[3] = {dir + "npc_abilities.tsv", dir + "npc_montages.tsv", dir + "npc_targeting.tsv"};
+    std::string err;
+    if (tables.load(files[0], files[1], files[2], err)) return true;
+    std::error_code ec;
+    bool any_there = false;
+    for (const std::string& file : files) any_there = any_there || std::filesystem::exists(file, ec);
+    if (!any_there) {
+        std::printf("  [skip] the creature tables (tools/npcabilities, the npcabilities extractor step): %s\n", err.c_str());
+        return false;
+    }
+    CHECKF(false, "the creature tables are there but do not read: %s", err.c_str());
+    return false;
+}
 
 struct RaiderCast {
     double      t;
@@ -208,7 +227,7 @@ void test_bandit_raider_fights_a_standing_player(TestHarness& h) {
     std::printf("a bandit raider against a player who stands still: made from a guard's open with its tree's abilities, it strikes within reach, lands each hit at its montage's notify, "
                 "holds its specials back by the tree's timers and does not drift\n");
     combat::NpcAbilityData tables;
-    if (!load_creature_tables(tables)) return;
+    if (!load_creature_tables(h, tables)) return;
     run_raider_kind_case(h, tables, "/Bandit_Raider/CSB_Bandit_Raider_StateTree.Default__CSB_Bandit_Raider_StateTree_C", true);
     run_raider_kind_case(h, tables, "/Bandit_Raider/Bandit_Raider.Default__Bandit_Raider_C", false);
 }
@@ -410,7 +429,7 @@ void test_arsonist_fires_at_a_standing_player(TestHarness& h) {
     std::printf("a bandit arsonist against a player who stands 20 m away: it casts its fire bolt about every 2 s and its combo now and then, each bolt leaves at its montage's notify and lands "
                 "when it arrives, no hit comes without a bolt, and its spray, stream and ring of fire stay off\n");
     combat::NpcAbilityData tables;
-    if (!load_creature_tables(tables)) return;
+    if (!load_creature_tables(h, tables)) return;
     run_arsonist_kind_case(h, tables, "/Bandit_Arsonist/Bandit_Arsonist.Default__Bandit_Arsonist_C", false);
     run_arsonist_kind_case(h, tables, "/Bandit_Arsonist/CSB_Arsonist_StateTree.Default__CSB_Arsonist_StateTree_C", false);
     run_arsonist_kind_case(h, tables, "/Bandit_Arsonist/Bandit_Arsonist_Blister.Default__Bandit_Arsonist_Blister_C", true);
@@ -422,7 +441,7 @@ void test_plain_goblin_shaman_throws_its_bomb(TestHarness& h) {
     std::printf("a plain goblin shaman against a player 2.5 m away: its oozing bomb leaves at its montage's notify, flies, and lands its damage when it arrives (it was an instant hit)\n");
     constexpr double kSeconds = 30.0;
     combat::NpcAbilityData tables;
-    if (!load_creature_tables(tables)) return;
+    if (!load_creature_tables(h, tables)) return;
     const std::string path = creature_path(f, "/GoblinShaman/Goblin_Shaman.Default__Goblin_Shaman_C");
     const auto bp = f.motion.find(path);
     CHECKF(!path.empty() && bp && tables.abilities_of(path) != nullptr, "the Blueprint table has the plain goblin shaman and the creature tables list its abilities");
@@ -463,10 +482,250 @@ void test_plain_goblin_shaman_throws_its_bomb(TestHarness& h) {
     CHECKF(earliest_after_cast >= 1.8, "no damage comes before the bomb has left the shaman's hand (%.2f s after the cast)", earliest_after_cast);
 }
 
+const talents::Node* finisher_node_of(const talents::Tree& tree, const char* skill) {
+    for (const talents::Node& n : tree.nodes) {
+        if (n.skill_name == skill && !n.ranks.empty()) return &n;
+    }
+    return nullptr;
+}
+
+bool marker_holds(const std::vector<stats::SkillRank>& held, uint64_t type, int64_t guid) {
+    for (const stats::SkillRank& s : held) {
+        if (s.cls == stats::kWeaponTreeRef && s.skill.type_id == type && s.skill.guid == guid) return true;
+    }
+    return false;
+}
+
+void check_weapon_book_marker(TestHarness& h, Rig& rig, const talents::Tree& wand, const talents::Tree& axe) {
+    const talents::Node* burning = finisher_node_of(wand, "Weapon_Finisher_Burning");
+    rig.book->load(wand.guid, {burning->ranks.front().guid});
+    const auto with_wand = rig.book->held_ranks(wand.weapon_line);
+    CHECK(marker_holds(with_wand, stats::kRefTypeSkill, burning->skill) && marker_holds(with_wand, stats::kRefTypeSkillRank, burning->ranks.front().guid),
+          "the wand in hand: the Burning pick is held under the weapon-in-hand marker, as its skill and as its rank");
+    CHECK(!marker_holds(rig.book->held_ranks(axe.weapon_line), stats::kRefTypeSkill, burning->skill) &&
+              !marker_holds(rig.book->held_ranks(0), stats::kRefTypeSkill, burning->skill) &&
+              !marker_holds(rig.book->held_ranks(-1), stats::kRefTypeSkill, burning->skill),
+          "...not with the axe in hand, with none in hand (0), nor with a weapon line that no weapon tree has (-1)");
+    size_t under_marker = 0, in_wand_tree = 0;
+    bool in_tree = false;
+    for (const stats::SkillRank& s : with_wand) {
+        under_marker += s.cls == stats::kWeaponTreeRef ? 1 : 0;
+        in_wand_tree += s.cls.type_id == stats::kRefTypeSkillTree && s.cls.guid == wand.guid ? 1 : 0;
+        if (s.cls.type_id == stats::kRefTypeSkillTree && s.cls.guid == wand.guid && s.skill.type_id == stats::kRefTypeSkill && s.skill.guid == burning->skill) {
+            in_tree = true;
+        }
+    }
+    CHECKF(under_marker == in_wand_tree && under_marker > 0, "the marker holds exactly what the wand's tree holds (%zu of %zu)", under_marker, in_wand_tree);
+    CHECK(in_tree, "(the pick is still held under its own tree, as before)");
+}
+
+int64_t finisher_targeting_of(const abilities::AbilityDef& def, const abilities::HitDef& hit) {
+    int64_t targeting = content::kTargetingDefaultSelf;
+    for (const content::AbilityHitRow& h : def.hits) {
+        if (h.hit_guid != hit.row.guid || h.source != "hit") continue;
+        for (const content::TargetingRow& tg : def.targetings) {
+            if (tg.key == h.key) targeting = tg.guid;
+        }
+    }
+    return targeting;
+}
+
+struct FinisherOut {
+    int    reacted = 0;
+    double value = 0;
+    int    flags = -1;
+};
+
+void tally_finisher_confirm(const bootstrap::HitConfirm& c, int64_t hit_guid, int64_t react_guid, int& landed, FinisherOut& out) {
+    if (c.record_guid == hit_guid && c.source_type == content::kSourceTypeAbility) {
+        ++landed;
+        if (!c.targets.empty()) {
+            out.flags = c.targets[0].flags;
+            out.value = c.targets[0].mods.empty() ? 0.0 : c.targets[0].mods[0].value;
+        }
+    }
+    if (c.record_guid == react_guid && c.source_type == content::kSourceTypeReaction) ++out.reacted;
+}
+
+struct FinisherBench {
+    TestHarness&                 h;
+    Rig&                         rig;
+    uint64_t                     wolf = 0;
+    double                       t = 100.0;
+    int32_t                      id = 500;
+    const talents::Tree*         wand = nullptr;
+    const talents::Tree*         axe = nullptr;
+    const talents::Node*         burning = nullptr;
+    const talents::Node*         bleed = nullptr;
+    const abilities::AbilityDef* wand_combo = nullptr;
+    const abilities::AbilityDef* axe_combo = nullptr;
+    const abilities::HitDef*     beam_end = nullptr;
+    const abilities::HitDef*     axe_finisher = nullptr;
+    const abilities::HitDef*     burning_hit = nullptr;
+    const abilities::HitDef*     bleeding_hit = nullptr;
+
+    bool ready() const {
+        if (wolf == 0 || !wand_combo || !axe_combo) return false;
+        return beam_end && axe_finisher && burning_hit && bleeding_hit;
+    }
+
+    void hold(int64_t ranks_line, int64_t carriers_line) const {
+        rig.cs->set_passives(rig.book->passives(carriers_line));
+        rig.cs->set_ranks(rig.book->held_ranks(ranks_line));
+        rig.pipe->set_reaction_carriers(rig.book->reaction_carriers(carriers_line));
+        rig.pipe->refresh(rig.clock, "the weapon in hand", true);
+        rig.take();
+    }
+
+    FinisherOut finish(const abilities::AbilityDef& combo, int anim, const abilities::HitDef& hit, const abilities::HitDef& reaction_hit, bool check = true) {
+        FinisherOut out;
+        t += 5.0;
+        TriggerInfo info;
+        info.animation_index = anim;
+        info.target_count = 1;
+        info.target_actors = {wolf};
+        const Refusal refusal = rig.pipe->trigger(combo.row.guid, id++, t, info);
+        if (check) CHECKF(refusal == Refusal::None, "%s is accepted (%d)", combo.row.name.c_str(), static_cast<int>(refusal));
+        rig.run_to(t + 0.4);
+        const auto verdict = rig.pipe->hit_request(combo.row.guid, finisher_targeting_of(combo, hit), hit.row.guid, 1, 0, t + 0.8, {wolf});
+        if (check) CHECKF(verdict == AbilityPipeline::HitVerdict::Scheduled, "the request for %s is scheduled", hit.row.name.c_str());
+        int landed = 0;
+        for (const Seen& s : rig.run_to(t + 1.6)) {
+            for (const bootstrap::HitConfirm& c : s.confirmations) {
+                tally_finisher_confirm(c, hit.row.guid, reaction_hit.row.guid, landed, out);
+            }
+        }
+        if (check) CHECKF(landed == 1, "%s landed once (%d)", hit.row.name.c_str(), landed);
+        return out;
+    }
+};
+
+void check_wand_and_axe_finisher_reactions(FinisherBench& b) {
+    TestHarness& h = b.h;
+    Rig& rig = b.rig;
+    b.hold(b.wand->weapon_line, b.wand->weapon_line);
+    const size_t fired0 = rig.pipe->reactions_fired();
+    int burns = 0;
+    for (int i = 0; i < 3; ++i) burns += b.finish(*b.wand_combo, 4, *b.beam_end, *b.burning_hit).reacted;
+    CHECKF(burns == 0 && rig.pipe->reactions_fired() == fired0 + 3,
+           "the wand in hand with the Burning pick: Weapon_Finisher_Burning fires at each of 3 beam ends; its hit only raises the burn, so none is confirmed (%d confirmed, %zu reactions)",
+           burns, rig.pipe->reactions_fired() - fired0);
+
+    b.hold(b.axe->weapon_line, b.wand->weapon_line);
+    const size_t fired1 = rig.pipe->reactions_fired();
+    const int after_swap = b.finish(*b.wand_combo, 4, *b.beam_end, *b.burning_hit).reacted;
+    CHECKF(after_swap == 0 && rig.pipe->reactions_fired() == fired1, "...the same beam end with the axe's line in hand: nothing fires (%d)", after_swap);
+    b.hold(0, b.wand->weapon_line);
+    const size_t fired2 = rig.pipe->reactions_fired();
+    const int none_in_hand = b.finish(*b.wand_combo, 4, *b.beam_end, *b.burning_hit).reacted;
+    CHECKF(none_in_hand == 0 && rig.pipe->reactions_fired() == fired2, "...and with no weapon in hand: nothing fires (%d)", none_in_hand);
+    b.hold(b.wand->weapon_line, b.wand->weapon_line);
+    const size_t fired3 = rig.pipe->reactions_fired();
+    CHECK(b.finish(*b.wand_combo, 4, *b.beam_end, *b.burning_hit).reacted == 0 && rig.pipe->reactions_fired() == fired3 + 1, "...back to the wand: it fires again");
+
+    rig.book->load(b.wand->guid, {});
+    b.hold(b.wand->weapon_line, b.wand->weapon_line);
+    const size_t fired4 = rig.pipe->reactions_fired();
+    const int no_pick = b.finish(*b.wand_combo, 4, *b.beam_end, *b.burning_hit).reacted;
+    CHECKF(no_pick == 0 && rig.pipe->reactions_fired() == fired4, "without the pick: nothing fires (%d)", no_pick);
+
+    rig.book->load(b.axe->guid, {b.bleed->ranks.front().guid});
+    b.hold(b.axe->weapon_line, b.axe->weapon_line);
+    const size_t fired5 = rig.pipe->reactions_fired();
+    const FinisherOut plain = b.finish(*b.axe_combo, 0, *b.axe_finisher, *b.bleeding_hit);
+    const size_t with_pick = rig.pipe->reactions_fired() - fired5;
+    CHECKF(plain.reacted == 0 && with_pick >= 1,
+           "the axe in hand with the Bleed pick: Weapon_Finisher_Bleeding fires at the proc'd finishing hit; its hit only applies the bleed, so it is not confirmed (%d confirmed, %zu reactions)",
+           plain.reacted, with_pick);
+    b.hold(b.wand->weapon_line, b.axe->weapon_line);
+    const size_t fired6 = rig.pipe->reactions_fired();
+    const int bleeds_wand = b.finish(*b.axe_combo, 0, *b.axe_finisher, *b.bleeding_hit).reacted;
+    const size_t without = rig.pipe->reactions_fired() - fired6;
+    CHECKF(bleeds_wand == 0 && with_pick == without + 1,
+           "...but not with the wand's line in hand (%d confirmed; %zu reactions against %zu: the Fighter's own reactions fire either way)",
+           bleeds_wand, without, with_pick);
+}
+
+FinisherOut plain_axe_finisher_hit(FinisherBench& b, int64_t ranks_line, int64_t carriers_line) {
+    TestHarness& h = b.h;
+    b.hold(ranks_line, carriers_line);
+    FinisherOut r;
+    for (int tries = 0; tries < 12; ++tries) {
+        r = b.finish(*b.axe_combo, 0, *b.axe_finisher, *b.bleeding_hit, false);
+        if (r.flags == 0 && r.value != 0.0) break;
+    }
+    CHECKF(r.flags == 0 && r.value != 0.0, "a hit that was not missed, blocked or critical within 12 tries (flags %d)", r.flags);
+    return r;
+}
+
+void check_axe_finisher_damage_talents(FinisherBench& b) {
+    TestHarness& h = b.h;
+    Rig& rig = b.rig;
+    const FinisherOut base = plain_axe_finisher_hit(b, b.axe->weapon_line, b.axe->weapon_line);
+    std::vector<int64_t> bought = {b.bleed->ranks.front().guid};
+    for (const char* skill : {"Weapon_Passive_DamageFocus_1", "Weapon_Passive_DamageFocus_2", "Weapon_Passive_DamageFocus_3",
+                              "Weapon_Passive_Finisher_Damage_1", "Weapon_Passive_Finisher_Damage_2", "Weapon_Passive_Finisher_Damage_3"}) {
+        const talents::Node* n = finisher_node_of(*b.axe, skill);
+        if (n) bought.push_back(n->ranks.front().guid);
+    }
+    CHECKF(bought.size() == 7, "the axe tree has the six damage talents (%zu bought)", bought.size());
+    rig.book->load(b.axe->guid, bought);
+    const FinisherOut boosted = plain_axe_finisher_hit(b, b.axe->weapon_line, b.axe->weapon_line);
+    CHECKF(base.value != 0.0 && boosted.value != 0.0 && near(boosted.value / base.value, 1.12, 1e-3),
+           "the axe's finishing hit with the six damage talents deals 12 %% more (%.3f over %.3f = %.4f)",
+           boosted.value, base.value, base.value != 0.0 ? boosted.value / base.value : 0.0);
+    const FinisherOut elsewhere = plain_axe_finisher_hit(b, b.wand->weapon_line, b.axe->weapon_line);
+    CHECKF(elsewhere.value != 0.0 && near(elsewhere.value / base.value, 1.0, 1e-3),
+           "...and the same as without them while the wand's line is in hand (%.4f)", base.value != 0.0 ? elsewhere.value / base.value : 0.0);
+    CHECK(rig.pawn.broken.empty(), "(the pawn took every change)");
+}
+
+void test_weapon_finisher_picks(TestHarness& h) {
+    Fixture& f = h.f;
+    std::printf("the weapon talents see the weapon in hand: a finisher pick fires its reaction at that weapon's finishing hit\n");
+    Rig rig(4, 25, {});
+    CHECKF(rig.ok(), "the rig: %s", rig.problem.c_str());
+    if (!rig.ok()) return;
+    const talents::Tree* wand = rig.talent_catalog->tree_named("Weapon_Ranged_Wand");
+    const talents::Tree* axe = rig.talent_catalog->tree_named("Weapon_1H_Axe");
+    CHECK(wand && axe && wand->weapon_line != 0 && axe->weapon_line != 0 && wand->weapon_line != axe->weapon_line,
+          "the wand's and the 1H axe's weapon trees, each with a line of its own");
+    if (!wand || !axe) return;
+    const talents::Node* burning = finisher_node_of(*wand, "Weapon_Finisher_Burning");
+    const talents::Node* bleed = finisher_node_of(*axe, "Weapon_Finisher_Bleed");
+    CHECK(burning && bleed, "the wand's Burning pick and the axe's Bleed pick");
+    if (!burning || !bleed) return;
+    check_weapon_book_marker(h, rig, *wand, *axe);
+
+    combat_rig::World w;
+    if (!w.problem.empty()) return;
+    const std::string wolf_path = creature_path(f, "/Beast/Canine/Wolf.Default__Wolf_C");
+    combat::NpcStatBook book(*f.ctx->bundle, *f.ctx->gear);
+    combat::CombatWorld world(w.registry, w.npcs.get(), &navfix::shared_nav(), *f.data, *f.catalog, book, f.motion);
+    const uint64_t wolf = w.spawn(wolf_path, 600, 0, 8, 100);
+    combat_rig::FakePlayer player(rig, 77, {0, 0, 1098});
+    world.add_player(&player);
+    combat::WorldHitPort port(world, w.registry, player.fighter());
+    rig.pipe->set_combat(&port);
+    rig.know({"WeaponCombo_Ranged_Wand", "WeaponCombo_Melee_1H_Axe"});
+    FinisherBench b{h, rig, wolf, 100.0, 500, wand, axe, burning, bleed,
+                    f.catalog->ability_named("WeaponCombo_Ranged_Wand"),
+                    f.catalog->ability_named("WeaponCombo_Melee_1H_Axe"),
+                    f.catalog->hit_named("Weapon_Wand_Beam_ComboEnd_Hit"),
+                    f.catalog->hit_named("WeaponCombo_Axe_1H_Hit4+"),
+                    f.catalog->hit_named("Weapon_Finisher_Burning"),
+                    f.catalog->hit_named("Weapon_Finisher_Bleeding")};
+    CHECK(b.ready(), "a Wolf, the two combos, their finishing hits and the two reactions' hits");
+    if (!b.ready()) return;
+    check_wand_and_axe_finisher_reactions(b);
+    check_axe_finisher_damage_talents(b);
+}
+
 }  // namespace
 
 void run_combat_projectile_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db) {
     (void)db;
+    test_weapon_finisher_picks(h);
     test_bandit_raider_fights_a_standing_player(h);
     test_arsonist_fires_at_a_standing_player(h);
     test_plain_goblin_shaman_throws_its_bomb(h);

@@ -33,19 +33,23 @@ struct Dash { const char *ability; double speed; };
 struct StepToken { bool ok = false; int step = 1; bool proc = false; int variant = 0; bool finisher = false; bool beam = false; };
 
 extern const ClassResource kClassResources[1];
-extern const Timing kTimings[5];
+extern const Timing kTimings[9];
 extern const BranchedCast kBranchedCasts[27];
 extern const GatheredCast kGatheredCasts[1];
 extern const TimedCast kTimedCasts[3];
 extern const MissileLanding kMissileLandings[7];
 extern const Flight kFlights[12];
-extern const ShotCast kShotCasts[11];
+extern const ShotCast kShotCasts[37];
+extern const NoteCast kNoteCasts[23];
+extern const BounceRule kBounces[3];
 extern const LoopedCast kLoopedCasts[1];
 extern const Dash kDashes[6];
 extern const char *const kExpirePhases[2];
 extern const char *const kTickPhases[1];
 extern const char *const kApplyPhases[1];
 
+bool swing_flies(std::string_view ability, int animation);
+bool swing_flies(const std::string &ability, int animation);
 std::string_view group_of_name(std::string_view name);
 bool is_none_tag(const std::string &s);
 std::string group_key(const content::AbilityRow &row);
@@ -69,6 +73,8 @@ public:
   struct Hits;
   struct Casts;
   struct Zones;
+  struct Projectiles;
+  struct Pets;
   struct FlightCalc { const Cast &cast; double distance = 0.0; double rate = 1.0; double t = 0.0; };
 
   explicit Host(AbilityPipeline &p) : p_(p) {}

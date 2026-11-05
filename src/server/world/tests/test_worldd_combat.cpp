@@ -6,6 +6,11 @@
 
 #include <bit>
 
+namespace sandal::worldd::tests {
+void run_combat_burn_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db);
+void run_combat_dots_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db);
+}  // namespace sandal::worldd::tests
+
 using namespace sandal::worldd::tests;
 
 namespace {
@@ -690,6 +695,8 @@ int main() {
     run_combat_lunge_chase_tests(h, *f.db);
     run_combat_projectile_tests(h, *f.db);
     run_combat_generic_tests(h, *f.db);
+    run_combat_burn_tests(h, *f.db);
+    run_combat_dots_tests(h, *f.db);
     std::printf("\n%d passed, %d failed\n", h.pass, h.fail);
     return h.fail == 0 ? 0 : 1;
 }

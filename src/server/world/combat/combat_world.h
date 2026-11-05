@@ -381,6 +381,7 @@ public:
     bool gm_heal(uint64_t actor_id);
     enum class GmReset : uint8_t { Walking, Standing, Dead };
     GmReset gm_reset(uint64_t actor_id, double now);
+    class Npc;
 
 private:
     struct Attack {
@@ -435,7 +436,6 @@ private:
         std::vector<PlannedHit> hits;
         std::vector<PlannedFire> fires;
     };
-    class Npc;
     Npc*  combatant(uint64_t actor_id);
     Npc*  make_combatant(const world::WorldActor& a);
     Attack choose_attack(Npc& n);

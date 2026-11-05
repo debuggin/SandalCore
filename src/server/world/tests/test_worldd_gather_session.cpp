@@ -494,9 +494,13 @@ static void check_journeyman_harvest(Rig &rig, uint64_t moonbell) {
         "the T3 sickle: 349");
 }
 
+static size_t pc_answers_count(const Player &p) {
+  const auto calls = pc_calls_since(p, 0);
+  return calls.size() - count_calls(calls, "ClientSetTime");
+}
+
 static void test_refusals() {
-  std::printf("a start that is refused: each check logged and counted, nothing "
-              "sent, nothing changed\n");
+  std::printf("a start that is refused: each check logged and counted, nothing sent, nothing changed\n");
   Rig rig;
   if (!rig.open(g_path))
     return;
@@ -504,53 +508,37 @@ static void test_refusals() {
   const uint64_t moonbell = rig.add_node(id::kMoonbell, 0, 200, 12);
   const uint64_t far_node = rig.add_node(id::kDaffodil, 1000, 0, 13);
   const uint64_t dormant = rig.add_node(id::kDaffodil, 25000, 0, 14);
-  Player &bare = rig.add_player(
-      record_of("bbec5c86eb101fe5f38c87f0fa22e7d0", "bare", /*tools=*/false));
-  Player &novice =
-      rig.add_player(record_of("0000000000000000000000000000aa01", "novice"));
-  svc::Character ar =
-      record_of("0000000000000000000000000000aa02", "apprentice");
+  Player &bare = rig.add_player(record_of("bbec5c86eb101fe5f38c87f0fa22e7d0", "bare", /*tools=*/false));
+  Player &novice = rig.add_player(record_of("0000000000000000000000000000aa01", "novice"));
+  svc::Character ar = record_of("0000000000000000000000000000aa02", "apprentice");
   ar.professions.push_back(prof(id::kHerbalism, 1, 10, 40000));
   Player &apprentice = rig.add_player(std::move(ar));
   for (Player *p : {&bare, &novice, &apprentice})
     play(*p);
-  CHECK(novice.s->actor_view()->state_of(far_node) ==
-                world::ClientState::Awake &&
-            novice.s->actor_view()->state_of(dormant) !=
-                world::ClientState::Awake,
-        "the 10 m node is open on the client, the 250 m node is only dormant "
-        "there");
-  const size_t pc_before = pc_calls_since(novice, 0).size();
+  CHECK(novice.s->actor_view()->state_of(far_node) == world::ClientState::Awake &&
+            novice.s->actor_view()->state_of(dormant) != world::ClientState::Awake,
+        "the 10 m node is open on the client, the 250 m node is only dormant there");
+  const size_t pc_before = pc_answers_count(novice);
   bare.send_now(interact(rig.component_of(daffodil)), bare.pawn_ch);
-  CHECK(refusal_count(bare, "no tool") == 1 &&
-            bare.s->harvests_started() == 0 &&
+  CHECK(refusal_count(bare, "no tool") == 1 && bare.s->harvests_started() == 0 &&
             rig.board().state_of(daffodil) == gather::NodeState::Available,
         "nothing worn in the Sickle's slot: refused (no tool)");
   novice.send_now(interact(rig.component_of(moonbell)), novice.pawn_ch);
-  CHECK(refusal_count(novice, "not certified") == 1 &&
-            rig.board().state_of(moonbell) == gather::NodeState::Available,
+  CHECK(refusal_count(novice, "not certified") == 1 && rig.board().state_of(moonbell) == gather::NodeState::Available,
         "a Novice Herbalist at an Apprentice node: not certified");
   novice.send_now(interact(rig.component_of(far_node)), novice.pawn_ch);
-  CHECK(refusal_count(novice, "out of range") == 1 &&
-            rig.board().state_of(far_node) == gather::NodeState::Available,
+  CHECK(refusal_count(novice, "out of range") == 1 && rig.board().state_of(far_node) == gather::NodeState::Available,
         "a node 10 m away: out of range");
   novice.send_now(interact(rig.component_of(dormant)), novice.pawn_ch);
-  CHECK(refusal_count(novice, "not open") == 1,
-        "a node the client has only dormant: not open");
+  CHECK(refusal_count(novice, "not open") == 1, "a node the client has only dormant: not open");
   apprentice.send_now(interact(rig.component_of(moonbell)), apprentice.pawn_ch);
-  CHECK(apprentice.s->professions().tier(id::kHerbalism) == 1 &&
-            refusal_count(apprentice, "tool tier too low") == 1,
-        "an Apprentice Herbalist with a T1 sickle at an Apprentice node: the "
-        "tool's tier is too low");
+  CHECK(apprentice.s->professions().tier(id::kHerbalism) == 1 && refusal_count(apprentice, "tool tier too low") == 1,
+        "an Apprentice Herbalist with a T1 sickle at an Apprentice node: the tool's tier is too low");
   novice.send_now(interact(999999999), novice.pawn_ch);
-  CHECK(novice.s->harvests_started() == 0 &&
-            novice.s->interactions_ignored() >= 1,
+  CHECK(novice.s->harvests_started() == 0 && novice.s->interactions_ignored() >= 1,
         "a component no actor owns is ignored");
-  CHECK(pc_calls_since(novice, 0).size() == pc_before,
-        "and none of this sent the PlayerController a call");
-  std::string all = "bare: " + refusals_of(bare) +
-                    "; novice: " + refusals_of(novice) +
-                    "; apprentice: " + refusals_of(apprentice);
+  CHECK(pc_answers_count(novice) == pc_before, "and none of this sent the PlayerController a call");
+  std::string all = "bare: " + refusals_of(bare) + "; novice: " + refusals_of(novice) + "; apprentice: " + refusals_of(apprentice);
   std::printf("      (%s)\n", all.c_str());
   check_journeyman_harvest(rig, moonbell);
 }
@@ -646,6 +634,48 @@ static void test_exploits() {
   check_second_player_exploits(rig, p, a, b);
 }
 
+static void test_pile_is_made_when_the_session_ends() {
+  std::printf("a full bag's pile that still waits is made when the session ends\n");
+  Rig rig;
+  if (!rig.open(g_path))
+    return;
+  struct Pile {
+    std::vector<combat::LootStack> stacks;
+  };
+  std::vector<Pile> piles;
+  rig.world->set_pile_hook(
+      [&](double, double, double, const repl::GuidValue &, const std::string &,
+          const std::vector<combat::LootStack> &stacks) -> uint64_t {
+        piles.push_back({stacks});
+        return 9100 + piles.size();
+      });
+  const uint64_t node = rig.add_node(id::kDaffodil, 200, 0, 46);
+  svc::Character full = record_of("bbec5c86eb101fe5f38c87f0fa22e7d0", "cyb");
+  constexpr int64_t kCoal = 109162169652923ll;
+  for (int slot = 0; slot < 24; ++slot)
+    full.items.push_back(
+        make_item(R0, slot, kCoal, 300 + static_cast<uint32_t>(slot), 20));
+  Player &p = rig.add_player(std::move(full));
+  play(p);
+  p.send_now(interact(rig.component_of(node)), p.pawn_ch);
+  run_until(rig, [&] { return p.s->harvests_completed() == 1; }, seconds(20));
+  CHECK(p.s->harvests_completed() == 1 && piles.empty() &&
+            p.s->harvest_piles() == 0,
+        "the harvest is done and its pile still waits for its time");
+  p.s->finish("the test ends the session");
+  CHECK(piles.size() == 1 && p.s->harvest_piles() == 1,
+        "the end of the session made the pile");
+  if (piles.size() == 1) {
+    CHECK(piles[0].stacks.size() == 1 &&
+              piles[0].stacks[0].item == id::kDaffodilItem &&
+              piles[0].stacks[0].quantity == 3,
+          "it holds the harvest: Daffodil x3");
+  }
+  rig.run(milliseconds(300));
+  CHECK(piles.size() == 1 && p.s->harvest_piles() == 1,
+        "and the pile is not made a second time");
+}
+
 int main() {
   auto logger = std::make_shared<spdlog::logger>(
       "test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
@@ -667,6 +697,7 @@ int main() {
   }
   test_refusals();
   test_exploits();
+  test_pile_is_made_when_the_session_ends();
   std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;
 }

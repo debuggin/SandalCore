@@ -1,26 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  test_worldd_ability_all.cpp: the ability runtime against what the retail server answered, for EVERY class (plan D2, stage 2)
 //
-//  capture_casts.h (tools/capture/gen_casts.py) holds every ServerTriggerAbility of the 482 unique retail captures that a server without NPCs can
-//  serve (stage S1 or S2: 589 casts of the eight classes, the weapon combos swung at the air, the consumables, Sprint and Dodge), with what the
-//  client sent while it ran (hit requests, held cancels) and what the server answered, item by item with its time. The calls of one capture are
-//  replayed in order on one character of the capture's class and level (the level comes from the Mana costs) of the real content.db, on a
-//  simulated clock, each at its own time (so cooldowns, charges, running effects and resources are what they were). For each cast:
-//    - it must be ACCEPTED (not refused);
-//    - the ability item (the ability, MontageGroup, the montage's NetGUID, the caster as the target when the call named one), the Cooldowns item
-//      (InitialCooldown, Charges left) and the cost (Mana to the decimal) must be what retail sent, in retail's order;
-//    - every effect the ability can put on its caster that retail sent must be sent, with retail's Duration, TickTime and stacks;
-//    - every hit confirmation of the ability's hits retail sent must be sent (the hit's record, the source's type and record, whether it answers
-//      a request, the number of stat mods), the shields' count must be retail's, and a cast retail ended early is ended;
-//    - the TIMES (ability item +-60 ms, Cooldowns and cost +-120 ms, effects and confirmations +-150 ms) are counted apart: a capture without
-//      timestamps (Mage, Rogue, a third of the others) has order only.
-//  What is not matched is a LISTED difference (kKnown: the ability, what, why), and the list is exact: an unlisted difference fails.
-//  The report counts the casts accepted and matched per class, and what is left per reason.
-//  Without a content.db the test says so and is skipped.
-// ============================================================================
+// test_worldd_ability_all.cpp: ability runtime against retail server answers for every class (plan D2, stage 2).
 #include "ability_rig.h"
 #include "capture_casts.h"
 
@@ -28,13 +10,8 @@
 
 #include <algorithm>
 #include <bit>
-#include <cmath>
-#include <cstring>
-#include <map>
 #include <regex>
-#include <set>
 #include <sstream>
-// built by C Y B with C O A
 
 using namespace ability_rig;
 
@@ -99,7 +76,6 @@ int class_enum(const std::string& name) {
 
 constexpr double kItemTolerance = 0.060, kStepTolerance = 0.120, kEffectTolerance = 0.150;
 
-// every effect the ability can put on its caster: its own, those of its hits, projectiles' and zones' hits, and what those effects fire; and every hit
 void closure(const abilities::Catalog& cat, const abilities::AbilityDef& def, std::set<int64_t>& effects, std::set<int64_t>& hits) {
     std::vector<int64_t> todo;
     for (const auto& [key, e] : def.effects) effects.insert(e);
@@ -123,9 +99,7 @@ void closure(const abilities::Catalog& cat, const abilities::AbilityDef& def, st
         }
     }
 }
-// Cyb with C-O-A
 
-/// The skills an expression asks GetSkillPurchased about: (class tree, skill reference) pairs as the text names them.
 std::vector<stats::SkillRank> skills_in(const std::string& text) {
     static const std::regex re(R"(\$#297887639323616934:(\d+)\$\s*,\s*\$#(\d+):(\d+)\$)");
     std::vector<stats::SkillRank> out;
@@ -138,9 +112,20 @@ std::vector<stats::SkillRank> skills_in(const std::string& text) {
     return out;
 }
 
-/// The talents the capture's character held, as far as the cooldowns and charges its casts show: for each ability whose cooldown or charge formula
-/// asks about skills, the smallest set of them under which the formulas give retail's InitialCooldown and at least as many charges as retail's
-/// Cooldowns items show (a cast leaves Charges - 1 at most). The retail testers had talents the captures do not name.
+bool eval_talent_trial(Rig& r, const abilities::AbilityDef& def, const std::vector<stats::SkillRank>& trial, double cooldown, int most_left) {
+    std::vector<stats::SkillRank> all = r.base_ranks;
+    all.insert(all.end(), trial.begin(), trial.end());
+    r.cs->set_ranks(all);
+    std::string err;
+    auto ev = r.cs->evaluation({}, err);
+    if (!ev) return false;
+    stats::ExprHost host;
+    double cd = 0, ch = 1;
+    if (def.row.cooldown_expr != 0 && !ev->eval(r.catalog->program(def.row.cooldown_expr), host, cd, err)) return false;
+    if (def.row.charges_expr != 0 && !ev->eval(r.catalog->program(def.row.charges_expr), host, ch, err)) return false;
+    return std::fabs(cd - cooldown) < 1e-3 && static_cast<int>(std::lround(ch)) >= most_left + 1;
+}
+
 std::vector<stats::SkillRank> infer_talents(Rig& r, int capture) {
     std::vector<stats::SkillRank> extra;
     std::set<int64_t> done;
@@ -159,7 +144,6 @@ std::vector<stats::SkillRank> infer_talents(Rig& r, int capture) {
             }
         }
         if (cand.empty() || cand.size() > 4) continue;
-        // retail's numbers
         double cooldown = -1;
         int most_left = -1;
         for (const capture_casts::Case& d : capture_casts::kCases) {
@@ -172,7 +156,6 @@ std::vector<stats::SkillRank> infer_talents(Rig& r, int capture) {
             }
         }
         if (cooldown < 0) continue;
-        std::vector<stats::SkillRank> best;
         bool found = false;
         for (unsigned size = 0; size <= cand.size() && !found; ++size) {
             for (unsigned mask = 0; mask < (1u << cand.size()) && !found; ++mask) {
@@ -180,30 +163,19 @@ std::vector<stats::SkillRank> infer_talents(Rig& r, int capture) {
                 std::vector<stats::SkillRank> trial = extra;
                 for (size_t i = 0; i < cand.size(); ++i)
                     if (mask & (1u << i)) trial.push_back(cand[i]);
-                std::vector<stats::SkillRank> all = r.base_ranks;
-                all.insert(all.end(), trial.begin(), trial.end());
-                r.cs->set_ranks(all);
-                std::string err;
-                auto ev = r.cs->evaluation({}, err);
-                if (!ev) continue;
-                stats::ExprHost host;
-                double cd = 0, ch = 1;
-                if (def->row.cooldown_expr != 0 && !ev->eval(r.catalog->program(def->row.cooldown_expr), host, cd, err)) continue;
-                if (def->row.charges_expr != 0 && !ev->eval(r.catalog->program(def->row.charges_expr), host, ch, err)) continue;
-                if (std::fabs(cd - cooldown) < 1e-3 && static_cast<int>(std::lround(ch)) >= most_left + 1) {
-                    best = trial;
+                if (eval_talent_trial(r, *def, trial, cooldown, most_left)) {
+                    extra = trial;
                     found = true;
                 }
             }
         }
-        if (found) extra = best;
     }
     return extra;
 }
 
-/// Why a difference is listed (the groups: what is known, and what is not resolved).
 const char* const R_D1 = "a consumable is used through D1's item path (use_item), which sends no ability montage; the all-class test feeds it to the ability pipeline";
 const char* const R_A7 = "General_Guard, Dodge and Sprint are A7's rows (kept as they are by the brief); their stamina hits, shields and ends are A7's, not the generic pipeline's";
+const char* const R_TAP = "three Guard taps released 18 to 20 ms after the call: retail shows no Guard effect for two of them and an effect of 32 ms for the third, a race in retail with no effect on play; the pipeline never starts the effect of a tap released before its start";
 const char* const R_NPC = "the effect or hit depends on an enemy NPC, an incoming hit or a lingering zone (milestone E); there is no enemy in the replay";
 const char* const R_MOD = "retail's number carries a talent or gear modifier the capture does not name (the test infers talents only from cooldown and charges, and the level from the first cost)";
 const char* const R_SEQ = "the retail capture is one long mixed session; the state before this cast (mana, a charge, a running channel) comes from earlier modelled casts and differs from retail's, so the cast is refused, or over before its cost step";
@@ -212,10 +184,7 @@ const char* const R_CONFX = "our confirmation rule (stat mods, an FX id or the p
 const char* const R_CONFM = "retail confirmed a hit (an ally or a zone hit) that our cast does not reach: the ally or zone is not in the replay";
 const char* const R_SONG = "the effect's stack count follows the band in range (Resonance) or the song's siblings; the band is not modelled";
 const char* const R_UNRES = "not resolved in stage 2";
-// [Cyb + C O A]
 
-/// A difference that is listed: it is not an error (the ability, its capture, the start of the problem's text, why). Exact: a problem that is not here
-/// fails the test.
 struct Known {
     const char* ability;
     int         capture;
@@ -335,6 +304,7 @@ const Known kKnown[] = {
     {"General_Dodge", 742, "CD:cooldown", R_A7},
     {"General_Sprint", 745, "END:missing", R_A7},
     {"General_Guard", 760, "CONF:extra General_Stamina_StamRegenDisable_EndHit", R_A7},
+    {"General_Guard", 821, "EFF:missing General_Guard", R_TAP},
     {"General_Guard", 821, "EFF:missing General_Stamina_DisableRegen", R_A7},
     {"General_Guard", 821, "CONF:missing General_Stamina_StamRegenDisable_ApplyHit", R_A7},
     {"General_Guard", 822, "EFF:missing General_Stamina_DisableRegen", R_A7},
@@ -360,23 +330,343 @@ const Known kKnown[] = {
     {"Tank_Charge", 1510, "CONF:extra Tank_Charge_Courage_Check", R_NPC},
 };
 
-std::string problem_name(const std::string& tag) { return tag; }
-
-/// How far a zone actor's open may be from retail's (the offset varies from one capture of the same dance to the next: Shielding +112 and +462 ms), and
-/// how far its close (a dance's length: Shielding 5,123 and 5,371 ms in two captures).
 constexpr double kZoneTolerance = 0.20;
 constexpr double kZoneCloseTolerance = 0.30;
 
-/// A zone actor retail closed: the close is compared once the capture's replay is over.
 struct PendingClose {
     const char* name;
     int         capture;
     int64_t     ability;
-    int64_t     zone_id;   // the runtime's number of the instance the cast opened
-    double      t0;        // when the cast was triggered
-    int         close_ms;  // retail's ZCLOSE, ms after the trigger
+    int64_t     zone_id;
+    double      t0;
+    int         close_ms;
 };
-// (C-O-A) (C | Y | B)
+
+struct Tally {
+    size_t total = 0, accepted = 0, refused_listed = 0, matched = 0, timed = 0, with_ts = 0;
+};
+
+struct ReplayCtx {
+    std::vector<const Seen*>      events;
+    std::set<int64_t>             reach_effects;
+    std::set<int64_t>             reach_hits;
+    const capture_casts::Case*    c = nullptr;
+    double                        t0 = 0;
+    double                        mana_before = 0;
+    bool                          a7 = false;
+    bool                          has_ts = false;
+};
+
+void replay_client_sends(Rig& r, const capture_casts::Case& c, const std::vector<RItem>& client, double t0, bool has_ts, bool a7, bool verbose, Refusal refusal) {
+    const double end_t = t0 + (c.window_ms > 0 ? std::max(c.window_ms / 1000.0, 0.8) : 6.0);
+    std::vector<std::pair<double, const RItem*>> sends;
+    for (const RItem& q : client) sends.emplace_back(has_ts ? t0 + q.ms / 1000.0 : t0 + 0.3, &q);
+    std::stable_sort(sends.begin(), sends.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (const auto& [t, q] : sends) {
+        if (refusal != Refusal::None) break;
+        if (q->kind == "REQ") {
+            if (!a7) {
+                r.clock = t;
+                r.a7->tick(t);
+                const auto verdict = r.pipe->hit_request(to_i(q->f[0]), to_i(q->f[1]), to_i(q->f[2]), static_cast<size_t>(to_i(q->f[3])), static_cast<size_t>(to_i(q->f[4])), t);
+                if (verbose) std::printf("      request at %.3f: %s\n", t - t0, AbilityPipeline::verdict_name(verdict));
+                r.take();
+            }
+        } else if (q->kind == "ENDREQ") {
+            r.run_to(t);
+            if (!a7) {
+                int32_t sid = -1;
+                for (const auto& [k, v] : r.pawn.abilities)
+                    if (v.ability_guid == c.ability) sid = static_cast<int32_t>(k);
+                if (sid >= 0) r.pipe->end_request(sid, t);
+            }
+            r.take();
+        } else if (q->kind == "HELD") {
+            r.run_to(t);
+            if (a7) r.a7->cancel(c.client_instance_id, t);
+            else r.pipe->cancel(c.client_instance_id, t);
+            r.take();
+        } else if (q->kind == "BRANCH") {
+            r.run_to(t);
+            if (!a7) r.pipe->branch_request(c.client_instance_id, to_i(q->f[0]), t);
+            r.take();
+        }
+    }
+    r.run_to(end_t);
+}
+
+void check_ability_and_cd_items(const ReplayCtx& ctx, const std::vector<RItem>& reply, std::vector<std::string>& problems, std::vector<std::string>& late) {
+    const capture_casts::Case& c = *ctx.c;
+    const bootstrap::ActiveAbilityItem* my_item = nullptr;
+    double my_item_at = 0;
+    for (const Seen* e : ctx.events) {
+        if (!my_item && !e->change.abilities_added.empty()) {
+            my_item = &e->change.abilities_added[0];
+            my_item_at = e->at - ctx.t0;
+        }
+    }
+    for (const RItem& it : reply) {
+        if (it.kind != "AB" || to_i(it.f[0]) != c.ability || to_u(it.f[3]) == 0) continue;
+        if (!my_item) {
+            problems.emplace_back("AB:missing");
+            break;
+        }
+        if (my_item->ability_guid != c.ability || my_item->montage_group != it.f[2]) problems.push_back("AB:group " + it.f[2] + " (" + my_item->montage_group + ")");
+        if (!ctx.a7 && my_item->montage_guid != to_u(it.f[3])) problems.emplace_back("AB:montage");
+        if (my_item->targets_self != (to_i(it.f[5]) > 0)) problems.emplace_back("AB:targets");
+        if (ctx.has_ts && std::fabs(my_item_at - it.ms / 1000.0) > kItemTolerance) late.push_back("AB " + std::to_string(static_cast<int>(my_item_at * 1000)) + "/" + std::to_string(it.ms));
+        break;
+    }
+    const bootstrap::CooldownItem* my_cd = nullptr;
+    double my_cd_at = -1;
+    for (const Seen* e : ctx.events) {
+        for (const auto& cd : e->change.cooldowns_set) {
+            if (!my_cd && cd.ability_guid == c.ability) {
+                my_cd = &cd;
+                my_cd_at = e->at - ctx.t0;
+            }
+        }
+    }
+    for (const RItem& it : reply) {
+        if (it.kind != "CD" || to_i(it.f[0]) != c.ability) continue;
+        if (!my_cd) {
+            problems.emplace_back("CD:missing");
+            break;
+        }
+        if (my_cd->initial_cooldown != static_cast<float>(to_d(it.f[1]))) problems.push_back("CD:cooldown " + it.f[1]);
+        if (my_cd->charges != to_i(it.f[2])) problems.push_back("CD:charges " + it.f[2] + " (" + std::to_string(my_cd->charges) + ")");
+        if (ctx.has_ts && std::fabs(my_cd_at - it.ms / 1000.0) > kStepTolerance) late.push_back("CD " + std::to_string(static_cast<int>(my_cd_at * 1000)) + "/" + std::to_string(it.ms));
+        break;
+    }
+}
+
+void check_mana_and_effects(Rig& r, const ReplayCtx& ctx, const std::vector<RItem>& reply, const std::map<int64_t, double>& before, std::vector<std::string>& problems, std::vector<std::string>& late) {
+    const capture_casts::Case& c = *ctx.c;
+    int cd_ms = -1;
+    for (const RItem& it : reply)
+        if (it.kind == "CD" && to_i(it.f[0]) == c.ability) cd_ms = it.ms;
+    double retail_before = before.count(content::kGuidMana) ? before.at(content::kGuidMana) : -1;
+    const RItem* step = nullptr;
+    for (const RItem& it : reply) {
+        if (it.kind != "STAT" || to_i(it.f[1]) != content::kGuidMana) continue;
+        if (cd_ms >= 0 && it.ms == cd_ms) {
+            step = &it;
+            break;
+        }
+        if (cd_ms < 0 || it.ms < cd_ms) retail_before = to_d(it.f[2]);
+    }
+    if (step && retail_before >= 0) {
+        const double retail_delta = retail_before - to_d(step->f[2]);
+        double my_after = ctx.mana_before;
+        for (const Seen* e : ctx.events) {
+            if (e->change.cooldowns_set.empty()) continue;
+            for (const auto& s : e->change.stats)
+                if (s.record == content::kGuidMana) my_after = s.value;
+            break;
+        }
+        if (retail_delta > 1 && std::fabs((ctx.mana_before - my_after) - retail_delta) > 1e-3)
+            problems.push_back("COST:mana " + std::to_string(retail_delta) + " (" + std::to_string(ctx.mana_before - my_after) + ")");
+    }
+    std::set<int64_t> first_seen;
+    for (const RItem& it : reply) {
+        if (it.kind != "EFF" || ctx.a7) continue;
+        const int64_t guid = to_i(it.f[0]);
+        if (!ctx.reach_effects.count(guid) || !first_seen.insert(guid).second) continue;
+        const abilities::EffectDef* ed = r.catalog->effect(guid);
+        const std::string name = ed ? ed->row.name : std::to_string(guid);
+        bool produced = false, same = false, timely = false;
+        for (const Seen* e : ctx.events) {
+            for (const auto* list : {&e->change.effects_added, &e->change.effects_changed}) {
+                for (const auto& x : *list) {
+                    if (x.effect_guid != guid) continue;
+                    produced = true;
+                    const bool inf = to_d(it.f[1]) > 1e30;
+                    const bool extends = ed && ed->row.stack_duration_refresh.find("ExtendDuration") != std::string::npos;
+                    const bool same_here = (inf ? x.duration > 1e30f : std::fabs(x.duration - to_d(it.f[1])) < (extends ? 0.2 : 1e-3)) &&
+                                           std::fabs(x.tick_time - to_d(it.f[2])) < 1e-4 && x.stacks == to_i(it.f[3]);
+                    if (same_here) {
+                        same = true;
+                        if (!ctx.has_ts || std::fabs((e->at - ctx.t0) * 1000 - it.ms) <= kEffectTolerance * 1000) timely = true;
+                    }
+                }
+            }
+        }
+        if (!produced) problems.push_back("EFF:missing " + name);
+        else if (!same) problems.push_back("EFF:differs " + name + " " + it.f[1] + "/" + it.f[2] + "/" + it.f[3]);
+        else if (!timely) late.push_back("EFF " + name);
+    }
+}
+
+void check_confs_shields_ends_zones(Rig& r, const ReplayCtx& ctx, const std::vector<RItem>& reply, std::vector<std::string>& problems, std::vector<std::string>& late, std::vector<PendingClose>& pending_closes) {
+    const capture_casts::Case& c = *ctx.c;
+    std::map<int64_t, int> retail_conf, my_conf;
+    for (const RItem& it : reply)
+        if (it.kind == "CONF" && !ctx.a7) ++retail_conf[to_i(it.f[1])];
+    for (const Seen* e : ctx.events)
+        for (const auto& h : e->confirmations)
+            if (ctx.reach_hits.count(h.record_guid) && !ctx.a7) ++my_conf[h.record_guid];
+    for (const auto& [rec, n] : retail_conf) {
+        if (!ctx.reach_hits.count(rec)) continue;
+        const int mine = my_conf.count(rec) ? my_conf[rec] : 0;
+        const abilities::HitDef* hd = r.catalog->hit(rec);
+        const std::string hn = hd ? hd->row.name : std::to_string(rec);
+        if (mine == 0) problems.push_back("CONF:missing " + hn);
+        else if (mine < n && n <= 3) problems.push_back("CONF:fewer " + hn + " " + std::to_string(mine) + "/" + std::to_string(n));
+    }
+    for (const auto& [rec, n] : my_conf) {
+        if (!retail_conf.count(rec)) {
+            const abilities::HitDef* hd = r.catalog->hit(rec);
+            problems.push_back("CONF:extra " + (hd ? hd->row.name : std::to_string(rec)));
+        }
+    }
+    int retail_n = -1;
+    for (const RItem& it : reply)
+        if (it.kind == "SHIELD") retail_n = static_cast<int>(to_i(it.f[0]));
+    if (retail_n > 0 && r.pawn.shields.empty()) problems.emplace_back("SHIELD:missing");
+    for (const RItem& it : reply) {
+        if (it.kind == "END") {
+            bool mine = false;
+            for (const Seen* e : ctx.events) mine = mine || (e->end && *e->end == to_i(it.f[0]));
+            if (!mine) problems.emplace_back("END:missing");
+            break;
+        }
+    }
+    for (const RItem& it : reply) {
+        if (it.kind != "ZONE" || ctx.a7) continue;
+        const bootstrap::ZoneOp* open = nullptr;
+        double open_at = 0;
+        for (const Seen* e : ctx.events) {
+            for (const bootstrap::ZoneOp& z : e->zones) {
+                if (!open && z.kind == bootstrap::ZoneOp::Kind::Open && z.ability == c.ability) {
+                    open = &z;
+                    open_at = e->at - ctx.t0;
+                }
+            }
+        }
+        if (!open) {
+            problems.emplace_back("ZONE:missing");
+            continue;
+        }
+        if (ctx.has_ts && std::fabs(open_at * 1000 - it.ms) > kZoneTolerance * 1000) late.push_back("ZONE " + std::to_string(static_cast<int>(open_at * 1000)) + "/" + std::to_string(it.ms));
+        int close_ms = -1;
+        for (const RItem& z : reply)
+            if (z.kind == "ZCLOSE") close_ms = z.ms;
+        if (ctx.has_ts && close_ms >= 0) pending_closes.push_back({c.name, c.capture, c.ability, open->id, ctx.t0, close_ms});
+    }
+}
+
+void tally_cast_results(const capture_casts::Case& c, Refusal refusal, const std::vector<std::string>& problems, const std::vector<std::string>& late, bool verbose, const std::string& only_ability, Tally& ty, std::map<std::string, size_t>& reasons, std::map<std::string, std::vector<std::string>>& reason_cases) {
+    std::vector<std::string> unlisted;
+    for (const std::string& p : problems) {
+        bool listed = false;
+        for (const Known& k : kKnown) listed = listed || (std::string(k.ability) == c.name && k.capture == c.capture && p.rfind(k.tag, 0) == 0);
+        if (!listed) unlisted.push_back(p);
+    }
+    if (refusal != Refusal::None && unlisted.empty()) ++ty.refused_listed;
+    if (unlisted.empty()) ++ty.matched;
+    if (unlisted.empty() && late.empty()) ++ty.timed;
+    for (const std::string& p : unlisted) {
+        const size_t sp = p.find(' ');
+        const std::string head = sp != std::string::npos ? p.substr(0, sp) : p;
+        const std::string rkey = head + " [" + c.cls + "]";
+        ++reasons[rkey];
+        reason_cases[rkey].push_back(std::string(c.name) + "@" + std::to_string(c.capture) + ":" + std::to_string(c.line) + " " + p);
+    }
+    if (verbose || (!unlisted.empty() && !only_ability.empty())) {
+        std::printf("%s %s cap %d line %d: %s", unlisted.empty() ? "ok  " : "FAIL", c.name, c.capture, c.line, unlisted.empty() ? "matches" : "");
+        for (const std::string& p : unlisted) std::printf("\n      %s", p.c_str());
+        for (const std::string& p : late) std::printf("\n      late %s", p.c_str());
+        std::printf("\n");
+    }
+}
+
+void run_single_cast(Rig& r, const capture_casts::Case& c, double& clock_no_ts, bool verbose, const std::string& only_ability, Tally& ty, std::map<std::string, size_t>& reasons, std::map<std::string, std::vector<std::string>>& reason_cases, std::vector<PendingClose>& pending_closes) {
+    ++ty.total;
+    const bool has_ts = c.at_ms >= 0;
+    if (has_ts) ++ty.with_ts;
+    const std::vector<RItem> reply = parse_lines(c.reply);
+    const std::vector<RItem> client = parse_lines(c.client);
+    const std::map<int64_t, double> before = parse_before(c.before);
+    std::vector<std::string> problems, late;
+    const double t0 = has_ts ? 5.0 + c.at_ms / 1000.0 + 0.0123 : (clock_no_ts += 15.0);
+    r.run_to(t0 - 0.2);
+    r.set_current(content::kGuidMana, r.pawn.stat(content::kGuidMaxMana));
+    r.take();
+    for (const int64_t guid : content::kResourceStats) {
+        const auto b = before.find(guid);
+        if (b != before.end()) r.set_current(guid, b->second);
+    }
+    r.take();
+    r.run_to(t0 - 0.001);
+    const double mana_before = r.pawn.stat(content::kGuidMana);
+    const size_t first_event = r.log.size();
+    const bool a7 = r.rules.ability(c.ability) != nullptr;
+    TriggerInfo info;
+    info.animation_index = c.animation_index;
+    info.target_count = static_cast<uint32_t>(c.targets);
+    info.item = false;
+    const Refusal refusal = a7 ? r.a7->trigger(c.ability, c.client_instance_id, t0, info) : r.pipe->trigger(c.ability, c.client_instance_id, t0, info);
+    r.take();
+    replay_client_sends(r, c, client, t0, has_ts, a7, verbose, refusal);
+    if (refusal != Refusal::None) problems.push_back(std::string("refused:") + refusal_name(refusal));
+    else ++ty.accepted;
+    if (!r.pawn.broken.empty()) problems.push_back("pawn:" + r.pawn.broken);
+    if (refusal == Refusal::None) {
+        ReplayCtx ctx{{}, {}, {}, &c, t0, mana_before, a7, has_ts};
+        for (size_t i = first_event; i < r.log.size(); ++i) ctx.events.push_back(&r.log[i]);
+        if (const abilities::AbilityDef* def = r.catalog->ability(c.ability)) closure(*r.catalog, *def, ctx.reach_effects, ctx.reach_hits);
+        check_ability_and_cd_items(ctx, reply, problems, late);
+        check_mana_and_effects(r, ctx, reply, before, problems, late);
+        check_confs_shields_ends_zones(r, ctx, reply, problems, late, pending_closes);
+    }
+    tally_cast_results(c, refusal, problems, late, verbose, only_ability, ty, reasons, reason_cases);
+}
+
+void run_single_capture(int capture, const std::string& only_class, const std::string& only_ability, bool verbose, std::map<std::string, Tally>& tally, std::map<std::string, size_t>& reasons, std::map<std::string, std::vector<std::string>>& reason_cases) {
+    std::string rig_cls;
+    int level = 0;
+    std::vector<int64_t> known;
+    bool has_only_ability = only_ability.empty();
+    for (const auto& c : capture_casts::kCases) {
+        if (c.capture != capture) continue;
+        rig_cls = c.rig_cls;
+        level = std::max(level, c.level);
+        known.push_back(c.ability);
+        if (!only_ability.empty() && only_ability == c.name) has_only_ability = true;
+    }
+    if (level == 0) level = 25;
+    if ((!only_class.empty() && rig_cls != only_class) || !has_only_ability) return;
+    Rig r(class_enum(rig_cls), level);
+    if (!r.ok()) {
+        std::printf("  [FAIL] the rig of capture %d (%s %d): %s\n", capture, rig_cls.c_str(), level, r.problem.c_str());
+        ++g_fail;
+        return;
+    }
+    r.pipe->set_known(known);
+    r.pipe->set_data_timings(true);
+    r.take();
+    r.use_extra_ranks(infer_talents(r, capture));
+    double clock_no_ts = 10.0;
+    std::vector<PendingClose> pending_closes;
+    std::vector<const capture_casts::Case*> in_order;
+    for (const capture_casts::Case& x : capture_casts::kCases)
+        if (x.capture == capture) in_order.push_back(&x);
+    std::stable_sort(in_order.begin(), in_order.end(), [](const capture_casts::Case* a, const capture_casts::Case* b) { return a->line < b->line; });
+    for (const capture_casts::Case* cp : in_order) {
+        if (!only_ability.empty() && only_ability != cp->name) continue;
+        run_single_cast(r, *cp, clock_no_ts, verbose, only_ability, tally[cp->cls], reasons, reason_cases, pending_closes);
+    }
+    if (!pending_closes.empty()) {
+        r.run_to(r.clock + 40.0);
+        for (const PendingClose& pc : pending_closes) {
+            double closed_at = -1;
+            for (const Seen& s : r.log)
+                for (const bootstrap::ZoneOp& z : s.zones)
+                    if (z.kind == bootstrap::ZoneOp::Kind::Close && z.id == pc.zone_id) closed_at = s.at - pc.t0;
+            CHECKF(closed_at >= 0 && std::fabs(closed_at * 1000 - pc.close_ms) <= kZoneCloseTolerance * 1000, "%s (capture %d): the zone's actor is closed %.0f ms after the trigger (retail %d)", pc.name, pc.capture, closed_at * 1000, pc.close_ms);
+        }
+    }
+}
 
 }  // namespace
 
@@ -398,366 +688,27 @@ int main(int argc, char** argv) {
     std::set<int> captures;
     for (const auto& c : capture_casts::kCases) captures.insert(c.capture);
 
-    struct Tally {
-        size_t total = 0, accepted = 0, refused_listed = 0, matched = 0, timed = 0, with_ts = 0;
-    };
     std::map<std::string, Tally> tally;
     std::map<std::string, size_t> reasons;
     std::map<std::string, std::vector<std::string>> reason_cases;
-
     for (const int capture : captures) {
-        std::string rig_cls;
-        int level = 0;
-        std::vector<int64_t> known;
-        for (const auto& c : capture_casts::kCases) {
-            if (c.capture != capture) continue;
-            rig_cls = c.rig_cls;
-            level = std::max(level, c.level);
-            known.push_back(c.ability);
-        }
-        if (level == 0) level = 25;
-        if (!only_class.empty() && rig_cls != only_class) continue;
-        if (!only_ability.empty()) {
-            bool has = false;
-            for (const auto& c : capture_casts::kCases) has = has || (c.capture == capture && only_ability == c.name);
-            if (!has) continue;
-        }
-        Rig r(class_enum(rig_cls), level);
-        if (!r.ok()) {
-            std::printf("  [FAIL] the rig of capture %d (%s %d): %s\n", capture, rig_cls.c_str(), level, r.problem.c_str());
-            ++g_fail;
-            continue;
-        }
-        r.pipe->set_known(known);
-        r.pipe->set_data_timings(true);
-        r.take();
-        r.use_extra_ranks(infer_talents(r, capture));
-        double clock_no_ts = 10.0;
-        std::vector<PendingClose> pending_closes;
-        // the capture's casts in the order they happened (the header is sorted by class)
-        std::vector<const capture_casts::Case*> in_order;
-        for (const capture_casts::Case& x : capture_casts::kCases) {
-            if (x.capture == capture) in_order.push_back(&x);
-        }
-        std::stable_sort(in_order.begin(), in_order.end(), [](const capture_casts::Case* a, const capture_casts::Case* b) { return a->line < b->line; });
-        for (const capture_casts::Case* cp : in_order) {
-            const capture_casts::Case& c = *cp;
-            if (!only_ability.empty() && only_ability != c.name) continue;
-            Tally& ty = tally[c.cls];
-            ++ty.total;
-            const bool has_ts = c.at_ms >= 0;
-            if (has_ts) ++ty.with_ts;
-            const std::vector<RItem> reply = parse_lines(c.reply);
-            const std::vector<RItem> client = parse_lines(c.client);
-            const std::map<int64_t, double> before = parse_before(c.before);
-            std::vector<std::string> problems, late;
-            auto problem = [&](const std::string& p) { problems.push_back(p); };
-// -- C | Y | B . CoA --
-
-            const double t0 = has_ts ? 5.0 + c.at_ms / 1000.0 + 0.0123 : (clock_no_ts += 15.0);
-            r.run_to(t0 - 0.2);
-            r.set_current(content::kGuidMana, r.pawn.stat(content::kGuidMaxMana));
-            r.take();
-            // the class resources the character had (a Tank's Courage, a Cleric's DivinePower ...)
-            for (const int64_t guid : content::kResourceStats) {
-                const auto b = before.find(guid);
-                if (b != before.end()) r.set_current(guid, b->second);
-            }
-            r.take();
-            r.run_to(t0 - 0.001);
-            const double mana_before = r.pawn.stat(content::kGuidMana);
-            const size_t first_event = r.log.size();
-            const bool a7 = r.rules.ability(c.ability) != nullptr;
-            Refusal refusal = Refusal::None;
-            TriggerInfo info;
-            info.animation_index = c.animation_index;
-            info.target_count = static_cast<uint32_t>(c.targets);
-            info.item = false;
-            if (a7) {
-                refusal = r.a7->trigger(c.ability, c.client_instance_id, t0, info);
-            } else {
-                refusal = r.pipe->trigger(c.ability, c.client_instance_id, t0, info);
-            }
-            r.take();
-            // what the client sent while the cast ran
-            // (the cast's own steps come about 0.3 s after the call whatever retail's window was: a window cut short by the next call still lets them run)
-            double end_t = t0 + (c.window_ms > 0 ? std::max(c.window_ms / 1000.0, 0.8) : 6.0);
-            std::vector<std::pair<double, const RItem*>> sends;
-            for (const RItem& q : client) sends.emplace_back(has_ts ? t0 + q.ms / 1000.0 : t0 + 0.3, &q);
-            std::stable_sort(sends.begin(), sends.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-            for (const auto& [t, q] : sends) {
-                if (refusal != Refusal::None) break;
-                if (q->kind == "REQ") {
-                    if (!a7) {
-                        r.clock = t;
-                        r.a7->tick(t);
-                        const auto verdict = r.pipe->hit_request(to_i(q->f[0]), to_i(q->f[1]), to_i(q->f[2]), static_cast<size_t>(to_i(q->f[3])), static_cast<size_t>(to_i(q->f[4])), t);
-                        if (verbose) std::printf("      request at %.3f: %s\n", t - t0, AbilityPipeline::verdict_name(verdict));
-                        r.take();
-                    }
-                } else if (q->kind == "ENDREQ") {
-                    r.run_to(t);
-                    if (!a7) {
-                        // the client names the ServerInstanceId of the item the pawn lists
-                        int32_t sid = -1;
-                        for (const auto& [k, v] : r.pawn.abilities)
-                            if (v.ability_guid == c.ability) sid = static_cast<int32_t>(k);
-                        if (sid >= 0) r.pipe->end_request(sid, t);
-                    }
-                    r.take();
-                } else if (q->kind == "HELD") {
-                    r.run_to(t);
-                    if (a7) r.a7->cancel(c.client_instance_id, t);
-                    else r.pipe->cancel(c.client_instance_id, t);
-                    r.take();
-                } else if (q->kind == "BRANCH") {   // the client's cast bar ended: it asks for its branch (a cast bar's cost and hits follow this request)
-                    r.run_to(t);
-                    if (!a7) r.pipe->branch_request(c.client_instance_id, to_i(q->f[0]), t);
-                    r.take();
-                }
-            }
-            r.run_to(end_t);
-            if (refusal != Refusal::None) {
-                problem(std::string("refused:") + refusal_name(refusal));
-            } else {
-                ++ty.accepted;
-            }
-            if (!r.pawn.broken.empty()) problem("pawn:" + r.pawn.broken);
-
-            if (refusal == Refusal::None) {
-                std::vector<const Seen*> events;
-                for (size_t i = first_event; i < r.log.size(); ++i) events.push_back(&r.log[i]);
-                const abilities::AbilityDef* def = r.catalog->ability(c.ability);
-                std::set<int64_t> reach_effects, reach_hits;
-                if (def) closure(*r.catalog, *def, reach_effects, reach_hits);
-                if (r.pipe->resource_class() >= 0) {
-                    // (the class's own effect resource, e.g. Bard_Resonance, is part of every cast)
-                }
-                // the ability item
-                const bootstrap::ActiveAbilityItem* my_item = nullptr;
-                double my_item_at = 0;
-                for (const Seen* e : events) {
-                    if (!my_item && !e->change.abilities_added.empty()) {
-                        my_item = &e->change.abilities_added[0];
-                        my_item_at = e->at - t0;
-                    }
-                }
-                for (const RItem& it : reply) {
-                    if (it.kind != "AB" || to_i(it.f[0]) != c.ability || to_u(it.f[3]) == 0) continue;
-                    if (!my_item) {
-                        problem("AB:missing");
-                        break;
-                    }
-                    if (my_item->ability_guid != c.ability || my_item->montage_group != it.f[2]) problem("AB:group " + it.f[2] + " (" + my_item->montage_group + ")");
-                    if (!a7 && my_item->montage_guid != to_u(it.f[3])) problem("AB:montage");   // (A7's items name the montage by path: its own test compares them)
-                    if (my_item->targets_self != (to_i(it.f[5]) > 0)) problem("AB:targets");
-                    if (has_ts && std::fabs(my_item_at - it.ms / 1000.0) > kItemTolerance) late.push_back("AB " + std::to_string(static_cast<int>(my_item_at * 1000)) + "/" + std::to_string(it.ms));
-                    break;
-                }
-                // the Cooldowns item
-                const bootstrap::CooldownItem* my_cd = nullptr;
-                double my_cd_at = -1;
-                for (const Seen* e : events) {
-                    for (const auto& cd : e->change.cooldowns_set) {
-                        if (!my_cd && cd.ability_guid == c.ability) {
-                            my_cd = &cd;
-                            my_cd_at = e->at - t0;
-                        }
-                    }
-                }
-                for (const RItem& it : reply) {
-                    if (it.kind != "CD" || to_i(it.f[0]) != c.ability) continue;
-                    if (!my_cd) {
-                        problem("CD:missing");
-                        break;
-                    }
-                    if (my_cd->initial_cooldown != static_cast<float>(to_d(it.f[1]))) problem("CD:cooldown " + it.f[1]);
-                    if (my_cd->charges != to_i(it.f[2])) problem("CD:charges " + it.f[2] + " (" + std::to_string(my_cd->charges) + ")");
-                    if (has_ts && std::fabs(my_cd_at - it.ms / 1000.0) > kStepTolerance) late.push_back("CD " + std::to_string(static_cast<int>(my_cd_at * 1000)) + "/" + std::to_string(it.ms));
-                    break;
-                }
-                // the Mana cost
-                {
-                    int cd_ms = -1;
-                    for (const RItem& it : reply)
-                        if (it.kind == "CD" && to_i(it.f[0]) == c.ability) cd_ms = it.ms;
-                    double retail_before = before.count(content::kGuidMana) ? before.at(content::kGuidMana) : -1;
-                    const RItem* step = nullptr;
-                    for (const RItem& it : reply) {
-                        if (it.kind != "STAT" || to_i(it.f[1]) != content::kGuidMana) continue;
-                        if (cd_ms >= 0 && it.ms == cd_ms) {
-                            step = &it;
-                            break;
-                        }
-                        if (cd_ms < 0 || it.ms < cd_ms) retail_before = to_d(it.f[2]);
-                    }
-                    if (step && retail_before >= 0) {
-                        const double retail_delta = retail_before - to_d(step->f[2]);
-                        double my_after = mana_before;
-                        for (const Seen* e : events) {
-                            bool cost_event = !e->change.cooldowns_set.empty();
-                            if (!cost_event) continue;
-                            for (const auto& s : e->change.stats)
-                                if (s.record == content::kGuidMana) my_after = s.value;
-                            break;
-                        }
-                        if (retail_delta > 1 && std::fabs((mana_before - my_after) - retail_delta) > 1e-3)
-                            problem("COST:mana " + std::to_string(retail_delta) + " (" + std::to_string(mana_before - my_after) + ")");
-                    }
-                }
-                // the effects
-                std::set<int64_t> first_seen;
-                for (const RItem& it : reply) {
-                    if (it.kind != "EFF" || a7) continue;   // (the effects of Sprint, Dodge and Rest are A7's: its own tests compare them)
-                    const int64_t guid = to_i(it.f[0]);
-                    if (!reach_effects.count(guid) || !first_seen.insert(guid).second) continue;
-                    const abilities::EffectDef* ed = r.catalog->effect(guid);
-                    const std::string name = ed ? ed->row.name : std::to_string(guid);
-                    bool produced = false, same = false, timely = false;
-                    for (const Seen* e : events) {
-                        for (const auto* list : {&e->change.effects_added, &e->change.effects_changed}) {
-                            for (const auto& x : *list) {
-                                if (x.effect_guid != guid) continue;
-                                produced = true;
-                                const bool inf = to_d(it.f[1]) > 1e30;
-                                const bool extends = ed && ed->row.stack_duration_refresh.find("ExtendDuration") != std::string::npos;
-                                const bool same_here = (inf ? x.duration > 1e30f : std::fabs(x.duration - to_d(it.f[1])) < (extends ? 0.2 : 1e-3)) &&
-                                                       std::fabs(x.tick_time - to_d(it.f[2])) < 1e-4 && x.stacks == to_i(it.f[3]);
-                                if (same_here) {
-                                    same = true;
-                                    if (!has_ts || std::fabs((e->at - t0) * 1000 - it.ms) <= kEffectTolerance * 1000) timely = true;
-                                }
-                            }
-                        }
-                    }
-                    if (!produced) problem("EFF:missing " + name);
-                    else if (!same) problem("EFF:differs " + name + " " + it.f[1] + "/" + it.f[2] + "/" + it.f[3]);
-                    else if (!timely) late.push_back("EFF " + name);
-                }
-                // the confirmations
-                std::map<int64_t, int> retail_conf, my_conf;
-                for (const RItem& it : reply)
-                    if (it.kind == "CONF" && !a7) ++retail_conf[to_i(it.f[1])];
-                for (const Seen* e : events)
-                    for (const auto& h : e->confirmations)
-                        if (reach_hits.count(h.record_guid) && !a7) ++my_conf[h.record_guid];
-                for (const auto& [rec, n] : retail_conf) {
-                    if (!reach_hits.count(rec)) continue;
-                    const int mine = my_conf.count(rec) ? my_conf[rec] : 0;
-                    const abilities::HitDef* hd = r.catalog->hit(rec);
-                    const std::string hn = hd ? hd->row.name : std::to_string(rec);
-                    if (mine == 0) problem("CONF:missing " + hn);
-                    else if (mine < n && n <= 3) problem("CONF:fewer " + hn + " " + std::to_string(mine) + "/" + std::to_string(n));
-                }
-                for (const auto& [rec, n] : my_conf) {
-                    if (!retail_conf.count(rec)) {
-                        const abilities::HitDef* hd = r.catalog->hit(rec);
-                        problem("CONF:extra " + (hd ? hd->row.name : std::to_string(rec)));
-                    }
-                }
-                // the shields: the count of the last TempHealth item
-                {
-                    int retail_n = -1;
-                    for (const RItem& it : reply)
-                        if (it.kind == "SHIELD") retail_n = static_cast<int>(to_i(it.f[0]));
-                    if (retail_n >= 0 && retail_n > 0 && r.pawn.shields.empty()) problem("SHIELD:missing");
-                }
-                // a cast retail ended early
-                for (const RItem& it : reply) {
-                    if (it.kind == "END") {
-                        bool mine = false;
-                        for (const Seen* e : events) mine = mine || (e->end && *e->end == to_i(it.f[0]));
-                        if (!mine) problem("END:missing");
-                        break;
-                    }
-                }
-                // the lingering zone's actor [R: ZONE lines: a dance's visual effect; 4 of the 511 casts]: it opens near retail's offset, and its close is
-                // compared when the capture is over (what ends a dance is the next cast)
-                for (const RItem& it : reply) {
-                    if (it.kind != "ZONE" || a7) continue;
-                    const bootstrap::ZoneOp* open = nullptr;
-                    double open_at = 0;
-                    for (const Seen* e : events) {
-                        for (const bootstrap::ZoneOp& z : e->zones) {
-                            if (!open && z.kind == bootstrap::ZoneOp::Kind::Open && z.ability == c.ability) {
-                                open = &z;
-                                open_at = e->at - t0;
-                            }
-                        }
-                    }
-                    if (!open) {
-                        problem("ZONE:missing");
-                        continue;
-                    }
-                    if (has_ts && std::fabs(open_at * 1000 - it.ms) > kZoneTolerance * 1000) late.push_back("ZONE " + std::to_string(static_cast<int>(open_at * 1000)) + "/" + std::to_string(it.ms));
-                    int close_ms = -1;
-                    for (const RItem& z : reply)
-                        if (z.kind == "ZCLOSE") close_ms = z.ms;
-                    if (has_ts && close_ms >= 0) pending_closes.push_back({c.name, c.capture, c.ability, open->id, t0, close_ms});
-                }
-            }
-            // the listed differences are no error
-            std::vector<std::string> unlisted;
-            for (const std::string& p : problems) {
-                bool listed = false;
-                for (const Known& k : kKnown) listed = listed || (std::string(k.ability) == c.name && k.capture == c.capture && p.rfind(k.tag, 0) == 0);
-                if (!listed) unlisted.push_back(p);
-            }
-            if (refusal != Refusal::None && unlisted.empty()) ++ty.refused_listed;
-            if (unlisted.empty()) ++ty.matched;
-            if (unlisted.empty() && late.empty()) ++ty.timed;
-            for (const std::string& p : unlisted) {
-                std::string key = p;
-                // (the reasons are counted by their first words)
-                const size_t sp = key.find(' ');
-                const size_t colon = key.find(':');
-                std::string head = key.substr(0, std::min(sp == std::string::npos ? key.size() : sp, colon == std::string::npos ? key.size() : key.size()));
-                if (sp != std::string::npos) head = key.substr(0, sp);
-                ++reasons[head + " [" + c.cls + "]"];
-                reason_cases[head + " [" + c.cls + "]"].push_back(std::string(c.name) + "@" + std::to_string(c.capture) + ":" + std::to_string(c.line) + " " + p);
-            }
-            if (verbose || (!unlisted.empty() && !only_ability.empty())) {
-                std::printf("%s %s cap %d line %d: %s", unlisted.empty() ? "ok  " : "FAIL", c.name, c.capture, c.line, unlisted.empty() ? "matches" : "");
-                for (const std::string& p : unlisted) std::printf("\n      %s", p.c_str());
-                for (const std::string& p : late) std::printf("\n      late %s", p.c_str());
-                std::printf("\n");
-            }
-        }
-        // the zone actors retail destroyed: ours are closed when the dance ends too, as long after its trigger
-        if (!pending_closes.empty()) {
-            r.run_to(r.clock + 40.0);
-            for (const PendingClose& pc : pending_closes) {
-                double closed_at = -1;
-                for (const Seen& s : r.log)
-                    for (const bootstrap::ZoneOp& z : s.zones)
-                        if (z.kind == bootstrap::ZoneOp::Kind::Close && z.id == pc.zone_id) closed_at = s.at - pc.t0;
-                CHECKF(closed_at >= 0 && std::fabs(closed_at * 1000 - pc.close_ms) <= kZoneCloseTolerance * 1000, "%s (capture %d): the zone's actor is closed %.0f ms after the trigger (retail %d)", pc.name, pc.capture,
-                       closed_at * 1000, pc.close_ms);
-            }
-        }
+        run_single_capture(capture, only_class, only_ability, verbose, tally, reasons, reason_cases);
     }
     std::printf("\n%-10s %7s %9s %9s %9s %9s\n", "class", "casts", "accepted", "matched", "on time", "with ts");
-    size_t total = 0, accepted = 0, matched = 0;
+    size_t total = 0, accepted = 0, matched = 0, refused_listed = 0;
     for (const auto& [cls, t] : tally) {
         std::printf("%-10s %7zu %9zu %9zu %9zu %9zu\n", cls.c_str(), t.total, t.accepted, t.matched, t.timed, t.with_ts);
         total += t.total;
         accepted += t.accepted;
         matched += t.matched;
+        refused_listed += t.refused_listed;
     }
-    std::printf("%-10s %7zu %9zu %9zu\n", "all", total, accepted, matched);
-    std::printf("\nwhat is left:\n");
+    std::printf("%-10s %7zu %9zu %9zu\n\nwhat is left:\n", "all", total, accepted, matched);
     for (const auto& [reason, n] : reasons) {
         std::printf("  %5zu  %s\n", n, reason.c_str());
-        if (verbose) {
-            size_t shown = 0;
-            for (const std::string& s : reason_cases[reason]) {
-                if (++shown > 6) break;
-                std::printf("           %s\n", s.c_str());
-            }
-        }
+        for (size_t i = 0; verbose && i < reason_cases[reason].size() && i < 6; ++i)
+            std::printf("           %s\n", reason_cases[reason][i].c_str());
     }
-    size_t refused_listed = 0;
-    for (const auto& [cls, t] : tally) refused_listed += t.refused_listed;
     std::printf("%zu casts are refused and listed in kKnown with the reason\n", refused_listed);
     CHECKF(accepted + refused_listed == total, "every cast is accepted, or its refusal is listed (%zu + %zu of %zu)", accepted, refused_listed, total);
     CHECKF(matched == total, "every accepted cast matches retail's reply (%zu of %zu)", matched, total);

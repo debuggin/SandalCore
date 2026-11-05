@@ -1,4 +1,6 @@
 #include "session/ability_pipeline_internal.h"
+#include "session/consumable_timings.h"
+#include "session/summoner_pets.h"
 
 #include <spdlog/spdlog.h>
 
@@ -23,6 +25,7 @@ struct AbilityPipeline::Host::Casts {
     const AbilityDef *def = nullptr;
     std::string name;
     bool loop = false, is_toggle = false, has_montage = false;
+    std::shared_ptr<const ItemCast> item_cast;
     std::vector<const EffectDef *> own_effects;
     std::vector<uint64_t> target_actors;
   };
@@ -72,9 +75,9 @@ struct AbilityPipeline::Host::Casts {
       return refuse_cast(self, plan, Refusal::Dead);
     if (!plan.def || self.a7_.enabled(plan.ability))
       return refuse_cast(self, plan, Refusal::NotEnabled);
-    if (!self.known(plan.ability))
+    if (!self.known(plan.ability) && !info.item_cast)
       return refuse_cast(self, plan, Refusal::NotKnown);
-    if (info.item)
+    if (info.item && !info.item_cast)
       return refuse_cast(self, plan, Refusal::Unsupported,
                          " (an item's ability is not run here)");
     if (self.casts_.size() >= kMaxCasts ||
@@ -99,8 +102,11 @@ struct AbilityPipeline::Host::Casts {
       return refuse_cast(self, plan, Refusal::BadTarget,
                          " (the target is not there or is dead)");
     const bool hostile = ti.relation == combat::Relation::Hostile;
-    const int req_mask = hostile ? 2 : kFriendlyMask;
-    if ((row.applicable_targets & req_mask) == 0) {
+    const bool bad_mask =
+        hostile ? (row.applicable_targets & 2) == 0
+                : (row.applicable_targets != 0 &&
+                   (row.applicable_targets & kFriendlyMask) == 0);
+    if (bad_mask) {
       return refuse_cast(self, plan, Refusal::BadTarget,
                          hostile ? " (it does not harm enemies)"
                                  : " (it does not help allies)");
@@ -111,6 +117,45 @@ struct AbilityPipeline::Host::Casts {
       return refuse_cast(self, plan, Refusal::OutOfRange);
     }
     return Refusal::None;
+  }
+
+  static bool has_pet_out_or_pending_bolt(const AbilityPipeline &self,
+                                          const AbilityDef *def,
+                                          bool &pet_out) {
+    pet_out = false;
+    for (const pets::Definition &d : pets::kDefinitions)
+      pet_out = pet_out || self.stacks_of(d.effect) > 0;
+    for (const Cast &other : self.casts_) {
+      if (other.def == def && other.cost_due)
+        return true;
+    }
+    return false;
+  }
+
+  static std::optional<Refusal>
+  try_handle_dimensional_bolt(AbilityPipeline &self, const TriggerPlan &plan) {
+    if (plan.ability != pets::kBolt)
+      return std::nullopt;
+    const uint64_t aim =
+        plan.target_actors.empty() ? 0 : plan.target_actors.front();
+    const bool marked =
+        aim != 0 && self.combat_ &&
+        self.combat_->effect_remaining(aim, pets::kBoltMark, plan.t) > 0;
+    bool pet_out = false;
+    const bool pending = has_pet_out_or_pending_bolt(self, plan.def, pet_out);
+    if (const auto g = self.groups_.find(group_key(plan.def->row));
+        g != self.groups_.end() && g->second.timer_end >= 0)
+      return refuse_cast(self, plan, Refusal::Charges);
+    if (marked && pet_out) {
+      self.land_bolt_recall(plan.client_id, aim, plan.t);
+      return Refusal::None;
+    }
+    if (pending)
+      return refuse_cast(self, plan, Refusal::Busy);
+    if (marked || self.stacks_of(pets::kBoltLockout) > 0 ||
+        self.stacks_of(pets::kBoltLockout2) > 0)
+      return refuse_cast(self, plan, Refusal::Busy, " (its lockout)");
+    return std::nullopt;
   }
 
   static Refusal validate_trigger_targets(AbilityPipeline &self,
@@ -158,6 +203,7 @@ struct AbilityPipeline::Host::Casts {
     cast.def = plan.def;
     cast.trigger_at = plan.t;
     cast.animation_index = info.animation_index;
+    cast.item_cast = info.item_cast;
     cast.target = info.target_count > 0 && plan.target_actors.empty();
     cast.self_reachable = (row.applicable_targets & kFriendlyMask) != 0;
     cast.target_actors = plan.target_actors;
@@ -248,6 +294,23 @@ struct AbilityPipeline::Host::Casts {
       plan.table_end = it.end_ms / 1000.0;
   }
 
+  static void apply_special_trigger_timings(const Cast &cast,
+                                            TriggerPlan &plan) {
+    if (plan.item_cast) {
+      plan.item_delay = plan.cost_delay = kItemCastDelay;
+      for (const content::MontageRow &m : plan.def->montages) {
+        if (m.anim_index == cast.animation_index)
+          plan.table_end = consumable_montage_end(m.soft_path);
+      }
+    }
+    if (pets::for_ability(plan.ability)) {
+      plan.cost_delay = pets::kSummonSeconds;
+      plan.hit_delay = 0;
+      if (plan.table_end < 0)
+        plan.table_end = pets::kSummonSeconds + 0.38;
+    }
+  }
+
   static void load_trigger_timings(const AbilityPipeline &self,
                                    TriggerPlan &plan, Cast &cast) {
     const int aimed = static_cast<int>(!plan.target_actors.empty());
@@ -262,6 +325,7 @@ struct AbilityPipeline::Host::Casts {
       plan.cost_delay = tm.cost;
       plan.hit_delay = tm.hit;
     }
+    apply_special_trigger_timings(cast, plan);
     for (const content::MontageRow &m : plan.def->montages) {
       if (!m.soft_path.empty())
         plan.has_montage = true;
@@ -345,8 +409,9 @@ struct AbilityPipeline::Host::Casts {
       cast.montage_branch = true;
       cast.branch_position = l.position;
       cast.branch_predicted = false;
+      cast.loop_scale = 1.0 / self.client_rate(false);
       cast.item_due = plan.t + l.item;
-      cast.cost_due = plan.t + l.first_shot;
+      cast.cost_due = plan.t + l.first_shot * cast.loop_scale;
     }
     apply_table_end(plan, cast);
   }
@@ -365,19 +430,59 @@ struct AbilityPipeline::Host::Casts {
       cast.projectile_due.reset();
   }
 
-  static void try_plan_shot(AbilityPipeline &self, const TriggerPlan &plan,
-                            Cast &cast) {
-    const content::AbilityRow &row = plan.def->row;
-    if (!cast.projectile_due || cast.branched || cast.looped ||
-        is_weapon_combo(row))
+  static bool matches_flight_row(std::string_view ability_name, int anim_index,
+                                 int64_t key) {
+    for (const Flight &f : kFlights) {
+      if (ability_name == f.ability &&
+          (f.animation < 0 || f.animation == anim_index) && f.key == key)
+        return true;
+    }
+    return false;
+  }
+
+  static void resolve_branched_flight_owner(const AbilityPipeline &self,
+                                            const AbilityDef &def, Cast &cast) {
+    if (!cast.branched || !cast.projectile_due || cast.chain_owner != 0)
       return;
-    for (const ShotCast &sc : kShotCasts) {
-      if (row.name == sc.ability &&
-          (sc.animation < 0 || sc.animation == cast.animation_index)) {
-        self.plan_shot(cast, sc, plan.t);
+    for (const content::AbilityHitRow &h : def.hits) {
+      if (h.source != "projectile")
+        continue;
+      const content::ProjectileRow *p =
+          self.catalog_->projectile(h.owner_guid);
+      if (!p || !(p->speed > 0))
+        continue;
+      if (matches_flight_row(def.row.name, cast.animation_index, h.key)) {
+        cast.chain_owner = h.owner_guid;
         return;
       }
     }
+  }
+
+  static void try_plan_shot(AbilityPipeline &self, const TriggerPlan &plan,
+                            Cast &cast, bool swing) {
+    const content::AbilityRow &row = plan.def->row;
+    const ShotCast *shot = nullptr;
+    for (const ShotCast &sc : kShotCasts) {
+      if (row.name != sc.ability)
+        continue;
+      if (!shot && !swing)
+        shot = &sc;
+      if (sc.animation < 0 || sc.animation == cast.animation_index) {
+        shot = &sc;
+        break;
+      }
+    }
+    if (shot)
+      self.plan_shot(cast, *shot, plan.t);
+  }
+
+  static bool is_plain_projectile_cast(const Cast &cast,
+                                       const content::AbilityRow &row,
+                                       bool aimed, bool swing) {
+    if (!cast.projectile_due || cast.branched || cast.looped || cast.gathered ||
+        cast.timed || cast.toggle_off)
+      return false;
+    return !swing || (aimed && swing_flies(row.name, cast.animation_index));
   }
 
   static bool has_custom_projectile_timing(const Cast &cast) {
@@ -400,7 +505,15 @@ struct AbilityPipeline::Host::Casts {
     if (cast.gathered || cast.timed || cast.toggle_off)
       cast.projectile_due.reset();
     if (aimed)
-      try_plan_shot(self, plan, cast);
+      resolve_branched_flight_owner(self, *plan.def, cast);
+    const content::AbilityRow &row = plan.def->row;
+    const bool at_caster = !aimed && cast.target && cast.self_reachable;
+    const bool swing = is_weapon_combo(row);
+    const bool plain = is_plain_projectile_cast(cast, row, aimed, swing);
+    if ((aimed || at_caster) && plain)
+      try_plan_shot(self, plan, cast, swing);
+    if (aimed && plain && !cast.shot)
+      self.plan_notes(cast, plan.t);
   }
 
   static void classify_cast_hit_row(const AbilityPipeline &self,
@@ -460,6 +573,10 @@ struct AbilityPipeline::Host::Casts {
     slot.reaches = self.hits_caster(hit->row);
     slot.aims_others = self.combat_ != nullptr &&
                        (hit->row.applicable_targets & (2 | 4 | 8 | 16)) != 0;
+    if (pets::for_ability(def.row.guid) && hit->row.applicable_targets == 1 &&
+        hit->row.fallback_target.find("SelfOnly") != std::string::npos) {
+      slot.server_self_use = true;
+    }
     rec.slots.push_back(std::move(slot));
   }
 
@@ -471,7 +588,9 @@ struct AbilityPipeline::Host::Casts {
     rec.ability = row.guid;
     rec.trigger_at = plan.t;
     rec.cost_due = *cast.cost_due;
-    rec.window_end = rec.cost_due + kRequestWindow;
+    rec.window_end =
+        rec.cost_due + (plan.item_cast ? kItemRequestWindow : kRequestWindow);
+    rec.item_cast = plan.item_cast;
     rec.hit_delay = effective_hit_delay(plan);
     rec.reach = self.reach_of(*plan.def);
     for (const content::MontageRow &m : plan.def->montages) {
@@ -529,44 +648,6 @@ struct AbilityPipeline::Host::Casts {
       self.cancel_swings(plan.t, plan.name);
     self.casts_.push_back(std::move(cast));
   }
-
-  static bool apply_missile_flights(const AbilityPipeline &self, Cast &cast,
-                                    const FlightCalc &fc, double &first,
-                                    double &last) {
-    bool any = false;
-    for (Cast::Missile &m : cast.missiles) {
-      if (m.kind != Cast::Missile::Kind::Land)
-        continue;
-      const content::ProjectileRow *p = self.catalog_->projectile(m.projectile);
-      if (!p || !(p->speed > 0))
-        continue;
-      const int64_t key = projectile_hit_key(*cast.def, m.projectile);
-      if (resolve_flight_due(fc, key, *p, m.due)) {
-        first = std::min(first, m.due);
-        last = std::max(last, m.due);
-        any = true;
-      }
-    }
-    return any;
-  }
-
-  static bool apply_cast_projectile_flight(const AbilityPipeline &self,
-                                           Cast &cast, const FlightCalc &fc,
-                                           double &first, double &last) {
-    if (!cast.projectile_due)
-      return false;
-    for (const content::AbilityHitRow &h : cast.def->hits) {
-      const content::ProjectileRow *p =
-          h.source == "projectile" ? self.catalog_->projectile(h.owner_guid)
-                                   : nullptr;
-      double due = 0.0;
-      if (p && p->speed > 0 && resolve_flight_due(fc, h.key, *p, due)) {
-        cast.projectile_due = first = last = due;
-        return true;
-      }
-    }
-    return false;
-  }
 };
 
 Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
@@ -585,6 +666,7 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
   plan.t = now_;
   plan.def = catalog_ ? catalog_->ability(ability) : nullptr;
   plan.name = plan.def ? plan.def->row.name : std::to_string(ability);
+  plan.item_cast = info.item_cast;
 
   if (const Refusal r = Host::Casts::validate_trigger_shape(*this, info, plan);
       r != Refusal::None)
@@ -593,6 +675,9 @@ Refusal AbilityPipeline::trigger(int64_t ability, int32_t client_id, double now,
           Host::Casts::validate_trigger_targets(*this, info, plan);
       r != Refusal::None)
     return r;
+  if (const std::optional<Refusal> r =
+          Host::Casts::try_handle_dimensional_bolt(*this, plan))
+    return *r;
 
   Cast cast;
   if (const Refusal r =
@@ -637,6 +722,7 @@ void AbilityPipeline::step_item(Cast &cast, double t) {
     break;
   }
   item.montage_group = montage_group_of(def);
+  item.play_rate = static_cast<float>(item_rate(def));
   item.animation_counter = ++animation_counter_;
   cast.item = item;
   c.abilities_added.push_back(std::move(item));
@@ -667,7 +753,7 @@ void AbilityPipeline::cancel_swings(double t, const std::string &by) {
 }
 
 void AbilityPipeline::step_branch(Cast &cast, double t) {
-  if (cast.gathered)
+  if (cast.gathered && (!cast.cost_due || can_pay(cast)))
     launch_gathered(cast, t);
   land_by_flight(cast, t);
   if (!cast.montage_branch || !item_instance_ ||
@@ -687,85 +773,6 @@ void AbilityPipeline::step_branch(Cast &cast, double t) {
   emit({std::move(c), std::nullopt, t,
         "the montage of " + cast.def->row.name +
             " moves to the end of its cast"});
-}
-
-void AbilityPipeline::land_by_flight(Cast &cast, double t) {
-  if (!combat_ || !cast.branched || cast.target_actors.empty() ||
-      cast.heard_at < 0)
-    return;
-  const Flight *plan = Host::find_cast_flight(cast);
-  if (!plan)
-    return;
-  const combat::TargetInfo info = combat_->inspect(cast.target_actors.front());
-  if (!info.exists || !info.alive)
-    return;
-  const double distance = info.surface_distance_cm + kMuzzleCm;
-  const double rate =
-      plan->bar / std::clamp(cast.heard_at - cast.trigger_at, 0.3, 8.0);
-  const Host::FlightCalc fc{cast, distance, rate, t};
-  double first = 1e18;
-  double last = 0.0;
-  bool any = Host::Casts::apply_missile_flights(*this, cast, fc, first, last);
-  if (!any)
-    any =
-        Host::Casts::apply_cast_projectile_flight(*this, cast, fc, first, last);
-  if (any) {
-    spdlog::info("[abilities] {}: the target is {:.1f} m away: the projectiles "
-                 "land {:.3f} to {:.3f} s after the cast bar's end",
-                 cast.def->row.name, distance / 100.0, first - cast.heard_at,
-                 last - cast.heard_at);
-  }
-}
-
-void AbilityPipeline::launch_shot(Cast &cast, double t) {
-  cast.flight_pending = false;
-  const combat::TargetInfo info = combat_->inspect(cast.target_actors.front());
-  const content::ProjectileRow *p = nullptr;
-  for (const content::AbilityHitRow &h : cast.def->hits) {
-    const content::ProjectileRow *q =
-        h.source == "projectile" ? catalog_->projectile(h.owner_guid) : nullptr;
-    if (q && q->speed > 0) {
-      p = q;
-      break;
-    }
-  }
-  if (!p || !info.exists || !info.alive) {
-    cast.flight = 0;
-    land_shot(cast, t);
-    return;
-  }
-  const double distance = info.surface_distance_cm + kMuzzleCm;
-  cast.flight = distance / p->speed;
-  land_shot(cast, t);
-  spdlog::info(
-      "[abilities] {}: the projectile leaves {:.3f} s after the trigger (the "
-      "client plays at {:.3f}{}); the target is {:.1f} m away: it lands "
-      "{:.3f} s after the launch",
-      cast.def->row.name, cast.launch_at - cast.trigger_at,
-      client_rate(cast.shot->magical),
-      cast.anchored ? ", the launch is the client's request" : "",
-      distance / 100.0, *cast.projectile_due - cast.launch_at);
-}
-
-void AbilityPipeline::launch_gathered(Cast &cast, double t) {
-  if (!combat_ || !cast.gathered)
-    return;
-  const GatheredCast &g = *cast.gathered;
-  const bool charged = cast.charged && cast.charged_projectile != 0;
-  const std::vector<combat::GatheredTarget> found =
-      charged
-          ? combat_->enemies_in_line(g.charged_length, g.charged_radius,
-                                     kMaxGathered)
-          : combat_->enemies_in_cone(g.angle, g.length, g.behind, kMaxGathered);
-  const int64_t projectile =
-      charged ? cast.charged_projectile : cast.gathered_projectile;
-  const double speed = charged ? g.charged_speed : g.speed;
-  for (const combat::GatheredTarget &e : found)
-    cast.missiles.push_back({t + e.distance_cm / speed, projectile, e.actor});
-  spdlog::info("[abilities] {} ({}): {} enem{} ahead of the caster{}",
-               cast.def->row.name, charged ? "the charged shot" : "the scatter",
-               found.size(), found.size() == 1 ? "y" : "ies",
-               gathered_log_suffix(found.size()));
 }
 
 void AbilityPipeline::step_end(Cast &cast, double t) {

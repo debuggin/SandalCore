@@ -1,4 +1,5 @@
 #include "session/ability_pipeline_internal.h"
+#include "session/summoner_pets.h"
 
 #include <algorithm>
 #include <cmath>
@@ -68,16 +69,14 @@ struct AbilityPipeline::Host::Core {
 
   static void build_effect_spec(AbilityPipeline &self, ApplyEffectSpec &spec) {
     const content::EffectRow &row = spec.def.row;
-    for (const content::ModRow &m : spec.def.mods) {
+    for (const content::ModRow &m : spec.def.mods)
       append_effect_mod(self, m, spec);
-    }
     spec.in_place_limit = std::max(1, row.global_stack_limit);
     if (row.in_place_stack_limit_expr != 0) {
       double v = 0;
       std::string why;
-      if (self.eval(row.in_place_stack_limit_expr, v, why) && v >= 1) {
+      if (self.eval(row.in_place_stack_limit_expr, v, why) && v >= 1)
         spec.in_place_limit = static_cast<int>(std::min(v, 4096.0));
-      }
     }
     spec.never_refresh =
         row.stack_duration_refresh.find("NeverRefresh") != std::string::npos;
@@ -125,8 +124,6 @@ struct AbilityPipeline::Host::Core {
       w = static_cast<uint32_t>(self.guid_rng_.next() >> 16);
     self.effects_.push_back(e);
     c.effects_added.push_back(self.effect_item(self.effects_.back()));
-    // the effect's Apply hits run now that it is on [R: Rogue_Stealth's effect
-    // confirms its Apply hit with the effect's item]
     if (self.apply_depth_ < kMaxApplyDepth) {
       ++self.apply_depth_;
       const EffectInst created = self.effects_.back();
@@ -183,14 +180,58 @@ struct AbilityPipeline::Host::Core {
                                  int in_place_limit, bool raw) {
     if (raw)
       return std::max(1, row.global_stack_limit);
-    const bool in_place =
-        row.stack_type.find("StackInPlace") != std::string::npos;
-    return in_place ? in_place_limit : 1;
+    return row.stack_type.find("StackInPlace") != std::string::npos
+               ? in_place_limit
+               : 1;
+  }
+
+  static void evict_consumable_group(AbilityPipeline &self, AbilityChange &c,
+                                     const content::EffectRow &row) {
+    if (row.group_guid == 0 || row.group_limit < 1 ||
+        row.group_name.rfind("Consumable_", 0) != 0 ||
+        row.group_stack_type.find("OverrideOldest") == std::string::npos)
+      return;
+    for (size_t pass = 0; pass < kMaxEffects; ++pass) {
+      size_t count = 0, oldest = self.effects_.size();
+      for (size_t i = 0; i < self.effects_.size(); ++i) {
+        if (self.effects_[i].def->row.group_guid != row.group_guid)
+          continue;
+        ++count;
+        if (oldest == self.effects_.size() ||
+            self.effects_[i].key < self.effects_[oldest].key)
+          oldest = i;
+      }
+      if (count < static_cast<size_t>(row.group_limit) ||
+          oldest == self.effects_.size())
+        break;
+      self.remove_instance(c, oldest);
+    }
+  }
+
+  static void remove_matching_by_hit(AbilityPipeline &self, AbilityChange &c,
+                                     const HitDef &hit, int &left) {
+    for (size_t i = 0; i < self.effects_.size() && left > 0;) {
+      EffectInst &e = self.effects_[i];
+      if (!hit.removes(*e.def)) {
+        ++i;
+        continue;
+      }
+      const int take = std::min(left, e.stacks);
+      left -= take;
+      if (take >= e.stacks) {
+        self.remove_instance(c, i);
+      } else {
+        e.stacks -= take;
+        c.effects_changed.push_back(self.effect_item(e));
+        ++i;
+      }
+    }
   }
 
   static void dispatch_effect_inst(AbilityPipeline &self, AbilityChange &c,
                                    ApplyEffectSpec &spec, int stacks_in,
                                    bool raw) {
+    evict_consumable_group(self, c, spec.def.row);
     EffectInst *existing = nullptr;
     for (EffectInst &e : self.effects_) {
       if (e.def != &spec.def)
@@ -226,13 +267,7 @@ AbilityPipeline::AbilityPipeline(const abilities::Catalog *catalog,
 void AbilityPipeline::resolve_resource() {
   resource_ = nullptr;
   resource_class_ = stats_.class_enum();
-  if (!catalog_)
-    return;
-  // contentc version 35: with the game's reactions in the tables the class
-  // resource is the passive's reaction (the Bard's Resonance); the modelled
-  // rule below is for a content.db without them, or with the reactions switched
-  // off
-  if (catalog_->reactions() != 0 && reactions_enabled_)
+  if (!catalog_ || (catalog_->reactions() != 0 && reactions_enabled_))
     return;
   for (const ClassResource &r : kClassResources) {
     if (r.class_enum == stats_.class_enum())
@@ -253,9 +288,11 @@ double AbilityPipeline::sync(double t) const {
   return bootstrap::effect_clock(world_time_at_zero_ + t);
 }
 
+std::string AbilityPipeline::cooldown_group_of(const content::AbilityRow &row) {
+  return group_key(row);
+}
+
 void AbilityPipeline::emit(AbilityEvent e) {
-  // the hits this step made are confirmed with it (the client draws its
-  // floating numbers from them)
   for (bootstrap::HitConfirm &h : confirmations_)
     e.confirmations.push_back(std::move(h));
   confirmations_.clear();
@@ -274,12 +311,8 @@ std::vector<AbilityEvent> AbilityPipeline::take_events() {
 void AbilityPipeline::refuse(int32_t client_id, Refusal why, double t,
                              const std::string &what, bool) {
   ++refused_;
-  AbilityEvent e;
-  e.end_ability = client_id;
-  e.at = t;
-  e.note = what + " refused: " + refusal_name(why);
-  e.refusal = true;
-  events_.push_back(std::move(e));
+  events_.push_back(
+      {{}, client_id, t, what + " refused: " + refusal_name(why), true, {}, {}});
 }
 
 std::string AbilityPipeline::expr_problem(int64_t expr) const {
@@ -303,6 +336,7 @@ bool AbilityPipeline::eval(int64_t expr, double &out, std::string &why) {
   }
   if (!ensure_evaluation(why))
     return false;
+  evaluation_->set_consumed(consumed_);
   Host host(*this);
   std::string err;
   double v = 0;
@@ -359,6 +393,7 @@ bool AbilityPipeline::eval_requirement(int64_t expr,
     return eval_bool(expr, true, out, why);
   if (!ensure_evaluation(why))
     return false;
+  evaluation_->set_consumed(consumed_);
   const auto res = Host::eval_target_program(*this, e->program, *tf, ti, why);
   out = res.value_or(false);
   return res ? why.empty() : eval_bool(expr, true, out, why);
@@ -377,6 +412,7 @@ bool AbilityPipeline::eval_in_event(int64_t expr, const ReactionContext &rc,
   }
   if (!ensure_evaluation(why))
     return false;
+  evaluation_->set_consumed(consumed_);
   combat::HitContext ctx;
   Host::populate_event_hit_context(*this, rc, ctx);
   Host host(*this);
@@ -504,6 +540,12 @@ bool AbilityPipeline::remove_effect(int64_t effect_guid, double now) {
 void AbilityPipeline::set_moving(bool moving) {
   moving_ = moving;
   stats_.set_moving(moving);
+  if (moving) {
+    for (size_t i = casts_.size(); i-- > 0;) {
+      if (pets::for_ability(casts_[i].def->row.guid) && casts_[i].cost_due)
+        abort_cast(i, now_, "the summoner moved before completion");
+    }
+  }
 }
 
 double AbilityPipeline::progress_of(const std::string &group) const {
@@ -667,35 +709,26 @@ void AbilityPipeline::remove_by_hit(AbilityChange &c, const HitDef &hit) {
   for (const int64_t guid : hit.remove_effects) {
     Host::remove_guid_by_hit(*this, c, guid, left);
   }
+  if (hit.remove_effects.empty())
+    Host::Core::remove_matching_by_hit(*this, c, hit, left);
   sync_engine_effects();
 }
 
 void AbilityPipeline::run_effect_hits(AbilityChange &c, const EffectInst &e,
                                       const char *const *phases, size_t n,
                                       double t) {
-  HitSource src; // an effect's hit: confirmed by the server when it lands,
-                 // Source is the pawn [R: 1,525 effect hits]
-  src.type = content::kSourceTypeEffect;
-  src.guid = e.def->row.guid;
-  src.actor = true;
-  src.confirm = true;
   const bool tick = n == 1 && std::string_view(phases[0]) == "Tick";
-  src.simulated = tick;
-  src.autonomous = tick;
+  HitSource src{content::kSourceTypeEffect, e.def->row.guid, true, true, tick,
+                tick};
   for (const auto &[phase, hit_guid] : e.def->hits) {
     bool wanted = false;
     for (size_t i = 0; i < n; ++i)
       wanted = wanted || phase == phases[i];
-    if (!wanted)
-      continue;
-    if (const HitDef *h = catalog_->hit(hit_guid))
-      apply_hit(c, *h, t, false, src);
+    if (wanted) {
+      if (const HitDef *h = catalog_->hit(hit_guid))
+        apply_hit(c, *h, t, false, src);
+    }
   }
-}
-
-double AbilityPipeline::client_rate(bool magical) const {
-  const double r = stat_now(magical ? kStatMagicalSpeed : kStatPhysicalSpeed);
-  return (r > 0.2 && r < 3.0) ? r : 1.0;
 }
 
 AbilityPipeline::Cast *AbilityPipeline::cast_of(int32_t client_id) {
@@ -704,41 +737,6 @@ AbilityPipeline::Cast *AbilityPipeline::cast_of(int32_t client_id) {
       return &c;
   }
   return nullptr;
-}
-
-void AbilityPipeline::plan_shot(Cast &cast, const ShotCast &shot, double t) {
-  if (!combat_ || cast.target_actors.empty() || !cast.cost_due)
-    return;
-  cast.shot = &shot;
-  cast.flight_pending = true;
-  cast.launch_at = t + shot.fire / client_rate(shot.magical);
-  cast.projectile_due = cast.launch_at;
-}
-
-void AbilityPipeline::land_shot(Cast &cast, double t) {
-  double land = std::max(t, cast.launch_at + cast.flight);
-  if (cast.cost_due)
-    land = std::max(land, *cast.cost_due);
-  cast.projectile_due = land;
-}
-
-void AbilityPipeline::anchor_shot(Cast &cast, double now) {
-  cast.anchored = true;
-  const double was = cast.launch_at;
-  cast.launch_at =
-      std::max(now - cast.shot->ask_gap / client_rate(cast.shot->magical),
-               cast.trigger_at);
-  if (cast.flight_pending) {
-    cast.projectile_due = std::max(now, cast.launch_at);
-  } else if (cast.projectile_due) {
-    land_shot(cast, now);
-  }
-  spdlog::info(
-      "[abilities] {}: the client asked for the hit that goes with the launch "
-      "{:.3f} s after the trigger: the projectile {} {:.3f} s from the plan",
-      cast.def->row.name, now - cast.trigger_at,
-      cast.launch_at < was ? "left" : "leaves",
-      std::fabs(cast.launch_at - was));
 }
 
 void AbilityPipeline::end_held(size_t index, double t) {
@@ -767,14 +765,12 @@ void AbilityPipeline::end_loop(AbilityChange &c, int64_t ability, double t) {
 }
 
 double AbilityPipeline::zone_due(const Zone &z) const {
-  switch (z.state) {
-  case Zone::State::Pending:
+  if (z.state == Zone::State::Pending)
     return z.open_at;
-  case Zone::State::Open:
+  if (z.state == Zone::State::Open)
     return z.end_at;
-  case Zone::State::Ended:
+  if (z.state == Zone::State::Ended)
     return std::min(z.fade_at >= 0 ? z.fade_at : kInf, z.close_at);
-  }
   return kInf;
 }
 

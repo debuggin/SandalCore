@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  test_worldd_rewards.cpp: what a kill hands out (plan E1, stage 3, part 2), from the REAL content.db's reward tables
-//
-//    the data     content.db's loot_table (contentc version 10) holds the tables the Blueprints name and the sub tables they reach; the expressions of the
-//                 kill table (Base_Kill_Reward_XP+Glint) compiled, the quest- and biome-gated ones did not (and read as "no")
-//    experience   Base_Kill_XP at the creature's level times its reward multiplier, the same for the three kinds; an elite is worth more; the decay of the
-//                 level difference (1 in the band, 0.05 nine below and further)
-//    Glint        the chance (Glint_Chance x Loot_Falloff), the quantity (Glint_QMin .. QMax x the multiplier) and the falloff past nine levels
-//    the rules    determinism by seed, a gated predicate gives nothing, an unknown root is skipped, a table named twice rolls once
-//    the biome    (Nodes 1) the gear tables are gated by GetNodeBiome (BaseLoot_Melee_RVR, _TUR, _NONE ...): the kill's biome decides which of them roll
-//  Without a content.db the test says so and is skipped.
-// ============================================================================
 #include "ability_rig.h"
 #include "combat/npc_stats.h"
 #include "combat/rewards.h"
@@ -40,9 +28,8 @@ static int g_pass = 0, g_fail = 0;
 
 namespace {
 
-constexpr int64_t kBaseKillTable = 6064630135340401618ll;   // Base_Kill_Reward_XP+Glint
-constexpr int64_t kGlintT1 = 6064628753953390592ll;         // Certificate_T1_Glint
-// ~ Cyb - C-O-A ~
+constexpr int64_t kBaseKillTable = 6064630135340401618ll;
+constexpr int64_t kGlintT1 = 6064628753953390592ll;
 
 struct Fixture {
     std::string                        path;
@@ -113,7 +100,6 @@ std::vector<std::string> tags_of(const std::string& csv) {
     return out;
 }
 
-/// One kill of a creature: its stats' run, a seed and the players' side.
 struct Kill {
     std::unique_ptr<stats::CharacterStats>             cs;
     std::unique_ptr<stats::CharacterStats::Evaluation> ev;
@@ -121,7 +107,6 @@ struct Kill {
     std::vector<int64_t>                               roots;
     stats::SplitMix                                    rng;
     combat::RollContext                                ctx;
-// built with C O A and C Y B
 
     bool make(Fixture& f, const std::string& leaf, int level, uint64_t seed) {
         const auto bp = f.blueprint(leaf);
@@ -157,20 +142,19 @@ void test_data(Fixture& f) {
         CHECK(base->containers[1].grant == "Always" && base->containers[1].pred != 0 && base->containers[1].rewards.size() == 1 &&
                   base->containers[1].rewards[0].items.size() == 1 && base->containers[1].rewards[0].items[0].item == kGlintT1,
               "the second is the Certificate_T1_Glint, behind a predicate");
-        // the kill expressions compiled
         bool all = true;
         for (const content::LootXp& x : base->containers[0].rewards[0].xp) all = all && f.catalog->program(x.expr) >= 0;
         all = all && f.catalog->program(base->containers[1].pred) >= 0 && f.catalog->program(base->containers[1].rewards[0].items[0].qty) >= 0;
         CHECK(all, "the experience values, the chance and the quantity are programs of the stat program");
     }
-    // the gated ones have no program (a quest, a biome ...): counted, read as "no"
     size_t gated = 0, total = 0;
-    for (const int64_t g : {int64_t{6064630405967118341}, int64_t{6064630610665209856}}) {   // Goblin_Base, Bandit_Base
+    for (const int64_t g : {int64_t{6064630405967118341}, int64_t{6064630610665209856}}) {
         if (const content::LootTable* t = f.rewards->table(g)) {
             ++total;
             gated += (t->pred != 0 && f.catalog->program(t->pred) < 0) ? 1 : 0;
         }
     }
+    (void)gated;
     CHECKF(total == 2, "Goblin_Base and Bandit_Base are there (%zu of 2)", total);
     std::string why;
     CHECK(f.db->xp_rule("adventuring_decay", why).value_or(0) != 0, "the Adventuring decay rule is in the file");
@@ -214,7 +198,6 @@ void test_experience(Fixture& f) {
         CHECK(t > w, "an elite is worth more than a plain creature of its level");
     }
 
-    // the decay of the level difference: 1 in the band, 0.05 nine below and further, as the Adventuring leveling type says
     Kill k;
     CHECK(k.make(f, "Rabid_C", 8, 3), "a Rabid for the decay");
     auto worth = [&](int player_level) {
@@ -230,7 +213,6 @@ void test_experience(Fixture& f) {
 
 void test_glint(Fixture& f) {
     std::printf("Glint\n");
-    // Glint_Chance(8) = 0.3756; Loot_Falloff(0) = 1: about 3 kills in 8 give some
     size_t kills = 0, with_glint = 0;
     int64_t total = 0, lo = 1 << 30, hi = 0;
     for (uint64_t seed = 1; seed <= 3000; ++seed) {
@@ -253,9 +235,7 @@ void test_glint(Fixture& f) {
     std::printf("  %zu of %zu level-8 kills dropped Certificate_T1_Glint (%.3f), %lld to %lld each\n", with_glint, kills, rate, static_cast<long long>(lo), static_cast<long long>(hi));
     CHECKF(rate > 0.33 && rate < 0.42, "the chance is Glint_Chance(8) = 0.376 (measured %.3f)", rate);
     CHECK(lo >= 1 && hi <= 20 && hi > lo, "a drop is a few certificates, Glint_QMin(8) = 4 to Glint_QMax(8) = 8 times the multiplier");
-// [C-O-A - Cyb]
 
-    // the same kill with a player 12 levels below the creature's level: Loot_Falloff(12) = 0: nothing
     size_t far = 0;
     for (uint64_t seed = 1; seed <= 500; ++seed) {
         Kill k;
@@ -266,63 +246,59 @@ void test_glint(Fixture& f) {
     CHECKF(far == 0, "a looter 12 levels above the creature gets no Glint (Loot_Falloff) (%zu in 500 kills)", far);
 }
 
-/// The knob of 2026-10-10 (the user: drops are too rare): RollContext::chance_mult multiplies the chance of every RollEachByPercent draw and nothing else.
+struct ChanceTally {
+    size_t kills = 0, kills_with_items = 0, stacks = 0, glint = 0;
+    int64_t quantity = 0;
+};
+
+ChanceTally run_chance_kills(Fixture& f, const char* leaf, int level, double mult, size_t n) {
+    ChanceTally t;
+    for (uint64_t seed = 1; seed <= n; ++seed) {
+        Kill k;
+        if (!k.make(f, leaf, level, seed * 7919)) return t;
+        k.ctx.chance_mult = mult;
+        ++t.kills;
+        bool any = false;
+        for (const combat::RolledItem& it : f.rewards->roll(k.roots, k.ctx).loot) {
+            if (it.item == kGlintT1) {
+                ++t.glint;
+                continue;
+            }
+            ++t.stacks;
+            t.quantity += it.quantity;
+            any = true;
+        }
+        t.kills_with_items += any ? 1 : 0;
+    }
+    return t;
+}
+
 void test_chance_mult(Fixture& f) {
     std::printf("the loot-chance knob\n");
-    struct Tally {
-        size_t kills = 0, kills_with_items = 0, stacks = 0, glint = 0;
-        int64_t quantity = 0;
-    };
-    const auto run = [&](const char* leaf, int level, double mult, size_t n) {
-        Tally t;
-        for (uint64_t seed = 1; seed <= n; ++seed) {
-            Kill k;
-            if (!k.make(f, leaf, level, seed * 7919)) return t;
-            k.ctx.chance_mult = mult;
-            ++t.kills;
-            bool any = false;
-            for (const combat::RolledItem& it : f.rewards->roll(k.roots, k.ctx).loot) {
-                if (it.item == kGlintT1) {
-                    ++t.glint;
-                    continue;
-                }
-                ++t.stacks;
-                t.quantity += it.quantity;
-                any = true;
-            }
-            t.kills_with_items += any ? 1 : 0;
-        }
-        return t;
-    };
-    // a creature whose tables give items by percent, in the band of its level (the kind tables: Bandit_Base ...)
     const char* chosen = nullptr;
-    Tally one, three, many, none;
+    ChanceTally one, three, many, none;
     for (const char* leaf : {"Bandit_Raider_Dunir_C", "Wolf_C", "Rabid_C", "Bear_C", "Goblin_Bonebinder_C"}) {
-        one = run(leaf, 10, 1.0, 3000);
+        one = run_chance_kills(f, leaf, 10, 1.0, 3000);
         std::printf("  %s, level 10, 3000 kills at the data's own odds: %zu with items (%zu stacks), Glint in %zu\n", leaf, one.kills_with_items, one.stacks, one.glint);
-        if (one.kills > 0 && one.stacks >= 30 && one.kills_with_items * 2 < one.kills) {   // chances small enough for a multiplier to show
+        if (one.kills > 0 && one.stacks >= 30 && one.kills_with_items * 2 < one.kills) {
             chosen = leaf;
             break;
         }
     }
     CHECK(chosen != nullptr, "a creature of the data gives items by percent, at small chances");
     if (!chosen) return;
-    three = run(chosen, 10, 3.0, 3000);
-    many = run(chosen, 10, 1000.0, 3000);
-    none = run(chosen, 10, 0.0, 3000);
+    three = run_chance_kills(f, chosen, 10, 3.0, 3000);
+    many = run_chance_kills(f, chosen, 10, 1000.0, 3000);
+    none = run_chance_kills(f, chosen, 10, 0.0, 3000);
     std::printf("  %s: stacks of items in 3000 kills: x0 %zu, x1 %zu, x3 %zu, x1000 %zu; kills with items: %zu, %zu, %zu, %zu; Glint stacks x1 %zu, x3 %zu\n", chosen, none.stacks, one.stacks, three.stacks, many.stacks, none.kills_with_items,
                 one.kills_with_items, three.kills_with_items, many.kills_with_items, one.glint, three.glint);
     CHECK(three.stacks * 10 >= one.stacks * 18, "x3 makes the item drops clearly more frequent (at least 1.8 times as many stacks in the same kills)");
-    // (a table picks its sub tables by percent and a sub table's items by percent again: the two draws are multiplied, so x3 gives up to about 9 times the stacks, never more)
     CHECK(three.stacks * 10 <= one.stacks * 95 + 60, "...but not more than the multiplier gives twice over (two nested percent draws: at most about 9 times the stacks)");
     CHECK(many.stacks >= three.stacks && none.stacks <= one.stacks, "a larger multiplier gives more, 0 gives fewer than the data's own (each chance is capped at 1)");
-    // the quantities are the data's: the mean size of a stack does not move with the multiplier
     const double mean1 = one.stacks ? static_cast<double>(one.quantity) / one.stacks : 0, mean3 = three.stacks ? static_cast<double>(three.quantity) / three.stacks : 0;
     std::printf("  the mean stack: %.2f at x1, %.2f at x3\n", mean1, mean3);
     CHECK(mean1 > 0 && std::fabs(mean3 - mean1) <= 0.25 * mean1 + 0.3, "a stack is as big as it was: the multiplier never touches a quantity");
-    // Glint is not a percent draw (its chance is a predicate on Glint_Chance): untouched
     CHECK(three.glint * 10 <= one.glint * 13 + 40 && three.glint * 13 + 40 >= one.glint * 10, "and the Glint certificates (a predicate, not a percent draw) are as frequent as before");
-    // the default is the data's own odds: a context nobody set rolls as chance_mult 1
     Kill a, b;
     a.make(f, chosen, 10, 777);
     b.make(f, chosen, 10, 777);
@@ -336,24 +312,20 @@ void test_rules(Fixture& f) {
     Kill a, b;
     CHECK(a.make(f, "Goblin_Bonebinder_C", 5, 99) || a.make(f, "Wolf_C", 5, 99), "a creature with a kind's own table");
     CHECK(b.make(f, a.cs ? "Wolf_C" : "Wolf_C", 5, 99), "another");
-    // the same seed gives the same roll
     Kill c, d;
     c.make(f, "Wolf_C", 6, 4242);
     d.make(f, "Wolf_C", 6, 4242);
     const combat::Rolled rc = f.rewards->roll(c.roots, c.ctx), rd = f.rewards->roll(d.roots, d.ctx);
     CHECK(rc.loot.size() == rd.loot.size() && rc.xp.size() == rd.xp.size() && (rc.xp.empty() || rc.xp[0].amount == rd.xp[0].amount), "the same seed rolls the same kill");
-    // an unknown root is skipped; a root named twice rolls once
     std::vector<int64_t> roots = {123456789, kBaseKillTable, kBaseKillTable};
     Kill e;
     e.make(f, "Wolf_C", 6, 5);
     const combat::Rolled re = f.rewards->roll(roots, e.ctx);
     CHECK(re.tables == 1 && re.xp.size() == 3, "an unknown table is skipped and a table named twice rolls once");
-    // no stats, no rolls of an expression: nothing is made up
     combat::RollContext bare;
     bare.rng = e.ctx.rng;
     const combat::Rolled rb = f.rewards->roll({kBaseKillTable}, bare);
     CHECK(rb.xp.empty() && rb.loot.empty(), "without the creature's stats no expression runs: nothing is given");
-    // a table that is gated by a quest: no program, nothing
     size_t gated_tables = 0;
     for (const int64_t g : e.roots) {
         if (const content::LootTable* t = f.rewards->table(g)) gated_tables += (t->pred != 0 && f.catalog->program(t->pred) < 0) ? 1 : 0;
@@ -363,7 +335,6 @@ void test_rules(Fixture& f) {
     g2.make(f, "Wolf_C", 6, 6);
     const combat::Rolled none = f.rewards->roll({}, g2.ctx);
     CHECK(none.xp.empty() && none.loot.empty() && none.tables == 0, "no roots, no reward");
-    // the kind tables of the data give gear, not only Glint: Bandit_Base and its sub tables across many kills
     size_t kinds = 0;
     std::set<int64_t> items;
     for (uint64_t seed = 1; seed <= 400; ++seed) {
@@ -377,9 +348,7 @@ void test_rules(Fixture& f) {
     std::printf("  400 Bandit Raiders of level 10 dropped %zu stacks of %zu kinds of item\n", kinds, items.size());
     CHECK(items.size() >= 1, "a bandit's tables give items");
 }
-// Cyb + C.O.A
 
-/// The items a table gives, with everything under it.
 void items_under(const combat::RewardBook& book, int64_t guid, std::set<int64_t>& items, std::set<int64_t>& seen) {
     if (!seen.insert(guid).second) return;
     const content::LootTable* t = book.table(guid);
@@ -392,53 +361,8 @@ void items_under(const combat::RewardBook& book, int64_t guid, std::set<int64_t>
     for (const int64_t s : t->subs) items_under(book, s, items, seen);
 }
 
-void test_biome(Fixture& f) {
-    std::printf("the biome-gated gear\n");
-    // BaseLoot_Melee is RollEachByPercent over BaseLoot_Melee_RVR, _TUR, _SAN, _JUN, _ANV and _NONE, each behind a table predicate that reads GetNodeBiome(); _NONE
-    // (every one of the six biomes ruled out) gives the same Gear, Recipe and Reagent tables as _RVR
-    constexpr int64_t kMeleeRvr = 6064633918165090314ll, kMeleeTur = 6064633918182522894ll, kMeleeNone = 6064633933201475221ll;
+void check_biome_kills(Fixture& f, const std::string& leaf, const std::set<int64_t>& only_rvr, const std::set<int64_t>& only_tur) {
     constexpr int kDefault = 0, kRiverlands = 14, kTropics = 18;
-    {
-        size_t compiled = 0;
-        for (const int64_t table : {kMeleeRvr, kMeleeTur, kMeleeNone}) {
-            const content::LootTable* t = f.rewards->table(table);
-            if (t && t->pred != 0 && f.catalog->program(t->pred) >= 0) ++compiled;
-        }
-        CHECKF(compiled == 3, "the predicates of BaseLoot_Melee_RVR, _TUR and _NONE are programs now (%zu of 3)", compiled);
-    }
-    std::set<int64_t> rvr_items, tur_items, none_items, seen;
-    items_under(*f.rewards, kMeleeRvr, rvr_items, seen);
-    seen.clear();
-    items_under(*f.rewards, kMeleeTur, tur_items, seen);
-    seen.clear();
-    items_under(*f.rewards, kMeleeNone, none_items, seen);
-    CHECKF(!rvr_items.empty() && !tur_items.empty() && none_items == rvr_items, "BaseLoot_Melee_RVR gives %zu kinds of item, _TUR %zu, _NONE the same as _RVR (%zu)", rvr_items.size(), tur_items.size(),
-           none_items.size());
-    std::set<int64_t> only_rvr, only_tur;
-    for (const int64_t i : rvr_items) {
-        if (!tur_items.count(i)) only_rvr.insert(i);
-    }
-    for (const int64_t i : tur_items) {
-        if (!rvr_items.count(i)) only_tur.insert(i);
-    }
-    CHECKF(!only_rvr.empty() && !only_tur.empty(), "each has items of its own: %zu, %zu", only_rvr.size(), only_tur.size());
-    // a melee creature whose tables reach BaseLoot_Melee
-    std::string leaf;
-    for (const char* candidate : {"Bandit_Raider_Dunir_C", "Minotaur_Berserker_C", "Goblin_Gravehide_C", "Bandit_Brute_C", "Minotaur_Warrior_C"}) {
-        Kill k;
-        if (!k.make(f, candidate, 10, 1)) continue;
-        std::set<int64_t> under, seen_roots;
-        for (const int64_t r : k.roots) items_under(*f.rewards, r, under, seen_roots);
-        bool reaches = false;
-        for (const int64_t i : only_rvr) reaches = reaches || under.count(i);
-        if (reaches) {
-            leaf = candidate;
-            break;
-        }
-    }
-    CHECK(!leaf.empty(), "a melee creature of the area whose tables reach BaseLoot_Melee");
-    if (leaf.empty()) return;
-    // the same creature killed in the Riverlands, in the Tropics and where the zone has the Default biome, many times
     struct Drops {
         size_t rvr = 0, tur = 0, stacks = 0, tables = 0;
     };
@@ -464,29 +388,69 @@ void test_biome(Fixture& f) {
     CHECK(rv.rvr > 0 && rv.tur == 0, "in the Riverlands the _RVR gear drops and the _TUR gear does not");
     CHECK(tr.tur > 0 && tr.rvr == 0, "in the Tropics the _TUR gear drops and the _RVR gear does not");
     CHECK(no.rvr > 0 && no.tur == 0, "where the zone has the Default biome the _NONE table rolls (the same gear as _RVR)");
-    // and the registry answers the same: a kill where the node registry puts the biome and the node
-    {
-        std::vector<world::CityNodeInfo> infos(2);
-        infos[0].guid = 5;
-        infos[1].guid = 6;
-        world::CityNodes registry(std::move(infos), {});
-        size_t rvr = 0;
-        for (uint64_t seed = 1; seed <= 600; ++seed) {
-            Kill k;
-            k.make(f, leaf, 10, seed * 104729);
-            k.ctx.nodes = &registry;
-            k.ctx.node = 1;
-            k.ctx.biome = kRiverlands;
-            for (const combat::RolledItem& it : f.rewards->roll(k.roots, k.ctx).loot) rvr += only_rvr.count(it.item);
-        }
-        CHECK(rvr == rv.rvr, "with a registry in the context the roll is the same as with the biome alone");
+    std::vector<world::CityNodeInfo> infos(2);
+    infos[0].guid = 5;
+    infos[1].guid = 6;
+    world::CityNodes registry(std::move(infos), {});
+    size_t rvr = 0;
+    for (uint64_t seed = 1; seed <= 600; ++seed) {
+        Kill k;
+        k.make(f, leaf, 10, seed * 104729);
+        k.ctx.nodes = &registry;
+        k.ctx.node = 1;
+        k.ctx.biome = kRiverlands;
+        for (const combat::RolledItem& it : f.rewards->roll(k.roots, k.ctx).loot) rvr += only_rvr.count(it.item);
     }
+    CHECK(rvr == rv.rvr, "with a registry in the context the roll is the same as with the biome alone");
+}
+
+void test_biome(Fixture& f) {
+    std::printf("the biome-gated gear\n");
+    constexpr int64_t kMeleeRvr = 6064633918165090314ll, kMeleeTur = 6064633918182522894ll, kMeleeNone = 6064633933201475221ll;
+    {
+        size_t compiled = 0;
+        for (const int64_t table : {kMeleeRvr, kMeleeTur, kMeleeNone}) {
+            const content::LootTable* t = f.rewards->table(table);
+            if (t && t->pred != 0 && f.catalog->program(t->pred) >= 0) ++compiled;
+        }
+        CHECKF(compiled == 3, "the predicates of BaseLoot_Melee_RVR, _TUR and _NONE are programs now (%zu of 3)", compiled);
+    }
+    std::set<int64_t> rvr_items, tur_items, none_items, seen;
+    items_under(*f.rewards, kMeleeRvr, rvr_items, seen);
+    seen.clear();
+    items_under(*f.rewards, kMeleeTur, tur_items, seen);
+    seen.clear();
+    items_under(*f.rewards, kMeleeNone, none_items, seen);
+    CHECKF(!rvr_items.empty() && !tur_items.empty() && none_items == rvr_items, "BaseLoot_Melee_RVR gives %zu kinds of item, _TUR %zu, _NONE the same as _RVR (%zu)", rvr_items.size(), tur_items.size(),
+           none_items.size());
+    std::set<int64_t> only_rvr, only_tur;
+    for (const int64_t i : rvr_items) {
+        if (!tur_items.count(i)) only_rvr.insert(i);
+    }
+    for (const int64_t i : tur_items) {
+        if (!rvr_items.count(i)) only_tur.insert(i);
+    }
+    CHECKF(!only_rvr.empty() && !only_tur.empty(), "each has items of its own: %zu, %zu", only_rvr.size(), only_tur.size());
+    std::string leaf;
+    for (const char* candidate : {"Bandit_Raider_Dunir_C", "Minotaur_Berserker_C", "Goblin_Gravehide_C", "Bandit_Brute_C", "Minotaur_Warrior_C"}) {
+        Kill k;
+        if (!k.make(f, candidate, 10, 1)) continue;
+        std::set<int64_t> under, seen_roots;
+        for (const int64_t r : k.roots) items_under(*f.rewards, r, under, seen_roots);
+        bool reaches = false;
+        for (const int64_t i : only_rvr) reaches = reaches || under.count(i);
+        if (reaches) {
+            leaf = candidate;
+            break;
+        }
+    }
+    CHECK(!leaf.empty(), "a melee creature of the area whose tables reach BaseLoot_Melee");
+    if (leaf.empty()) return;
+    check_biome_kills(f, leaf, only_rvr, only_tur);
 }
 
 }  // namespace
 
-/// The tables that the first objectives of two beginner quests give when the quest starts (quests part 3, slice 2): the Suspicious Bread of Hungry For More (the quest once gave none)
-/// and the Heartwood Extract of The Root of the Problem, whose quantity expression is empty.  Each is one item.
 void test_quest_start_tables(Fixture& f) {
     std::printf("quest start tables\n");
     constexpr int64_t kBreadTable = 6064634776945885185ll, kBread = 6064634776923734016ll;
@@ -513,6 +477,89 @@ void test_quest_start_tables(Fixture& f) {
     CHECKF(extracts == 1, "the extract's table gives exactly one Heartwood Extract (%lld)", static_cast<long long>(extracts));
 }
 
+void test_roll_cuts_a_huge_quantity(Fixture& f) {
+    std::printf("a roll cuts a quantity that is too big\n");
+    constexpr int64_t kTable = 7000000001ll, kBread = 6064634776923734016ll;
+    int64_t kHugeConstant = 0;
+    for (int64_t id = 1; id < 40000 && kHugeConstant == 0; ++id) {
+        const content::ExprRow* row = f.catalog->expr(id);
+        if (row && row->text == "15000000") kHugeConstant = id;
+    }
+    CHECK(kHugeConstant != 0, "(the data holds the constant 15000000)");
+    if (kHugeConstant == 0) return;
+    content::LootTable table;
+    table.guid = kTable;
+    content::LootContainer container;
+    container.grant = "Always";
+    container.algo = "All";
+    content::LootReward reward;
+    reward.items.push_back({kBread, 0, kHugeConstant});
+    reward.xp.push_back({"Adventuring", kHugeConstant});
+    container.rewards.push_back(std::move(reward));
+    table.containers.push_back(std::move(container));
+    std::map<int64_t, content::LootTable> tables;
+    tables[kTable] = std::move(table);
+    combat::RewardBook book(*f.catalog, std::move(tables), 0);
+    Kill k;
+    if (!k.make(f, "Rabid_C", 8, 1)) {
+        CHECK(false, "a Rabid");
+        return;
+    }
+    const combat::Rolled out = book.roll({kTable}, k.ctx);
+    int64_t items = 0, xp = 0;
+    for (const combat::RolledItem& it : out.loot) items += it.item == kBread ? it.quantity : 0;
+    for (const combat::RolledXp& x : out.xp) xp += x.type == "Adventuring" ? x.amount : 0;
+    CHECKF(items == combat::kMaxRolledQuantity, "the 15,000,000 items are cut at the most one line gives (%lld)", static_cast<long long>(items));
+    CHECKF(xp == 15000000, "the 15,000,000 experience is under its own cap and stays (%lld)", static_cast<long long>(xp));
+}
+
+void test_roll_cuts_a_huge_experience(Fixture& f) {
+    std::printf("a roll cuts an experience amount that is too big\n");
+    constexpr int64_t kTable = 7000000002ll;
+    int64_t kLuckFormula = 0;
+    for (int64_t id = 1; id < 40000 && kLuckFormula == 0; ++id) {
+        const content::ExprRow* row = f.catalog->expr(id);
+        if (row && row->text.find("0.15 * (1 + GetPlayerLootAvgLuck())") != std::string::npos) kLuckFormula = id;
+    }
+    CHECK(kLuckFormula != 0, "(the data holds the formula that reads the players' average luck)");
+    if (kLuckFormula == 0) return;
+    content::LootTable table;
+    table.guid = kTable;
+    content::LootContainer container;
+    container.grant = "Always";
+    container.algo = "All";
+    content::LootReward reward;
+    reward.xp.push_back({"Adventuring", kLuckFormula});
+    container.rewards.push_back(std::move(reward));
+    table.containers.push_back(std::move(container));
+    std::map<int64_t, content::LootTable> tables;
+    tables[kTable] = std::move(table);
+    combat::RewardBook book(*f.catalog, std::move(tables), 0);
+    Kill k;
+    if (!k.make(f, "Rabid_C", 8, 1)) {
+        CHECK(false, "a Rabid");
+        return;
+    }
+    const auto xp_with_luck = [&](double luck) {
+        k.ctx.avg_luck = luck;
+        int64_t amount = -1;
+        for (const combat::RolledXp& x : book.roll({kTable}, k.ctx).xp) amount = x.type == "Adventuring" ? x.amount : amount;
+        return amount;
+    };
+    const int64_t ordinary = xp_with_luck(100.0), huge = xp_with_luck(1.0e12);
+    CHECKF(ordinary == 15, "an ordinary amount is the formula's value, rounded (%lld)", static_cast<long long>(ordinary));
+    CHECKF(huge == combat::kMaxRolledXp, "an amount of 1.5 x 10^11 is cut at the most one line gives (%lld)", static_cast<long long>(huge));
+}
+
+void test_rolled_quantity() {
+    std::printf("a rolled quantity and a rolled experience amount are bounded\n");
+    CHECK(combat::rolled_quantity(3.0) == 3 && combat::rolled_quantity(2.9999999999) == 3 && combat::rolled_quantity(0.4) == 0, "an ordinary roll is its whole number");
+    CHECK(combat::rolled_quantity(1.0e9) == combat::kMaxRolledQuantity && combat::rolled_quantity(1.0e30) == combat::kMaxRolledQuantity, "a billion is cut to the largest stack");
+    CHECK(combat::rolled_quantity(std::nan("")) == 0 && combat::rolled_quantity(HUGE_VAL) == 0 && combat::rolled_quantity(-5.0) == 0, "a number that is none, an infinite one and a negative one give nothing");
+    CHECK(combat::rolled_xp(2792.4) == 2792 && combat::rolled_xp(0.4) == 0 && combat::rolled_xp(1.0e30) == combat::kMaxRolledXp, "an experience amount is rounded and cut at the most one line gives");
+    CHECK(combat::rolled_xp(std::nan("")) == 0 && combat::rolled_xp(HUGE_VAL) == 0 && combat::rolled_xp(-1.0) == 0, "...and a number that is none, an infinite one and a negative one give nothing");
+}
+
 int main() {
     if (!real_db_present() || !std::filesystem::exists(NPC_MOTION_PATH)) {
         std::printf("[skip] test_worldd_rewards: no content.db or npc_motion.tsv at %s: skipped\n", real_db_path().c_str());
@@ -530,6 +577,9 @@ int main() {
     test_rules(f);
     test_biome(f);
     test_quest_start_tables(f);
+    test_rolled_quantity();
+    test_roll_cuts_a_huge_quantity(f);
+    test_roll_cuts_a_huge_experience(f);
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

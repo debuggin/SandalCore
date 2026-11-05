@@ -191,7 +191,7 @@ void Endpoint::on_handshake(const Address& from, const uint8_t* data, size_t len
     }
     sessions_[from] = std::move(s);
     if (carried_result) on_login_result(session, *carried_result, now);
-    if (!carried && no_content) on_login_result(session, LoginResult{false, {}, login_text::kContentMissing}, now);
+    if (!carried && no_content) on_login_result(session, LoginResult{false, login_text::kContentMissing, {}}, now);
 }
 
 void Endpoint::post_login_result(uint64_t session_id, LoginResult result) {

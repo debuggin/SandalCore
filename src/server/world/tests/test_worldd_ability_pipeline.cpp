@@ -235,6 +235,8 @@ void test_stat_forms() {
         "(an effect that is not on is not taken off)");
   CHECK(!r.pipe->grant_effect(123456789, 1, 2.2),
         "(an effect the catalog does not have cannot be given)");
+  CHECK(!r.book->held_ranks(0).empty(),
+        "(held_ranks(0) lists the unarmed character's held skills and ranks)");
 }
 
 void check_song_stop_replace_and_air(Rig &r, int64_t self_effect, int64_t buff,

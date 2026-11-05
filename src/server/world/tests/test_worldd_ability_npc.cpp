@@ -1,41 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+#include "test_worldd_ability_npc_common.h"
+
 #include "ability_npc_known.h"
-#include "ability_rig.h"
 #include "capture_npc_casts.h"
-#include "combat/combat_data.h"
-#include "combat/npc_stats.h"
-#include "combat_rig.h"
-#include "npc/motion_table.h"
 
 #include <spdlog/spdlog.h>
 
-#include <algorithm>
 #include <bit>
-#include <cmath>
-#include <cstring>
-#include <map>
 #include <regex>
-#include <set>
 #include <sstream>
 
-#ifndef NPC_MOTION_PATH
-#define NPC_MOTION_PATH "dist/content/npc_motion.tsv"
-#endif
-
-using namespace ability_rig;
 using namespace sandal::worldd::tests;
-
-static int g_pass = 0, g_fail = 0;
-#define CHECK(cond, msg) do { \
-    if (cond) { g_pass++; } \
-    else { std::printf("  [FAIL] %s\n", msg); g_fail++; } \
-} while (0)
-#define CHECKF(cond, ...) do { \
-    if (cond) { g_pass++; } \
-    else { std::printf("  [FAIL] "); std::printf(__VA_ARGS__); std::printf("\n"); g_fail++; } \
-} while (0)
 
 namespace {
 
@@ -721,6 +698,8 @@ int main(int argc, char** argv) {
     }
     for (const int capture : captures) run_capture_cases(capture, st);
     print_ability_npc_report(st, n_cases);
+    run_ability_npc_pets_tests();
+    run_ability_npc_pets_cmds_tests();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

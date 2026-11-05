@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #include "capture_leveling.h"
+#include "protocol/repl/hit_rpc.h"
 #include "test_worldd_items_session_common.h"
 using namespace aoc::worldd;
 static repl::DesignDataId adventuring_id() {
@@ -484,6 +485,239 @@ static void test_g2_saver_round_trip() {
     const auto cert = again.mirror.tracker.certification(leveling_id(g2::kLtMining));
     CHECK(cert && *cert == g2::kJourneyman, "the join's XPTracker says so");
 }
+namespace gc {
+inline constexpr int64_t kProcessingXpScroll = 6064634041989399767ll;
+inline constexpr int64_t kProcessingXpAbility = 6064634041996149977ll, kProcessingXpHit = 6064634041997853914ll, kProcessingXpEffect = 6064634041998836955ll;
+inline constexpr int64_t kConstitutionScroll = 6064630417664311553ll;
+inline constexpr int64_t kConstitutionAbility = 6064630560632275139ll, kConstitutionHit = 6064630560632275140ll;
+inline constexpr int64_t kHerbalismElixir = 6064632105782280214ll;
+inline constexpr int64_t kHerbalismAbility = 6064632320007733313ll, kHerbalismHit = 6064632320007733314ll, kHerbalismEffect = 6064632320007733315ll;
+inline constexpr int64_t kProcessingXpRating = 6064629302956655088ll, kHerbalismQuantityRating = 6064629302956589530ll, kConstitution = 109183598614140ll;
+inline constexpr int64_t kSelfTargeting = 6064628968549646338ll;
+inline constexpr int64_t kRoastedChicken = 6064630417660903452ll, kRoastedChickenAbility = 6064632320235340026ll;
+}  // namespace gc
+static BunchWriter trigger_bag_item(const emit::FIntrepidNetworkGUID &ability, int64_t guid, int32_t id, int slot, const repl::ItemInstance &item) {
+    const schema::ClassSchema &cls = class_named("UAoCAbilityComponent");
+    const schema::RpcSchema *rpc = cls.rpc("ServerTriggerAbility");
+    BunchWriter out, field;
+    repl::RpcParams p;
+    bool ok = rpc && repl::set_rpc_param(*rpc, p, "AbilityGuid", repl::Value::i64(guid));
+    if (ok && id != 0) ok = repl::set_rpc_param(*rpc, p, "ClientInstanceId", repl::Value::i64(id));
+    ok = ok && repl::set_rpc_param(*rpc, p, "InputVector", repl::Value(repl::Vec2d{1, 0})) && repl::set_rpc_param(*rpc, p, "ItemData.Slot", repl::Value::i64(slot));
+    ok = ok && repl::set_rpc_param(*rpc, p, "ItemData.ItemInstance", repl::Value(item)) && repl::set_rpc_param(*rpc, p, "ItemData.Location", repl::Value::u64(3));
+    bool failed = false;
+    if (!ok || repl::write_rpc_field(cls, *rpc, p, field, client_options(), &failed) == 0 || failed) return out;
+    repl::write_content_block(out, repl::BlockHeader{false, false, ability}, field, false);
+    return out;
+}
+static BunchWriter hit_request_for(const bs::PlayerSetup &setup, int64_t ability, int64_t targeting, int64_t hit) {
+    const schema::ClassSchema &cls = class_named("UAoCAbilityComponent");
+    const schema::RpcSchema *rpc = cls.rpc("RequestHitVerification_Server");
+    BunchWriter out, field;
+    repl::HitRequest req;
+    repl::HitComponentRef c;
+    c.object = setup.guids.collision_cylinder;
+    c.server_timestamp = 1.0f;
+    req.components.push_back(c);
+    req.ability_guid = ability;
+    req.targeting_guid = targeting;
+    req.hit_guid = hit;
+    const auto params = rpc ? repl::hit_request_params(*rpc, req) : std::nullopt;
+    bool failed = false;
+    if (!params || repl::write_rpc_field(cls, *rpc, *params, field, client_options(), &failed) == 0 || failed) return out;
+    repl::write_content_block(out, repl::BlockHeader{false, false, setup.guids.ability}, field, false);
+    return out;
+}
+static const Mirror::EffectSeen *effect_of(const Harness &h, int64_t guid) {
+    for (const auto &[id, e] : h.mirror.effect_items) {
+        if (e.guid == guid) return &e;
+    }
+    return nullptr;
+}
+struct UseConsumableSpec {
+    int slot;
+    int64_t ability;
+    int64_t hit;
+    uint32_t guid;
+    int32_t id;
+    int hit_after_steps;
+};
+static bool use_consumable(Harness &h, const UseConsumableSpec &u) {
+    const svc::InventoryItem *item = h.s->inventory().at(Bag, u.slot);
+    if (!item) return false;
+    const bs::PlayerSetup &setup = h.s->bootstrap().setup();
+    std::vector<fake::Bunch> sent;
+    sent.push_back(h.client.actor(h.pawn_ch, item_used(3, u.slot, guid_n(u.guid)), true));
+    sent.push_back(h.client.actor(h.pawn_ch, trigger_bag_item(setup.guids.ability, u.ability, u.id, u.slot, items::to_instance(*item)), true));
+    if (u.hit_after_steps == 0) sent.push_back(h.client.actor(h.pawn_ch, hit_request_for(setup, u.ability, gc::kSelfTargeting, u.hit), true));
+    h.client_sends(std::move(sent));
+    for (int i = 0; i < 10; ++i) h.step();
+    if (u.hit_after_steps > 0) h.client_sends({h.client.actor(h.pawn_ch, hit_request_for(setup, u.ability, gc::kSelfTargeting, u.hit), true)});
+    for (int i = 0; i < 15; ++i) h.step();
+    return true;
+}
+static void check_scroll_and_elixir_buffs(Harness &h) {
+    const sg::CharacterStats *cs = h.s->character_stats();
+    const float xp_before = cs->find(gc::kProcessingXpRating)->value;
+    const size_t chains = h.got.size();
+    CHECK(use_consumable(h, {4, gc::kProcessingXpAbility, gc::kProcessingXpHit, 310, 21, 0}) && h.mirror.unreadable == 0 && !h.s->failed(), "the Processing XP scroll is used (ServerItemUsed, the trigger and the hit request in one datagram)");
+    CHECK(h.s->inventory().at(Bag, 4) && h.s->inventory().at(Bag, 4)->quantity == 4 && h.s->uses_applied() == 1 && h.s->uses_refused() == 0, "one scroll of the stack of five is taken, no refusal");
+    const size_t storage_calls = count_calls(pc_calls_since(h, chains), "ClientReceiveStorageEvent");
+    CHECK(storage_calls == 1, "the client is told with one storage event");
+    CHECK(!h.mirror.events.empty() && h.mirror.events.back().type == static_cast<uint8_t>(repl::StorageEventType::Remove), "... a Remove");
+    CHECK(mirror_matches(h), "... and the client's bag agrees with the session's");
+    if (storage_calls != 1) std::printf("    %zu storage event call(s) since the use\n", storage_calls);
+    const Mirror::EffectSeen *e1 = effect_of(h, gc::kProcessingXpEffect);
+    CHECK(e1 && e1->duration == 300.0f, "the buff is on the pawn for 300 s");
+    CHECK(cs->find(gc::kProcessingXpRating)->value == xp_before + 370.0f, "Artisan_Processing_XP_Rating rose by the scroll's own 370 (the item's stat block at its quality)");
+    CHECK(stats_match(h), "the client's stat arrays are the session's");
+    const float con_before = cs->find(gc::kConstitution)->value;
+    CHECK(use_consumable(h, {5, gc::kConstitutionAbility, gc::kConstitutionHit, 311, 22, 0}), "the Constitution scroll is used");
+    CHECK(h.s->inventory().at(Bag, 5) == nullptr && mirror_matches(h), "the scroll is gone from its slot");
+    CHECK(effect_of(h, gc::kProcessingXpEffect) == nullptr, "the first scroll's buff is gone: one scroll at a time");
+    CHECK(cs->find(gc::kProcessingXpRating)->value == xp_before && cs->find(gc::kConstitution)->value == con_before + 26.0f, "the XP rating is back, Constitution rose by the scroll's 26");
+    bool long_buff = false;
+    for (const auto &[id, e] : h.mirror.effect_items) long_buff = long_buff || e.duration == 10800.0f;
+    CHECK(long_buff, "the Constitution scroll's buff lasts 10,800 s");
+    const float herb_before = cs->find(gc::kHerbalismQuantityRating)->value;
+    CHECK(use_consumable(h, {6, gc::kHerbalismAbility, gc::kHerbalismHit, 312, 23, 7}), "the Herbalism elixir is used");
+    const Mirror::EffectSeen *e3 = effect_of(h, gc::kHerbalismEffect);
+    CHECK(e3 && e3->duration == 3600.0f && long_buff, "the elixir's buff lasts 3,600 s and the scroll's is still on");
+    CHECK(cs->find(gc::kHerbalismQuantityRating)->value == herb_before + 458.0f, "the Herbalism Quantity rating rose by the Uncommon 458");
+    CHECK(h.s->inventory().at(Bag, 6) && h.s->inventory().at(Bag, 6)->quantity == 3 && mirror_matches(h) && stats_match(h), "three elixirs are left and the client agrees");
+}
+static void check_consumable_refusals(Harness &h) {
+    const bs::PlayerSetup &setup = h.s->bootstrap().setup();
+    const uint64_t used = h.s->uses_applied();
+    const svc::InventoryItem *other = h.s->inventory().at(Bag, 6);
+    h.client_sends({h.client.actor(h.pawn_ch, trigger_bag_item(setup.guids.ability, gc::kProcessingXpAbility, 24, 6, items::to_instance(*other)), true)});
+    for (int i = 0; i < 15; ++i) h.step();
+    CHECK(h.s->uses_applied() == used && h.s->inventory().at(Bag, 6)->quantity == 3 && h.s->ability_ends_sent() >= 1, "the ability of another item in that slot is refused (ClientEndAbility) and nothing is taken");
+    for (int i = 0; i < 60; ++i) h.step();
+    const svc::InventoryItem *xp = h.s->inventory().at(Bag, 4);
+    const int32_t xp_left = xp ? xp->quantity : 0;
+    const repl::ItemInstance xp_item = xp ? items::to_instance(*xp) : repl::ItemInstance{};
+    const uint64_t used_before_pair = h.s->uses_applied();
+    h.client_sends({h.client.actor(h.pawn_ch, item_used(3, 4, guid_n(310)), true),
+                    h.client.actor(h.pawn_ch, trigger_bag_item(setup.guids.ability, gc::kProcessingXpAbility, 30, 4, xp_item), true),
+                    h.client.actor(h.pawn_ch, item_used(3, 4, guid_n(310)), true),
+                    h.client.actor(h.pawn_ch, trigger_bag_item(setup.guids.ability, gc::kProcessingXpAbility, 31, 4, xp_item), true)});
+    for (int i = 0; i < 25; ++i) h.step();
+    CHECK(xp_left == 4 && h.s->uses_applied() == used_before_pair + 1 && h.s->inventory().at(Bag, 4) && h.s->inventory().at(Bag, 4)->quantity == xp_left - 1 && mirror_matches(h),
+          "two presses of one scroll within 65 ms: one is taken, the second is refused at its cost step and takes nothing");
+    const size_t refused = h.s->uses_refused();
+    h.request(item_used(3, 7, guid_n(313)), h.pawn_ch);
+    CHECK(h.s->uses_refused() == refused + 1 && h.s->inventory().at(Bag, 7) && h.s->inventory().at(Bag, 7)->quantity == 1 && h.s->uses_applied() == used_before_pair + 1, "a meal is not served yet: the use is refused and the meal stays");
+}
+static void test_consumables_scroll_and_elixir() {
+    const char *path = professions_db_path();
+    if (!path) {
+        std::printf("Consumables: a scroll and an elixir: skipped (no real content.db)\n");
+        return;
+    }
+    std::printf("Consumables: a scroll and an elixir are used through their ability\n");
+    svc::Character rec = cyb_record();
+    std::vector<svc::InventoryItem> items;
+    for (const auto &it : rec.items)
+        if (it.container == Worn) items.push_back(it);
+    items.push_back(make_item(Bag, 4, gc::kProcessingXpScroll, 310, 5));
+    items.push_back(make_item(Bag, 5, gc::kConstitutionScroll, 311, 1));
+    svc::InventoryItem elixir = make_item(Bag, 6, gc::kHerbalismElixir, 312, 4);
+    elixir.quality = 6;
+    items.push_back(elixir);
+    items.push_back(make_item(Bag, 7, gc::kRoastedChicken, 313, 1));
+    rec.items = items;
+    Harness h(rec, true, true, path);
+    CHECK(h.mirror.unreadable == 0 && !h.s->failed(), "(joined)");
+    const auto listed = [&](int64_t a) { return std::find(h.mirror.records.begin(), h.mirror.records.end(), a) != h.mirror.records.end(); };
+    CHECK(listed(gc::kProcessingXpAbility) && listed(gc::kConstitutionAbility) && listed(gc::kHerbalismAbility),
+          "the join lists the abilities of the carried scrolls and the elixir in ReplicatedRecordsToLoad (the client sends no trigger for an ability it has not loaded)");
+    CHECK(!listed(gc::kRoastedChickenAbility), "a meal's ability is not listed: meals are not served yet");
+    check_scroll_and_elixir_buffs(h);
+    check_consumable_refusals(h);
+}
+static void check_consumable_destroyed_before_cost(Harness &h, float con_before) {
+    const sg::CharacterStats *cs = h.s->character_stats();
+    const bs::PlayerSetup &setup = h.s->bootstrap().setup();
+    const auto *pipe = h.s->pipeline();
+    MoveSpec destroy;
+    destroy.type = static_cast<uint8_t>(repl::StorageEventType::Remove);
+    destroy.to_object = setup.guids.backpack;
+    destroy.to_slot = 4;
+    destroy.to_count = 1;
+    destroy.has_source = false;
+    destroy.source_guid = destroy.event_guid = destroy.target_guid = guid_n(330);
+    const size_t effects_before = pipe->effect_count(), ends_before = h.s->ability_ends_sent(), chains = h.got.size();
+    const uint64_t used_before = h.s->uses_applied();
+    const svc::InventoryItem *first = h.s->inventory().at(Bag, 4);
+    const repl::ItemInstance first_item = first ? items::to_instance(*first) : repl::ItemInstance{};
+    h.client_sends({h.client.actor(h.pawn_ch, item_used(3, 4, guid_n(330)), true),
+                    h.client.actor(h.pawn_ch, trigger_bag_item(setup.guids.ability, gc::kConstitutionAbility, 41, 4, first_item), true),
+                    h.client.actor(h.pawn_ch, hit_request_for(setup, gc::kConstitutionAbility, gc::kSelfTargeting, gc::kConstitutionHit), true),
+                    h.client.actor(h.pc_ch, storage_move(destroy), true)});
+    CHECK(h.s->item_reservations() == 1 && h.s->inventory().at(Bag, 4) == nullptr, "the trigger was accepted (the scroll is reserved) and the stack is destroyed in the same datagram");
+    for (int i = 0; i < 25; ++i) h.step();
+    CHECK(h.s->uses_applied() == used_before && h.s->items_destroyed() == 1, "the cast took nothing: its item was gone at the cost step");
+    CHECK(cs->find(gc::kConstitution)->value == con_before && pipe->effect_count() == effects_before, "no buff: Constitution did not rise and no effect is on the pawn (the hit the client asked for went with the cast)");
+    CHECK(pipe->charges_left(gc::kConstitutionAbility) == -1, "no cooldown: the cast that could not be paid started none");
+    CHECK(h.s->ability_ends_sent() == ends_before + 1 && h.s->item_reservations() == 0, "the cast was ended (ClientEndAbility) and nothing stays reserved");
+    CHECK(count_calls(pc_calls_since(h, chains), "ClientReceiveStorageEvent") == 1 && mirror_matches(h), "the client was told once, by the destroy, and its bag agrees");
+    CHECK(h.mirror.unreadable == 0 && !h.s->failed(), "(nothing unreadable)");
+}
+static void check_consumable_next_use_and_death(Harness &h, float con_before) {
+    const sg::CharacterStats *cs = h.s->character_stats();
+    const bs::PlayerSetup &setup = h.s->bootstrap().setup();
+    const auto *pipe = h.s->pipeline();
+    const uint64_t used_before = h.s->uses_applied();
+    const svc::InventoryItem *second = h.s->inventory().at(Bag, 5);
+    const repl::ItemInstance second_item = second ? items::to_instance(*second) : repl::ItemInstance{};
+    h.client_sends({h.client.actor(h.pawn_ch, item_used(3, 5, guid_n(331)), true),
+                    h.client.actor(h.pawn_ch, trigger_bag_item(setup.guids.ability, gc::kConstitutionAbility, 42, 5, second_item), true),
+                    h.client.actor(h.pawn_ch, hit_request_for(setup, gc::kConstitutionAbility, gc::kSelfTargeting, gc::kConstitutionHit), true)});
+    for (int i = 0; i < 25; ++i) h.step();
+    CHECK(h.s->uses_applied() == used_before + 1 && h.s->inventory().at(Bag, 5) && h.s->inventory().at(Bag, 5)->quantity == 1 && mirror_matches(h),
+          "the next use is paid: one scroll of the stack of two is taken and the client agrees");
+    CHECK(cs->find(gc::kConstitution)->value == con_before + 26.0f && h.s->item_reservations() == 0, "... and its buff is on (Constitution rose by the scroll's 26)");
+    for (int i = 0; i < 60; ++i) h.step();
+    const float xp_before = cs->find(gc::kProcessingXpRating)->value;
+    const uint64_t used_before_death = h.s->uses_applied();
+    const svc::InventoryItem *last = h.s->inventory().at(Bag, 6);
+    const repl::ItemInstance last_item = last ? items::to_instance(*last) : repl::ItemInstance{};
+    h.client_sends({h.client.actor(h.pawn_ch, item_used(3, 6, guid_n(332)), true),
+                    h.client.actor(h.pawn_ch, trigger_bag_item(setup.guids.ability, gc::kProcessingXpAbility, 43, 6, last_item), true),
+                    h.client.actor(h.pawn_ch, hit_request_for(setup, gc::kProcessingXpAbility, gc::kSelfTargeting, gc::kProcessingXpHit), true)});
+    CHECK(h.s->item_reservations() == 1, "the trigger was accepted: the scroll is reserved for the cast");
+    h.s->take_damage(h.conn, 1.0e9, h.t);
+    for (int i = 0; i < 25; ++i) h.step();
+    CHECK(h.s->dead() && h.s->deaths() == 1, "the character died before the cost step");
+    CHECK(h.s->item_reservations() == 0, "the death let the reservation go (a stack of one can be used again)");
+    CHECK(h.s->inventory().at(Bag, 6) && h.s->inventory().at(Bag, 6)->quantity == 1 && h.s->uses_applied() == used_before_death, "the scroll is still in its slot and nothing was taken");
+    CHECK(cs->find(gc::kProcessingXpRating)->value == xp_before && pipe->stacks_of(gc::kProcessingXpEffect) == 0, "the hit the client asked for before the death gave no buff");
+}
+static void test_consumables_item_gone_and_death() {
+    const char *path = professions_db_path();
+    if (!path) {
+        std::printf("Consumables: the stack gone before the cost step, a death before it: skipped (no real content.db)\n");
+        return;
+    }
+    std::printf("Consumables: the stack leaves the bag between the trigger and the cost step; the character dies in that window\n");
+    svc::Character rec = cyb_record();
+    std::vector<svc::InventoryItem> carried;
+    for (const auto &it : rec.items)
+        if (it.container == Worn) carried.push_back(it);
+    carried.push_back(make_item(Bag, 4, gc::kConstitutionScroll, 330, 1));
+    carried.push_back(make_item(Bag, 5, gc::kConstitutionScroll, 331, 2));
+    carried.push_back(make_item(Bag, 6, gc::kProcessingXpScroll, 332, 1));
+    rec.items = carried;
+    Harness h(rec, true, true, path);
+    const sg::CharacterStats *cs = h.s->character_stats();
+    const auto *pipe = h.s->pipeline();
+    CHECK(h.mirror.unreadable == 0 && !h.s->failed() && pipe, "(joined)");
+    if (!pipe) return;
+    const float con_before = cs->find(gc::kConstitution)->value;
+    check_consumable_destroyed_before_cost(h, con_before);
+    check_consumable_next_use_and_death(h, con_before);
+}
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
@@ -499,6 +733,8 @@ int main() {
     test_g2_join();
     test_g2_scrolls();
     test_g2_saver_round_trip();
+    test_consumables_scroll_and_elixir();
+    test_consumables_item_gone_and_death();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

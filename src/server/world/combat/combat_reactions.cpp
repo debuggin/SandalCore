@@ -47,7 +47,7 @@ void fill_dealt_hit(const CombatStatIds& ids, const Resolved& r, const Delivery&
     }
 }
 
-HitContext make_reaction_hit_ctx(const stats::StatProfile& profile, const HitOrigin* origin, uint8_t flags) {
+HitContext make_reaction_hit_ctx(const stats::DamageProfile& profile, const HitOrigin* origin, uint8_t flags) {
     HitContext ctx;
     ctx.profile = &profile;
     if (origin) {

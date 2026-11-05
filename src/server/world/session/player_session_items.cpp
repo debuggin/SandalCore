@@ -425,7 +425,7 @@ void PlayerSession::sync_ability_values() {
 void PlayerSession::refresh_rank_mods() {
   if (stats_ && book_) {
     stats_->set_passives(book_->passives(wielded_line_));
-    stats_->set_ranks(book_->held_ranks());
+    stats_->set_ranks(book_->held_ranks(wielded_line_));
   }
   if (pipeline_ && book_) pipeline_->set_reaction_carriers(book_->reaction_carriers(wielded_line_));
   sync_ability_values();
@@ -518,10 +518,21 @@ void PlayerSession::finish_level_up(const leveling::XpResult& xp, bool class_cha
       sync_level_up_trees(*book_, pb_, name());
     }
   }
-  if (leveled || class_changed) {
-    apply_gear_stats(leveled && class_changed ? "the new level and class" : leveled ? "the new level" : "the new class");
-  }
+  if (leveled || class_changed) apply_gear_stats(leveled && class_changed ? "the new level and class" : leveled ? "the new level" : "the new class");
   if (leveled && !pb_.mark_temp_health()) spdlog::debug("[session] {}: no TempHealth item to mark", name());
+  if (leveled && !dead_ && stats_) {
+    if (const stats::StatValue* hp = stats_->find(content::kGuidMaxHealth)) set_current_value(content::kGuidHealth, hp->value);
+    if (const stats::StatValue* mp = stats_->find(content::kGuidMaxMana)) set_current_value(content::kGuidMana, mp->value);
+    if (abilities_) {
+      bootstrap::AbilityChange refill;
+      abilities_->refill_stamina(refill);
+      stats_->set_current(content::kGuidStamina, static_cast<float>(abilities_->stamina()));
+      if (pb_.apply_ability_change(refill)) abilities_dirty_ = true;
+      else spdlog::warn("[session] {}: the pawn does not take the Stamina of the new level", name());
+    } else if (const stats::StatValue* sp = stats_->find(content::kGuidMaxStamina)) {
+      set_current_value(content::kGuidStamina, sp->value);
+    }
+  }
   if (apply_or_rollback_rank_effects(pb_, rank_effects, rank_effects_, markers_, name())) abilities_dirty_ = true;
 }
 
@@ -588,10 +599,7 @@ void PlayerSession::refuse_item_request(Connection& conn, const char* what, cons
 
 void PlayerSession::on_item_used(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
   const auto use = repl::parse_item_used(rpc.call);
-  if (!use) {
-    log_unreadable_item_rpc(item_unreadable_logged_, name(), "ServerItemUsed", rpc.call.param_bits);
-    return;
-  }
+  if (!use) return log_unreadable_item_rpc(item_unreadable_logged_, name(), "ServerItemUsed", rpc.call.param_bits);
   if (!within_budget(item_budget_, "ServerItemUsed", now) || !room_for(8)) return;
   if (!catalog_) return refuse_item_request(conn, "ServerItemUsed", "worldd has no item catalog", now);
   const auto storage = container_of_location(use->storage);
@@ -601,7 +609,9 @@ void PlayerSession::on_item_used(Connection& conn, const repl::ClientRpc& rpc, C
   }
   if (const svc::InventoryItem* item = find_usable_backpack_item(inventory_, *storage, *use)) {
     if (mounts_ && mounts_->is_mount_item(item->item_record_id)) return on_mount_item_used(svc::InventoryItem(*item));
-    if (is_activatable_backpack_item(*catalog_, item->item_record_id)) return on_item_activated(conn, *use, svc::InventoryItem(*item), now);
+    if (is_activatable_backpack_item(*catalog_, item->item_record_id)) {
+      return item_casts_ability(item->item_record_id) ? void() : on_item_activated(conn, *use, svc::InventoryItem(*item), now);
+    }
   }
   const items::Outcome outcome = inventory_.use(*storage, use->slot, items::guid_hex(use->expected_item), use->requested_equip_slot, *catalog_);
   if (!outcome.ok) {
@@ -611,14 +621,69 @@ void PlayerSession::on_item_used(Connection& conn, const repl::ClientRpc& rpc, C
   apply_outcome(conn, outcome, *storage == svc::ItemContainer::Backpack ? "an item is worn" : "an item is taken off");
 }
 
+bool PlayerSession::item_casts_ability(int64_t record) const {
+  const content::ContentDb* db = world_ ? world_->content() : nullptr;
+  std::string error;
+  return db && db->consumable_ability(record, error) != 0;
+}
+
+std::shared_ptr<const ItemCast> PlayerSession::consumable_cast(int64_t ability, int32_t slot, uint32_t location) {
+  const content::ContentDb* db = world_ ? world_->content() : nullptr;
+  const auto container = container_of_location(static_cast<uint8_t>(location));
+  if (!db || !container || *container != svc::ItemContainer::Backpack || !stats_ || !stats_->started()) return nullptr;
+  const svc::InventoryItem* item = inventory_.at(*container, slot);
+  if (!item || item->quantity < 1) return nullptr;
+  int32_t reserved = 0;
+  for (const auto& [id, held] : item_reserved_) {
+    reserved += held->container == static_cast<int>(*container) && held->slot == slot && held->instance_guid == item->instance_guid ? 1 : 0;
+  }
+  std::string error;
+  if (item->quantity - reserved < 1 || db->consumable_ability(item->item_record_id, error) != ability) return nullptr;
+  return std::make_shared<ItemCast>(ItemCast{item->item_record_id, ability, item->quality, stats_->item_stats(item->item_record_id, item->quality),
+                                             static_cast<int>(*container), slot, item->instance_guid, true});
+}
+
+void PlayerSession::take_consumable(const std::shared_ptr<const ItemCast>& cast, int32_t client_instance_id) {
+  if (!cast->consumes) return;
+  while (item_reserved_.size() >= 16) item_reserved_.erase(item_reserved_.begin());
+  item_reserved_[client_instance_id] = cast;
+  spdlog::log(level_for(use_logged_), "[session] {}: a consumable is used: item record {} (quality {}) from the {} slot {} casts ability {}; {} stat(s) from its stat block",
+              name(), cast->record, cast->quality, items::container_name(static_cast<svc::ItemContainer>(cast->container)), cast->slot, cast->ability, cast->stats.size());
+}
+
+bool PlayerSession::consumable_paid(int32_t client_instance_id) {
+  const auto reserved = item_reserved_.find(client_instance_id);
+  if (reserved == item_reserved_.end()) return false;
+  const std::shared_ptr<const ItemCast> cast = reserved->second;
+  item_reserved_.erase(reserved);
+  items::Outcome taken = inventory_.use_up(static_cast<svc::ItemContainer>(cast->container), cast->slot, cast->instance_guid, 1);
+  if (!taken.ok) {
+    for (const svc::InventoryItem& it : inventory_.items()) {
+      if (it.item_record_id == cast->record && it.instance_guid == cast->instance_guid && it.container == svc::ItemContainer::Backpack) {
+        taken = inventory_.use_up(it.container, it.slot, it.instance_guid, 1);
+        break;
+      }
+    }
+  }
+  if (!taken.ok) {
+    spdlog::log(level_for(use_logged_), "[session] {}: the consumable cast {} cannot be paid, its item is not in the bag any more ({}): the cast is over",
+                name(), client_instance_id, taken.refusal);
+    return false;
+  }
+  inventory_dirty_ = inventory_changed_ = true;
+  ++uses_applied_;
+  ++items_applied_;
+  while (item_sends_.size() >= 16) item_sends_.erase(item_sends_.begin());
+  item_sends_[client_instance_id] = item_events_for(taken);
+  item_taken_.push_back(client_instance_id);
+  return true;
+}
+
 void PlayerSession::on_tier_up(Connection& conn, const repl::ItemUse& use, svc::ItemContainer container, Clock::time_point now) {
   const char* what = "ServerItemUsed (a Glint tier change)";
-  const auto refuse = [&](const std::string& why) {
-    ++uses_refused_;
-    refuse_item_request(conn, what, why, now);
-  };
+  const auto refuse = [&](const std::string& why) { ++uses_refused_; refuse_item_request(conn, what, why, now); };
   const content::ContentDb* db = world_ ? world_->content() : nullptr;
-  std::string why;
+  std::string why, error;
   const svc::InventoryItem* held = validate_tier_up_slot_and_use(inventory_, db, container, use, why);
   if (!held) return refuse(why);
   const items::CurrencyTable* currencies = world_->currencies();
@@ -627,10 +692,8 @@ void PlayerSession::on_tier_up(Connection& conn, const repl::ItemUse& use, svc::
   const items::CurrencyKind* next = currencies->next_of(held->item_record_id);
   if (!kind) return refuse("item record " + std::to_string(held->item_record_id) + " is no kind of a currency");
   if (!next) return refuse("item record " + std::to_string(held->item_record_id) + " is the top kind of its currency: there is no next kind");
-  std::string error;
   const auto product_record = db->item(next->item, error);
-  if (!product_record)
-    return refuse(error.empty() ? "the next kind, item record " + std::to_string(next->item) + ", is not in content.db" : "content.db failed: " + error);
+  if (!product_record) return refuse(error.empty() ? "the next kind, item record " + std::to_string(next->item) + ", is not in content.db" : "content.db failed: " + error);
   const auto stack_record = db->item(held->item_record_id, error);
   const int32_t pq = std::max(1, product_record->default_quality);
   const int64_t created = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() * 1000;
@@ -692,25 +755,25 @@ void PlayerSession::on_storage_event_request(Connection& conn, const repl::Clien
 }
 
 void PlayerSession::on_combat_settings(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
-  constexpr std::string_view kPrefix = "CharacterInGameSettings.";
-  std::vector<bootstrap::PropertyValue> values;
-  if (rpc.call.decoded) {
-    for (const std::string_view path : kCombatEchoPaths) {
-      const schema::RepCommand* c = repl::rpc_command(*rpc.call.rpc, path.substr(kPrefix.size()));
-      if (!c) continue;
-      const auto it = rpc.call.params.values.find(c->handle);
-      if (it != rpc.call.params.values.end()) values.push_back({path, it->second});
+  std::vector<std::string> paths;
+  std::vector<repl::Value> held;
+  if (rpc.call.decoded && rpc.call.rpc) {
+    for (const schema::RepCommand& c : rpc.call.rpc->commands) {
+      const auto it = rpc.call.params.values.find(c.handle);
+      if (it == rpc.call.params.values.end() || !c.path) continue;
+      paths.push_back(std::string(kCombatEchoPrefix) + c.path);
+      held.push_back(it->second);
     }
   }
-  if (values.empty()) {
-    spdlog::log(level_for(combat_empty_logged_), "[session] {}: the client's combat settings carry none of the {} values worldd echoes", name(),
-                kCombatEchoPaths.size());
-    return;
-  }
+  if (paths.empty()) { spdlog::log(level_for(combat_empty_logged_), "[session] {}: the client's combat settings carry no value worldd can echo", name()); return; }
   if (!within_budget(combat_budget_, "ServerUpdateAccountCombatSettings", now) || !room_for(1)) return;
-  spdlog::log(level_for(combat_logged_), "[session] {}: the client's combat settings: echoing {} of the {} values worldd sends", name(), values.size(),
-              kCombatEchoPaths.size());
-  queue("combat settings echo", [values = std::move(values)](bootstrap::PlayerBootstrap& pb) { return pb.combat_settings_echo(values); }, conn);
+  spdlog::log(level_for(combat_logged_), "[session] {}: the client's combat settings: echoing {} of the {} values", name(), paths.size(), rpc.call.rpc ? rpc.call.rpc->commands.size() : 0);
+  queue("combat settings echo", [paths = std::move(paths), held = std::move(held)](bootstrap::PlayerBootstrap& pb) {
+    std::vector<bootstrap::PropertyValue> values;
+    values.reserve(paths.size());
+    for (size_t i = 0; i < paths.size(); ++i) values.push_back({paths[i], held[i]});
+    return pb.combat_settings_echo(values);
+  }, conn);
 }
 
 void PlayerSession::on_storage_request(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {
@@ -726,10 +789,7 @@ void PlayerSession::on_storage_request(Connection& conn, const repl::ClientRpc& 
       else kind = bootstrap::resource_kind(static_cast<int>(*resolved) - static_cast<int>(svc::ItemContainer::Resource0));
     }
   }
-  if (!kind) {
-    spdlog::debug("[session] {}: ServerRequestStorageData names a container worldd has no payload for", name());
-    return;
-  }
+  if (!kind) { spdlog::debug("[session] {}: ServerRequestStorageData names a container worldd has no payload for", name()); return; }
   if (!within_budget(storage_budget_, "ServerRequestStorageData", now) || !room_for(1)) return;
   const bootstrap::StorageKind k = *kind;
   queue("ClientReceiveStoragePayload", [k](bootstrap::PlayerBootstrap& pb) { return pb.storage_payload(k, Role::Pawn); }, conn);

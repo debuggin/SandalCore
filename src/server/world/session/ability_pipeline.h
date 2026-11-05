@@ -3,101 +3,10 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #pragma once
 
-#include "combat/hit_port.h"
-#include "combat/hit_resolver.h"
-#include "session/abilities.h"
-#include "session/ability_catalog.h"
-#include "stats/character_stats.h"
-
-#include <cstdint>
-#include <deque>
-#include <functional>
-#include <map>
-#include <optional>
-#include <set>
-#include <string>
-#include <vector>
+#include "session/ability_pipeline_types.h"
+#include "session/item_cast.h"
 
 namespace aoc::worldd {
-
-// Cast-bar abilities wait for ServerRequestBranchVerification before jumping to the branch section and taking cost.
-struct BranchedCast {
-    const char* ability;
-    int64_t     branch;
-    float       position;
-    double      item;
-    double      request;
-    double      answer;
-    double      cost;
-    double      end;
-    int         animation = -1;
-    bool        cost_first = false;
-    bool        cancels = true;
-    double      full = 0;
-    int64_t     held_skill = 0;
-    double      hold_limit = 0;
-    double      release = 0;
-    int64_t     charged_branch = 0;
-    double      charged_answer = 0;
-    double      charged_cost = 0;
-};
-
-struct LoopedCast {
-    const char* ability;
-    float       position;
-    double      item;
-    double      first_shot;
-    double      period;
-    double      jump;
-    double      end;
-};
-
-struct GatheredCast {
-    const char* ability;
-    int         projectile;
-    double      angle;
-    double      length;
-    double      behind;
-    double      speed;
-    int         charged_projectile = 0;
-    double      charged_length = 0;
-    double      charged_radius = 0;
-    double      charged_speed = 0;
-    const char* charged_montage = "";
-    uint64_t    charged_montage_guid = 0;
-};
-
-struct TimedCast {
-    enum class Kind : uint8_t {
-        Volley,
-        Strike,
-        Barrage,
-    };
-    const char* ability;
-    Kind        kind;
-    int         projectile;
-    double      first;
-    double      gap;
-    int         count;
-    double      speed;
-    double      angle = 0;
-    double      length = 0;
-    double      behind = 0;
-    double      radius = 0;
-    double      pitch[3] = {0, 0, 0};
-    float       jump_position = 0;
-    double      jump_at = 0;
-    double      end_at = 0;
-};
-
-struct ShotCast {
-    const char* ability;
-    int         animation;
-    double      fire;
-    bool        magical;
-    const char* ask;
-    double      ask_gap;
-};
 
 // Generic data-driven ability runtime operating alongside AbilityRuntime (Sprint/Dodge/Rest) on the session clock.
 class AbilityPipeline {
@@ -110,6 +19,8 @@ public:
     static constexpr int    kMaxRegenSteps = 5;
     static constexpr double kConfirmDelay = 0.080;
     static constexpr double kRequestWindow = 5.0;
+    static constexpr double kItemRequestWindow = 15.0;
+    static constexpr double kItemCastDelay = 0.065;
     static constexpr int    kMaxRequestsPerHit = 8;
     static constexpr double kMinRequestGap = 0.100;
     static constexpr int    kBeamRequestsPerHit = 24;
@@ -123,6 +34,7 @@ public:
     static constexpr double kHeldEndDelay = 0.059;
     static constexpr double kEndDelay = 0.259;
     static constexpr double kEarliestBranchRequest = 0.6;
+    static constexpr double kEarliestChargedRequest = 1.0;
     static constexpr int    kMaxApplyDepth = 4;
     static constexpr double kMovementWindow = 1.0;
     static constexpr double kMovementMargin = 1.5;
@@ -135,10 +47,18 @@ public:
     static constexpr size_t kRecentIds = 256;
     static constexpr size_t kMaxEffects = 256;
     static constexpr size_t kMaxStepsPerAdvance = 100000;
+    static constexpr double kMaxShotFlight = 3.0;
+    static constexpr double kLaunchAdvance = 0.15;
 
     using WornFn = std::function<std::vector<stats::WornItem>()>;
     using WeaponTagsFn = std::function<std::vector<std::string>()>;
     using ActiveTargetFn = std::function<uint64_t()>;
+    using ItemTakeFn = std::function<bool(int32_t client_instance_id)>;
+    using StatCost = ability_types::StatCost;
+    using Inspection = ability_types::Inspection;
+    using HitVerdict = ability_types::HitVerdict;
+    using PetPayment = ability_types::PetPayment;
+    using BoltRecall = ability_types::BoltRecall;
 
     AbilityPipeline(const abilities::Catalog* catalog, stats::CharacterStats& stats, AbilityRuntime& a7, WornFn worn, double world_time_at_zero,
                     uint64_t seed = 1);
@@ -146,24 +66,8 @@ public:
     void set_known(std::vector<int64_t> known);
     bool known(int64_t ability) const { return known_.count(ability) != 0; }
     bool handles(int64_t ability) const;
+    static std::string cooldown_group_of(const content::AbilityRow& row);
 
-    struct StatCost {
-        int64_t     stat = 0;
-        std::string name;
-        double      amount = 0;
-    };
-    struct Inspection {
-        double                  cooldown = 0;
-        int                     max_charges = 1;
-        int                     charge_cost = 1;
-        bool                    triggers_cooldown = false;
-        std::string             group;
-        std::vector<StatCost>   stat_costs;
-        std::vector<std::pair<int64_t, int>> effect_costs;
-        std::optional<double>   cast_seconds;
-        bool                    requirement = true;
-        std::string             problem;
-    };
     std::optional<Inspection> inspect(int64_t ability);
 
     bool evaluate(int64_t expr, double& out, std::string& why) {
@@ -176,17 +80,9 @@ public:
     bool branch_request(int32_t client_instance_id, int64_t branch_guid, double now);
     bool end_request(int32_t server_instance_id, double now);
 
-    enum class HitVerdict : uint8_t {
-        Scheduled,
-        Quiet,
-        Empty,
-        NoCast,
-        NotItsHit,
-        TooMany,
-        Unsupported,
-    };
     static const char* verdict_name(HitVerdict v);
-    HitVerdict hit_request(int64_t ability, int64_t targeting_guid, int64_t hit_guid, size_t components, size_t own, double now, const std::vector<uint64_t>& targets = {});
+    HitVerdict hit_request(int64_t ability, int64_t targeting_guid, int64_t hit_guid, size_t components, size_t own, double now,
+                           const std::vector<uint64_t>& targets = {});
 
     void set_dead(bool dead);
     bool dead() const { return dead_; }
@@ -194,15 +90,36 @@ public:
     void set_combat(combat::HitPort* port) { combat_ = port; }
     void set_weapon_tags(WeaponTagsFn fn) { weapon_tags_ = std::move(fn); }
     void set_active_target(ActiveTargetFn fn) { active_target_ = std::move(fn); }
+    void set_item_taker(ItemTakeFn fn) { item_taker_ = std::move(fn); }
     void receive_hit(const combat::IncomingHit& hit, double now);
-    void confirm_hit_on(const combat::IncomingHit& hit, double now, const protocol::emit::FIntrepidNetworkGUID& target, const protocol::emit::FIntrepidNetworkGUID& cylinder,
-                        double taken, bool lethal);
+    void confirm_hit_on(const combat::IncomingHit& hit, double now, const protocol::emit::FIntrepidNetworkGUID& target,
+                        const protocol::emit::FIntrepidNetworkGUID& cylinder, double taken, bool lethal);
+    void confirm_effect_hit(const combat::EffectHitNote& note, double now);
+    void confirm_dealt(const combat::DealtHit& dealt, double now);
+    bool can_pay_pet_ability(int64_t ability, double now, PetPayment& out);
+    void commit_pet_payment(int64_t ability, const PetPayment& pay, double now);
+    bool pay_pet_ability(int64_t ability, double now, double& cooldown);
+    void start_pet_cooldown(int64_t ability, double seconds, double now);
+    void land_pet_hit(int64_t hit_guid, int64_t ability, double now);
+    bool holds_dispellable() const;
+    bool grant_effect(int64_t effect_guid, double now);
+    bool grant_effect(int64_t effect_guid, int stacks, double now);
+    uint64_t take_transpose() {
+        const uint64_t id = transpose_with_;
+        transpose_with_ = 0;
+        return id;
+    }
+    BoltRecall take_bolt_recall() {
+        const BoltRecall recall = bolt_recall_;
+        bolt_recall_ = {};
+        return recall;
+    }
+
     void tick(double now);
     std::vector<AbilityEvent> take_events();
     double next_due() const;
 
     void sync_a7_values(double now);
-    bool grant_effect(int64_t effect_guid, int stacks, double now);
 
     void set_reaction_carriers(std::vector<int64_t> effect_guids);
     void set_reactions_enabled(bool on) {
@@ -227,6 +144,7 @@ public:
     size_t effect_count() const { return effects_.size(); }
     int    stacks_of(int64_t effect_guid) const;
     std::optional<double> effect_end(int64_t effect_guid) const;
+    double stat_of(int64_t guid) const { return stat_now(guid); }
     size_t cooldowns_running() const { return groups_.size(); }
     int    charges_left(int64_t ability) const;
     double now() const { return now_; }
@@ -239,155 +157,19 @@ public:
     double world_time_at_zero() const { return world_time_at_zero_; }
 
 private:
-    struct HitSource {
-        int64_t type = 0;
-        int64_t guid = 0;
-        bool    actor = true;
-        bool    confirm = false;
-        bool    response = false;
-        bool    simulated = false;
-        bool    autonomous = true;
-        bool    source_is_target = false;
-    };
-    struct HitEvent {
-        const abilities::HitDef*     hit = nullptr;
-        const abilities::AbilityDef* ability = nullptr;
-        HitSource                    src;
-        std::vector<uint64_t>        targets;
-        bool                         on_self = false;
-        std::map<int64_t, double>    mods;
-        std::map<int64_t, double>    effective;
-        uint8_t                      flags = 0;
-    };
-    struct ReactionContext {
-        const HitEvent*              hit = nullptr;
-        const abilities::AbilityDef* consumed = nullptr;
-    };
-    struct Pending {
-        double at = 0;
-        bool   found = true;
-        std::vector<uint64_t> targets;
-    };
-    struct HitSlot {
-        const abilities::HitDef* hit = nullptr;
-        int64_t                  targeting = 0;
-        bool                     reaches = false;
-        bool                     aims_others = false;
-        int                      requests = 0;
-        double                   last_request = -1e9;
-        std::vector<Pending>     due;
-        bool                     applied = false;
-    };
-    struct CastRecord {
-        int32_t                      client_id = 0;
-        int64_t                      ability = 0;
-        double                       trigger_at = 0;
-        double                       cost_at = -1;
-        double                       fill = 1;
-        double                       cost_due = 0;
-        double                       window_end = 0;
-        double                       hit_delay = kHitDelay;
-        int                          max_requests = kMaxRequestsPerHit;
-        double                       min_gap = kMinRequestGap;
-        std::vector<HitSlot>         slots;
-        std::set<int64_t>            reach;
-        std::map<int64_t, std::pair<int, double>> asked;
-    };
-    struct Cast {
-        int32_t                               client_id = 0;
-        const abilities::AbilityDef*          def = nullptr;
-        double                                trigger_at = 0;
-        std::optional<double>                 item_due, cost_due, hit_due, projectile_due, loop_due, own_due;
-        const BranchedCast*                   branched = nullptr;
-        const LoopedCast*                     looped = nullptr;
-        const GatheredCast*                   gathered = nullptr;
-        int64_t                               gathered_projectile = 0;
-        int64_t                               charged_projectile = 0;
-        bool                                  held = false;
-        bool                                  charged = false;
-        int                                   shots = 0;
-        int64_t                               shot_projectile = 0;
-        bool                                  montage_branch = false;
-        float                                 branch_position = 0;
-        bool                                  branch_predicted = true;
-        std::optional<double>                 branch_due, end_due;
-        struct Missile {
-            double   due = 0;
-            int64_t  projectile = 0;
-            uint64_t target = 0;
-            enum class Kind : uint8_t { Land, Launch, Strike };
-            Kind     kind = Kind::Land;
-            int      index = 0;
-            double   x = 0, y = 0, z = 0;
-        };
-        std::vector<Missile>                  missiles;
-        const TimedCast*                      timed = nullptr;
-        std::set<uint64_t>                    struck;
-        bootstrap::ActiveAbilityItem          item;
-        std::vector<const abilities::EffectDef*> own_effects;
-        bool                                  toggle_off = false;
-        int64_t                               chain_owner = 0;
-        int64_t                               instance = -1;
-        int32_t                               animation_index = 0;
-        bool                                  target = false;
-        bool                                  self_reachable = true;
-        std::vector<uint64_t>                 target_actors;
-        bool                                  loop = false;
-        double                                cooldown = 0;
-        int                                   max_charges = 1;
-        int                                   charge_cost = 1;
-        std::string                           group;
-        std::vector<std::pair<int64_t, double>> stat_costs;
-        std::vector<std::pair<int64_t, int>>  effect_costs;
-        bool                                  triggers_cooldown = false;
-        bool                                  clears_montage = false;
-        bool                                  request_heard = false;
-        double                                heard_at = -1;
-        const ShotCast*                       shot = nullptr;
-        bool                                  flight_pending = false;
-        double                                launch_at = -1;
-        bool                                  anchored = false;
-        double                                flight = 0;
-    };
-    struct EffectInst {
-        int64_t                     owner = 0;
-        int64_t                     zone = 0;
-        bool                        has_shield = false;
-        float                       shield_base = 0, shield_value = 0;
-        uint32_t                    shield_guid[4] = {0, 0, 0, 0};
-        int64_t                     key = 0;
-        const abilities::EffectDef* def = nullptr;
-        int                         stacks = 1;
-        double                      start = 0, end = 0;
-        double                      next_tick = 0;
-        std::vector<stats::EffectMod> mods;
-    };
-    struct Zone {
-        enum class State : uint8_t { Pending, Open, Ended };
-        int64_t id = 0;
-        int64_t ability = 0, zone = 0;
-        int32_t client_id = 0;
-        double  open_at = 0;
-        double  end_at = 0;
-        double  fade_at = -1, close_at = -1;
-        State   state = State::Pending;
-    };
-    // Chain-based cooldown recovery preserves the first use's start timestamp across consecutive charge recoveries.
-    struct Group {
-        int                  max_charges = 1;
-        int                  charges = 1;
-        double               cooldown = 0;
-        double               timer_start = 0, timer_end = -1;
-        double               chain_start = 0;
-        int                  timers = 0;
-        std::set<int64_t>    items;
-        int64_t              last_ability = 0;
-    };
-    struct Held {
-        int32_t               client_id = 0;
-        int64_t               ability = 0;
-        std::optional<double> end_due;
-    };
+    using HitSource = ability_types::HitSource;
+    using HitEvent = ability_types::HitEvent;
+    using ReactionContext = ability_types::ReactionContext;
+    using Pending = ability_types::Pending;
+    using HitSlot = ability_types::HitSlot;
+    using CastRecord = ability_types::CastRecord;
+    using Cast = ability_types::Cast;
+    using EffectInst = ability_types::EffectInst;
+    using Zone = ability_types::Zone;
+    using Group = ability_types::Group;
+    using Held = ability_types::Held;
+    using Instance = ability_types::Instance;
+
     bool dead_ = false;
     class Host;
 
@@ -409,10 +191,9 @@ private:
     bool   take_stat(bootstrap::AbilityChange& c, int64_t stat, double amount);
 
     const char* resolve_formulas(Cast& cast, const abilities::AbilityDef& def, std::string& why);
-    void   run_cast_step(Cast& cast, double t);
     void   step_item(Cast& cast, double t);
     void   step_cost(Cast& cast, double t);
-    void   step_hits(Cast& cast, double t, const char* which);
+    void   step_hits(Cast& cast, double t, const char* which, int depth = 0);
     void   cancel_swings(double t, const std::string& by);
     void   step_branch(Cast& cast, double t);
     void   launch_gathered(Cast& cast, double t);
@@ -425,13 +206,20 @@ private:
     bool   holds_skill(int64_t skill) const;
     void   reschedule_branch(Cast& cast, double branch_at, double cost_after);
     void   abort_cast(size_t index, double t, const char* why);
+    void   end_zones_of(const Cast& cast, double t);
+    bool   can_pay(const Cast& cast) const;
     void   bring_sooner(Cast& cast, double earlier);
     void   land_by_flight(Cast& cast, double t);
     double client_rate(bool magical) const;
+    bool   plays_at_magical(const abilities::AbilityDef& def, bool row_magical) const;
+    double item_rate(const abilities::AbilityDef& def) const;
     void   plan_shot(Cast& cast, const ShotCast& shot, double t);
     void   launch_shot(Cast& cast, double t);
     void   anchor_shot(Cast& cast, double now);
     void   land_shot(Cast& cast, double t);
+    void   plan_notes(Cast& cast, double t);
+    void   launch_note(Cast& cast, const Cast::Missile& fly, double t);
+    void   bounce_from(bootstrap::AbilityChange& c, Cast& cast, const abilities::HitDef& hit, int64_t projectile, uint64_t target, int depth, double t);
     Cast*  cast_of(int32_t client_id);
     double held_fill(const Cast& cast, double held_seconds) const;
 
@@ -441,11 +229,22 @@ private:
         FillScope(AbilityPipeline& pipeline, double fill) : p(pipeline), saved(pipeline.fill_) { p.fill_ = fill; }
         ~FillScope() { p.fill_ = saved; }
     };
+    struct ConsumedScope {
+        AbilityPipeline&                   p;
+        const std::vector<stats::StatMod>* saved;
+        ConsumedScope(AbilityPipeline& pipeline, const std::shared_ptr<const ItemCast>& item)
+            : p(pipeline), saved(pipeline.consumed_) {
+            p.consumed_ = item ? &item->stats : nullptr;
+        }
+        ~ConsumedScope() { p.consumed_ = saved; }
+    };
     void   step_end(Cast& cast, double t);
     void   finish_cast_if_done(size_t index);
     std::string montage_group_of(const abilities::AbilityDef& def) const;
 
     void   apply_hit(bootstrap::AbilityChange& c, const abilities::HitDef& hit, double t, bool skip_resource, const HitSource& src);
+    void   apply_hit_here(bootstrap::AbilityChange& c, const abilities::HitDef& hit, double t, bool skip_resource, const HitSource& src);
+    void   modify_cooldowns(bootstrap::AbilityChange& c, const abilities::HitDef& hit, double t);
     void   apply_effect(bootstrap::AbilityChange& c, const abilities::EffectDef& def, int stacks, std::optional<double> duration, double t, bool raw = false,
                         int64_t owner = 0);
     void   remove_instance(bootstrap::AbilityChange& c, size_t index);
@@ -460,6 +259,7 @@ private:
 
     void   step_own(Cast& cast, double t);
     void   end_held(size_t index, double t);
+    void   release_held(int32_t client_id, double t);
     std::set<int64_t> effects_applied_by_hits(const abilities::AbilityDef& def) const;
     void   end_loop(bootstrap::AbilityChange& c, int64_t ability, double t);
     void   remove_by_hit(bootstrap::AbilityChange& c, const abilities::HitDef& hit);
@@ -468,10 +268,11 @@ private:
     CastRecord* record_of(int32_t client_id);
     void   run_slot(CastRecord& rec, HitSlot& slot, double t, bool response, bool found, const std::vector<uint64_t>& targets);
     void   apply_hit_on_targets(bootstrap::AbilityChange& c, const abilities::HitDef& hit, const std::vector<uint64_t>& targets, double t, const HitSource& src,
-                                const abilities::AbilityDef* ability);
+                                const abilities::AbilityDef* ability, bool* landed = nullptr);
 
     bool   eval_in_event(int64_t expr, const ReactionContext& rc, double& out, std::string& why);
     void   raise_hit_event(bootstrap::AbilityChange& c, const HitEvent& ev, double t);
+    void   fire_carried_reactions(bootstrap::AbilityChange& c, const HitEvent& ev, double t);
     void   raise_ability_event(bootstrap::AbilityChange& c, const abilities::AbilityDef& ability, double t);
     void   run_reactions(bootstrap::AbilityChange& c, int kind, int bit, const ReactionContext& rc, double t);
     void   fire_reaction(bootstrap::AbilityChange& c, const abilities::ReactionDef& r, const ReactionContext& rc, double t);
@@ -494,6 +295,7 @@ private:
     void   use_charge(bootstrap::AbilityChange& c, const Cast& cast, double t);
     void   group_timer_ends(const std::string& key, double t);
     bootstrap::CooldownItem cooldown_item(int64_t ability, const Group& g) const;
+    void   land_bolt_recall(int32_t client_id, uint64_t target, double t);
 
     void   regenerate(double t);
     void   resolve_resource();
@@ -504,13 +306,16 @@ private:
     WornFn                    worn_;
     WeaponTagsFn              weapon_tags_;
     ActiveTargetFn            active_target_;
+    ItemTakeFn                item_taker_;
     double                    world_time_at_zero_;
     stats::SplitMix           rng_;
+    std::mt19937_64           bounce_rng_{0x5a17d00du};
     std::unique_ptr<stats::CharacterStats::Evaluation> evaluation_;
 
     double                    now_ = 0;
     double                    clock_ = 0;
     int                       apply_depth_ = 0;
+    int                       carried_depth_ = 0;
     bool                      data_timings_ = true;
     bool                      moving_ = false;
     std::map<int64_t, int>    last_max_charges_;
@@ -520,6 +325,7 @@ private:
     double progress_of(const std::string& group) const;
     double last_item_at_ = -1;
     double fill_ = 1;
+    const std::vector<stats::StatMod>* consumed_ = nullptr;
     std::map<int64_t, double> full_bars_;
     double                    next_regen_ = kRegenInterval;
     std::set<int64_t>         known_;
@@ -539,18 +345,14 @@ private:
     std::vector<bootstrap::HitConfirm> confirmations_;
     std::deque<CastRecord>    records_;
     std::vector<Held>         held_;
-    struct Instance {
-        int64_t server_id = 0;
-        int32_t client_id = 0;
-        std::optional<double> end_due;
-        int64_t ability = 0;
-    };
     std::deque<Instance>      instances_;
     void   end_instance(size_t index, double t);
     stats::SplitMix           guid_rng_;
     std::vector<bootstrap::ShieldElement> shields_sent_;
     size_t                    refused_ = 0, casts_started_ = 0, regen_ticks_ = 0;
     combat::HitPort*          combat_ = nullptr;
+    uint64_t                  transpose_with_ = 0;
+    BoltRecall                bolt_recall_;
     const abilities::EffectDef* resource_ = nullptr;
     int                       resource_class_ = 0;
     std::vector<int64_t>      reaction_carriers_;
@@ -561,6 +363,7 @@ private:
     std::set<int64_t>         reaction_noted_;
     std::set<int64_t>         reaction_recursive_noted_;
     std::set<int>             unserved_host_;
+    const ReactionContext*    active_reaction_ = nullptr;
 };
 
 }  // namespace aoc::worldd

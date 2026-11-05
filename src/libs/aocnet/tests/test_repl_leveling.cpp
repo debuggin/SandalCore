@@ -519,7 +519,7 @@ static void test_refusals() {
         RpcCall call{&build_rpc, *ok, true, 0, 0};
         CHECK(parse_purchase_skill_build(call) && parse_purchase_skill_build(call)->changes.size() == kMaxSkillBuildChanges, "and read back");
         const RepCommand* cmd = rpc_command(build_rpc, "BuildChanges.AllocationChanges");
-        ArrayValue a{std::vector<ElementState>(kMaxSkillBuildChanges + 1)};
+        ArrayValue a; a.elements.resize(kMaxSkillBuildChanges + 1);
         const auto elems = build_rpc.element_commands.subspan(cmd->elem_begin, cmd->elem_end - cmd->elem_begin);
         for (ElementState& e : a.elements)
             for (size_t i = 0; i < elems.size(); ++i) {

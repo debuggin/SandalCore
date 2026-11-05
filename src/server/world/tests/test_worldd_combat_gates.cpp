@@ -1,10 +1,29 @@
 #include "combat_test_fixture.h"
 
+#include <filesystem>
+
 namespace sandal::worldd::tests {
 namespace {
 
 namespace repl = aoc::protocol::repl;
 namespace schema = aoc::protocol::schema;
+
+bool load_creature_tables(TestHarness& h, combat::NpcAbilityData& tables) {
+    std::string dir = NPC_MOTION_PATH;
+    dir.erase(dir.find_last_of("/\\") + 1);
+    const std::string files[3] = {dir + "npc_abilities.tsv", dir + "npc_montages.tsv", dir + "npc_targeting.tsv"};
+    std::string err;
+    if (tables.load(files[0], files[1], files[2], err)) return true;
+    std::error_code ec;
+    bool any_there = false;
+    for (const std::string& file : files) any_there = any_there || std::filesystem::exists(file, ec);
+    if (!any_there) {
+        std::printf("  [skip] the creature tables (tools/npcabilities, the npcabilities extractor step): %s\n", err.c_str());
+        return false;
+    }
+    CHECKF(false, "the creature tables are there but do not read: %s", err.c_str());
+    return false;
+}
 
 struct MoveWire {
     double t = 0;
@@ -147,7 +166,7 @@ void test_creature_movement_reaches_client(TestHarness& h) {
     Fixture& f = h.f;
     std::printf("a creature whose open has the client ignore its movement: it walks, plays an in-place attack and turns, and every one of those updates reaches a client that applies them\n");
     combat::NpcAbilityData tables;
-    if (!load_creature_tables(tables)) return;
+    if (!load_creature_tables(h, tables)) return;
     const std::string alpha_path = creature_path(f, "/Beast/Canine/AlphaWolf.Default__AlphaWolf_C");
     const auto bp = f.motion.find(alpha_path);
     CHECK(!alpha_path.empty() && bp && tables.abilities_of(alpha_path) != nullptr, "the Blueprint table has the Alpha Wolf and the creature tables list its abilities");
@@ -261,7 +280,7 @@ void test_creature_parameter_and_health_gates(TestHarness& h) {
     Fixture& f = h.f;
     std::printf("the Alpha Wolf's Growl is gated by a tree parameter (the plain Wolf's is switched off) and by its own health (under 75 %%): the same fight, a full-health Alpha, a hurt Alpha and a hurt Wolf\n");
     combat::NpcAbilityData tables;
-    if (!load_creature_tables(tables)) return;
+    if (!load_creature_tables(h, tables)) return;
     const std::string alpha_path = creature_path(f, "/Beast/Canine/AlphaWolf.Default__AlphaWolf_C");
     const std::string wolf_path = creature_path(f, "/Beast/Canine/Wolf.Default__Wolf_C");
     CHECK(!alpha_path.empty() && !wolf_path.empty() && tables.abilities_of(alpha_path) && tables.abilities_of(wolf_path),
@@ -337,7 +356,7 @@ void test_creature_roll_gate(TestHarness& h) {
     Fixture& f = h.f;
     std::printf("the Bear's right swing is gated by a roll of one half, asked afresh at every try: over a long fight it swings right and left, neither always\n");
     combat::NpcAbilityData tables;
-    if (!load_creature_tables(tables)) return;
+    if (!load_creature_tables(h, tables)) return;
     const std::string bear_path = creature_path(f, "/Beast/Bear/Bear.Default__Bear_C");
     const auto bp = f.motion.find(bear_path);
     CHECK(!bear_path.empty() && bp && tables.abilities_of(bear_path) != nullptr, "the Blueprint table has the Bear and the creature tables list its abilities");
@@ -396,7 +415,7 @@ void test_bite_lands_wherever_the_player_stands(TestHarness& h) {
     Fixture& f = h.f;
     std::printf("a Wolf's bite, whose targeting record measures nothing (validity off): at its notify it lands on its target wherever he stands, in front of it, behind it or far away\n");
     combat::NpcAbilityData tables;
-    if (!load_creature_tables(tables)) return;
+    if (!load_creature_tables(h, tables)) return;
     const std::string wolf_path = creature_path(f, "/Beast/Canine/Wolf.Default__Wolf_C");
     const abilities::AbilityDef* bite = f.catalog->ability_named("Wolf_Bite");
     CHECK(!wolf_path.empty() && f.motion.find(wolf_path) && tables.abilities_of(wolf_path) && bite,
@@ -625,7 +644,7 @@ void test_fury_lands_only_inside_its_cone(TestHarness& h) {
     Fixture& f = h.f;
     std::printf("a Grem's Fury (validity on: 300 cm, 60 degrees, line of sight) lands each of its four bites at its notify only while the player is inside its cone, and its Snap (validity off) wherever he stands\n");
     combat::NpcAbilityData tables;
-    if (!load_creature_tables(tables)) return;
+    if (!load_creature_tables(h, tables)) return;
     const std::string rabid_path = creature_path(f, "/Beast/Rabid/Rabid.Default__Rabid_C");
     const abilities::AbilityDef* fury = f.catalog->ability_named("Rabid_Fury");
     const abilities::AbilityDef* snap = f.catalog->ability_named("Rabid_Snap");

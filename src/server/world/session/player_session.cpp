@@ -421,29 +421,39 @@ void PlayerSession::rebuild_ability_lists() {
   const talents::AbilityLists lists = talents::join_abilities(
       *book_, bootstrap::general_unstuck(), combo_, bootstrap::carried_combos(*db, inventory_),
       bootstrap::static_known_tail(),
-      bootstrap::carried_item_abilities(world_->mounts() ? &world_->mounts()->data() : nullptr, inventory_));
+      bootstrap::carried_item_abilities(world_->mounts() ? &world_->mounts()->data() : nullptr, inventory_, db));
   known_ = lists.known;
   records_ = lists.records;
 }
 
 void PlayerSession::sync_item_abilities(Connection& conn) {
-  if (!world_ || !world_->mounts() || !phase_in_done_ || !join_.empty() || finished_ || failed_ || abilities_failed_)
+  const content::ContentDb* db = world_ ? world_->content() : nullptr;
+  if (!world_ || (!world_->mounts() && !db) || !phase_in_done_ || !join_.empty() || finished_ || failed_ ||
+      abilities_failed_)
     return;
-  const std::vector<int64_t> carried = bootstrap::carried_item_abilities(&world_->mounts()->data(), inventory_);
+  const std::vector<int64_t> carried_records = inventory_.records();
+  if (carried_records == item_ability_records_) return;
+  const std::vector<int64_t> carried = bootstrap::carried_item_abilities(
+      world_->mounts() ? &world_->mounts()->data() : nullptr, inventory_, db);
   std::vector<int64_t> missing;
   for (const int64_t a : carried) {
     if (std::find(records_.begin(), records_.end(), a) == records_.end()) missing.push_back(a);
   }
-  if (missing.empty() || !room_for(1)) return;
+  if (missing.empty()) {
+    item_ability_records_ = carried_records;
+    return;
+  }
+  if (!room_for(1)) return;
   for (const int64_t a : missing) records_.push_back(a);
   if (!push_abilities()) {
     for (const int64_t a : missing) records_.erase(std::remove(records_.begin(), records_.end(), a), records_.end());
     return;
   }
+  item_ability_records_ = carried_records;
   ++item_ability_syncs_;
   spdlog::log(level_for(item_ability_logged_),
-              "[session] {}: {} item ability record(s) added to ReplicatedRecordsToLoad (a mount item is carried: the "
-              "client needs Summon_Mount loaded to send the summon)",
+              "[session] {}: {} item ability record(s) added to ReplicatedRecordsToLoad (an item that casts an ability "
+              "is carried: the client needs the ability loaded to send its trigger)",
               name(), missing.size());
   queue("pawn state", [](bootstrap::PlayerBootstrap& pb) { return pb.pawn_state_update("item abilities"); }, conn);
 }
@@ -730,6 +740,17 @@ void PlayerSession::follow_worn_weapon() {
   push_abilities();
   spdlog::info("[session] {}: the weapon in hand was taken off and no other is worn: combo {} leaves KnownAbilities",
                name(), gone);
+}
+
+void PlayerSession::register_talents_rpcs(RpcTable& t) {
+  t.add(RpcScope::PlayerController, "ServerSetActionbarSlotUseData",
+        [](PlayerSession& s, const RpcContext& c) { s.on_set_slot(c.conn, c.rpc, c.now); });
+  t.add(RpcScope::PlayerController, "ServerSetActionbarMultiSlotUseData",
+        [](PlayerSession& s, const RpcContext& c) { s.on_set_slots(c.conn, c.rpc, c.now); });
+  t.add(RpcScope::Pawn, "ServerPurchaseSkillBuild",
+        [](PlayerSession& s, const RpcContext& c) { s.on_purchase(c.conn, c.rpc, c.now); });
+  t.add(RpcScope::Pawn, "ServerSetUseRangedWeapon",
+        [](PlayerSession& s, const RpcContext& c) { s.on_set_ranged(c.conn, c.rpc, c.now); });
 }
 
 }  // namespace worldd

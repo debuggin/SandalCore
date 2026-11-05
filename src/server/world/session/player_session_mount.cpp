@@ -328,6 +328,7 @@ void PlayerSession::SessionInternal::finish_mount_up(PlayerSession& s, Connectio
     s.checker_.rebase(s.ride_->limits(s.base_limits_, t), start);
     s.ride_->moved(a.x, a.y, a.z, a.yaw_degrees, t);
     s.pending_fix_.reset();
+    s.based_fix_.reset();
     s.dismounted_valid_ = false;
     ++s.mount_ups_;
     s.abilities_->set_mounted(true, t);
@@ -412,6 +413,7 @@ void PlayerSession::dismount(Connection& conn, Clock::time_point now, DismountWh
     start.movement_mode = repl::kMoveFalling;   // the rider leaps off [R: 912: its moves start in mode 3]
     checker_.rebase(base_limits_, start);
     pending_fix_.reset();
+    based_fix_.reset();
     dismounted_at_ = now;
     dismounted_valid_ = true;
     dismount_extra_sent_ = false;

@@ -4,6 +4,8 @@
 
 #include "combat_test_fixture.h"
 
+#include <filesystem>
+
 namespace sandal::worldd::tests {
 namespace {
 
@@ -679,11 +681,28 @@ void log_grem_summary(const GremSim& sim) {
     }
 }
 
+bool load_creature_tables(TestHarness& h, combat::NpcAbilityData& tables) {
+    std::string dir = NPC_MOTION_PATH;
+    dir.erase(dir.find_last_of("/\\") + 1);
+    const std::string files[3] = {dir + "npc_abilities.tsv", dir + "npc_montages.tsv", dir + "npc_targeting.tsv"};
+    std::string err;
+    if (tables.load(files[0], files[1], files[2], err)) return true;
+    std::error_code ec;
+    bool any_there = false;
+    for (const std::string& file : files) any_there = any_there || std::filesystem::exists(file, ec);
+    if (!any_there) {
+        std::printf("  [skip] the creature tables (tools/npcabilities, the npcabilities extractor step): %s\n", err.c_str());
+        return false;
+    }
+    CHECKF(false, "the creature tables are there but do not read: %s", err.c_str());
+    return false;
+}
+
 void test_grem_fight(TestHarness& h) {
     Fixture& f = h.f;
     std::printf("a Grem against a player who stands still: it lunges to the player, bites in reach, never goes through or drifts away, turns, and comes back when the player steps away\n");
     combat::NpcAbilityData tables;
-    if (!load_creature_tables(tables)) return;
+    if (!load_creature_tables(h, tables)) return;
     const std::string rabid_path = creature_path(f, "/Beast/Rabid/Rabid.Default__Rabid_C");
     const auto bp = f.motion.find(rabid_path);
     CHECK(!rabid_path.empty() && bp && tables.abilities_of(rabid_path) != nullptr, "the Blueprint table has the Rabid and the creature tables list its abilities");

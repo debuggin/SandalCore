@@ -7,18 +7,12 @@
 #include "test_worldd_node_state_common.h"
 
 #include "aoc/citynode/v1/citynode.grpc.pb.h"
-#include "capture_blocks.h"
-#include "capture_nodes.h"
 #include "svc/city_node_control.h"
 #include "svc/service_token.h"
-#include "world/node_constants.h"
 
 #include <grpcpp/grpcpp.h>
+#include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
-
-#include <algorithm>
-#include <mutex>
-#include <set>
 
 using namespace aoc::worldd;
 namespace bs = aoc::worldd::bootstrap;
@@ -179,6 +173,13 @@ struct FakeService final : nodev1::CityNodeService::Service {
   std::mutex mu;
   std::string token_seen;
   std::vector<std::string> calls;
+  std::mutex gate_mu;
+  std::condition_variable gate_cv;
+  bool hold = false;
+  void wait_for_gate() {
+    std::unique_lock<std::mutex> lock(gate_mu);
+    gate_cv.wait(lock, [this] { return !hold; });
+  }
 
   static nodev1::Node node(const std::string &name, uint32_t level, int64_t xp) {
     nodev1::Node n;
@@ -199,7 +200,8 @@ struct FakeService final : nodev1::CityNodeService::Service {
   }
   grpc::Status SetNodeLevel(grpc::ServerContext *ctx, const nodev1::SetNodeLevelRequest *req, nodev1::SetNodeLevelResponse *resp) override {
     note(ctx, "SetNodeLevel " + req->node().name() + " " + std::to_string(req->level()) + (req->disable_vassalship() ? " dv" : ""));
-    if (req->node().name() == "Atlantis")
+    wait_for_gate();
+    if (req->node().name().rfind("Atlantis", 0) == 0)
       return grpc::Status(grpc::StatusCode::NOT_FOUND, "no node named Atlantis");
     if (req->level() > 4)
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "level 9 is above the highest, 4");
@@ -306,9 +308,109 @@ static void test_control() {
   check_unreachable_control(o);
 }
 
+static void wait_for_service_call(FakeService &service, size_t min_calls) {
+  for (int i = 0; i < 500; ++i) {
+    {
+      std::lock_guard<std::mutex> lock(service.mu);
+      if (service.calls.size() > min_calls)
+        return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
+
+static void release_service_gate(FakeService &service) {
+  {
+    std::lock_guard<std::mutex> lock(service.gate_mu);
+    service.hold = false;
+  }
+  service.gate_cv.notify_all();
+}
+
+static void check_control_second_burst_and_newline(FakeService &service, svc::GrpcNodeControl &control, std::mutex &lines_mu, std::vector<std::string> &lines) {
+  std::ostringstream logged;
+  const auto previous_logger = spdlog::default_logger();
+  auto capture = std::make_shared<spdlog::logger>("capture", std::make_shared<spdlog::sinks::ostream_sink_mt>(logged));
+  capture->set_level(spdlog::level::warn);
+  spdlog::set_default_logger(capture);
+  {
+    std::lock_guard<std::mutex> lock(service.gate_mu);
+    service.hold = true;
+  }
+  size_t calls_before = 0;
+  {
+    std::lock_guard<std::mutex> lock(service.mu);
+    calls_before = service.calls.size();
+  }
+  control.set_level("Verra_RVR_Joeva", 101, false, "ServerSetNodeLevel by cyb");
+  wait_for_service_call(service, calls_before);
+  for (int level = 102; level <= 170; ++level)
+    control.set_level("Verra_RVR_Joeva", level, false, "ServerSetNodeLevel by cyb");
+  release_service_gate(service);
+  control.drain();
+  spdlog::set_default_logger(previous_logger);
+  CHECK(logged.str().find("the newest is refused") != std::string::npos, "the second burst is told in the log again, once the queue had emptied");
+  control.set_level("Atlantis\nforged [gm] line", 2, false, "ServerSetNodeLevel by cyb");
+  control.drain();
+  std::lock_guard<std::mutex> lock(lines_mu);
+  const std::string &last = lines.empty() ? std::string() : lines.back();
+  CHECK(last.find("Atlantis?forged [gm] line") != std::string::npos && last.find('\n') == std::string::npos, "a node name with a newline is shown with a '?' instead");
+}
+
+static void test_control_busy() {
+  std::printf("the GM control while the node service is slow\n");
+  FakeService service;
+  grpc::ServerBuilder builder;
+  int port = 0;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&service);
+  std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
+  if (!server || port == 0) {
+    std::printf("  [FAIL] the fake service does not start\n");
+    ++g_fail;
+    return;
+  }
+  service.hold = true;
+  std::mutex lines_mu;
+  std::vector<std::string> lines;
+  svc::GrpcNodeControl::Options o;
+  o.address = "127.0.0.1:" + std::to_string(port);
+  o.token = std::string(64, 'c');
+  o.deadline_ms = 20000;
+  {
+    svc::GrpcNodeControl control(o, [&](const std::string &l) {
+      std::lock_guard<std::mutex> lock(lines_mu);
+      lines.push_back(l);
+    });
+    control.set_level("Verra_RVR_Joeva", 1, false, "ServerSetNodeLevel by cyb");
+    wait_for_service_call(service, 0);
+    for (int level = 2; level <= 70; ++level)
+      control.set_level("Verra_RVR_Joeva", level, false, "ServerSetNodeLevel by cyb");
+    release_service_gate(service);
+    control.drain();
+    bool in_order = true;
+    {
+      std::lock_guard<std::mutex> lock(service.mu);
+      for (size_t i = 0; i < service.calls.size(); ++i)
+        in_order = in_order && service.calls[i] == "SetNodeLevel Verra_RVR_Joeva " + std::to_string(i + 1);
+      CHECKF(service.calls.size() == 65 && in_order, "the service got the first 65 calls, 1 to 65, in order (%zu calls)", service.calls.size());
+    }
+    size_t refused = 0;
+    {
+      std::lock_guard<std::mutex> lock(lines_mu);
+      for (const std::string &l : lines)
+        refused += l.find("a node GM call was not sent") != std::string::npos ? 1 : 0;
+    }
+    CHECKF(refused == 5 && control.calls_made() == 65, "the five calls past the 64 that wait were refused, and said so (%zu refused, %llu made)", refused, static_cast<unsigned long long>(control.calls_made()));
+    check_control_second_burst_and_newline(service, control, lines_mu, lines);
+  }
+  server->Shutdown();
+}
+
 void run_node_state_control_tests() {
   test_level_change();
   test_restore();
   test_console();
   test_control();
+  test_control_busy();
 }

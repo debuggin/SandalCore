@@ -403,22 +403,6 @@ ChannelStartAttempt try_start_gather_channel(const ChannelPrecheckInput &in, Clo
         return {false, "node refused", out.why, out.pre, 0.0};
     return {true, nullptr, {}, out.pre, *seconds};
 }
-template <typename PileT>
-bool drop_one_gather_pile(PlayerWorld *npc_world, const bootstrap::PlayerSetup &setup, const PileT &pile, spdlog::level::level_enum ok_lvl,
-                          std::string_view session_name) {
-    std::string error = "the session has no world";
-    const auto &cg = setup.character_guid;
-    const uint64_t actor =
-        npc_world ? npc_world->drop_harvest_pile(pile.x, pile.y, pile.z, repl::GuidValue{cg[0], cg[1], cg[2], cg[3]}, setup.name, pile.stacks, error) : 0;
-    if (actor != 0) {
-        spdlog::log(ok_lvl, "[gather] {}: the bag was full: {} stack(s) of the harvest of {} are in a pile where it stands", session_name, pile.stacks.size(),
-                    pile.node_name);
-        return true;
-    }
-    spdlog::warn("[gather] {}: the pile for {} stack(s) of the harvest of {} is not made ({}): they are lost", session_name, pile.stacks.size(), pile.node_name,
-                 error);
-    return false;
-}
 template <typename GatherRunT> bool release_gather_board_channel(PlayerWorld *npc_world, uint64_t player_id, const GatherRunT &prev, const std::string &why) {
     gather::Gathering *g = npc_world ? npc_world->gathering() : nullptr;
     const gather::Channel *ch = g ? g->board().channel_of(prev.node) : nullptr;
@@ -441,11 +425,7 @@ void log_gather_cancelled(spdlog::level::level_enum lvl, std::string_view sessio
 template <typename PileDequeT, typename CalloutDequeT> struct GatherFlushEnv {
     PileDequeT *piles = nullptr;
     CalloutDequeT *callouts = nullptr;
-    PlayerWorld *npc_world = nullptr;
-    const bootstrap::PlayerSetup *setup = nullptr;
-    size_t *harvest_piles = nullptr;
-    std::string_view session_name;
-    std::function<spdlog::level::level_enum()> pile_log_lvl;
+    std::function<void(typename PileDequeT::value_type &)> make_pile;
     std::function<bool()> can_send_callout;
     QueueFn q_fn;
 };
@@ -454,8 +434,7 @@ void flush_due_piles_and_callouts(const GatherFlushEnv<PileDequeT, CalloutDequeT
     while (!env.piles->empty() && now >= env.piles->front().due) {
         auto pile = std::move(env.piles->front());
         env.piles->pop_front();
-        if (drop_one_gather_pile(env.npc_world, *env.setup, pile, env.pile_log_lvl(), env.session_name))
-            ++(*env.harvest_piles);
+        env.make_pile(pile);
     }
     while (!env.callouts->empty() && now >= env.callouts->front().due) {
         if (!env.can_send_callout())
@@ -663,7 +642,9 @@ void PlayerSession::send_channeling(Connection &conn, const repl::ChannelingData
         },
         conn, /*must_build=*/true);
 }
-void PlayerSession::on_interrupt_channel(Connection &conn, Clock::time_point) {
+void PlayerSession::on_interrupt_channel(Connection &conn, Clock::time_point now) {
+    if (!within_budget(cancel_budget_, "ServerInterruptChannel", now))
+        return;
     if (foliage_.row != kNoInstance) {
         cancel_foliage(&conn, "the client interrupted the channel (ServerInterruptChannel)");
         return;
@@ -695,8 +676,8 @@ void PlayerSession::run_gather(Connection &conn, Clock::time_point now) {
     if (g)
         g->board().advance(now);
     flush_due_piles_and_callouts(GatherFlushEnv<std::deque<GatherPile>, std::deque<GatherCallout>>{
-                                     &gather_piles_, &gather_callouts_, npc_world_, &pb_.setup(), &harvest_piles_, name(),
-                                     [this]() { return level_for(gather_done_logged_, 20); }, [this]() { return room_for(1); },
+                                     &gather_piles_, &gather_callouts_, [this](GatherPile &p) { make_gather_pile(p); },
+                                     [this]() { return room_for(1); },
                                      [this, &conn](const char *w, StepBuilder b, bool m) { queue(w, std::move(b), conn, m); }},
                                  now);
     if (gather_.node == 0 || !g)
@@ -716,6 +697,20 @@ void PlayerSession::run_gather(Connection &conn, Clock::time_point now) {
         view_->update_now(conn, gather_.node);
     if (now >= ch->completes)
         complete_gather(conn, now);
+}
+void PlayerSession::make_gather_pile(GatherPile &pile) {
+    std::string error = "the session has no world";
+    const auto &cg = pb_.setup().character_guid;
+    const uint64_t actor =
+        npc_world_ ? npc_world_->drop_harvest_pile(pile.x, pile.y, pile.z, repl::GuidValue{cg[0], cg[1], cg[2], cg[3]}, pb_.setup().name, pile.stacks, error) : 0;
+    if (actor != 0) {
+        ++harvest_piles_;
+        spdlog::log(level_for(gather_done_logged_, 20), "[gather] {}: the bag was full: {} stack(s) of the harvest of {} are in a pile where it stands", name(),
+                    pile.stacks.size(), pile.node_name);
+    } else {
+        spdlog::warn("[gather] {}: the pile for {} stack(s) of the harvest of {} is not made ({}): they are lost", name(), pile.stacks.size(), pile.node_name,
+                     error);
+    }
 }
 bool PlayerSession::complete_gather(Connection &conn, Clock::time_point now) {
     gather::Gathering *g = npc_world_ ? npc_world_->gathering() : nullptr;
@@ -790,6 +785,10 @@ void PlayerSession::deliver_harvest(Connection &conn, Clock::time_point now, con
         hand_over_progress(xp.leveled() ? "a level-up" : "a harvest");
     if (inventory_dirty_)
         hand_over_inventory("a harvest", /*periodic=*/false);
+}
+void PlayerSession::register_gather_rpcs(RpcTable &t) {
+    t.add(RpcScope::Pawn, "ServerInterruptChannel",
+          [](PlayerSession &s, const RpcContext &c) { s.on_interrupt_channel(c.conn, c.now); });
 }
 } // namespace worldd
 } // namespace aoc

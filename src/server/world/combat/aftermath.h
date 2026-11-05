@@ -178,6 +178,7 @@ public:
 
     const Stats& stats() const { return stats_; }
     size_t corpses() const { return corpses_.size(); }
+    size_t corpse_count() const { return corpses_.size(); }
     size_t respawns_pending() const { return respawns_.size(); }
 
 private:

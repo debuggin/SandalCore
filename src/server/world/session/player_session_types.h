@@ -4,9 +4,12 @@
 #include "net/connection.h"
 #include "net/control_channel.h"
 #include "protocol/repl/item_rpc.h"
+#include "protocol/repl/rpc.h"
 #include "protocol/repl/vendor_rpc.h"
+#include "session/item_cast.h"
 #include "session/mounts.h"
 #include "session/player_world.h"
+#include "session/summoner_pets.h"
 
 #include <array>
 #include <cctype>
@@ -19,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -26,6 +30,10 @@
 #include <vector>
 
 #include <spdlog/spdlog.h>
+
+#if __has_include("session/rpc_table.h")
+#include "session/rpc_table.h"
+#endif
 
 namespace aoc {
 namespace worldd {
@@ -35,6 +43,52 @@ namespace schema = ::aoc::protocol::schema;
 namespace wire = ::aoc::protocol::wire;
 using bootstrap::Role;
 using protocol::emit::FIntrepidNetworkGUID;
+
+#if !__has_include("session/rpc_table.h")
+class PlayerSession;
+
+enum class RpcScope : uint8_t { PlayerController, Pawn, AbilityComponent, FtueComponent };
+
+struct RpcContext {
+    Connection&                      conn;
+    bootstrap::Role                  role;
+    const protocol::repl::ClientRpc& rpc;
+    const InBunch&                   bunch;
+    Clock::time_point                now;
+};
+
+using RpcHandler = void (*)(PlayerSession&, const RpcContext&);
+
+class RpcTable {
+public:
+    void add(RpcScope scope, std::string_view name, RpcHandler handler) {
+        for (const Entry& e : names_) {
+            if (e.scope == scope && e.name == name) throw std::logic_error("the client call " + std::string(name) + " is registered twice");
+        }
+        names_.push_back({scope, std::string(name), handler});
+    }
+    void add_prefix(RpcScope scope, std::string_view prefix, RpcHandler handler) { prefixes_.push_back({scope, std::string(prefix), handler}); }
+
+    RpcHandler find(RpcScope scope, std::string_view name) const {
+        for (const Entry& e : names_) {
+            if (e.scope == scope && name == e.name) return e.handler;
+        }
+        for (const Entry& e : prefixes_) {
+            if (e.scope == scope && name.substr(0, e.name.size()) == e.name) return e.handler;
+        }
+        return nullptr;
+    }
+    size_t size() const { return names_.size() + prefixes_.size(); }
+
+private:
+    struct Entry {
+        RpcScope    scope;
+        std::string name;
+        RpcHandler  handler;
+    };
+    std::vector<Entry> names_, prefixes_;
+};
+#endif
 
 class RequestBudget {
 public:
@@ -70,6 +124,8 @@ std::string url_option(std::string_view url, std::string_view key);
 
 bootstrap::LoginIdentity make_login_identity(const std::optional<LoginMessage>& message, const svc::Character& character,
                                              std::vector<std::string>* notes);
+
+inline constexpr std::string_view kCombatEchoPrefix = "CharacterInGameSettings.";
 
 inline constexpr std::array<std::string_view, 9> kCombatEchoPaths = {
     "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.MayHarmAngle",
@@ -269,6 +325,35 @@ struct StackSpec {
 };
 
 void stacks_of(const StackSpec& spec, const content::ItemRecord& rec, std::vector<svc::InventoryItem>& out);
+
+struct BasedPlace {
+    protocol::repl::Vec3d location, acceleration;
+};
+
+struct BaseKey {
+    uint64_t    object = 0;
+    std::string path;
+    std::string bone;
+    bool operator==(const BaseKey&) const = default;
+};
+
+struct BaseTrack {
+    BaseKey               key;
+    protocol::repl::Vec3d offset;
+    protocol::repl::Vec3d place;
+};
+
+struct HeldMoveAck {
+    float time_stamp = 0;
+    bool  on_mount = false;
+};
+
+struct TickPlan {
+    bool   stopped = false;
+    bool   view = false;
+    bool   view_due = false;
+    double x = 0, y = 0;
+};
 
 }  // namespace worldd
 }  // namespace aoc

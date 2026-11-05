@@ -94,8 +94,22 @@ public:
     std::vector<combat::KillReward>          kills;
     std::vector<combat::IncomingHit>         hits;
     std::vector<std::pair<double, bool>>     combat_flips;
+    void confirm_effect_hit(const combat::EffectHitNote& note, double) override { effect_notes.push_back(note); }
+    void deliver_effect_notes() {
+        std::vector<combat::EffectHitNote> notes;
+        notes.swap(effect_notes);
+        for (const combat::EffectHitNote& n : notes) {
+            confirmed_notes.push_back(n);
+            rig_.pipe->confirm_effect_hit(n, rig_.clock = std::max(rig_.clock, n.at));
+        }
+        rig_.take();
+    }
+    std::vector<combat::EffectHitNote>       effect_notes, confirmed_notes;
+    void hit_dealt(const combat::DealtHit& hit, double) override { dealt.push_back(hit); }
+    void hit_from_pet(int64_t hit_guid, int64_t, double) override { from_pet.push_back(hit_guid); }
+    std::vector<combat::DealtHit>            dealt;
+    std::vector<int64_t>                     from_pet;
     bool                                     in_combat = false;
-// -- CoA & C Y B --
 
 private:
     ability_rig::Rig& rig_;

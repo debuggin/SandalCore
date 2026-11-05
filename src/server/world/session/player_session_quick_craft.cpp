@@ -644,7 +644,7 @@ bool PlayerSession::cancel_quick_make(Connection *conn, const std::string &why) 
     return true;
 }
 void PlayerSession::on_interrupt_station_craft(Connection &conn, const protocol::repl::ClientRpc &rpc, Clock::time_point now) {
-    if (!within_budget(vendor_budget_, "ServerInterruptStationCraft", now))
+    if (!within_budget(craft_budget_, "ServerInterruptStationCraft", now))
         return;
     const auto station = repl::parse_interrupt_craft(rpc.call);
     if (!station) {

@@ -34,7 +34,6 @@ struct PlayerSession::SessionInternal {
     static void init_joined_state(PlayerSession& p, PlayerWorld& world, const svc::Character& character, bootstrap::CharacterSetupResult& built, uint64_t nodes_version);
     static void init_mounts_and_view(PlayerSession& p, PlayerWorld& world);
     static void log_join_summary(PlayerSession& p, PlayerWorld& world);
-    static void tick_view_and_saves(PlayerSession& s, Connection& conn, Clock::time_point now);
 };
 
 PlayerSession::PlayerSession(bootstrap::PlayerSetup setup, bootstrap::GameStateMode mode, std::string character_id, const MovementConfig& movement,
@@ -112,9 +111,11 @@ bool PlayerSession::allocate_channels(const Connection& conn) {
 }
 
 PlayerSession::~PlayerSession() {
+    clear_pet();
     cancel_quick_make(nullptr, "the session is destroyed");
     cancel_gather(nullptr, "the session is destroyed");
     leave_combat();
+    leave_presence("the session is destroyed");
 }
 
 uint64_t PlayerSession::SessionInternal::enrich_join_setup(PlayerWorld& world, const svc::Character& character, bootstrap::CharacterSetupResult& built) {
@@ -212,6 +213,7 @@ void PlayerSession::SessionInternal::init_mounts_and_view(PlayerSession& p, Play
     view_config.player_id = static_cast<uint64_t>(p.pb_.setup().player_id);
     const auto& g = p.pb_.setup().character_guid;
     view_config.player_guid = repl::GuidValue{g[0], g[1], g[2], g[3]};
+    view_config.player_name = p.pb_.setup().name;
     if (world.mounts()) {
         MountController::Owner owner;
         owner.player_id = static_cast<uint64_t>(p.pb_.setup().player_id);
@@ -428,69 +430,11 @@ void PlayerSession::pump(Connection& conn) {
 
 void PlayerSession::tick(Connection& conn) { pump(conn); }
 
-void PlayerSession::SessionInternal::tick_view_and_saves(PlayerSession& s, Connection& conn, Clock::time_point now) {
-    if (s.phase_in_done_ && !s.time_syncs_.empty() && now >= s.time_syncs_.front() && s.room_for(1)) {
-        s.time_syncs_.pop_front();
-        if (s.time_syncs_.empty()) s.time_syncs_.push_back(now + kTimeSyncInterval);
-        const double world_time = s.pb_.setup().world_time + s.session_seconds(now);
-        ++s.time_syncs_sent_;
-        s.queue("clock", [world_time](bootstrap::PlayerBootstrap& pb) { return pb.set_time(world_time); }, conn);
-    }
-    if (s.view_ && !s.phase_in_done_ && !s.scenery_done_ && s.join_.empty()) {
-        const GoodPosition at = s.checker_.good();
-        size_t opened = 0;
-        s.scenery_done_ = s.view_->open_scenery(conn, at.x, at.y, now, &opened);
-        if (opened > 0) {
-            s.scenery_opened_ += opened;
-            s.scenery_at_ = s.session_seconds(now);
-        }
-    }
-    if (s.view_ && s.phase_in_done_ && s.join_.empty() && s.replies_.empty() && s.delayed_.empty()) {
-        const GoodPosition at = s.checker_.good();
-        s.view_->tick(conn, at.x, at.y, now);
-        if (s.npc_world_) s.npc_world_->note_player(static_cast<uint64_t>(s.pb_.setup().player_id), at.x, at.y);
-        if (!s.position_log_started_) {
-            s.position_log_started_ = true;
-            s.last_position_log_ = now;
-        } else if (now - s.last_position_log_ >= kPositionLogInterval) {
-            s.last_position_log_ = now;
-            s.log_position(now);
-        }
-    }
-    if (!s.save_clock_started_) {
-        s.save_clock_started_ = true;
-        s.last_save_ = now;
-        return;
-    }
-    if (now - s.last_save_ < s.save_interval_) return;
-    s.last_save_ = now;
-    if (s.position_changed(/*with_yaw=*/false)) s.hand_over("periodic save", /*periodic=*/true);
-    if (s.inventory_dirty_) s.hand_over_inventory("periodic save", /*periodic=*/true);
-}
-
 void PlayerSession::tick(Connection& conn, Clock::time_point now) {
-    last_now_ = now;
-    pump(conn);
-    if (finished_ || failed_) return;
-    session_seconds(now);
-    run_abilities(conn, now);
-    run_mounts(conn, now);
-    run_ride(conn, now);
-    run_timers(conn, now);
-    run_gather(conn, now);
-    run_foliage(conn, now);
-    run_floor_net(conn, now);
-    run_embersprings(conn, now);
-    run_props(conn, now);
-    run_dialogue(conn, now);
-    run_quests(conn, now);
-    run_warehouse(conn, now);
-    run_crafting(conn, now);
-    run_quick_make(conn, now);
-    run_cargo(conn, now);
-    run_nodes(conn);
-    sync_item_abilities(conn);
-    SessionInternal::tick_view_and_saves(*this, conn, now);
+    const TickPlan plan = tick_logic(conn, now, /*plan_view=*/false);
+    if (plan.stopped) return;
+    if (plan.view) view_->tick(conn, plan.x, plan.y, now);
+    tick_after(now, plan);
 }
 
 bool PlayerSession::position_changed(bool with_yaw) const {
@@ -537,12 +481,14 @@ void PlayerSession::hand_over(const char* why, bool periodic) {
 void PlayerSession::finish(const char* why) {
     if (finished_) return;
     finished_ = true;
+    clear_pet();
     cancel_quick_make(nullptr, why);   // Crafting, step 3: nothing was taken, so nothing is given back
-    cancel_gather(nullptr, why);   // Gathering stage 2: a node this player channels is available again
+    end_gathering(why);
     if (registry_) {
         for (const auto& [id, za] : zone_actors_) registry_->remove(za.actor);
     }
     zone_actors_.clear();
+    leave_presence(why);
     if (mounts_) {
         if (const auto kept = mounts_->shutdown()) apply_persist(nullptr, *kept);
     }

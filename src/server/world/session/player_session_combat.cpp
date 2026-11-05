@@ -24,6 +24,15 @@ public:
   void receive_kill(const combat::KillReward& kill, double) override {
     if (kills.size() < 64) kills.push_back(kill);
   }
+  void confirm_effect_hit(const combat::EffectHitNote& note, double) override {
+    if (effect_notes.size() < 256) effect_notes.push_back(note);
+  }
+  void hit_dealt(const combat::DealtHit& hit, double) override {
+    if (dealt.size() < 64) dealt.push_back(hit);
+  }
+  void hit_from_pet(int64_t hit_guid, int64_t ability, double) override {
+    if (pet_hits.size() < 16) pet_hits.emplace_back(hit_guid, ability);
+  }
 
   uint64_t id() const override { return actor_id(); }
   bool is_player() const override { return true; }
@@ -44,6 +53,9 @@ public:
 
   std::vector<combat::IncomingHit> inbox;
   std::vector<combat::KillReward>  kills;
+  std::vector<combat::EffectHitNote> effect_notes;
+  std::vector<combat::DealtHit>      dealt;
+  std::vector<std::pair<int64_t, int64_t>> pet_hits;
   bool                             wants_in_combat = false;
 
 private:
@@ -179,6 +191,7 @@ struct ParsedTriggerInput {
   bool pvp_force = false;
   bool full_call = false;
   TriggerInfo info;
+  std::optional<nav::Vec3> trigger_place;
 };
 
 using ResolveActorsFn = std::function<std::vector<uint64_t>(const std::vector<FIntrepidNetworkGUID>&,
@@ -200,6 +213,9 @@ std::optional<ParsedTriggerInput> read_trigger_input(const repl::ClientRpc& rpc,
     out.info.target_count = t->target_count;
     out.info.target_actors = resolve_actors(t->targets, t->inline_targets);
     out.info.item = t->item_slot != -1;
+    if (t->first_target_place) {
+      out.trigger_place = nav::Vec3{t->first_target_place->x, t->first_target_place->y, t->first_target_place->z};
+    }
     return out;
   }
   if (const auto prefix = repl::read_trigger_prefix(bunch.data.data(), bunch.data.size(), rpc.call.param_pos,
@@ -258,14 +274,28 @@ bool is_summon_mount_ability(const std::unique_ptr<MountController>& mounts, int
   return mounts && ability != 0 && ability == mounts->book().summon_ability();
 }
 
-bool dispatch_trigger_to_runtime(AbilityRuntime& runtime, std::optional<AbilityPipeline>& pipeline,
-                                 const ParsedTriggerInput& parsed, double sec) {
-  if (pipeline && pipeline->handles(parsed.ability)) {
-    const Refusal accepted = pipeline->trigger(parsed.ability, parsed.instance, sec, parsed.info);
-    return parsed.ability == content::kGuidDropCrate && accepted == Refusal::None;
+using QueueItemChainFn = std::function<void(const std::vector<bootstrap::ItemEvent>&)>;
+
+void drain_taken_consumables(std::deque<int32_t>& item_taken,
+                             std::map<int32_t, std::vector<bootstrap::ItemEvent>>& item_sends,
+                             const std::function<bool(size_t)>& has_room, const QueueItemChainFn& queue_chain) {
+  while (!item_taken.empty()) {
+    const auto sent = item_sends.find(item_taken.front());
+    if (sent == item_sends.end()) {
+      item_taken.pop_front();
+      continue;
+    }
+    if (!has_room(sent->second.size() / bootstrap::kMaxEventsPerChain + 2)) break;
+    const std::vector<bootstrap::ItemEvent> events = std::move(sent->second);
+    item_sends.erase(sent);
+    item_taken.pop_front();
+    for (size_t at = 0; at < events.size(); at += bootstrap::kMaxEventsPerChain) {
+      const std::vector<bootstrap::ItemEvent> part(
+          events.begin() + static_cast<std::ptrdiff_t>(at),
+          events.begin() + static_cast<std::ptrdiff_t>(std::min(events.size(), at + bootstrap::kMaxEventsPerChain)));
+      queue_chain(part);
+    }
   }
-  runtime.trigger(parsed.ability, parsed.instance, sec, parsed.info);
-  return false;
 }
 
 }  // namespace
@@ -313,9 +343,13 @@ void PlayerSession::take_hit(Connection& conn, const combat::IncomingHit& h, Clo
 void PlayerSession::drain_combat(Connection& conn, Clock::time_point now) {
   if (!combat_side_ || !pipeline_) return;
   const double sec = ability_seconds(now);
+  drain_pet(conn, now);
   std::vector<combat::IncomingHit> hits;
   hits.swap(combat_side_->inbox);
   for (const combat::IncomingHit& h : hits) take_hit(conn, h, now);
+  std::vector<combat::EffectHitNote> notes;
+  notes.swap(combat_side_->effect_notes);
+  for (const combat::EffectHitNote& n : notes) pipeline_->confirm_effect_hit(n, sec);
   while (!combat_side_->kills.empty()) {
     if (!room_for(12 + (world_ ? world_->auto_grants().size() : 0))) break;
     const combat::KillReward k = combat_side_->kills.front();
@@ -351,11 +385,12 @@ AbilityRuntime* PlayerSession::ability_runtime(Clock::time_point now) {
       pipeline_.emplace(
           world_ ? world_->ability_catalog() : nullptr, *stats_, *abilities_,
           [this] { return bootstrap::worn_items_of(inventory_); }, pb_.setup().world_time,
-          static_cast<uint64_t>(pb_.setup().player_id) * 7919u + 1u);
+          combat::session_dice_seed(world_ ? world_->dice_seed() : 0, static_cast<uint64_t>(pb_.setup().player_id)));
       attach_pipeline_catalog_and_reactions(*pipeline_, book_, wielded_line_, world_, {name(), known_});
       pipeline_->set_weapon_tags([this] { return weapon_tags(); });
       pipeline_->set_active_target(
           [this]() -> uint64_t { return active_targets_[0].is_valid() ? active_targets_[0].ObjectId : 0; });
+      pipeline_->set_item_taker([this](int32_t client_instance_id) { return consumable_paid(client_instance_id); });
       sync_ability_values();
       if (npc_world_ && npc_world_->combat()) {
         combat_side_ = std::make_shared<CombatSide>(*this);
@@ -414,16 +449,28 @@ void PlayerSession::take_ability_events() {
       }
       abilities_dirty_ = true;
     }
+    for (const int64_t id : e.change.effects_removed) pet_effects_.erase(id);
+    for (const auto& effect : e.change.effects_added) {
+      if (pets::for_effect(effect.effect_guid)) pet_effects_[effect.effect_id] = effect.effect_guid;
+    }
     for (bootstrap::HitConfirm& h : e.confirmations) {
       if (pending_confirms_.size() >= kMaxPendingConfirms) pending_confirms_.pop_front();
       pending_confirms_.push_back(std::move(h));
     }
-    if (e.end_ability) pending_ends_.push_back(*e.end_ability);
+    if (e.end_ability) {
+      pending_ends_.push_back(*e.end_ability);
+      item_reserved_.erase(*e.end_ability);
+    }
     for (const bootstrap::ZoneOp& z : e.zones) {
       if (zone_ops_.size() < kMaxZoneOps) zone_ops_.push_back(z);
     }
+    const bool transition = is_ability_transition(e);
+    if (transition && last_now_ - ability_log_window_start_ >= kAbilityLogWindow) {
+      ability_log_window_start_ = last_now_;
+      ability_transitions_logged_ = 0;
+    }
     const spdlog::level::level_enum level = e.refusal ? level_for(ability_logged_)
-                                            : is_ability_transition(e)
+                                            : transition
                                                 ? level_for(ability_transitions_logged_, kLoggedAbilityTransitions)
                                                 : spdlog::level::debug;
     spdlog::log(level, "[session] {}: {} (Stamina {:.2f}){}", name(), e.note, runtime.stamina(),
@@ -517,6 +564,13 @@ void PlayerSession::flush_abilities(Connection& conn) {
       }
     }
   }
+  drain_taken_consumables(
+      item_taken_, item_sends_, [this](size_t n) { return room_for(n); },
+      [this, &conn](const auto& part) {
+        queue(
+            "ClientReceiveStorageEvent", [part](bootstrap::PlayerBootstrap& pb) { return pb.item_events(part); }, conn,
+            /*must_build=*/true);
+      });
   const auto send_fn = [this, &conn](bootstrap::Send& s) { return static_cast<int>(send(conn, s)); };
   if (!drain_pending_ends(pb_, pending_ends_, ability_ends_, send_fn)) return;
   drain_pending_confirms(pb_, pending_confirms_, confirms_sent_, checker_.good(), send_fn);
@@ -570,12 +624,28 @@ void PlayerSession::on_ability_trigger(Connection& conn, const repl::ClientRpc& 
   if (is_summon_mount_ability(mounts_, parsed->ability)) {
     return on_summon_trigger(conn, parsed->instance, parsed->item_slot, parsed->item_location, now);
   }
-  if (dispatch_trigger_to_runtime(*runtime, pipeline_, *parsed, ability_seconds(now))) {
-    crate_drop_due_ = now + kCrateDropDelay;
-    crate_drop_instance_ = parsed->instance;
+  if (pet_takes_trigger(conn, parsed->ability, parsed->instance, parsed->info, now)) return;
+  bool accepted_cast = false;
+  if (pipeline_ && pipeline_->handles(parsed->ability)) {
+    TriggerInfo info = parsed->info;
+    if (parsed->item_slot != -1) info.item_cast = consumable_cast(parsed->ability, parsed->item_slot, parsed->item_location);
+    accepted_cast = pipeline_->trigger(parsed->ability, parsed->instance, ability_seconds(now), info) == Refusal::None;
+    if (accepted_cast && info.item_cast) take_consumable(info.item_cast, parsed->instance);
+    if (accepted_cast && !info.target_actors.empty()) pet_joins_owners_cast(info.target_actors.front());
+    if (parsed->ability == content::kGuidDropCrate && accepted_cast) {
+      crate_drop_due_ = now + kCrateDropDelay;
+      crate_drop_instance_ = parsed->instance;
+    }
+  } else {
+    runtime->trigger(parsed->ability, parsed->instance, ability_seconds(now), parsed->info);
+    accepted_cast = true;
   }
   take_ability_events();
   flush_abilities(conn);
+  if (const int64_t command = pets::command_of_ability(parsed->ability); command != 0 && pet_actor_ && accepted_cast) {
+    pet_command(conn, command, parsed->info.target_actors.empty() ? 0 : parsed->info.target_actors.front(),
+                parsed->trigger_place, now);
+  }
 }
 
 void PlayerSession::on_ability_cancel(Connection& conn, const repl::ClientRpc& rpc, Clock::time_point now) {

@@ -360,6 +360,25 @@ static void test_foliage_off() {
           "and no cutting starts");
 }
 
+static void test_foliage_start_budget() {
+    std::printf("a flood of tree starts: the budget drops the surplus\n");
+    FRig fr;
+    if (!fr.open()) return;
+    Player &p = join_at_the_oak(fr, "bbec5c86eb101fe5f38c87f0fa22e7d0", "cyb");
+    for (int i = 0; i < 400; ++i) {
+        p.client_sends({p.client.actor(p.pc_ch, foliage_start(fid::kOwner, fid::kFismc0, static_cast<uint32_t>(i % 5), 2), true)});
+        if (i % 50 == 49) fr.rig.run(milliseconds(40));
+    }
+    fr.rig.run(milliseconds(200));
+    CHECK(p.s->foliage_interacts() == 400, "all 400 starts arrived");
+    char msg[160];
+    std::snprintf(msg, sizeof msg, "...the budget dropped all but the first few of them (%zu dropped)", p.s->requests_dropped());
+    CHECK(p.s->requests_dropped() >= 350, msg);
+    CHECK(p.s->foliage_started() == 1 && p.s->foliage_refused() == 399, "...one cutting, and every other start counted as a refusal");
+    const auto over = p.s->foliage_refusals().find("over the request budget");
+    CHECK(over != p.s->foliage_refusals().end() && over->second >= 350, "...the refusals the budget made are listed under their own name");
+}
+
 int main() {
     if (!init_foliage_session_env()) return 0;
     if (std::getenv("FOLIAGE_ONLY_UNNAMED_CALL")) {
@@ -375,6 +394,7 @@ int main() {
     test_flood();
     test_full_bag();
     test_foliage_off();
+    test_foliage_start_budget();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

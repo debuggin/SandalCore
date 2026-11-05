@@ -5,6 +5,7 @@
 #include "combat/combat_world.h"
 
 #include "bootstrap/ability_replication.h"
+#include "bootstrap/constants.h"
 #include "combat/combat_world_npc.h"
 #include "content/content_db.h"
 #include "session/summoner_pets.h"

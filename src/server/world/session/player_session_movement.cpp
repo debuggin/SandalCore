@@ -1,5 +1,6 @@
 #include "protocol/repl/move_packed.h"
 #include "protocol/repl/rpc_fields.h"
+#include "session/gm_travel.h"
 #include "session/player_session.h"
 
 namespace aoc {
@@ -62,7 +63,7 @@ void PlayerSession::log_position(Clock::time_point) {
     }
     const double from_login = npc_world_ ? std::hypot(at.x - npc_world_->area().center_x, at.y - npc_world_->area().center_y) / 100.0 : 0.0;
     spdlog::info("[session] {}: at ({:.0f}, {:.0f}, {:.0f}) cm, {:.0f} m from the login spot, movement mode {}{}; {} moves acknowledged, {} refused, {} dropped as stale{}; its view holds {} awake and {} dormant actors",
-                 name(), at.x, at.y, at.z, from_login, static_cast<unsigned>(at.movement_mode), mounted() ? " (mounted)" : "", moves_acked_, moves_refused_, moves_stale_, ground,
+                 name(), at.x, at.y, at.z, from_login, static_cast<unsigned>(at.movement_mode), mounted() ? " (mounted)" : "", moves_acked_, moves_refused_, moves_stale_, based_move_summary() + ground,
                  view_ ? view_->count(world::ClientState::Awake) : 0, view_ ? view_->count(world::ClientState::Dormant) : 0);
 }
 
@@ -203,10 +204,7 @@ bool PlayerSession::SessionInternal::dispatch_controller_early_rpc(PlayerSession
         return true;
     }
     if (name_of_rpc == "ServerStartInteractionWithFoliage") {
-        if (!rpc.call.decoded && ++s.foliage_unreadable_logged_ <= kLoggedPerKind) {
-            spdlog::warn("[session] {}: ServerStartInteractionWithFoliage arrived and its parameters do not decode: no cutting starts, and the client is told to end its own (ClientInterruptInteractionWithFoliage)", s.name());
-        }
-        s.on_foliage_interact(conn, rpc, now);
+        s.on_foliage_start(conn, rpc, now);
         return true;
     }
     return false;
@@ -291,6 +289,7 @@ bool PlayerSession::SessionInternal::dispatch_pawn_actor_rpc(PlayerSession& s, C
     if (name_of_rpc == "ServerSetUseRangedWeapon") { s.on_set_ranged(conn, rpc, now); return true; }
     if (name_of_rpc == "ServerSetActiveTarget") { s.on_set_active_target(conn, rpc, now); return true; }
     if (name_of_rpc == "ServerSetHoverTargetGuid") { s.on_set_hover_target(conn, rpc, now); return true; }
+    if (name_of_rpc == "ServerSendPetCommand") { s.on_pet_command(conn, rpc, now); return true; }
     if (name_of_rpc == "ServerActivateItem") {
         if (!s.activate_logged_) {
             s.activate_logged_ = true;
@@ -358,11 +357,7 @@ void PlayerSession::SessionInternal::accept_move(PlayerSession& s, Connection& c
         if (s.pipeline_) s.pipeline_->set_moving(moving);
         if (!on_mount) s.tally_speed(before, s.checker_.good(), abilities->sprinting(), abilities->evading());
     }
-    auto ack = on_mount ? s.mount_ack(move.time_stamp) : s.pb_.good_move_ack(move.time_stamp);
-    if (!ack) return;
-    if (s.send(conn, *ack) != Outcome::Sent) return;
-    if (on_mount) ++s.mount_moves_acked_;
-    if (++s.moves_acked_ == 1) spdlog::info("[session] {}: the first move is acknowledged (TimeStamp {})", s.name(), move.time_stamp);
+    if (!s.hold_move_ack(move.time_stamp, on_mount)) s.answer_move(conn, move.time_stamp, on_mount);
 }
 
 void PlayerSession::SessionInternal::refuse_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict) {
@@ -383,6 +378,7 @@ void PlayerSession::SessionInternal::refuse_move(PlayerSession& s, const repl::N
                     good.z);
     }
     s.pending_fix_ = std::isfinite(move.time_stamp) ? move.time_stamp : 0.0f;
+    s.held_move_ack_.reset();
 }
 
 void PlayerSession::on_move(Connection& conn, const repl::ClientRpc& rpc, const InBunch& bunch, Clock::time_point now, bool on_mount) {
@@ -394,16 +390,18 @@ void PlayerSession::on_move(Connection& conn, const repl::ClientRpc& rpc, const 
         return;
     }
     std::string why;
-    const auto moves = repl::read_move_packed(bunch.data.data(), bunch.data.size(), rpc.call.param_pos,
-                                              rpc.call.param_pos + rpc.call.param_bits, &why);
+    auto moves = repl::read_move_packed(bunch.data.data(), bunch.data.size(), rpc.call.param_pos,
+                                        rpc.call.param_pos + rpc.call.param_bits, &why);
     if (!moves) {
-        if (!unreadable_move_logged_) {
+        ++moves_unreadable_;
+        if (!unreadable_move_logged_ || moves_unreadable_ % 100 == 0) {
             unreadable_move_logged_ = true;
-            spdlog::warn("[session] {}: a ServerMovePacked does not read ({}; {} parameter bits): not acknowledged (further ones are not logged)",
-                         name(), why, rpc.call.param_bits);
+            spdlog::warn("[session] {}: a ServerMovePacked does not read ({}; {} parameter bits): not acknowledged ({} such moves so far; the first and every 100th are said)",
+                         name(), log_text(why), rpc.call.param_bits, moves_unreadable_);
         }
         return;
     }
+    if (!stand_on_bases(*moves)) return;
     if (!on_mount) scale_pawn_limits(now);
     const double allow = on_mount ? 0.0
                                   : std::max(dash_allowed(now) ? checker_.limits().dash_speed : 0.0,
@@ -431,7 +429,7 @@ void PlayerSession::on_move(Connection& conn, const repl::ClientRpc& rpc, const 
 }
 
 void PlayerSession::end_of_datagram(Connection& conn) {
-    if (!pending_fix_) return;
+    if (!release_based_fix() && !pending_fix_) return;
     const float time_stamp = *pending_fix_;
     pending_fix_.reset();
     if (failed_) return;

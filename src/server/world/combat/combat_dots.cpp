@@ -3,8 +3,8 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #include "combat/combat_world.h"
 
+#include "bootstrap/constants.h"
 #include "combat/combat_world_npc.h"
-#include "combat/npc_replicator.h"
 #include "content/content_db.h"
 
 #include <spdlog/spdlog.h>
@@ -56,7 +56,7 @@ struct EffectHitLogCtx {
     const CombatStatIds&          id;
 };
 
-void build_effect_hit_note(const Resolved& r, const CombatWorld::Delivery& d, const CombatStatIds& id, EffectHitNote& note) {
+void build_effect_hit_note(const Resolved& r, const Delivery& d, const CombatStatIds& id, EffectHitNote& note) {
     for (size_t i = 0; i < r.mods.size(); ++i) {
         const ResolvedMod& m = r.mods[i];
         if (m.stat_guid != id.health && m.stat_guid != id.mana) continue;

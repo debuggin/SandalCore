@@ -15,7 +15,7 @@ namespace {
 using StepBuilder = std::function<std::optional<bootstrap::Send>(bootstrap::PlayerBootstrap &)>;
 struct StationCheckResult {
     bool ok = false;
-    bool quick = false;
+    bool quick = true;
     std::string refusal;
     const world::WorldActor *actor = nullptr;
 };
@@ -420,15 +420,15 @@ void PlayerSession::on_start_craft(Connection &conn, const repl::ClientRpc &rpc,
         return;
     const auto req = repl::parse_start_craft(rpc.call);
     if (!req) {
-        log_unreadable_start_craft_once(vendor_unreadable_logged_, name(), rpc.call.param_bits);
-        if (!quick_.active && within_budget(vendor_budget_, "ServerStartCraft", now) && room_for(2)) {
+        log_unreadable_start_craft_once(craft_unreadable_logged_, name(), rpc.call.param_bits);
+        if (!quick_.active && within_budget(craft_budget_, "ServerStartCraft", now) && room_for(2)) {
             queue(
                 "ClientInterruptCraft", [](bootstrap::PlayerBootstrap &pb) { return pb.craft_interrupted(); }, conn,
                 /*must_build=*/true);
         }
         return;
     }
-    if (!within_budget(vendor_budget_, "ServerStartCraft", now) || !room_for(8))
+    if (!within_budget(craft_budget_, "ServerStartCraft", now) || !room_for(8))
         return;
     const StationCheckResult st = validate_start_craft_station(*req, registry_, view_.get(), world_, checker_.good());
     const auto refuse = [&](const std::string &why) {

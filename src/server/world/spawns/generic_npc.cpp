@@ -32,7 +32,6 @@ uint64_t fnv1a(const std::string& s) {
     }
     return h;
 }
-// C O A x Cyb
 
 uint64_t mix(uint64_t z) {
     z += 0x9E3779B97F4A7C15ull;
@@ -138,6 +137,29 @@ bool adopt_ability_records(OpenTemplate& t, const OpenTemplate& guard, const std
         made.elements.push_back(std::move(e));
     }
     return block.state.state.set(*block.schema, "ReplicatedRecordsToLoad", repl::Value(std::move(made)));
+}
+
+void apply_starting_alignments(OpenTemplate& t, const std::vector<int64_t>& alignments) {
+    if (alignments.empty()) return;
+    for (ParsedBlock& b : t.blocks) {
+        if (b.cls != "UAlignmentComponent" || !b.schema) continue;
+        const repl::Value* v = b.state.state.get(*b.schema, "Alignments");
+        const auto* c = v ? v->get_if<repl::AlignmentContainer>() : nullptr;
+        if (!c) continue;
+        repl::AlignmentContainer made;
+        for (const int64_t a : alignments) {
+            repl::AlignmentContainer::Instance inst;
+            inst.key = static_cast<uint64_t>(a);
+            inst.guids.push_back(repl::GuidValue{});
+            made.instances.push_back(std::move(inst));
+        }
+        for (const auto& inst : c->instances) {
+            const bool own = std::any_of(inst.guids.begin(), inst.guids.end(), [](const repl::GuidValue& g) { return (g.a | g.b | g.c | g.d) != 0; });
+            if (own) made.instances.push_back(inst);   // the donor's instigator record: instantiate gives it the new CharacterGuid
+        }
+        made.timers = c->timers;
+        b.state.state.set(*b.schema, "Alignments", repl::Value(std::move(made)));
+    }
 }
 
 }  // namespace
@@ -411,7 +433,6 @@ const OpenTemplate* GenericNpcs::make_plain(const content::NpcAssetRow& asset, V
     if (!person && donor_ && config_.abilities_of) creature_kit = config_.abilities_of(path);
     const OpenTemplate* donor = person ? (talks && talker_ ? talker_ : person_) : donor_;
     if (!donor) return fail(Verdict::NoDonor);
-// [CoA ~ C:Y:B]
 
     OpenTemplate t = *donor;
     t.archetype_path = path;
@@ -432,25 +453,7 @@ const OpenTemplate* GenericNpcs::make_plain(const content::NpcAssetRow& asset, V
         t.spawn.scale = repl::QuantVec{repl::QuantVec::Mode::RawDouble, bits, bits, bits};
     }
     // the alignments: the Blueprint's StartingAlignments, then the creature's own (the instigator record with its CharacterGuid), as retail lists them
-    for (ParsedBlock& b : t.blocks) {
-        if (b.cls != "UAlignmentComponent" || !b.schema || row->alignments.empty()) continue;
-        const repl::Value* v = b.state.state.get(*b.schema, "Alignments");
-        const auto* c = v ? v->get_if<repl::AlignmentContainer>() : nullptr;
-        if (!c) continue;
-        repl::AlignmentContainer made;
-        for (const int64_t a : row->alignments) {
-            repl::AlignmentContainer::Instance inst;
-            inst.key = static_cast<uint64_t>(a);
-            inst.guids.push_back(repl::GuidValue{});
-            made.instances.push_back(std::move(inst));
-        }
-        for (const auto& inst : c->instances) {
-            const bool own = std::any_of(inst.guids.begin(), inst.guids.end(), [](const repl::GuidValue& g) { return (g.a | g.b | g.c | g.d) != 0; });
-            if (own) made.instances.push_back(inst);   // the donor's instigator record: instantiate gives it the new CharacterGuid
-        }
-        made.timers = c->timers;
-        b.state.state.set(*b.schema, "Alignments", repl::Value(std::move(made)));
-    }
+    apply_starting_alignments(t, row->alignments);
     if (fights && !adopt_ability_records(t, *fighter_, kit)) return fail(Verdict::NoDonor);   // (the guard's ability component is not what it was read as: the humanoid is not made at all)
     if (!creature_kit.empty()) adopt_ability_records(t, *donor_, creature_kit);   // (a donor whose list is empty, or another component, keeps its own list: the creature then fights with its single swing)
     if (fights) {
@@ -463,6 +466,3 @@ const OpenTemplate* GenericNpcs::make_plain(const content::NpcAssetRow& asset, V
 }
 
 }  // namespace aoc::worldd::spawns
-
-// the people's looks and names (spawns/npc_looks.h) are compiled here: see the note at the top of that file
-#include "spawns/npc_looks.cpp"

@@ -12,12 +12,16 @@ namespace aoc::worldd {
 const ClassResource kClassResources[1] = {{2, "Bard_Resonance"}};
 
 // Abilities whose cost step comes later than the montage's first notify in retail captures.
-const Timing kTimings[5] = {
+const Timing kTimings[9] = {
     {"Bard_Dance_Mesmerizing", 0.323, 1.011, -1},
     {"Bard_Saga", 0.315, 0.906, -1},
     {"Bard_Story_Joy", 0.312, 1.573, 0.0},
     {"Bard_Song_Anthem", 0.303, 1.904, -1},
     {"Bard_Song_Serenade", 0.303, 0.303, 0.307},
+    {"WeaponCombo_Ranged_Book", 0.084, 0.084, -1},
+    {"WeaponCombo_Ranged_Longbow", 0.088, 0.088, -1},
+    {"WeaponCombo_Ranged_Shortbow", 0.258, 0.258, -1},
+    {"WeaponCombo_Ranged_Wand", 0.107, 0.107, -1},
 };
 
 // Casts that end with a montage branch on client request or release deadline.
@@ -141,24 +145,9 @@ const Flight kFlights[12] = {
     {"Cleric_Judgment", 2.9962265, 1, 0.0376, 1},
 };
 
-const ShotCast kShotCasts[11] = {
-    {"Ranger_Snipe", -1, 2.9934108, false, "Ranger_Snipe_Hasting", 0.0292},
-    {"Ranger_PowerShot", -1, 1.3300842, false, "", 0},
-    {"Ranger_Headshot", -1, 0.99284714, false, "Ranger_Headshot_Check_Target",
-     0.0048},
-    {"Ranger_ThunderingShot", -1, 1.0793436, false, "", 0},
-    {"Mage_Firebolt", 0, 0.22428152, true, "", 0},
-    {"Mage_Firebolt", 1, 0.31828308, true, "", 0},
-    {"Mage_Firebolt", 2, 0.3165209, true, "", 0},
-    {"Summoner_DimensionalBolt", -1, 0.2294855, true,
-     "Summoner_DimensionalBolt_Lockout", 0.0033},
-    {"Tank_Tomahawk", 0, 0.30069223, false, "", 0},
-    {"Tank_Tomahawk", 1, 0.29991198, false, "", 0},
-    {"Tank_Grapple", -1, 0.4352452, false, "", 0},
-};
-
 const LoopedCast kLoopedCasts[1] = {
-    {"Ranger_Salvo", 0.43836784f, 0.083, 0.184, 0.2373, 0.150, 0.503},
+    {"Ranger_Salvo", 0.43836784f, 0.083, 0.184, 0.2373, 0.150, 0.503,
+     0.29427722},
 };
 
 const Dash kDashes[6] = {

@@ -1,34 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  test_worldd_resource.cpp: Gathering stage 3, part "Resource storage" (items/resource_grid.h, items/inventory.h)
-//
-//  the grid           the Tetris rule against the 12 slots of five retail captures (a login's Resource1 and Resource2 lists, and the Mining bags), the Sanctus bag's 6 x 4, the matrices
-//                     of the retail capture's Mining and Lumberjacking bags
-//  the catalog        ContentItemCatalog on the fixture: the dimension, the stack size, the resource flag and the bag grids of content.db v14
-//  the inventory      the grids of the worn bags, what from_items refuses, ONE routing (a resource item to Resource0 at the first free rectangle, everything else to the Backpack,
-//                     the Backpack untouched by a harvest), the top-up of a stack (same record and quality), a full container, a full Backpack that blocks nothing, moves inside
-//                     and between the containers and every refusal, the bags that stay, a partial consume, the login's repair, a round trip through from_items
-//  the real file      with AOC_CONTENT_DB (else dist/content/content.db of the working tree; "[skip]" without it): every one of the 10,568 items routed to exactly one kind (1,824
-//                     resource), the 64 worn bags with a grid, none of the items larger than the Sanctus bag, ContentDb::resource_bag on the three bags of the retail capture
-// ============================================================================
 #include "content_db_fixture.h"
 #include "items/inventory.h"
 #include "items/resource_grid.h"
 
 #include <sqlite3.h>
-
-#include <algorithm>
-#include <cstdio>
-#include <cstdlib>
-#include <filesystem>
-#include <map>
-#include <memory>
-#include <optional>
 #include <set>
-#include <string>
-#include <vector>
 
 using namespace aoc::worldd;
 namespace fs = std::filesystem;
@@ -67,10 +45,6 @@ static svc::InventoryItem make_item(ItemContainer c, int slot, int64_t record, u
     return it;
 }
 
-// ---- the grid ---------------------------------------------------------------------------------------------------------------------
-// built by C-O-A with C:Y:B
-
-/// Places the items in order on a grid, as retail's server did: each at the first free rectangle.
 static std::vector<int> place_all(const ResourceGrid& g, const std::vector<std::pair<int, int>>& dims) {
     std::vector<bool> covered;
     std::vector<int> slots;
@@ -94,28 +68,19 @@ static void test_grid() {
     CHECK(lumber.cells() == 30 && lumber.usable_cells() == 18 && lumber.blocked(0, 0) && !lumber.blocked(1, 0) && lumber.blocked(1, 3), "the retail capture's Lumberjacking T2 bag: 6 x 5 = 30 cells, 18 usable");
     CHECK(ResourceGrid().empty() && ResourceGrid().cells() == 0 && ResourceGrid().place(1, 1, {}) == -1, "no bag: no cells, nothing fits");
     CHECK(ResourceGrid(0, 4, false).empty() && ResourceGrid(8, 33, false).empty() && !ResourceGrid(8, 30, false).empty(), "a grid has 1 to 256 cells (the Livestream bag's 8 x 30 = 240 is the largest)");
-
-    // the retail capture, Resource1 (the Mining bag): Bass 2 x 1 at slot 0, the Bear carcass 2 x 2 at 3, Halcyonite 2 x 2 at 6, Bluegill 2 x 1 at 8
     CHECK(place_all(mining, {{2, 1}, {2, 2}, {2, 2}, {2, 1}}) == std::vector<int>({0, 3, 6, 8}), "1198 Resource1: the four captured slots 0, 3, 6, 8");
-    // the retail capture, Resource2 (the Lumberjacking bag): Braidwood 1 x 3 at slot 1, the Willow stacks at 3 and 5
     CHECK(place_all(lumber, {{1, 3}, {1, 3}, {1, 3}, {1, 3}, {1, 3}, {1, 3}}) == std::vector<int>({1, 3, 5, 12, 14, 16}),
           "1198 Resource2: the three captured slots 1, 3, 5, then the next free 1 x 3 are rows 2 to 4 of the other columns");
-    // the retail capture (a Mining bag): Limestone 2 x 2 at slot 0, Coal 1 x 1 at 3, Sapphire 2 x 2 at 6 (columns 6-7: (3, 0) is taken)
     CHECK(place_all(mining, {{2, 2}, {1, 1}, {2, 2}}) == std::vector<int>({0, 3, 6}), "1470: Limestone at 0, Coal at 3, Sapphire at 6");
-    // the retail captures (slots 24 and 27 of a Mining bag that held other items): free 2 x 2 rectangles of the grid
     CHECK(mining.fits(24, 2, 2, {}) && mining.fits(27, 2, 2, {}), "1469 slot 24 = (0, 3) and 1471 slot 27 = (3, 3) are free 2 x 2 rectangles of the Mining bag");
     CHECK(!mining.fits(2, 1, 1, {}) && !mining.fits(1, 2, 1, {}) && !mining.fits(7, 2, 1, {}) && !mining.fits(19, 1, 1, {}) && !mining.fits(40, 1, 1, {}) && !mining.fits(-1, 1, 1, {}),
           "a blocked cell, a rectangle across a blocked column, past the right edge, on a blocked row, outside the grid and a negative slot are no place");
-    // the Sanctus bag: the 1 x 2 plants of the retail captures go left to right, then the next row of rectangles
     CHECK(place_all(sanctus, {{1, 2}, {1, 2}, {1, 2}, {1, 2}, {1, 2}, {1, 2}, {1, 2}}) == std::vector<int>({0, 1, 2, 3, 4, 5, 12}), "Sanctus: six plants 1 x 2 in the first row, the seventh two rows down");
-    // a covered cell blocks, a rectangle in the last row cannot be taller
     std::vector<bool> covered;
     sanctus.cover(covered, 0, 6, 1);
     CHECK(sanctus.place(1, 1, covered) == 6 && sanctus.place(1, 4, covered) == -1 && sanctus.place(1, 3, covered) == 6 && sanctus.place(7, 1, covered) == -1,
           "the first row covered: the next free cell is slot 6; nothing 4 tall or 7 wide fits");
 }
-
-// ---- the fixture's catalog ----------------------------------------------------------------------------------------------------
 
 static std::unique_ptr<content::ContentDb> g_db;
 static std::unique_ptr<items::ContentItemCatalog> g_catalog;
@@ -152,11 +117,9 @@ static void test_catalog() {
     const auto lumber = c.info(fr::kBagLumber);
     CHECK(lumber && lumber->bag && *lumber->bag == ResourceGrid(6, 5, true, fr::kLumberMatrix), "the Lumberjacking T2 bag: the 6 x 5 grid with its matrix");
     CHECK(!c.info(fi::kChest)->bag && !c.info(fi::kScepter)->resource, "gear has no grid and is no resource");
-    // the file is read once per record
     const auto again = c.info(fr::kOak);
     CHECK(again && again->inv_h == 3, "a second ask for a record answers the same (from what was kept)");
 
-    // ContentDb itself
     std::string error;
     const auto rec = g_db->item(fr::kBearCarcass, error);
     CHECK(rec && rec->resource && rec->inv_w == 2 && rec->inv_h == 2 && rec->max_stack_size == 20, "ContentDb::item reads inv_w, inv_h and resource");
@@ -173,9 +136,6 @@ static void test_catalog() {
     CHECK(!g_db->resource_bag(fi::kPotion, error) && error.empty(), "an item that is no bag has no grid, and that is no error");
 }
 
-// ---- the inventory --------------------------------------------------------------------------------------------------------------
-
-/// A character wearing the Sanctus bag (and what a test adds).
 static std::vector<svc::InventoryItem> worn_kit(bool mining_in_24 = false, bool lumber_in_25 = false) {
     std::vector<svc::InventoryItem> v;
     v.push_back(make_item(Worn, 23, fi::kBag, 900));
@@ -212,12 +172,10 @@ static void test_from_items() {
               three->grid(R2).override_matrix() == fr::kLumberMatrix,
           "the retail capture's three bags: containers of 24, 40 and 30 cells, the last two with their matrices");
 
-    // items in the containers, as 1198's login lists: Bass, Bear, Halcyonite and Bluegill in Resource1; Braidwood and two Willow stacks in Resource2
     auto held = build(with(worn_kit(true, true), {make_item(R1, 0, fr::kBass, 1, 2), make_item(R1, 3, fr::kBearCarcass, 2), make_item(R1, 6, fr::kHalcyonite, 3, 10),
                                                   make_item(R1, 8, fr::kBluegill, 4), make_item(R2, 1, fr::kBraidwood, 5, 5), make_item(R2, 3, fr::kWillow, 6, 5, 6),
                                                   make_item(R2, 5, fr::kWillow, 7, 15), make_item(R0, 0, fr::kRune, 8, 3, 7), make_item(R0, 1, fr::kRune, 9, 1, 17)}));
     CHECK(held && held->count(R1) == 4 && held->count(R2) == 3 && held->count(R0) == 2 && held->size() == 12, "1198's resource lists load on the three grids");
-// C:Y:B : C | O | A
 
     std::string why;
     CHECK(!build(with(worn_kit(), {make_item(R1, 0, fr::kOak, 1)}), &why) && why.find("Resource1") != std::string::npos && why.find("no resource bag") != std::string::npos,
@@ -228,42 +186,34 @@ static void test_from_items() {
     CHECK(!build(with(worn_kit(), {make_item(R0, 0, fr::kOak, 1), make_item(R0, 6, fr::kDaffodil, 2)}), &why) && why.find("another item") != std::string::npos,
           "a daffodil (1 x 2) at (0, 1) on the oak (1 x 3 at (0, 0)) is refused");
     CHECK(build(with(worn_kit(), {make_item(R0, 0, fr::kOak, 1), make_item(R0, 1, fr::kOak, 2, 1, 6), make_item(R0, 18, fr::kRune, 3)})).has_value(), "neighbouring rectangles are fine");
-    // without a catalog the grids stay empty and only the slot number is checked
     std::string error;
     auto bare = Inv::from_items(with(worn_kit(), {make_item(R2, 255, fr::kOak, 1)}), error);
     CHECK(bare && bare->grid(R0).empty(), "from_items without a catalog keeps the items and opens no grid");
     CHECK(!Inv::from_items({make_item(R0, 256, fr::kOak, 1)}, error) && error.find("slot 256") != std::string::npos, "...and still refuses a slot past 255");
-    // a resource item in the Backpack still loads (the login repairs it)
     CHECK(build(with(worn_kit(), {make_item(Bag, 0, fr::kOak, 1)})).has_value(), "a resource item in the Backpack loads: the login's repair moves it");
 }
 
 static void test_routing() {
     std::printf("grant: one routing\n");
     auto inv = build(worn_kit());
-    // an Oak stack and a potion in one grant: the oak to Resource0 slot 0, the potion to the lowest Backpack slot
     auto o = inv->grant({make_item(Bag, 0, fr::kOak, 1, 6), make_item(Bag, 0, fi::kPotion, 2, 3)}, *g_catalog);
     CHECK(o.ok && o.events.size() == 2 && o.events[0].container == R0 && o.events[0].slot == 0 && o.events[0].item.quantity == 6 && o.events[1].container == Bag && o.events[1].slot == 0,
           "an oak goes to Resource0 slot 0 and a potion to Backpack slot 0, as Add events in the order given");
     CHECK(o.events[0].type == aoc::protocol::repl::StorageEventType::Add && o.events[0].instigated && inv->count(R0) == 1 && inv->count(Bag) == 1, "...instigated, one in each storage");
-    // a second oak stack of another quality: Resource0 slot 1; a daffodil next to it: (2, 0)
     o = inv->grant({make_item(Bag, 0, fr::kOak, 3, 5, 6), make_item(Bag, 0, fr::kDaffodil, 4, 3)}, *g_catalog);
     CHECK(o.ok && o.events.size() == 2 && o.events[0].slot == 1 && o.events[1].slot == 2, "the next rectangles in row-major order: slots 1 and 2");
-    // with three bags the harvest goes to Resource0 first
     auto three = build(worn_kit(true, true));
     o = three->grant({make_item(Bag, 0, fr::kBass, 5, 2)}, *g_catalog);
     CHECK(o.ok && o.events.size() == 1 && o.events[0].container == R0, "with three bags the first container with room (Resource0) takes the item");
-    // the kit's other kinds never go to a resource container, and a record the file does not know goes to the Backpack
     o = three->grant({make_item(Bag, 0, 424242, 6), make_item(Bag, 0, fi::kChest, 7)}, *g_catalog);
     CHECK(o.ok && adds_to(o, Bag) == 2 && three->count(R0) == 1, "an unknown record and a chest go to the Backpack");
-    // refusals change nothing
     const auto before = inv->items();
     CHECK(!inv->grant({}, *g_catalog).ok, "nothing to grant is refused");
-    auto bad = make_item(Bag, 0, fr::kOak, 1);   // the guid of an oak already held
+    auto bad = make_item(Bag, 0, fr::kOak, 1);
     o = inv->grant({bad}, *g_catalog);
     CHECK(!o.ok && o.events.empty() && o.refusal.find("guid") != std::string::npos && inv->items() == before, "a guid the character already has is refused, nothing changed");
     auto zero = make_item(Bag, 0, fr::kOak, 8, 0);
     CHECK(!inv->grant({zero}, *g_catalog).ok && inv->items() == before, "a quantity of 0 is refused");
-    // a grant to a character with no bag: a resource item has no home, a potion still does
     auto nobag = build({make_item(Worn, 2, fi::kChest, 1)});
     const auto r = nobag->grant_what_fits({make_item(Bag, 0, fr::kOak, 2, 4), make_item(Bag, 0, fi::kPotion, 3)}, *g_catalog);
     CHECK(r.outcome.ok && r.outcome.events.size() == 1 && r.outcome.events[0].container == Bag && r.rest.size() == 1 && r.rest[0].item_record_id == fr::kOak && r.rest[0].quantity == 4,
@@ -273,7 +223,6 @@ static void test_routing() {
 
 static void test_merge() {
     std::printf("grant: topping up a stack\n");
-    // an Oak stack of 15 at quality 1: ten more fill it to 20 (a Remove and an Add of the same instance) and start a stack of 5
     auto inv = build(with(worn_kit(), {make_item(R0, 0, fr::kOak, 1, 15)}));
     auto o = inv->grant({make_item(Bag, 0, fr::kOak, 2, 10)}, *g_catalog);
     CHECK(o.ok && o.events.size() == 3, "ten oak on a stack of 15: three events");
@@ -283,28 +232,23 @@ static void test_merge() {
                        o.events[2].item.quantity == 5 && o.events[2].item.instance_guid == guid_n(2);
     CHECK(shape, "Remove the stack of 15, Add it again with 20 (the same instance), Add a new stack of 5 at the next free rectangle");
     CHECK(inv->at(R0, 0)->quantity == 20 && inv->at(R0, 1)->quantity == 5 && inv->count(R0) == 2, "the inventory holds 20 and 5");
-    // another quality does not merge, nor does a full stack
     inv = build(with(worn_kit(), {make_item(R0, 0, fr::kOak, 1, 15)}));
     o = inv->grant({make_item(Bag, 0, fr::kOak, 2, 5, 6)}, *g_catalog);
     CHECK(o.ok && o.events.size() == 1 && o.events[0].slot == 1 && inv->at(R0, 0)->quantity == 15, "an oak of quality 6 does not join a stack of quality 1");
     inv = build(with(worn_kit(), {make_item(R0, 0, fr::kOak, 1, 20)}));
     o = inv->grant({make_item(Bag, 0, fr::kOak, 2, 5)}, *g_catalog);
     CHECK(o.ok && o.events.size() == 1 && o.events[0].slot == 1, "a stack that is full is not topped up");
-    // another record does not merge
     inv = build(with(worn_kit(), {make_item(R0, 0, fr::kOak, 1, 5)}));
     o = inv->grant({make_item(Bag, 0, fr::kWillow, 2, 5)}, *g_catalog);
     CHECK(o.ok && o.events.size() == 1 && o.events[0].item.item_record_id == fr::kWillow, "another record starts its own stack");
-    // the stack that has room is found in any container: Coal x19 in Resource1 is topped up, the 4 left go to the first container with room, Resource0
     inv = build(with(worn_kit(true), {make_item(R1, 0, fr::kCoal, 1, 19)}));
     o = inv->grant({make_item(Bag, 0, fr::kCoal, 2, 5)}, *g_catalog);
     CHECK(o.ok && o.events.size() == 3 && o.events[0].container == R1 && o.events[1].container == R1 && o.events[1].item.quantity == 20 && o.events[2].container == R0 &&
               o.events[2].item.quantity == 4,
           "a stack with room in Resource1 is topped up first, the rest of the grant starts a stack in Resource0");
-    // a stack of an item that stacks to 10: the Glint certificates
     inv = build(with(worn_kit(), {make_item(R0, 0, fr::kGlint, 1, 8)}));
     o = inv->grant({make_item(Bag, 0, fr::kGlint, 2, 5)}, *g_catalog);
     CHECK(o.ok && o.events.size() == 3 && o.events[1].item.quantity == 10 && o.events[2].item.quantity == 3, "a record that stacks to 10 stops at 10");
-    // several items of one grant meet the same stack: 8 + 5 + 5 certificates on an empty bag are 10, 8
     inv = build(worn_kit());
     o = inv->grant({make_item(Bag, 0, fr::kGlint, 1, 8), make_item(Bag, 0, fr::kGlint, 2, 5), make_item(Bag, 0, fr::kGlint, 3, 5)}, *g_catalog);
     std::vector<int32_t> held;
@@ -317,33 +261,28 @@ static void test_merge() {
 static void test_full() {
     std::printf("grant: a full container, a full Backpack\n");
     auto inv = build(worn_kit());
-    // 1 x 3 oaks in a 6 x 4 grid: one per column (rows 0 to 2), six in all
     std::vector<svc::InventoryItem> eight;
-    for (uint32_t i = 1; i <= 8; ++i) eight.push_back(make_item(Bag, 0, fr::kOak, i, 20, static_cast<int32_t>(i)));   // distinct qualities: none joins another
+    for (uint32_t i = 1; i <= 8; ++i) eight.push_back(make_item(Bag, 0, fr::kOak, i, 20, static_cast<int32_t>(i)));
     const auto r = inv->grant_what_fits(eight, *g_catalog);
     CHECK(r.outcome.ok && r.outcome.events.size() == 6 && inv->count(R0) == 6 && r.rest.size() == 2 && r.rest[0].quality == 7 && r.rest[1].quality == 8, "eight oak stacks: six fit the 6 x 4 bag, two are returned");
     bool slots_ok = true;
     for (size_t i = 0; i < r.outcome.events.size(); ++i) slots_ok = slots_ok && r.outcome.events[i].slot == static_cast<int>(i);
     CHECK(slots_ok, "...at slots 0 to 5");
-    // grant() is all or nothing
     inv = build(worn_kit());
     const auto before = inv->items();
     const auto o = inv->grant(eight, *g_catalog);
     CHECK(!o.ok && o.events.empty() && inv->items() == before && o.refusal.find("no room") != std::string::npos, "grant of eight stacks is refused whole: nothing changed");
     CHECK(inv->can_grant({eight[0], eight[1]}, *g_catalog) && !inv->can_grant(eight, *g_catalog) && inv->items() == before, "can_grant says so and changes nothing");
-    // a Backpack full of other items blocks nothing of a resource grant, and a resource container full blocks nothing of the Backpack's
     std::vector<svc::InventoryItem> full = worn_kit();
     for (uint32_t s = 0; s < 70; ++s) full.push_back(make_item(Bag, static_cast<int>(s), fi::kPotion, 100 + s));
     auto packed = build(full);
     const auto oak = packed->grant({make_item(Bag, 0, fr::kOak, 1, 5)}, *g_catalog);
     CHECK(oak.ok && oak.events.size() == 1 && oak.events[0].container == R0 && packed->count(Bag) == 70, "a Backpack full of potions does not block a harvest: the oak goes to Resource0");
     CHECK(!packed->grant({make_item(Bag, 0, fi::kPotion, 2)}, *g_catalog).ok, "...but one more potion has no room");
-    // a mixed grant that fits in one kind only: all or nothing
     const auto mixed = packed->grant({make_item(Bag, 0, fr::kDaffodil, 3, 2), make_item(Bag, 0, fi::kPotion, 4)}, *g_catalog);
     CHECK(!mixed.ok && packed->count(R0) == 1, "an oak/potion grant that does not fit as a whole is refused without placing the part that fits");
     const auto part = packed->grant_what_fits({make_item(Bag, 0, fr::kDaffodil, 3, 2), make_item(Bag, 0, fi::kPotion, 4)}, *g_catalog);
     CHECK(part.outcome.ok && part.outcome.events.size() == 1 && part.rest.size() == 1 && part.rest[0].item_record_id == fi::kPotion, "grant_what_fits places the daffodil and returns the potion");
-    // an item larger than a stack: the first piece is placed, the rest has no guid of its own
     auto big = build(worn_kit());
     const auto bigr = big->grant_what_fits({make_item(Bag, 0, fr::kCoal, 1, 25)}, *g_catalog);
     CHECK(bigr.outcome.events.size() == 1 && bigr.outcome.events[0].item.quantity == 20 && bigr.rest.size() == 1 && bigr.rest[0].quantity == 5 && bigr.rest[0].instance_guid.empty(),
@@ -376,17 +315,14 @@ static void test_move() {
     CHECK(refuse(inv->move(Bag, 0, 1, daffodil, R0, 3, g_catalog.get()), "from the bag"), "...and the Backpack to a resource container");
     CHECK(refuse(inv->swap(R0, 2, 3, daffodil, R0, 1, oak, 4), "swap"), "a swap of resource items: refused");
     CHECK(refuse(inv->move(R0, 2, 3, daffodil, R2, 0, g_catalog.get()), "a container with no bag"), "to Resource2, whose bag is not worn: refused");
-    // sliding over its own cells is allowed: the daffodil at slot 2 (rows 0-1 of column 2) down one row to slot 8
     o = inv->move(R0, 2, 3, daffodil, R0, 8, g_catalog.get());
     CHECK(o.ok && inv->at(R0, 8) && !inv->at(R0, 2), "a stack may slide over its own old cells");
     snapshot = inv->items();
-    // between containers: the coal from Resource0 to Resource1 (the Mining bag): (3, 0) is free, (2, 0) is blocked
     CHECK(refuse(inv->move(R0, 12, 7, coal, R1, 2, g_catalog.get()), "blocked"), "to a blocked cell of the Mining bag: refused");
     o = inv->move(R0, 12, 7, coal, R1, 3, g_catalog.get());
     CHECK(o.ok && o.events.size() == 2 && o.events[0].container == R0 && o.events[1].container == R1 && o.events[1].slot == 3 && inv->at(R1, 3) && !inv->at(R0, 12) && inv->count(R1) == 1,
           "the coal moves from Resource0 to Resource1 slot 3");
 }
-// [C.Y.B ~ CoA]
 
 static void test_bags_stay() {
     std::printf("bags: a bag is worn, replaced and taken off during the session unless its container holds items\n");
@@ -396,34 +332,28 @@ static void test_bags_stay() {
     CHECK(!o.ok && o.holds_items && o.bags.empty() && inv->items() == before && inv->grid(R0).cells() == 24, "taking off the Sanctus bag is refused while its container holds the oak");
     o = inv->use(Bag, 0, guid_n(1), 23, *g_catalog);
     CHECK(!o.ok && o.holds_items && o.bags.empty() && inv->items() == before && inv->grid(R0).cells() == 24, "wearing the Mining bag over it is refused too");
-    // the server picks the first free bag slot: 24; its container opens at once with the bag's grid
     o = inv->use(Bag, 0, guid_n(1), 0xFFFFFFFFu, *g_catalog);
     CHECK(o.ok && inv->at(Worn, 24) && inv->grid(R1).cells() == 40 && inv->grid(R0).cells() == 24, "wearing it in the free slot 24 works and opens its 8 x 5 container now");
     CHECK(o.bags.size() == 1 && o.bags[0].index == 1 && o.bags[0].open, "...and the outcome says container 1 opened");
     auto relog = build(inv->items());
     CHECK(relog && relog->grid(R1).cells() == 40, "...and the next login builds the same");
-    // a coal fits the new container at once
     const auto coal = inv->grant({make_item(Bag, 0, fr::kCoal, 77, 3)}, *g_catalog);
     CHECK(coal.ok && inv->count(R1) + inv->count(R0) == 2, "a granted item finds room in a container (the first with room)");
-    // taking it off: its container is empty, so the bag goes to the Backpack and the container closes
     auto fresh = build(with(worn_kit(true), {make_item(R0, 0, fr::kOak, 2, 4)}));
     o = fresh->use(Worn, 24, guid_n(901), 0xFFFFFFFFu, *g_catalog);
     CHECK(o.ok && !fresh->at(Worn, 24) && fresh->grid(R1).empty() && fresh->grid(R0).cells() == 24 && o.events.size() == 2, "the empty Mining bag is taken off: the container closes");
     CHECK(o.bags.size() == 1 && o.bags[0].index == 1 && !o.bags[0].open, "...and the outcome says container 1 closed");
-    // replacing it with another bag: the empty container takes the new bag's grid (and the old bag goes to the Backpack)
     auto swap = build(with(worn_kit(true), {make_item(Bag, 0, fr::kBagLumber, 3)}));
     o = swap->use(Bag, 0, guid_n(3), 24, *g_catalog);
     CHECK(o.ok && swap->at(Worn, 24) && swap->at(Worn, 24)->item_record_id == fr::kBagLumber && swap->grid(R1).cells() == 30 && o.bags.size() == 1 && o.bags[0].index == 1 && o.bags[0].open &&
               swap->at(Bag, 0) && swap->at(Bag, 0)->item_record_id == fr::kBagMining,
           "the Lumberjacking bag replaces the empty Mining bag: the container is 6 x 5 now and the Mining bag is in the Backpack");
-    // ...but not while the bag it replaces holds a stack
     auto full = build(with(worn_kit(true), {make_item(Bag, 0, fr::kBagLumber, 3), make_item(R1, 0, fr::kCoal, 5, 2)}));
     const auto full_before = full->items();
     o = full->use(Bag, 0, guid_n(3), 24, *g_catalog);
     CHECK(!o.ok && o.holds_items && o.bags.empty() && full->items() == full_before && full->grid(R1).cells() == 40, "the Lumberjacking bag does not replace a Mining bag that holds coal");
     o = full->use(Worn, 24, guid_n(901), 0xFFFFFFFFu, *g_catalog);
     CHECK(!o.ok && o.holds_items && full->items() == full_before, "...and the Mining bag that holds coal is not taken off");
-    // the stack in a container is not used
     o = inv->use(R0, 0, guid_n(2), 0xFFFFFFFFu, *g_catalog);
     CHECK(!o.ok && o.refusal.find("Resource0") != std::string::npos, "a stack in a resource container is not used");
 }
@@ -438,6 +368,16 @@ static void test_consume() {
     o = inv->consume(R0, 0, guid_n(1), 12);
     CHECK(o.ok && o.events.size() == 1 && !inv->at(R0, 0), "taking the rest empties the slot");
 }
+
+struct CountingCatalog : items::ItemCatalog {
+    const items::ItemCatalog& inner;
+    mutable std::map<int64_t, int> asked;
+    explicit CountingCatalog(const items::ItemCatalog& c) : inner(c) {}
+    std::optional<items::ItemInfo> info(int64_t record) const override {
+        ++asked[record];
+        return inner.info(record);
+    }
+};
 
 static void test_repair() {
     std::printf("the login's repair: resource items found in the Backpack\n");
@@ -458,6 +398,10 @@ static void test_repair() {
     CHECK(second.moved.empty() && second.stayed.size() == 2, "a second repair moves nothing");
     auto empty = build(worn_kit());
     CHECK(empty->repair_resources(*g_catalog).moved.empty(), "an inventory with no resource item in the Backpack changes nothing");
+    CountingCatalog counting(*g_catalog);
+    auto counted = build(v);
+    counted->repair_resources(counting);
+    CHECK(counting.asked[fr::kDaffodil] == 1, "the daffodil's record is looked up once by the repair");
 }
 
 static void test_round_trip() {
@@ -470,7 +414,6 @@ static void test_round_trip() {
     const auto all = inv->items();
     auto again = build(all);
     CHECK(again && *again == *inv && again->items() == all && again->grid(R1).cells() == 40, "the items of an inventory with grants in two containers load into an equal inventory");
-    // the order of items(): storage by storage, by slot
     bool ordered = true;
     for (size_t i = 1; i < all.size(); ++i) {
         ordered = ordered && (static_cast<int>(all[i - 1].container) < static_cast<int>(all[i].container) ||
@@ -478,8 +421,6 @@ static void test_round_trip() {
     }
     CHECK(ordered, "items(): the Backpack's, the Equipment's, then Resource0, Resource1 and Resource2 by slot");
 }
-
-// ---- the real file ----------------------------------------------------------------------------------------------------------------
 
 static const char* real_db_path() {
     const char* env = std::getenv("AOC_CONTENT_DB");
@@ -495,6 +436,71 @@ static Matrix32 matrix32(const std::vector<std::vector<int>>& m) {
     Matrix32 out;
     for (const auto& col : m) out.emplace_back(col.begin(), col.end());
     return out;
+}
+
+static void check_real_routing(content::ContentDb& db, items::ContentItemCatalog& catalog, const std::vector<int64_t>& guids, const std::map<int64_t, bool>& tagged) {
+    std::string error;
+    const auto ashlar = db.item(6064634087359578287ll, error);
+    const auto sugar = db.item(6064634088104264020ll, error);
+    CHECK(ashlar && ashlar->resource && ashlar->default_quality == 1 && sugar && sugar->resource && sugar->default_quality == 1, "the reagents whose DefaultQuality is -3 or -2 read with quality 1 and are resources");
+    {
+        const std::pair<int64_t, const char*> names[] = {{6064633254017630211ll, "Coconut Wood"}, {109162169652924ll, "Oak Wood"}, {6064629184431849472ll, "Daffodil"},
+                                                         {6064630406148390932ll, "Bear Carcass Portion"}, {6064629326302543894ll, "Wolf"}, {6064629252182507530ll, "Rough Sapphire"}};
+        size_t ok = 0;
+        for (const auto& [guid, want] : names) {
+            const auto r = db.item(guid, error);
+            ok += r && r->display_name == want ? 1 : 0;
+        }
+        CHECK(ok == std::size(names), "ContentDb::item on the real file: display_name reads the retail text's names (Coconut Wood, Oak Wood, Daffodil, Bear Carcass Portion, Wolf, Rough Sapphire)");
+    }
+    size_t resource = 0, backpack = 0, other = 0, tag_mismatch = 0, too_big = 0;
+    for (const int64_t g : guids) {
+        const auto info = catalog.info(g);
+        if (!info) { ++other; continue; }
+        if (info->resource != (tagged.count(g) > 0)) ++tag_mismatch;
+        if (info->inv_w > 6 || info->inv_h > 4 || info->inv_w < 1 || info->inv_h < 1) ++too_big;
+        std::vector<svc::InventoryItem> kit = {make_item(Worn, 23, 6064629382556287782ll, 1)};
+        auto inv = Inv::from_items(kit, error, &catalog);
+        if (!inv) { ++other; continue; }
+        const auto o = inv->grant({make_item(Bag, 0, g, 2, 1)}, catalog);
+        if (!o.ok || o.events.size() != 1) { ++other; continue; }
+        (o.events[0].container == R0 ? resource : o.events[0].container == Bag ? backpack : other)++;
+        if ((o.events[0].container == R0) != info->resource) ++tag_mismatch;
+    }
+    CHECK(resource == 1824 && backpack == 10568 - 1824 && other == 0, "every one of the 10,568 items is granted to exactly one storage: 1,824 to Resource0, the rest to the Backpack");
+    CHECK(tag_mismatch == 0, "the catalog's flag is the item_tag rule for every item, and the routing follows the flag");
+    CHECK(too_big == 0, "no item takes more than the Sanctus bag's 6 x 4, or less than a cell");
+}
+
+static void check_real_bags(const char* path, content::ContentDb& db, items::ContentItemCatalog& catalog) {
+    size_t with_grid = 0, bags = 0;
+    {
+        sqlite3* r2 = nullptr;
+        sqlite3_open_v2(path, &r2, SQLITE_OPEN_READONLY, nullptr);
+        sqlite3_stmt* q = nullptr;
+        sqlite3_prepare_v2(r2, "SELECT item_guid FROM resource_bag", -1, &q, nullptr);
+        while (sqlite3_step(q) == SQLITE_ROW) {
+            ++bags;
+            const auto info = catalog.info(sqlite3_column_int64(q, 0));
+            with_grid += info && info->bag ? 1 : 0;
+        }
+        sqlite3_finalize(q);
+        sqlite3_close(r2);
+    }
+    CHECK(bags == 70 && with_grid == 64, "70 resource_bag rows, 64 of them worn items the catalog gives a grid");
+    std::string error;
+    const auto sanctus = db.resource_bag(6064629382556287782ll, error);
+    const auto mining = db.resource_bag(6064632218973765644ll, error);
+    const auto lumber = db.resource_bag(6064632219108704288ll, error);
+    CHECK(sanctus && sanctus->columns == 6 && sanctus->rows == 4 && !sanctus->custom, "Bag_Resource_Sanctus: 6 x 4, not custom");
+    CHECK(mining && mining->columns == 8 && mining->rows == 5 && mining->custom && mining->matrix == matrix32(fr::kMiningMatrix), "Bag_Resource_T2_Mining_0: the retail capture's 8 x 5 matrix, cell by cell");
+    CHECK(lumber && lumber->columns == 6 && lumber->rows == 5 && lumber->custom && lumber->matrix == matrix32(fr::kLumberMatrix), "Bag_Resource_T2_Lumberjacking_0: the retail capture's 6 x 5 matrix, cell by cell");
+    auto inv = Inv::from_items({make_item(Worn, 23, 6064629382556287782ll, 1), make_item(Worn, 24, 6064632218973765644ll, 2), make_item(Worn, 25, 6064632219108704288ll, 3),
+                                make_item(R1, 0, 6064629326234910728ll, 4, 2), make_item(R1, 3, 6064630406148390932ll, 5), make_item(R1, 6, 6064629252186439693ll, 6, 10),
+                                make_item(R1, 8, 6064629326176452611ll, 7), make_item(R2, 1, 6064631481844695080ll, 8, 5), make_item(R2, 3, 6064631481841025063ll, 9, 5, 6),
+                                make_item(R2, 5, 6064631481841025063ll, 10, 15)},
+                               error, &catalog);
+    CHECK(inv && inv->grid(R1).cells() == 40 && inv->grid(R2).cells() == 30 && inv->count(R1) == 4 && inv->count(R2) == 3, "the retail capture's Resource1 and Resource2 lists load on the real grids");
 }
 
 static void test_real() {
@@ -527,85 +533,8 @@ static void test_real() {
     }
     sqlite3_close(raw);
     CHECK(guids.size() == 10568 && tagged.size() == 1824, "10,568 items, 1,824 of them carry a child of item.resource");
-
-    // six resource reagents have a DefaultQuality of -3 or -2 in the data: they read with quality 1 (they were unknown records, and an unknown record goes to the Backpack)
-    const auto ashlar = db->item(6064634087359578287ll, error);   // Resource_Reagent_Ashlar_EarthsongPrism, -3
-    const auto sugar = db->item(6064634088104264020ll, error);    // Resource_Reagent_Seed_SugarCane, -2
-    CHECK(ashlar && ashlar->resource && ashlar->default_quality == 1 && sugar && sugar->resource && sugar->default_quality == 1, "the reagents whose DefaultQuality is -3 or -2 read with quality 1 and are resources");
-
-    // the names the retail pick-up text shows (the 17 items of the 24 captured harvest events; contentc's TestRealItemDisplayNames checks all 17 in the file itself)
-    {
-        const std::pair<int64_t, const char*> names[] = {{6064633254017630211ll, "Coconut Wood"}, {109162169652924ll, "Oak Wood"}, {6064629184431849472ll, "Daffodil"},
-                                                         {6064630406148390932ll, "Bear Carcass Portion"}, {6064629326302543894ll, "Wolf"}, {6064629252182507530ll, "Rough Sapphire"}};
-        size_t ok = 0;
-        for (const auto& [guid, want] : names) {
-            const auto r = db->item(guid, error);
-            ok += r && r->display_name == want ? 1 : 0;
-        }
-        CHECK(ok == std::size(names), "ContentDb::item on the real file: display_name reads the retail text's names (Coconut Wood, Oak Wood, Daffodil, Bear Carcass Portion, Wolf, Rough Sapphire)");
-    }
-
-    // one grant of every item into a character with the Sanctus bag and nothing else: the item goes where its kind says, exactly one storage each
-    size_t resource = 0, backpack = 0, other = 0, tag_mismatch = 0, too_big = 0;
-    for (const int64_t g : guids) {
-        const auto info = catalog.info(g);
-        if (!info) {
-            ++other;
-            continue;
-        }
-        if (info->resource != (tagged.count(g) > 0)) ++tag_mismatch;
-        if (info->inv_w > 6 || info->inv_h > 4 || info->inv_w < 1 || info->inv_h < 1) ++too_big;
-        std::vector<svc::InventoryItem> kit = {make_item(Worn, 23, 6064629382556287782ll, 1)};   // Bag_Resource_Sanctus
-        auto inv = Inv::from_items(kit, error, &catalog);
-        if (!inv) {
-            ++other;
-            continue;
-        }
-        const auto o = inv->grant({make_item(Bag, 0, g, 2, 1)}, catalog);
-        if (!o.ok || o.events.size() != 1) {
-            ++other;
-            continue;
-        }
-        (o.events[0].container == R0 ? resource : o.events[0].container == Bag ? backpack : other)++;
-        if ((o.events[0].container == R0) != info->resource) ++tag_mismatch;
-    }
-    CHECK(resource == 1824 && backpack == 10568 - 1824 && other == 0, "every one of the 10,568 items is granted to exactly one storage: 1,824 to Resource0, the rest to the Backpack");
-    CHECK(tag_mismatch == 0, "the catalog's flag is the item_tag rule for every item, and the routing follows the flag");
-    CHECK(too_big == 0, "no item takes more than the Sanctus bag's 6 x 4, or less than a cell");
-// -- CoA x C-Y-B --
-
-    // the 70 bags: the 64 worn ones have a grid, the six warehouse tab definitions are no worn item
-    size_t with_grid = 0, bags = 0;
-    {
-        sqlite3* r2 = nullptr;
-        sqlite3_open_v2(path, &r2, SQLITE_OPEN_READONLY, nullptr);
-        sqlite3_stmt* q = nullptr;
-        sqlite3_prepare_v2(r2, "SELECT item_guid FROM resource_bag", -1, &q, nullptr);
-        while (sqlite3_step(q) == SQLITE_ROW) {
-            ++bags;
-            const auto info = catalog.info(sqlite3_column_int64(q, 0));
-            with_grid += info && info->bag ? 1 : 0;
-        }
-        sqlite3_finalize(q);
-        sqlite3_close(r2);
-    }
-    CHECK(bags == 70 && with_grid == 64, "70 resource_bag rows, 64 of them worn items the catalog gives a grid");
-
-    // the retail capture's three bags, to the cell
-    const auto sanctus = db->resource_bag(6064629382556287782ll, error);
-    const auto mining = db->resource_bag(6064632218973765644ll, error);
-    const auto lumber = db->resource_bag(6064632219108704288ll, error);
-    CHECK(sanctus && sanctus->columns == 6 && sanctus->rows == 4 && !sanctus->custom, "Bag_Resource_Sanctus: 6 x 4, not custom");
-    CHECK(mining && mining->columns == 8 && mining->rows == 5 && mining->custom && mining->matrix == matrix32(fr::kMiningMatrix), "Bag_Resource_T2_Mining_0: the retail capture's 8 x 5 matrix, cell by cell");
-    CHECK(lumber && lumber->columns == 6 && lumber->rows == 5 && lumber->custom && lumber->matrix == matrix32(fr::kLumberMatrix), "Bag_Resource_T2_Lumberjacking_0: the retail capture's 6 x 5 matrix, cell by cell");
-
-    // the real items on the real grids: the retail capture's lists load into the three bags
-    auto inv = Inv::from_items({make_item(Worn, 23, 6064629382556287782ll, 1), make_item(Worn, 24, 6064632218973765644ll, 2), make_item(Worn, 25, 6064632219108704288ll, 3),
-                                make_item(R1, 0, 6064629326234910728ll, 4, 2), make_item(R1, 3, 6064630406148390932ll, 5), make_item(R1, 6, 6064629252186439693ll, 6, 10),
-                                make_item(R1, 8, 6064629326176452611ll, 7), make_item(R2, 1, 6064631481844695080ll, 8, 5), make_item(R2, 3, 6064631481841025063ll, 9, 5, 6),
-                                make_item(R2, 5, 6064631481841025063ll, 10, 15)},
-                               error, &catalog);
-    CHECK(inv && inv->grid(R1).cells() == 40 && inv->grid(R2).cells() == 30 && inv->count(R1) == 4 && inv->count(R2) == 3, "the retail capture's Resource1 and Resource2 lists load on the real grids");
+    check_real_routing(*db, catalog, guids, tagged);
+    check_real_bags(path, *db, catalog);
 }
 
 int main() {

@@ -4,12 +4,10 @@
 #include "test_worldd_area_common.h"
 
 #include "combat/combat_world.h"
-#include "combat/hit_resolver.h"
+#include "items/inventory.h"
 #include "npc/motion_table.h"
 #include "npc/retail_motion.h"
 #include "world/interaction_state.h"
-
-#include <array>
 
 using namespace aoc::worldd;
 namespace repl = aoc::protocol::repl;
@@ -95,7 +93,8 @@ static void check_gm_purchase_refusals(const content::ContentDb &db, const vendo
   }
   repl::VendorPurchaseCart huge{materials.guid, {{stackable, vendor::kMaxQuantity, std::nullopt, std::nullopt}}};
   const auto big = gm.plan_purchase(db, materials, huge, 70);
-  CHECK(big.ok == (static_cast<int64_t>(vendor::kMaxQuantity + max_stack - 1) / max_stack <= 70), "the largest quantity costs stacks, never a loop over the quantity");
+  const int64_t material_cells = static_cast<int64_t>(items::kResourceContainers) * items::kMaxResourceCells;
+  CHECK(big.ok == (static_cast<int64_t>(vendor::kMaxQuantity + max_stack - 1) / max_stack <= material_cells), "the largest quantity costs stacks, never a loop over the quantity");
   CHECK(!gm.plan_purchase(db, gear, cart, 0).ok, "no free slot at all refuses even one item");
 }
 
@@ -130,8 +129,16 @@ static void check_gm_purchase_plans(const content::ContentDb &db, const vendor::
   mats.items.push_back({stackable, max_stack * 2 + 1, std::nullopt, std::nullopt});
   plan = gm.plan_purchase(db, materials, mats, 70);
   CHECK(plan.ok && plan.stacks.size() == 3 && plan.stacks[0].quantity == max_stack && plan.stacks[1].quantity == max_stack && plan.stacks[2].quantity == 1, "a quantity of two stacks and one is three stacks: MaxStackSize, MaxStackSize, 1");
+  std::string material_error;
+  const auto material_rec = db.item(stackable, material_error);
+  CHECK(material_rec && material_rec->resource, "the item that stacks in the materials def is a material");
   plan = gm.plan_purchase(db, materials, mats, 2);
-  CHECK(!plan.ok && plan.stacks.empty() && plan.refusal.find("free slot") != std::string::npos, "a bag with two free slots refuses it whole");
+  CHECK(plan.ok && plan.stacks.size() == 3, "three stacks of materials are planned although the item bag has two free slots");
+  const auto gear_rec = db.item(gear_item, material_error);
+  repl::VendorPurchaseCart three = cart;
+  three.items[0].quantity = (gear_rec && gear_rec->max_stack_size > 1 ? gear_rec->max_stack_size : 1) * 2 + 1;
+  plan = gm.plan_purchase(db, gear, three, 2);
+  CHECK(!plan.ok && plan.stacks.empty() && plan.refusal.find("free slot") != std::string::npos, "three stacks of items do not fit two free slots: the cart is refused whole");
   check_gm_purchase_refusals(db, gm, gear, materials, max_stack);
   size_t listed = 0;
   for (const vendor::GmVendor &v : defs)
@@ -713,6 +720,15 @@ static void test_interaction_state(const content::ContentDb &db, const spawns::C
   CHECK(others_allowed == 0, "no other NPC is given CanInputActivate");
   std::printf("    %zu other NPCs, %zu with an interaction definition\n", others, others_interactable);
   check_per_player_interaction_copy(reg);
+  spawns::GenericNpcs generic(captured, nullptr, spawns::GenericConfig{});
+  content::NpcAssetRow quest_object;
+  quest_object.guid = 9000001;
+  quest_object.archetype_path = "/Game/DesignAssets/Interactables/Quest/CSQ_INT_PropKeyCheck.CSQ_INT_PropKeyCheck_C";
+  spawns::Verdict v_prop = spawns::Verdict::Generic, v_pawn = spawns::Verdict::Generic;
+  const spawns::OpenTemplate *as_prop = generic.prop_template(quest_object, &v_prop);
+  const spawns::OpenTemplate *as_pawn = generic.template_for(quest_object, &v_pawn);
+  CHECK(as_prop && as_prop->category == "prop", "a quest object's Blueprint is made as a prop from a recorded quest object");
+  CHECK(as_prop && (!as_pawn || as_pawn != as_prop), "the same Blueprint asked for as a pawn does not get the prop's open (the prop is kept under its own key)");
 }
 
 void run_area_vendors_ground(const content::ContentDb &db, const spawns::CapturedData &captured) {

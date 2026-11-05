@@ -7,10 +7,7 @@
 #include "capture_vendor.h"
 #include "nav/area_nav.h"
 #include "npc/npc_world.h"
-#include "protocol/repl/vendor_rpc.h"
 #include "vendor/node_tax.h"
-
-#include <spdlog/spdlog.h>
 
 namespace cap = capture_vendor;
 
@@ -465,8 +462,7 @@ static void inspect_crowd_moving_chains(const CrowdHarness& h, const ActorView& 
 }
 
 static void verify_crowd_moving_results(const CrowdHarness& h, const ActorView& v, const std::vector<uint64_t>& ids, const npc::NpcWorld::Stats& st0, const npc::NpcWorld::Stats& st1) {
-    size_t one_chain_bits = 0;
-    bool one_chain_two_handles = false;
+    size_t one_chain_bits = 0; bool one_chain_two_handles = false;
     inspect_crowd_moving_chains(h, v, ids, one_chain_bits, one_chain_two_handles);
     CHECK(one_chain_two_handles && one_chain_bits > 0 && one_chain_bits <= 260, "a walking NPC's update carries ReplicatedMovement and its timestamp, 260 bits at most (retail's: about 198)");
     const double secs = 3000 * 0.02, walkers = static_cast<double>(st1.writes - st0.writes) / 15.0 / secs;
@@ -479,8 +475,7 @@ static void verify_crowd_moving_results(const CrowdHarness& h, const ActorView& 
         const world::WorldActor* a = h.fx.world->registry().find(id);
         const uint32_t channel = v.channel_of(id);
         const fake::Delivered* last = nullptr;
-        for (const fake::Delivered& d : h.got)
-            if (d.channel == channel && !d.close) last = &d;
+        for (const fake::Delivered& d : h.got) if (d.channel == channel && !d.close) last = &d;
         if (!last || !a) continue;
         ++checked;
         const repl::Value* rm = a->actor.obj.state.get(*a->actor.obj.schema, "ReplicatedMovement");
@@ -496,7 +491,9 @@ static void test_crowd_moving() {
     std::string err;
     auto nav = nav::AreaNav::load(nav_path, &err);
     if (!nav) { std::printf("  [skip] %s: %s (tools/mapc: mapc build)\n", nav_path.c_str(), err.c_str()); return; }
-    if (nav->windowed()) nav->load_around(kCx, kCy, nav::AreaNav::kLoadRadius);
+    const bool ground = !nav->windowed() || nav->load_around(kCx, kCy, 2, 120);
+    CHECK(ground, "the ground round the crowd loads");
+    if (!ground) return;
     CrowdHarness h(300);
     npc::NpcWorld npcs(h.fx.world->registry(), nav.get());
     std::vector<uint64_t> ids;

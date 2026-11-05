@@ -369,6 +369,13 @@ static void test_durations(World &w) {
             all_in = false;
     }
     CHECK(seen == 9 && all_in, "the nine captured channels are 0.5 to 1.0 of their node's base duration");
+    content::GatherDefRow odd = *w.g->def(id::kDaffodil);
+    odd.duration_expr = 0;
+    odd.base_duration = 1.0e12;
+    const auto cut = w.g->channel_seconds(odd, *rig.run, why);
+    CHECK(cut && *cut == 3600.0, "a base duration of 10^12 s is cut at an hour");
+    odd.base_duration = std::nan("");
+    CHECK(!w.g->channel_seconds(odd, *rig.run, why), "a base duration that is no number is refused");
 }
 
 void run_gather_rolls_tests(World &w) {

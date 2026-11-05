@@ -45,15 +45,26 @@ static void check_combat_echo(const fake::Delivered &d,
   const BunchWriter original = hex_bits(capture_bootstrap::kCombatEcho);
   const auto orig =
       read_single_rep_block(original.data(), original.bit_pos(), pc_cls);
-  CHECK(echo && orig && echo->values().size() == 9 && d.reliable &&
+  CHECK(echo && orig && echo->values().size() == 50 && d.reliable &&
             d.exports.empty(),
-        "the echo is one reliable PlayerController block of nine values");
+        "the echo is one reliable PlayerController block of the request's 50 values");
   if (!echo || !orig) {
     return;
   }
+  constexpr std::array<std::string_view, 9> k_pkt620 = {
+      "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.MayHarmAngle",
+      "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.ProximityRadius",
+      "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.MaxDistance",
+      "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.ForwardOffset",
+      "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.TabTargetMethod",
+      "CharacterInGameSettings.CombatSettings.Targeting.bEnableHoverCasting",
+      "CharacterInGameSettings.CombatSettings.Targeting.SoftLock.VisualsMask",
+      "CharacterInGameSettings.CombatSettings.Input.BufferDuration",
+      "CharacterInGameSettings.CombatSettings.Rendering.PartyVFX",
+  };
   int equal = 0;
   int party_vfx_differs = 0;
-  for (const std::string_view path : kCombatEchoPaths) {
+  for (const std::string_view path : k_pkt620) {
     const repl::Value *mine = echo->get(pc_cls, path);
     const repl::Value *theirs = orig->get(pc_cls, path);
     if (mine && theirs && *mine == *theirs) {

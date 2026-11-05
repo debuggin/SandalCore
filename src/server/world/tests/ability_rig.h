@@ -1,40 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  tests/ability_rig.h  (plan D2)
-//
-//  What the tests of the generic ability runtime share: a Bard (or any class) of a level with the ranks the game grants and the ones a test
-//  adds, on the REAL content.db of the working tree (dist/content/content.db, or AOC_CONTENT_DB: the stat program, the gear rules, the ability
-//  tables and A7's rules all come from it), A7's AbilityRuntime and the pipeline on a simulated clock, and a `Pawn` that takes the events the way
-//  PlayerBootstrap::apply_ability_change does (the same key checks), so that a test reads what the client holds: stats, effect items, the ability
-//  item and the Cooldowns items.
-// ============================================================================
 #pragma once
 
-#include "bootstrap/ability_replication.h"
-#include "bootstrap/character_setup.h"
-#include "content/ability_content.h"
-#include "content/content_db.h"
-#include "session/abilities.h"
-#include "session/ability_catalog.h"
 #include "session/ability_pipeline.h"
 #include "session/talents.h"
-#include "stats/character_stats.h"
 #include "world_stats.h"
 
 #include <sqlite3.h>
 
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <filesystem>
-#include <map>
-#include <memory>
-#include <optional>
-#include <string>
-#include <utility>
-#include <vector>
 
 namespace ability_rig {
 
@@ -55,15 +31,12 @@ inline bool real_db_present() {
     return std::filesystem::is_regular_file(std::filesystem::path(real_db_path()), ec);
 }
 
-// the stats the tests look at
 inline constexpr int64_t kMoveSpeedMult = 109228544644729ll;
 inline constexpr int64_t kResonanceStat = 6064632920367763592ll;
 inline constexpr int64_t kMitigation = 6064628617716498440ll;
 inline constexpr int64_t kHealingMult = 6064630634099769360ll;
 inline constexpr int64_t kEvasion = 6064628617716498442ll;
-// [C.O.A + C.Y.B]
 
-/// The record guid of a row of a design table by schema and name (0 when there is none), read straight from content.db's `record` table.
 inline int64_t record_guid(const std::string& path, const char* schema, const char* name) {
     sqlite3* db = nullptr;
     if (sqlite3_open_v2(path.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) return 0;
@@ -79,15 +52,15 @@ inline int64_t record_guid(const std::string& path, const char* schema, const ch
     return guid;
 }
 
-/// The client's arrays as the events leave them (PlayerBootstrap::apply_ability_change's key rules): a change it would refuse is `broken`.
+/// Client arrays mirrored via PlayerBootstrap::apply_ability_change key rules.
 struct Pawn {
-    std::map<int64_t, float>                         stats;       // record -> value
-    std::map<int64_t, bootstrap::EffectItem>         effects;     // EffectId -> item
-    std::map<int64_t, bootstrap::ActiveAbilityItem>  abilities;   // ServerInstanceId -> item
-    std::map<int64_t, bootstrap::CooldownItem>       cooldowns;   // ability guid -> item
-    std::vector<int32_t>                             ends;        // ClientEndAbility ids, in order
-    std::vector<bootstrap::ShieldElement>            shields;     // the TempHealth array's item (plan D2, stage 2)
-    std::vector<bootstrap::HitConfirm>               confirmations;   // every hit confirmation the client was sent, in order
+    std::map<int64_t, float>                         stats;
+    std::map<int64_t, bootstrap::EffectItem>         effects;
+    std::map<int64_t, bootstrap::ActiveAbilityItem>  abilities;
+    std::map<int64_t, bootstrap::CooldownItem>       cooldowns;
+    std::vector<int32_t>                             ends;
+    std::vector<bootstrap::ShieldElement>            shields;
+    std::vector<bootstrap::HitConfirm>               confirmations;
     std::string                                      broken;
     size_t                                           stat_changes = 0;
 
@@ -134,7 +107,6 @@ struct Pawn {
     }
 };
 
-/// One event as a test wants to read it.
 struct Seen {
     double                    at = 0;
     bootstrap::AbilityChange  change;
@@ -142,23 +114,20 @@ struct Seen {
     std::string               note;
     bool                      refusal = false;
     std::vector<bootstrap::HitConfirm> confirmations;
-    std::vector<bootstrap::ZoneOp>     zones;   // the lingering zones' actors this step opens, fades or closes
+    std::vector<bootstrap::ZoneOp>     zones;
 };
 
-/// What a Rig reads from content.db and no test changes: the file, its stat context, the ability tables and rules, and the talent catalog. A test that
-/// builds hundreds of Rigs (one per captured session) used to open and parse all of it again for each one; it is loaded once per file for the life of the
-/// process now, and every Rig holds it by pointer. Nothing in it is written after it is loaded.
+/// Shared read-only content.db bundle cached per process so multi-session tests avoid re-parsing sqlite tables.
 struct RigContent {
     std::string                         path;
     std::optional<content::ContentDb>   db;
     const bootstrap::StatContext*       ctx = nullptr;
-    std::optional<abilities::Catalog>   catalog;          // not loaded when the Rig is built without the ability tables
+    std::optional<abilities::Catalog>   catalog;
     content::AbilityRules               rules;
-    std::optional<talents::Catalog>     talent_catalog;   // the production path's: the ranks the character holds come from a talents::Book
-    std::string                         problem;          // why it could not be loaded (empty: it is there)
+    std::optional<talents::Catalog>     talent_catalog;
+    std::string                         problem;
 };
 
-/// The shared content of `path`, loaded on the first call (with the ability tables or without them).
 inline std::shared_ptr<const RigContent> rig_content(const std::string& path, bool with_catalog) {
     static std::map<std::pair<std::string, bool>, std::shared_ptr<const RigContent>> loaded;
     std::shared_ptr<const RigContent>& slot = loaded[{path, with_catalog}];
@@ -195,31 +164,26 @@ inline std::shared_ptr<const RigContent> rig_content(const std::string& path, bo
 }
 
 struct Rig {
-    std::shared_ptr<const RigContent>           shared;   // what the Rig reads from content.db (shared by every Rig of the process, never written)
+    std::shared_ptr<const RigContent>           shared;
     const std::string&                          path;
     const std::optional<content::ContentDb>&    db;
     const bootstrap::StatContext*               ctx = nullptr;
     const std::optional<abilities::Catalog>&    catalog;
     const content::AbilityRules&                rules;
-    const std::optional<talents::Catalog>&      talent_catalog;   // the production path's: the ranks the character holds come from a talents::Book
+    const std::optional<talents::Catalog>&      talent_catalog;
     std::optional<stats::CharacterStats>        cs;
     std::optional<talents::Book>                book;
-    std::vector<stats::SkillRank>               base_ranks;   // what the Book holds (held_ranks()) and the named skills it has no rank for
+    std::vector<stats::SkillRank>               base_ranks;
     std::optional<AbilityRuntime>               a7;
     std::optional<AbilityPipeline>              pipe;
     Pawn                                        pawn;
-    std::vector<Seen>                           log;           // every event of every call, with the time it happened
+    std::vector<Seen>                           log;
     double                                      clock = 0;
     int32_t                                     next_client_id = 1;
     std::string                                 problem;
 
     static constexpr double kWorldTime = 1000.0;
 
-    /// A character of `class_enum` at `level`, holding the ranks a character of that level has and `extra_skills` (SkillRecordBase names the
-    /// character bought: Bard_Passive_Merriment ...); the stats start at their maximum. The ranks are the join's own (plan D2, review): a talents::Book
-    /// of the level with the skills bought, whose held_ranks() are what GetSkillPurchased reads and whose passives() are the stat mods of the ranks
-    /// (Endurance Training's MaxStamina +10), as build_player_setup and the session hand them to the stat engine. A skill that is in no tree the
-    /// character can buy from is a skill-typed rank the test names alone (a talent inferred from a capture).
     Rig(int class_enum, int level, const std::vector<std::string>& extra_skills = {}, bool with_catalog = true, uint64_t seed = 7)
         : shared(rig_content(real_db_path(), with_catalog)), path(shared->path), db(shared->db), ctx(shared->ctx), catalog(shared->catalog), rules(shared->rules),
           talent_catalog(shared->talent_catalog) {
@@ -229,7 +193,7 @@ struct Rig {
             return;
         }
         book.emplace(*talent_catalog, class_record_guid(class_enum), level);
-        std::vector<stats::SkillRank> loose;   // skills no tree of the character has a rank for
+        std::vector<stats::SkillRank> loose;
         std::map<int64_t, std::vector<int64_t>> bought;
         for (const std::string& s : extra_skills) {
             const int64_t guid = record_guid(path, "SkillRecordBase", s.c_str());
@@ -237,7 +201,6 @@ struct Rig {
                 problem = "no skill " + s;
                 return;
             }
-            // the first rank of the skill in the character's class tree, else the Universal tree: bought, as the character would have
             bool placed = false;
             for (const talents::Tree* tree : {book->class_tree(), talent_catalog->universal()}) {
                 if (!tree || placed) continue;
@@ -248,11 +211,10 @@ struct Rig {
                     break;
                 }
             }
-            // (the tree a skill belongs to: GetSkillPurchased's first reference; the formulas of the Bard's talents name the class tree)
             if (!placed) loose.push_back({{stats::kRefTypeSkillTree, class_tree_guid(class_enum)}, {stats::kRefTypeSkill, guid}});
         }
         for (const auto& [tree, ranks] : bought) book->load(tree, ranks);
-        std::vector<stats::SkillRank> ranks = book->held_ranks();
+        std::vector<stats::SkillRank> ranks = book->held_ranks(0);
         ranks.insert(ranks.end(), loose.begin(), loose.end());
         cs.emplace(*ctx->bundle, *ctx->gear, class_enum, level, ctx->rounding);
         base_ranks = ranks;
@@ -270,9 +232,8 @@ struct Rig {
             return;
         }
         pipe.emplace(catalog ? &*catalog : nullptr, *cs, *a7, [] { return std::vector<stats::WornItem>(); }, kWorldTime, seed);
-        pipe->set_data_timings(false);   // (a test of the runtime's mechanics runs on the default 300 ms; the retail tests turn the captures' times on)
-        pipe->set_reaction_carriers(book->reaction_carriers(0));   // the production path's: the effects of the ranks the character holds carry their reactions (the Bard's Resonant Weapon from level 5)
-        // the pawn as the join leaves it
+        pipe->set_data_timings(false);
+        pipe->set_reaction_carriers(book->reaction_carriers(0));
         for (const stats::StatValue& v : cs->values()) {
             if (v.float_array() || (v.replication != 1 && v.replication != 5 && v.replication != 7)) continue;
             pawn.stats[v.guid] = v.value;
@@ -280,11 +241,9 @@ struct Rig {
         pipe->sync_a7_values(0);
         take();
     }
-// built by C.O.A with Cyb
 
     bool ok() const { return problem.empty(); }
 
-    /// The class record's guid (the Book's class).
     int64_t class_record_guid(int class_enum) const {
         sqlite3* d = nullptr;
         int64_t guid = 0;
@@ -301,7 +260,6 @@ struct Rig {
     }
 
     int64_t class_tree_guid(int class_enum) const {
-        // the class record's skill tree: the class table's row of this enum (the Bard's tree is what its talents' formulas name)
         sqlite3* d = nullptr;
         int64_t guid = 0;
         if (sqlite3_open_v2(path.c_str(), &d, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) return 0;
@@ -325,7 +283,6 @@ struct Rig {
         return d ? d->row.guid : 0;
     }
 
-    /// The character also holds these ranks (talents a test infers from a capture): the base ranks and these; the effects the runtime holds are re-run.
     void use_extra_ranks(const std::vector<stats::SkillRank>& extra) {
         std::vector<stats::SkillRank> all = base_ranks;
         all.insert(all.end(), extra.begin(), extra.end());
@@ -334,14 +291,12 @@ struct Rig {
         take();
     }
 
-    /// The character knows these abilities (and nothing else).
     void know(const std::vector<const char*>& names) {
         std::vector<int64_t> g;
         for (const char* n : names) g.push_back(ability(n));
         pipe->set_known(g);
     }
 
-    /// Takes the events of both runtimes, applies them to the pawn (the test fails the moment the pawn would refuse one) and returns them.
     std::vector<Seen> take() {
         std::vector<AbilityEvent> events = a7->take_events();
         for (AbilityEvent& e : pipe->take_events()) events.push_back(std::move(e));
@@ -364,7 +319,6 @@ struct Rig {
         return out;
     }
 
-    /// Advances both runtimes to `t` (seconds) and returns what happened.
     std::vector<Seen> run_to(double t) {
         clock = t;
         a7->tick(t);
@@ -372,9 +326,8 @@ struct Rig {
         return take();
     }
 
-    bool asks = true;   // the client asks for every hit of the cast it can (RequestHitVerification_Server, 20 ms after the trigger), as the retail client does
+    bool asks = true;
 
-    /// ServerTriggerAbility at `t`: the events up to then and the trigger's own. `target`: the call names a target (the caster).
     Refusal trigger(const char* name, double t, bool target = false, int32_t anim = 0, std::vector<Seen>* seen = nullptr) {
         clock = t;
         a7->tick(t);
@@ -392,7 +345,6 @@ struct Rig {
                     int64_t targeting = content::kTargetingDefaultSelf;
                     for (const auto& tg : def->targetings)
                         if (tg.key == static_cast<int>(h.key)) targeting = tg.guid;
-                    // (a hit's own requirement is the client's to judge: the ones that do not hold are asked for all the same and run to nothing)
                     pipe->hit_request(guid, targeting, h.hit_guid, 1, 1, t + 0.02 + 0.0001 * static_cast<double>(asked.size()));
                 }
             }
@@ -401,10 +353,7 @@ struct Rig {
         if (seen) *seen = std::move(s);
         return r;
     }
-// (C Y B ~ CoA)
 
-    /// RequestHitVerification_Server at `t` for a hit of an ability: the targeting is the one the ability's data gives the hit's key. `own`: the client
-    /// names the caster's own component. Returns the verdict; the events up to then are taken (and `seen` gets them).
     AbilityPipeline::HitVerdict hit_request(const char* ability_name, const char* hit_name, double t, bool own = true, std::vector<Seen>* seen = nullptr) {
         clock = t;
         a7->tick(t);
@@ -426,7 +375,6 @@ struct Rig {
         return v;
     }
 
-    /// A held stat (Health, Mana) is `value` now, on the client and in the engine.
     void set_current(int64_t stat, double value) {
         cs->set_current(stat, static_cast<float>(value));
         pawn.stats[stat] = static_cast<float>(value);

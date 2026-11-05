@@ -238,10 +238,14 @@ struct Mirror {
         if (!check_read(ev && ev->targets.size() == 1 && ev->targets[0].slots.size() == 1)) return;
         events.push_back(*ev);
         const std::pair<int, int> key{storage_of(guids, ev->targets[0].object), ev->targets[0].slots[0].slot};
-        if (ev->type == static_cast<uint8_t>(repl::StorageEventType::Add))
+        if (ev->type == static_cast<uint8_t>(repl::StorageEventType::Add)) {
             storage[key] = ev->item;
-        else
-            storage.erase(key);
+        } else {
+            const auto held = storage.find(key);
+            const int32_t leaves = ev->targets[0].slots[0].count;
+            if (held != storage.end() && leaves > 0 && leaves < static_cast<int32_t>(held->second.quantity)) held->second.quantity -= static_cast<uint32_t>(leaves);
+            else storage.erase(key);
+        }
     }
     void absorb_pc_call(const repl::RpcCall &c) {
         if (!c.decoded) return;

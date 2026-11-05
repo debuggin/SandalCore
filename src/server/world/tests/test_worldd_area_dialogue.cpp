@@ -3,6 +3,8 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
 #include "area_session_test_harness.h"
+#include "protocol/repl/craft_rpc.h"
+#include "protocol/repl/vendor_rpc.h"
 #include "recordings.h"
 
 namespace {
@@ -361,6 +363,103 @@ void test_dialogue_1531() {
           "R: the vendor's greeting equals the recorded block bit for bit (929 bits), the NPC's object reference apart");
 }
 
+vendor::GmVendors dialogue_test_vendors() {
+    vendor::GmVendor gear{6064634098852102156ll, "PTR_ONLY_Vendor_Gear_0-9", "Gear", "GM Gear 0-9", {fi::kMace1H, fi::kShield, fi::kRingA, fi::kRingB, fi::kPotion, fi::kHeavyChest}, 6, 1};
+    vendor::GmVendor other{6064634360064966680ll, "PTR_ONLY_Vendor_Materials", "Materials", "GM Materials", {fi::kGatherCape}, 1, 1};
+    return vendor::GmVendors::from_defs({gear, other});
+}
+
+struct VendorHarness : Harness {
+    uint64_t gm = 0, gm2 = 0;
+    const int64_t gear_def = 6064634098852102156ll, mats_def = 6064634360064966680ll;
+    explicit VendorHarness(svc::Character r = cyb_record()) : Harness(std::move(r)) {
+        fx.world->set_gm_vendors(dialogue_test_vendors());
+        const spawns::OpenTemplate* vendor_t = fx.captured->template_for(spawns::kGmVendorArchetype);
+        if (!vendor_t) { std::printf("  [FAIL] no vendor template\n"); std::exit(2); }
+        gm = fx.add_vendor(*vendor_t, kCx + 800, kCy, gear_def, "GM Gear 0-9");
+        gm2 = fx.add_vendor(*vendor_t, kCx, kCy + 900, mats_def, "GM Materials");
+        start();
+    }
+    uint64_t component_of(uint64_t actor) const {
+        const world::WorldActor* a = fx.world->registry().find(actor);
+        return a ? a->npc.interact_component : 0;
+    }
+    void talk_to(uint64_t actor) { client_request(interact(component_of(actor)), pawn_ch); }
+};
+
+BunchWriter purchase(const repl::VendorPurchaseCart& cart) {
+    const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+    const schema::RpcSchema* rpc = pc.rpc("ServerHandleVendorPurchase");
+    const auto params = repl::vendor_purchase_params(*rpc, cart);
+    return params ? actor_rpc(pc, "ServerHandleVendorPurchase", *params) : BunchWriter();
+}
+
+repl::VendorPurchaseCart cart_of(int64_t vendor, std::vector<std::pair<int64_t, int32_t>> items) {
+    repl::VendorPurchaseCart c;
+    c.vendor = vendor;
+    for (const auto& [record, qty] : items) c.items.push_back({record, qty, std::nullopt, std::nullopt});
+    return c;
+}
+
+BunchWriter start_craft_for_no_station() {
+    const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
+    const schema::RpcSchema* rpc = pc.rpc("ServerStartCraft");
+    repl::StartCraft start;
+    start.quantity = 1;
+    const auto params = rpc ? repl::start_craft_params(*rpc, start) : std::nullopt;
+    return params ? actor_rpc(pc, "ServerStartCraft", *params) : BunchWriter();
+}
+
+void test_craft_start_for_no_station_stops_the_client() {
+    std::printf("a craft start that names no station: the client's craft is stopped\n");
+    VendorHarness h;
+    h.play();
+    h.run(milliseconds(1500));
+    const size_t from = h.got.size();
+    h.client_request(start_craft_for_no_station(), h.pc_ch);
+    CHECK(h.s->quick_refused() + h.s->crafts_refused() == 1, "the start is refused and counted");
+    CHECK(count_calls(pc_calls_since(h, from), "ClientInterruptCraft") == 1, "the client is sent ClientInterruptCraft");
+}
+
+void test_craft_start_is_not_slowed_by_the_shops() {
+    std::printf("a craft start has a request budget of its own: a burst of purchases does not use it\n");
+    VendorHarness h;
+    h.play();
+    h.run(milliseconds(1500));
+    std::vector<fake::Bunch> burst;
+    for (int i = 0; i < 12; ++i) burst.push_back(h.client.actor(h.pc_ch, purchase(cart_of(h.gear_def, {{fi::kPotion, 1}})), true));
+    burst.push_back(h.client.actor(h.pc_ch, start_craft_for_no_station(), true));
+    h.client_sends(std::move(burst));
+    h.settle();
+    CHECK(h.s->requests_dropped() >= 4, "the shops' budget cut the purchases of the burst");
+    CHECK(h.s->quick_refused() + h.s->crafts_refused() == 1, "the craft start of the same burst was not cut: it was answered");
+}
+
+void test_gm_materials_with_a_full_item_bag() {
+    std::printf("the GM vendor: materials go to the material bag when the item bag is full\n");
+    std::vector<svc::InventoryItem> full = kit();
+    full.erase(std::remove_if(full.begin(), full.end(), [](const svc::InventoryItem& i) { return i.container == Bag; }), full.end());
+    for (int i = 0; i < items::kBackpackSlots; ++i) full.push_back(make_item(Bag, i, fi::kPotion, 500 + static_cast<uint32_t>(i)));
+    VendorHarness f(cyb_record(full));
+    {
+        vendor::GmVendor gear{f.gear_def, "PTR_ONLY_Vendor_Gear_0-9", "Gear", "GM Gear 0-9", {fi::kMace1H, fi::kPotion}, 2, 1};
+        vendor::GmVendor mats{f.mats_def, "PTR_ONLY_Vendor_Materials", "Materials", "GM Materials", {cf::resource::kCoal}, 1, 1};
+        f.fx.world->set_gm_vendors(vendor::GmVendors::from_defs({gear, mats}));
+    }
+    f.play();
+    f.run(milliseconds(1500));
+    f.talk_to(f.gm2);
+    CHECK(f.s->vendor_actor() == f.gm2 && bag_items(f) == 70, "the materials vendor's window is open and the item bag holds 70 stacks: no free slot");
+    f.client_request(purchase(cart_of(f.mats_def, {{cf::resource::kCoal, 41}})), f.pc_ch);
+    CHECK(f.s->vendor_purchases() == 1 && f.s->vendor_refused() == 0, "41 Coal (three stacks) are sold although the item bag has no free slot");
+    CHECK(f.s->inventory().count(ItemContainer::Resource0) == 3 && bag_items(f) == 70, "they are in the material bag, and the item bag is as it was");
+    f.run(milliseconds(2200));
+    const size_t materials_before = f.s->inventory().count(ItemContainer::Resource0);
+    f.client_request(purchase(cart_of(f.mats_def, {{cf::resource::kCoal, 500}})), f.pc_ch);
+    CHECK(f.s->vendor_purchases() == 1 && f.s->vendor_refused() == 1 && f.s->inventory().count(ItemContainer::Resource0) == materials_before && bag_items(f) == 70,
+          "a cart the material bag cannot hold is refused whole: nothing is added");
+}
+
 }  // namespace
 
 void run_dialogue_session_suite() {
@@ -368,4 +467,7 @@ void run_dialogue_session_suite() {
     test_dialogue_town_crier();
     test_dialogue_session();
     test_dialogue_1531();
+    test_craft_start_for_no_station_stops_the_client();
+    test_craft_start_is_not_slowed_by_the_shops();
+    test_gm_materials_with_a_full_item_bag();
 }

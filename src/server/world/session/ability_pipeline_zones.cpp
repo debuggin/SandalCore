@@ -26,6 +26,7 @@ struct AbilityPipeline::Host::Zones {
     AbilityChange &c;
     Cast &cast;
     const char *which = "";
+    int depth = 0;
     bool combo_step = false;
     StepToken step{};
     double t = 0.0;
@@ -45,19 +46,7 @@ struct AbilityPipeline::Host::Zones {
   static void abort_unpaid_cast(AbilityPipeline &self, Cast &cast, double t) {
     const AbilityDef &def = *cast.def;
     self.drop_record(cast.client_id);
-    // Zones created by the cast either drop if unopened or end immediately.
-    for (size_t i = 0; i < self.zones_.size();) {
-      Zone &z = self.zones_[i];
-      if (z.client_id != cast.client_id || z.ability != def.row.guid ||
-          z.state == Zone::State::Ended) {
-        ++i;
-      } else if (z.state == Zone::State::Pending) {
-        self.zones_.erase(self.zones_.begin() + static_cast<std::ptrdiff_t>(i));
-      } else {
-        z.end_at = std::min(z.end_at, t);
-        ++i;
-      }
-    }
+    self.end_zones_of(cast, t);
     AbilityEvent e;
     if (self.item_instance_ && cast.instance >= 0 &&
         *self.item_instance_ == cast.instance) {
@@ -69,10 +58,23 @@ struct AbilityPipeline::Host::Zones {
     e.note = def.row.name + " cannot be paid for any more: the cast is over";
     e.refusal = true;
     ++self.refused_;
-    cast.hit_due = cast.projectile_due = cast.loop_due = cast.own_due =
-        std::nullopt;
+    cast.hit_due = cast.projectile_due = cast.loop_due = cast.own_due = std::nullopt;
+    cast.branch_due.reset();
     cast.missiles.clear();
     self.events_.push_back(std::move(e));
+  }
+
+  static void end_looped_shots(Cast &cast, double now) {
+    cast.branch_due = now + cast.looped->jump * cast.loop_scale;
+    cast.end_due = *cast.branch_due + cast.looped->end * cast.loop_scale;
+    const double jump_at = *cast.branch_due;
+    cast.missiles.erase(
+        std::remove_if(cast.missiles.begin(), cast.missiles.end(),
+                       [jump_at](const Cast::Missile &m) {
+                         return m.kind == Cast::Missile::Kind::Fly &&
+                                m.depth == 0 && m.due >= jump_at;
+                       }),
+        cast.missiles.end());
   }
 
   static int64_t active_zone_id_for_hit(const AbilityPipeline &self,
@@ -112,20 +114,25 @@ struct AbilityPipeline::Host::Zones {
 
   static void advance_looped_shot(AbilityPipeline &self, Cast &cast, double t) {
     ++cast.shots;
-    if (cast.shot_projectile != 0)
-      cast.missiles.push_back({t + kProjectileDelay, cast.shot_projectile});
-    bool more = true;
-    if (const auto g = self.groups_.find(cast.group);
-        g == self.groups_.end() || g->second.charges < cast.charge_cost)
-      more = false;
-    for (const auto &[stat, amount] : cast.stat_costs)
-      more = more && self.stat_now(stat) >= amount;
-    if (more) {
-      cast.cost_due = t + cast.looped->period;
-    } else {
-      cast.branch_due = t + cast.looped->jump;
-      cast.end_due = *cast.branch_due + cast.looped->end;
+    if (cast.shot_projectile != 0) {
+      const uint64_t aim = cast.target_actors.empty()
+                               ? (self.active_target_ ? self.active_target_() : 0)
+                               : cast.target_actors.front();
+      if (cast.looped->fire > 0 && aim != 0) {
+        const double fire_at =
+            std::max(t, cast.trigger_at +
+                            (cast.looped->fire + (cast.shots - 1) * cast.looped->period) *
+                                cast.loop_scale);
+        Cast::Missile m{fire_at, cast.shot_projectile, aim, Cast::Missile::Kind::Fly, cast.shots};
+        cast.missiles.push_back(m);
+      } else {
+        cast.missiles.push_back({t + kProjectileDelay, cast.shot_projectile});
+      }
     }
+    if (self.can_pay(cast))
+      cast.cost_due = t + cast.looped->period * cast.loop_scale;
+    else
+      end_looped_shots(cast, t);
   }
 
   static StepToken resolve_combo_step_token(const AbilityPipeline &self,
@@ -134,13 +141,10 @@ struct AbilityPipeline::Host::Zones {
     const AbilityDef &def = *cast.def;
     const content::MontageRow *montage = nullptr;
     for (const content::MontageRow &m : def.montages) {
-      if (m.anim_index == cast.animation_index)
-        montage = &m;
+      if (m.anim_index == cast.animation_index) montage = &m;
     }
-    if (!montage && !def.montages.empty())
-      montage = &def.montages.front();
-    if (!montage)
-      return step;
+    if (!montage && !def.montages.empty()) montage = &def.montages.front();
+    if (!montage) return step;
     step = step_token(leaf_of_path(montage->soft_path));
     int named_step = 0;
     bool named_proc = false;
@@ -157,14 +161,11 @@ struct AbilityPipeline::Host::Zones {
                                       const StepToken &mine) {
     bool paired = false;
     for (const content::AbilityHitRow &d : def.hits) {
-      if (d.source != "hit")
-        continue;
+      if (d.source != "hit") continue;
       const HitDef *direct = self.catalog_->hit(d.hit_guid);
-      if (!direct || direct->fires.empty())
-        continue;
+      if (!direct || direct->fires.empty()) continue;
       const StepToken theirs = step_token(direct->row.name);
-      paired =
-          paired || (same_step(mine, theirs) && theirs.variant == mine.variant);
+      paired = paired || (same_step(mine, theirs) && theirs.variant == mine.variant);
     }
     return paired;
   }
@@ -173,12 +174,10 @@ struct AbilityPipeline::Host::Zones {
                                            StepHitCtx &ctx, const HitDef &hit,
                                            int64_t owner_guid) {
     const StepToken mine = step_token(hit.row.name);
-    if (!mine.ok || (ctx.step.ok && !same_step(ctx.step, mine)))
-      return false;
+    if (!mine.ok || (ctx.step.ok && !same_step(ctx.step, mine))) return false;
     if (std::find(ctx.fired.begin(), ctx.fired.end(), &hit) != ctx.fired.end())
       return false;
-    if (mine.variant != 0 &&
-        !is_paired_combo_variant(self, *ctx.cast.def, mine))
+    if (mine.variant != 0 && !is_paired_combo_variant(self, *ctx.cast.def, mine))
       return false;
     ctx.fired.push_back(&hit);
     ctx.fired_by.push_back(owner_guid);
@@ -190,8 +189,7 @@ struct AbilityPipeline::Host::Zones {
                                       const content::AbilityHitRow &h,
                                       const HitDef &hit, HitSource &src) {
     if (std::string_view(ctx.which) == "hit") {
-      if (hit.row.net_type.find("ServerVerify") != std::string::npos)
-        return false;
+      if (hit.row.net_type.find("ServerVerify") != std::string::npos) return false;
       src = HitSource{};
       src.guid = ctx.cast.def->row.guid;
       src.actor = true;
@@ -201,8 +199,7 @@ struct AbilityPipeline::Host::Zones {
     }
     if (ctx.cast.chain_owner != 0 && h.owner_guid != ctx.cast.chain_owner)
       return false;
-    if (ctx.combo_step &&
-        !accept_combo_projectile_step(self, ctx, hit, h.owner_guid))
+    if (ctx.combo_step && !accept_combo_projectile_step(self, ctx, hit, h.owner_guid))
       return false;
     src = make_proj_source(h.owner_guid, true, true, false);
     return true;
@@ -210,17 +207,21 @@ struct AbilityPipeline::Host::Zones {
 
   static void apply_step_hit_row(AbilityPipeline &self, StepHitCtx &ctx,
                                  const content::AbilityHitRow &h) {
-    if (h.source != ctx.which)
-      return;
+    if (h.source != ctx.which) return;
     const HitDef *hit = self.catalog_->hit(h.hit_guid);
     HitSource src;
-    if (!hit || !resolve_step_hit_source(self, ctx, h, *hit, src))
-      return;
+    if (!hit || !resolve_step_hit_source(self, ctx, h, *hit, src)) return;
     const AbilityDef &def = *ctx.cast.def;
+    bool landed = false;
     if (!ctx.cast.target_actors.empty() &&
         (hit->row.applicable_targets & (2 | 4 | 8 | 16)) != 0) {
       self.apply_hit_on_targets(ctx.c, *hit, ctx.cast.target_actors, ctx.t, src,
-                                &def);
+                                &def, &landed);
+      if (landed && std::string_view(ctx.which) == "projectile" &&
+          !hit->recursive.empty() && ctx.cast.target_actors.size() == 1) {
+        self.bounce_from(ctx.c, ctx.cast, *hit, h.owner_guid,
+                         ctx.cast.target_actors.front(), ctx.depth, ctx.t);
+      }
     }
     const bool at_others = std::string_view(ctx.which) == "projectile" &&
                            !ctx.cast.target_actors.empty();
@@ -337,7 +338,7 @@ struct AbilityPipeline::Host::Zones {
       ground = g;
     const double way = std::clamp((from.z - ground) / down, 0.0, 10000.0);
     Cast::Missile land{t + way / tc.speed, 0, 0, Cast::Missile::Kind::Strike,
-                       launch.index,       x, y, ground};
+                       launch.index,       0, x, y, ground};
     cast.missiles.push_back(land);
     spdlog::info(
         "[abilities] {} (arrow {} of {}): it leaves {:.1f} m up and lands "
@@ -456,41 +457,17 @@ struct AbilityPipeline::Host::Zones {
     return dropped;
   }
 
-  static void append_fired_straight_missiles(AbilityPipeline &self,
-                                             const HitDef &hit, int64_t guid,
-                                             double t, Cast &wave) {
-    const content::ProjectileRow *p = self.catalog_->projectile(guid);
-    if (!p || p->speed <= 0)
-      return;
-    if (p->projectile_type.find("Straight") == std::string::npos) {
-      if (self.no_formula_.insert(guid).second) {
-        spdlog::info("[abilities] the hit {} fires {}, a {} projectile: only "
-                     "straight ones are made",
-                     hit.row.name, p->name, p->projectile_type);
+  static void schedule_server_self_use_slots(AbilityPipeline &self,
+                                             const Cast &cast, double t) {
+    CastRecord *rec = self.record_of(cast.client_id);
+    if (!rec) return;
+    for (HitSlot &s : rec->slots) {
+      if (s.server_self_use && s.due.empty() && s.requests == 0) {
+        ++s.requests;
+        s.last_request = t;
+        s.due.push_back({t + kConfirmDelay, true, {}});
       }
-      return;
     }
-    const std::vector<combat::GatheredTarget> found =
-        self.combat_->enemies_in_line(p->range, p->sphere_radius, kMaxGathered);
-    for (const combat::GatheredTarget &e : found)
-      wave.missiles.push_back({t + e.distance_cm / p->speed, guid, e.actor});
-    spdlog::info("[abilities] {} ({}): a straight projectile of {:.0f} cm/s "
-                 "flies {:.0f} m ahead: {} enem{} in its way",
-                 wave.def->row.name, hit.row.name, p->speed, p->range / 100.0,
-                 found.size(), found.size() == 1 ? "y" : "ies");
-  }
-
-  static bool handle_unaffordable_cost(AbilityPipeline &self, Cast &cast,
-                                       double t) {
-    if (is_cast_cost_affordable(self, cast))
-      return false;
-    if (cast.looped && cast.shots > 0) {
-      cast.branch_due = t + cast.looped->jump;
-      cast.end_due = *cast.branch_due + cast.looped->end;
-    } else {
-      abort_unpaid_cast(self, cast, t);
-    }
-    return true;
   }
 
   static void finish_toggle_off_cast(AbilityPipeline &self, AbilityChange &c,
@@ -503,13 +480,58 @@ struct AbilityPipeline::Host::Zones {
   }
 };
 
+bool AbilityPipeline::can_pay(const Cast &cast) const {
+  return Host::Zones::is_cast_cost_affordable(*this, cast);
+}
+
+void AbilityPipeline::end_zones_of(const Cast &cast, double t) {
+  const int64_t ability = cast.def ? cast.def->row.guid : 0;
+  for (size_t i = 0; i < zones_.size();) {
+    Zone &z = zones_[i];
+    if (z.client_id != cast.client_id || z.ability != ability ||
+        z.state == Zone::State::Ended) {
+      ++i;
+    } else if (z.state == Zone::State::Pending) {
+      zones_.erase(zones_.begin() + static_cast<std::ptrdiff_t>(i));
+    } else {
+      z.end_at = std::min(z.end_at, t);
+      ++i;
+    }
+  }
+}
+
+void AbilityPipeline::release_held(int32_t client_id, double t) {
+  const double at = t + kHeldEndDelay;
+  for (Held &h : held_) {
+    if (h.client_id == client_id && !h.end_due) h.end_due = at;
+  }
+  for (Cast &c : casts_) {
+    if (c.client_id == client_id && c.def && c.def->row.hold_animation &&
+        !c.held_release_due)
+      c.held_release_due = at;
+  }
+}
+
 void AbilityPipeline::step_cost(Cast &cast, double t) {
+  if (cast.looped && cast.shots > 0 && cast.instance >= 0 &&
+      (!item_instance_ || *item_instance_ != cast.instance)) {
+    Host::Zones::end_looped_shots(cast, t);
+    return;
+  }
   const AbilityDef &def = *cast.def;
   AbilityChange c;
-  if (CastRecord *rec = record_of(cast.client_id))
-    rec->cost_at = t;
-  if (Host::Zones::handle_unaffordable_cost(*this, cast, t))
+  bool affordable = can_pay(cast);
+  if (affordable && cast.item_cast && cast.item_cast->consumes && item_taker_)
+    affordable = item_taker_(cast.client_id);
+  if (CastRecord *rec = record_of(cast.client_id)) rec->cost_at = t;
+  if (!affordable) {
+    if (cast.looped && cast.shots > 0)
+      Host::Zones::end_looped_shots(cast, t);
+    else
+      Host::Zones::abort_unpaid_cast(*this, cast, t);
     return;
+  }
+  Host::Zones::schedule_server_self_use_slots(*this, cast, t);
   if (Host::Zones::spend_cast_costs(*this, c, cast) && resource_)
     apply_effect(c, *resource_, 1, std::nullopt, t);
   if (!cast.toggle_off)
@@ -517,16 +539,15 @@ void AbilityPipeline::step_cost(Cast &cast, double t) {
   else
     Host::Zones::finish_toggle_off_cast(*this, c, def.row.guid, t);
   use_charge(c, cast, t);
-  if (!cast.loop)
-    Host::Zones::apply_initial_zone_hits(*this, c, cast, t);
-  if (cast.looped)
-    Host::Zones::advance_looped_shot(*this, cast, t);
+  if (!cast.loop) Host::Zones::apply_initial_zone_hits(*this, c, cast, t);
+  if (cast.looped) Host::Zones::advance_looped_shot(*this, cast, t);
   recompute(c);
   emit({std::move(c), std::nullopt, t,
         "the cost, cooldown and class resource of " + def.row.name});
 }
 
 void AbilityPipeline::step_own(Cast &cast, double t) {
+  const ConsumedScope consumed(*this, cast.item_cast);
   const AbilityDef &def = *cast.def;
   AbilityChange c;
   for (const EffectDef *e : cast.own_effects) {
@@ -537,18 +558,17 @@ void AbilityPipeline::step_own(Cast &cast, double t) {
     apply_effect(c, *e, 1, std::nullopt, t, false, def.row.guid);
   }
   sync_engine_effects();
-  if (def.row.hold_animation) {
+  if (def.row.hold_animation &&
+      !(cast.held_release_due && *cast.held_release_due <= t)) {
     held_.erase(std::remove_if(
                     held_.begin(), held_.end(),
                     [&](const Held &h) { return h.ability == def.row.guid; }),
                 held_.end());
-    held_.push_back({cast.client_id, def.row.guid, std::nullopt});
-    if (held_.size() > 16)
-      held_.erase(held_.begin());
+    held_.push_back({cast.client_id, def.row.guid, cast.held_release_due});
+    if (held_.size() > 16) held_.erase(held_.begin());
   }
   recompute(c);
-  emit({std::move(c), std::nullopt, t,
-        "the own effects of " + def.row.name + " start"});
+  emit({std::move(c), std::nullopt, t, "the own effects of " + def.row.name + " start"});
 }
 
 void AbilityPipeline::step_loop(Cast &cast, double t) {
@@ -562,18 +582,15 @@ void AbilityPipeline::step_loop(Cast &cast, double t) {
       apply_effect(c, *e, 1, std::nullopt, t, false, def.row.guid);
   }
   recompute(c);
-  emit({std::move(c), std::nullopt, t,
-        "the effects of " + def.row.name + " start"});
+  emit({std::move(c), std::nullopt, t, "the effects of " + def.row.name + " start"});
 }
 
 void AbilityPipeline::spawn_zones(const Cast &cast, double open_at,
                                   double end_at) {
-  if (cast.loop)
-    return;
+  if (cast.loop) return;
   for (const int64_t guid : cast.def->zones) {
     const content::ZoneRow *row = catalog_->zone(guid);
-    if (!row)
-      continue;
+    if (!row) continue;
     Zone z;
     z.id = next_zone_id_++;
     z.ability = cast.def->row.guid;
@@ -583,10 +600,8 @@ void AbilityPipeline::spawn_zones(const Cast &cast, double open_at,
     const double life = row->life_time > 0 ? row->life_time : 30.0;
     z.end_at = end_at >= 0 ? std::max(end_at, open_at) : open_at + life;
     zones_.push_back(z);
-    if (zones_.size() > kMaxZones)
-      zones_.erase(zones_.begin());
-    Host::Zones::extend_record_for_zone(*this, cast.client_id, z, life,
-                                        row->tick_rate);
+    if (zones_.size() > kMaxZones) zones_.erase(zones_.begin());
+    Host::Zones::extend_record_for_zone(*this, cast.client_id, z, life, row->tick_rate);
   }
 }
 
@@ -641,9 +656,10 @@ void AbilityPipeline::run_zone(size_t index, double t) {
   }
 }
 
-void AbilityPipeline::step_hits(Cast &cast, double t, const char *which) {
+void AbilityPipeline::step_hits(Cast &cast, double t, const char *which, int depth) {
   const CastRecord *fill_record = record_of(cast.client_id);
   const FillScope fill(*this, fill_record ? fill_record->fill : 1.0);
+  const ConsumedScope consumed(*this, cast.item_cast);
   const AbilityDef &def = *cast.def;
   AbilityChange c;
   const bool combo_step =
@@ -653,11 +669,10 @@ void AbilityPipeline::step_hits(Cast &cast, double t, const char *which) {
                        : StepToken{};
   if (combo_step && step.beam) {
     emit({std::move(c), std::nullopt, t,
-          "the projectile step of " + def.row.name +
-              " (a beam: nothing flies)"});
+          "the projectile step of " + def.row.name + " (a beam: nothing flies)"});
     return;
   }
-  Host::Zones::StepHitCtx ctx{c, cast, which, combo_step, step, t};
+  Host::Zones::StepHitCtx ctx{c, cast, which, depth, combo_step, step, t};
   for (const content::AbilityHitRow &h : def.hits)
     Host::Zones::apply_step_hit_row(*this, ctx, h);
   Host::Zones::apply_combo_split_hits(*this, ctx);
@@ -673,14 +688,13 @@ void AbilityPipeline::start_timed(Cast &cast, const TimedCast &timed,
   cast.timed = &timed;
   if (projectile_of(*cast.def, timed.projectile) == 0 &&
       no_formula_.insert(cast.def->row.guid).second) {
-    spdlog::warn("[abilities] {} lists no projectile with key {}: its launches "
-                 "do nothing",
+    spdlog::warn("[abilities] {} lists no projectile with key {}: its launches do nothing",
                  cast.def->row.name, timed.projectile);
   }
   const combat::Vec3 at = combat_ ? combat_->self().position() : combat::Vec3{};
   for (int i = 0; i < timed.count; ++i) {
     cast.missiles.push_back({t + timed.first + timed.gap * i, 0, 0,
-                             Cast::Missile::Kind::Launch, i, at.x, at.y, at.z});
+                             Cast::Missile::Kind::Launch, i, 0, at.x, at.y, at.z});
   }
   if (timed.jump_at > 0 && timed.end_at > timed.jump_at) {
     cast.montage_branch = true;
@@ -692,8 +706,7 @@ void AbilityPipeline::start_timed(Cast &cast, const TimedCast &timed,
 }
 
 void AbilityPipeline::step_timed(Cast &cast, const Cast::Missile &m, double t) {
-  if (!combat_ || !cast.timed)
-    return;
+  if (!combat_ || !cast.timed) return;
   if (m.kind == Cast::Missile::Kind::Launch)
     launch_timed(cast, m, t);
   else if (m.kind == Cast::Missile::Kind::Strike)
@@ -702,8 +715,7 @@ void AbilityPipeline::step_timed(Cast &cast, const Cast::Missile &m, double t) {
 
 void AbilityPipeline::launch_timed(Cast &cast, const Cast::Missile &launch,
                                    double t) {
-  if (cast.instance >= 0 &&
-      (!item_instance_ || *item_instance_ != cast.instance))
+  if (cast.instance >= 0 && (!item_instance_ || *item_instance_ != cast.instance))
     return;
   switch (cast.timed->kind) {
   case TimedCast::Kind::Volley:
@@ -723,21 +735,18 @@ void AbilityPipeline::land_strike(Cast &cast, const Cast::Missile &m,
   const TimedCast &tc = *cast.timed;
   const AbilityDef &def = *cast.def;
   const int64_t projectile = projectile_of(def, tc.projectile + m.index);
-  if (projectile == 0)
-    return;
+  if (projectile == 0) return;
   AbilityChange c;
   Host::Zones::StrikeCtx ctx{c, cast, m, t, projectile, 0};
   for (const content::AbilityHitRow &h : def.hits) {
-    if (h.source != "projectile" || h.owner_guid != projectile)
-      continue;
+    if (h.source != "projectile" || h.owner_guid != projectile) continue;
     if (const HitDef *hit = catalog_->hit(h.hit_guid)) {
       apply_hit(c, *hit, t, true,
                 Host::Zones::make_proj_source(projectile, false, true, false));
       Host::Zones::apply_strike_recursive(*this, ctx, *hit);
     }
   }
-  spdlog::info("[abilities] {} (arrow {} of {}) lands at {:.1f} m from the "
-               "caster: {} enem{} hurt",
+  spdlog::info("[abilities] {} (arrow {} of {}) lands at {:.1f} m from the caster: {} enem{} hurt",
                def.row.name, m.index + 1, tc.count,
                std::hypot(m.x - combat_->self().position().x,
                           m.y - combat_->self().position().y) /
@@ -745,8 +754,7 @@ void AbilityPipeline::land_strike(Cast &cast, const Cast::Missile &m,
                ctx.hurt, ctx.hurt == 1 ? "y" : "ies");
   recompute(c);
   emit({std::move(c), std::nullopt, t,
-        "arrow " + std::to_string(m.index + 1) + " of " + def.row.name +
-            " lands"});
+        "arrow " + std::to_string(m.index + 1) + " of " + def.row.name + " lands"});
 }
 
 void AbilityPipeline::cancel_timed(int32_t client_instance_id, double now) {
@@ -761,34 +769,10 @@ void AbilityPipeline::cancel_timed(int32_t client_instance_id, double now) {
       cast.end_due = *cast.branch_due + (tc.end_at - tc.jump_at);
     }
     if (dropped > 0) {
-      spdlog::info("[abilities] the key of {} went up {:.3f} s after the "
-                   "trigger: {} arrows stay in the quiver",
+      spdlog::info("[abilities] the key of {} went up {:.3f} s after the trigger: {} arrows stay in the quiver",
                    cast.def->row.name, now - cast.trigger_at, dropped);
     }
   }
-}
-
-void AbilityPipeline::fire_from_hit(const CastRecord &rec, const HitDef &hit,
-                                    double t) {
-  if (!combat_ || hit.fires.empty())
-    return;
-  std::string why;
-  bool ok = true;
-  const bool allowed = eval_bool(hit.row.requirement_expr, true, ok, why) && ok;
-  drop_evaluation();
-  if (!allowed)
-    return;
-  const AbilityDef *def = catalog_->ability(rec.ability);
-  if (!def)
-    return;
-  Cast wave;
-  wave.client_id = rec.client_id;
-  wave.def = def;
-  wave.trigger_at = rec.trigger_at;
-  for (const int64_t guid : hit.fires)
-    Host::Zones::append_fired_straight_missiles(*this, hit, guid, t, wave);
-  if (!wave.missiles.empty())
-    casts_.push_back(std::move(wave));
 }
 
 } // namespace aoc::worldd

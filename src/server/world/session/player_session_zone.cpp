@@ -75,6 +75,7 @@ PlayerSession::GmMoveResult PlayerSession::move_to(Connection& conn, double x, d
     const double yaw = checker_.good().yaw_degrees;
     checker_.teleport(x, y, z, yaw);
     pending_fix_.reset();   // a correction a refused move left would put the client back where it was
+    based_fix_.reset();
     const float ts = checker_.good().has_time_stamp ? checker_.good().time_stamp : 0.0f;
     constexpr uint8_t mode = repl::kMoveFalling;   // the client lands and walks again by itself
     queue(gm ? "GM teleport" : "floor net teleport", [ts, x, y, z, mode](bootstrap::PlayerBootstrap& pb) { return pb.correction(ts, repl::Vec3d{x, y, z}, repl::Vec3d{}, mode); }, conn, /*must_build=*/true);
