@@ -43,6 +43,12 @@ namespace SandalLauncher.Models
         [JsonPropertyName("accountUsername")]
         public string AccountUsername { get; init; } = string.Empty;
 
+        [JsonPropertyName("isTemporaryAccount")]
+        public bool IsTemporaryAccount { get; init; }
+
+        [JsonPropertyName("createdAtUtc")]
+        public DateTimeOffset? CreatedAtUtc { get; init; }
+
         public static LauncherProfile FromLauncherConfig(
             LauncherConfig config,
             string id = "local-dev",
@@ -61,10 +67,32 @@ namespace SandalLauncher.Models
                 UseEos = config.ClientUseEos,
                 CertificatePinSha256 = string.Empty,
                 LastUsedUtc = DateTimeOffset.UtcNow,
-                AccountUsername = string.Empty
+                AccountUsername = string.Empty,
+                IsTemporaryAccount = false,
+                CreatedAtUtc = DateTimeOffset.UtcNow
             };
         }
     }
+
+    public sealed record LauncherCharacterSummary(
+        string CharacterId,
+        string Name,
+        string ClassName,
+        int Level,
+        string ZoneName);
+
+    public sealed record CharacterSelectTicket(
+        string CharacterId,
+        string CharacterName,
+        string JoinTicket,
+        string WorldEndpoint,
+        bool WorldEnterAllowed);
+
+    public sealed record AuthSessionResult(
+        string AccessToken,
+        string Username,
+        int ExpiresIn,
+        bool IsTemporaryAccount);
 
     public sealed record LauncherProfileCatalog
     {

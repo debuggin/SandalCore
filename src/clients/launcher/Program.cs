@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System;
+using System.Collections.ObjectModel;
+using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -8,6 +13,10 @@ using Avalonia.Markup.Xaml;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SandalCore.Config;
+using SandalLauncher.Config;
+using SandalLauncher.Models;
+using SandalLauncher.Security;
+using SandalLauncher.Services;
 using SandalLauncher.ViewModels;
 using SandalLauncher.Views;
 
@@ -22,6 +31,11 @@ namespace SandalLauncher
             {
                 return exitCode;
             }
+            LauncherCliOptions cliOptions = LauncherCliOptions.Parse(args);
+            if (cliOptions.HasAutomationFlags || cliOptions.AutomationPort.HasValue)
+            {
+                return RunSyncBounded(() => RunCliAutomationAsync(cliOptions), cliOptions.TimeoutSec);
+            }
             return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
         }
 
@@ -31,12 +45,97 @@ namespace SandalLauncher
                 .WithInterFont()
                 .LogToTrace();
 
+        public static async Task<int> RunCliAutomationAsync(
+            LauncherCliOptions options,
+            MultiProtocolGatewayClient? gatewayClient = null,
+            ICredentialVault? vault = null,
+            ProfileStoreService? profileStore = null,
+            CancellationToken ct = default)
+        {
+            ArgumentNullException.ThrowIfNull(options);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, options.TimeoutSec)));
+            CancellationToken linked = timeoutCts.Token;
+
+            LauncherConfig cfg = SandalConfigLoader.LoadLauncher();
+            MultiProtocolGatewayClient gw = gatewayClient ?? new MultiProtocolGatewayClient(options.GatewayUrl);
+            var vm = new MainWindowViewModel(cfg, gw, vault, profileStore);
+            using LauncherAutomationServer? autoServer = options.AutomationPort is > 0
+                ? new LauncherAutomationServer(vm, options.AutomationPort.Value)
+                : null;
+
+            try
+            {
+                await ExecuteCliWorkflowStepsAsync(options, vm, linked).ConfigureAwait(false);
+                if (options.JsonOutput)
+                    Console.Out.WriteLine(JsonSerializer.Serialize(new LauncherAutomationController(vm).GetStateSnapshot()));
+                return 0;
+            }
+            finally
+            {
+                if (options.DeleteTempAccountOnExit && vm.IsAuthenticated && vm.IsTemporaryAccount)
+                    await vm.DeleteAccountAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        private static async Task ExecuteCliWorkflowStepsAsync(
+            LauncherCliOptions options,
+            MainWindowViewModel vm,
+            CancellationToken ct)
+        {
+            if (options.KillExistingClient)
+                await vm.TerminateAshesAsync(ct).ConfigureAwait(false);
+            if (options.RegisterTemp)
+            {
+                vm.AuthUsername = options.Username;
+                vm.AuthPassword = options.Password;
+                await vm.RegisterTempAsync(ct).ConfigureAwait(false);
+            }
+            else if (options.AutoLogin || !string.IsNullOrWhiteSpace(options.Username))
+            {
+                vm.AuthUsername = options.Username;
+                vm.AuthPassword = options.Password;
+                vm.IsTemporaryAccount = false;
+                await vm.LoginAsync(ct).ConfigureAwait(false);
+            }
+            if (vm.IsAuthenticated && options.CreateCharacterIfMissing && vm.Characters.Count == 0)
+            {
+                vm.NewCharacterName = string.IsNullOrWhiteSpace(options.SelectCharacter) ? LauncherCliOptions.DefaultHeroName : options.SelectCharacter;
+                await vm.CreateCharacterAsync(ct).ConfigureAwait(false);
+            }
+            if (vm.IsAuthenticated && (options.VerifyCharSelect || !string.IsNullOrWhiteSpace(options.SelectCharacter)))
+            {
+                string target = !string.IsNullOrWhiteSpace(options.SelectCharacter) ? options.SelectCharacter : LauncherCliOptions.DefaultHeroName;
+                await vm.SelectCharacterByNameOrIdAsync(target, options.SpawnClient, ct).ConfigureAwait(false);
+            }
+            if (options.TerminateAfterCharSelect)
+                await vm.TerminateAshesAsync(ct).ConfigureAwait(false);
+        }
+
+        private static int RunSyncBounded(Func<Task<int>> action, int timeoutSec)
+        {
+            int code = 1;
+            Exception? captured = null;
+            using var gate = new ManualResetEventSlim(false);
+            _ = InvokeAsync();
+            gate.Wait(TimeSpan.FromSeconds(Math.Max(5, timeoutSec)));
+            if (captured is not null) ExceptionDispatchInfo.Capture(captured).Throw();
+            return code;
+
+            async Task InvokeAsync()
+            {
+                try { code = await action().ConfigureAwait(false); }
+                catch (Exception ex) { captured = ex; }
+                finally { gate.Set(); }
+            }
+        }
+
         private static bool TryHandleCliFastPath(string[] args, out int exitCode)
         {
             string flag = args[0];
             if (flag is "--help" or "-h")
             {
-                Console.Out.WriteLine("Usage: SandalLauncher [--json] [--dry-run] [--version] [--help]");
+                Console.Out.WriteLine(LauncherCliOptions.GetUsageText());
                 exitCode = 0;
                 return true;
             }
@@ -46,7 +145,7 @@ namespace SandalLauncher
                 exitCode = 0;
                 return true;
             }
-            if (flag is "--json" or "--dry-run")
+            if (args.Length == 1 && flag is "--json" or "--dry-run")
             {
                 LauncherConfig cfg = SandalConfigLoader.LoadLauncher();
                 string payload = JsonSerializer.Serialize(new
@@ -189,16 +288,54 @@ namespace SandalLauncher.ViewModels
         [ObservableProperty]
         private string _statusBannerMessage = "All 5 view states armed; live LauncherConfig SSoT bound.";
 
+        [ObservableProperty] private string _authUsername = string.Empty;
+        [ObservableProperty] private string _authPassword = string.Empty;
+        [ObservableProperty] private bool _isAuthenticated;
+        [ObservableProperty] private bool _isTemporaryAccount;
+        [ObservableProperty] private string _signedInUsername = string.Empty;
+        [ObservableProperty] private string _accessToken = string.Empty;
+        [ObservableProperty] private string _tempAccountBadgeText = "EPHEMERAL TEMP ACCOUNT";
+        [ObservableProperty] private string _newCharacterName = LauncherCliOptions.DefaultHeroName;
+        [ObservableProperty] private LauncherCharacterSummary? _selectedCharacter;
+        [ObservableProperty] private string _selectedCharacterId = string.Empty;
+        [ObservableProperty] private CharacterSelectTicket? _lastCharacterSelectTicket;
+        [ObservableProperty] private string _lastJoinTicket = string.Empty;
+        [ObservableProperty] private string _worldEndpoint = string.Empty;
+        [ObservableProperty] private string _joinTicketBadgeText = "No active join ticket";
+        [ObservableProperty] private bool _isAshesProcessRunning;
+        [ObservableProperty] private int? _trackedAshesPid;
+
+        public ObservableCollection<LauncherCharacterSummary> Characters { get; } = [];
+        public MultiProtocolGatewayClient GatewayClient { get; }
+        public EphemeralCredentialGuard CredentialGuard { get; }
+        public ProfileStoreService ProfileStore { get; }
+        public bool IsSignedOut => !IsAuthenticated;
+
         public MainWindowViewModel()
-            : this(SandalConfigLoader.LoadLauncher())
+            : this(SandalConfigLoader.LoadLauncher(), null, null, null)
         {
         }
 
-        public MainWindowViewModel(LauncherConfig config)
+        public MainWindowViewModel(
+            LauncherConfig config,
+            MultiProtocolGatewayClient? gatewayClient = null,
+            ICredentialVault? credentialVault = null,
+            ProfileStoreService? profileStore = null)
         {
             _config = config;
+            GatewayClient = gatewayClient ?? new MultiProtocolGatewayClient($"http://{config.GatewayHttpAddr}");
+            CredentialGuard = new EphemeralCredentialGuard(credentialVault ?? new InMemoryCredentialVault());
+            ProfileStore = profileStore ?? new ProfileStoreService();
             ApplyConfigSnapshot(config);
             ApplyViewState("populated");
+        }
+
+        partial void OnIsAuthenticatedChanged(bool value) => OnPropertyChanged(nameof(IsSignedOut));
+
+        partial void OnSelectedCharacterChanged(LauncherCharacterSummary? value)
+        {
+            if (value is not null)
+                SelectedCharacterId = value.CharacterId;
         }
 
         private void ApplyConfigSnapshot(LauncherConfig cfg)
@@ -317,6 +454,171 @@ namespace SandalLauncher.ViewModels
         private void LaunchClient()
         {
             StatusBannerMessage = $"Ready to launch client: {LaunchCommandLinePreview}";
+        }
+
+        [RelayCommand]
+        public async Task LoginAsync(CancellationToken ct = default)
+        {
+            string user = AuthUsername.Trim();
+            string pass = AuthPassword;
+            AuthPassword = string.Empty;
+            AuthSessionResult session = await GatewayClient.LoginAsync(user, pass, ct).ConfigureAwait(false);
+            if (IsTemporaryAccount)
+                CredentialGuard.SaveTemporaryCredentials($"temp-{session.Username}", session.Username, pass, isTemporaryAccount: true);
+            await ApplyAuthenticatedSessionAsync(session, IsTemporaryAccount, ct).ConfigureAwait(false);
+        }
+
+        [RelayCommand]
+        public async Task RegisterTempAsync(CancellationToken ct = default)
+        {
+            string user = string.IsNullOrWhiteSpace(AuthUsername) ? LauncherCliOptions.GenerateTempUsername() : AuthUsername.Trim();
+            string pass = string.IsNullOrEmpty(AuthPassword) ? LauncherCliOptions.GenerateStrongPassword() : AuthPassword;
+            AuthUsername = user;
+            AuthPassword = string.Empty;
+            IsTemporaryAccount = true;
+            AuthSessionResult session = await GatewayClient.RegisterAsync(user, pass, isTemporaryAccount: true, ct).ConfigureAwait(false);
+            string tempProfileId = $"temp-{session.Username}";
+            CredentialGuard.SaveTemporaryCredentials(tempProfileId, session.Username, pass, isTemporaryAccount: true);
+            await SaveTempProfileEntryAsync(tempProfileId, session.Username, ct).ConfigureAwait(false);
+            await ApplyAuthenticatedSessionAsync(session, isTemp: true, ct).ConfigureAwait(false);
+        }
+
+        [RelayCommand]
+        public Task CreateCharacterAsync(CancellationToken ct = default) =>
+            CreateCharacterWithIdsAsync(NewCharacterName, 1, 1, ct);
+
+        public async Task<LauncherCharacterSummary> CreateCharacterWithIdsAsync(
+            string name, int classId = 1, int raceId = 1, CancellationToken ct = default)
+        {
+            string targetName = string.IsNullOrWhiteSpace(name) ? LauncherCliOptions.DefaultHeroName : name.Trim();
+            LauncherCharacterSummary created = await GatewayClient.CreateCharacterAsync(AccessToken, targetName, classId, raceId, ct).ConfigureAwait(false);
+            Characters.Add(created);
+            SelectedCharacter = created;
+            SelectedCharacterId = created.CharacterId;
+            StatusBannerMessage = $"Created character '{created.Name}' ({created.CharacterId}).";
+            return created;
+        }
+
+        [RelayCommand]
+        public Task SelectCharacterAsync(CancellationToken ct = default)
+        {
+            string target = SelectedCharacter?.CharacterId
+                ?? (!string.IsNullOrWhiteSpace(SelectedCharacterId) ? SelectedCharacterId
+                : (Characters.Count > 0 ? Characters[0].CharacterId : LauncherCliOptions.DefaultHeroName));
+            return SelectCharacterByNameOrIdAsync(target, spawnClient: false, ct);
+        }
+
+        public async Task<CharacterSelectTicket> SelectCharacterByNameOrIdAsync(
+            string characterIdOrName, bool spawnClient = false, CancellationToken ct = default)
+        {
+            LauncherCharacterSummary? matched = Characters.FirstOrDefault(c =>
+                string.Equals(c.CharacterId, characterIdOrName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(c.Name, characterIdOrName, StringComparison.OrdinalIgnoreCase));
+            string resolvedTarget = matched?.CharacterId ?? characterIdOrName.Trim();
+            CharacterSelectTicket ticket = await GatewayClient.SelectCharacterAsync(AccessToken, resolvedTarget, verifyWorldEnter: true, ct).ConfigureAwait(false);
+            if (matched is not null) SelectedCharacter = matched;
+            SelectedCharacterId = ticket.CharacterId;
+            LastCharacterSelectTicket = ticket;
+            LastJoinTicket = ticket.JoinTicket;
+            WorldEndpoint = ticket.WorldEndpoint;
+            JoinTicketBadgeText = $"Ticket: {ticket.JoinTicket} -> {ticket.WorldEndpoint} (Enter={ticket.WorldEnterAllowed})";
+            if (spawnClient) IsAshesProcessRunning = true;
+            StatusBannerMessage = $"Character '{ticket.CharacterName}' selected; join ticket ready for {ticket.WorldEndpoint}.";
+            return ticket;
+        }
+
+        [RelayCommand]
+        public Task TerminateAshesAsync(CancellationToken ct = default) =>
+            TerminateAshesWithPolicyAsync(killAllMatching: true, ct);
+
+        public async Task<AshesTerminationResult> TerminateAshesWithPolicyAsync(
+            bool killAllMatching = true, CancellationToken ct = default)
+        {
+            AshesTerminationResult res = await ClientLaunchService.TerminateAshesProcessesAsync(TrackedAshesPid, killAllMatching, ct).ConfigureAwait(false);
+            IsAshesProcessRunning = false;
+            TrackedAshesPid = null;
+            StatusBannerMessage = $"Terminated {res.TerminatedCount} Ashes client process(es).";
+            return res;
+        }
+
+        [RelayCommand]
+        public async Task DeleteAccountAsync(CancellationToken ct = default)
+        {
+            string user = SignedInUsername;
+            string token = AccessToken;
+            string tempProfileId = $"temp-{user}";
+            _ = await TerminateAshesWithPolicyAsync(killAllMatching: true, ct).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(token))
+                _ = await GatewayClient.DeleteAccountAsync(token, user, null, ct).ConfigureAwait(false);
+            CredentialGuard.PurgeTemporaryCredentials(tempProfileId);
+            if (!string.IsNullOrWhiteSpace(user))
+            {
+                try { _ = await ProfileStore.DeleteProfileAsync(tempProfileId, ct).ConfigureAwait(false); }
+                catch (Exception) { }
+            }
+            ClearAuthenticatedSessionState();
+            ApplyViewState("empty");
+            StatusBannerMessage = $"Deleted temporary account '{user}' and purged all ephemeral credentials.";
+        }
+
+        [RelayCommand]
+        public void Logout()
+        {
+            if (IsTemporaryAccount && !string.IsNullOrWhiteSpace(SignedInUsername))
+                CredentialGuard.PurgeTemporaryCredentials($"temp-{SignedInUsername}");
+            ClearAuthenticatedSessionState();
+            ApplyViewState("populated");
+            StatusBannerMessage = "Signed out of Verra session.";
+        }
+
+        private async Task ApplyAuthenticatedSessionAsync(AuthSessionResult session, bool isTemp, CancellationToken ct)
+        {
+            AccessToken = session.AccessToken;
+            SignedInUsername = session.Username;
+            IsTemporaryAccount = isTemp || session.IsTemporaryAccount;
+            IsAuthenticated = true;
+            ActiveProfileName = IsTemporaryAccount
+                ? $"Profile: temp-{session.Username} (Ephemeral)"
+                : $"Profile: local-dev ({session.Username})";
+            _ = await ClientLaunchService.WriteIcsAuthTokenFileAsync(session.AccessToken, null, ct).ConfigureAwait(false);
+            Characters.Clear();
+            foreach (LauncherCharacterSummary c in await GatewayClient.ListCharactersAsync(session.AccessToken, ct).ConfigureAwait(false))
+                Characters.Add(c);
+            SelectedCharacter = Characters.Count > 0 ? Characters[0] : null;
+            SelectedCharacterId = SelectedCharacter?.CharacterId ?? string.Empty;
+            ApplyViewState("populated");
+            StatusBannerMessage = $"Authenticated as '{session.Username}' ({Characters.Count} character(s) loaded).";
+        }
+
+        private async Task SaveTempProfileEntryAsync(string tempProfileId, string username, CancellationToken ct)
+        {
+            try
+            {
+                LauncherProfile tempProfile = LauncherProfile.FromLauncherConfig(_config, tempProfileId, $"Temp ({username})") with
+                {
+                    AccountUsername = username,
+                    IsTemporaryAccount = true,
+                    CreatedAtUtc = DateTimeOffset.UtcNow
+                };
+                await ProfileStore.UpsertProfileAsync(tempProfile, ct).ConfigureAwait(false);
+            }
+            catch (Exception) { }
+        }
+
+        private void ClearAuthenticatedSessionState()
+        {
+            Characters.Clear();
+            SelectedCharacter = null;
+            SelectedCharacterId = string.Empty;
+            LastCharacterSelectTicket = null;
+            LastJoinTicket = string.Empty;
+            WorldEndpoint = string.Empty;
+            JoinTicketBadgeText = "No active join ticket";
+            AccessToken = string.Empty;
+            SignedInUsername = string.Empty;
+            AuthPassword = string.Empty;
+            IsAuthenticated = false;
+            IsTemporaryAccount = false;
         }
     }
 }

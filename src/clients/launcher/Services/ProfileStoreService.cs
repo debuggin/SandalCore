@@ -105,6 +105,52 @@ public sealed class ProfileStoreService
     public async Task<IReadOnlyList<LauncherProfile>> LoadProfilesAsync(CancellationToken cancellationToken = default) =>
         (await LoadCatalogAsync(cancellationToken).ConfigureAwait(false)).Profiles;
 
+    public async Task<IReadOnlyList<LauncherProfile>> GetTemporaryProfilesAsync(CancellationToken ct = default)
+    {
+        IReadOnlyList<LauncherProfile> profiles = await LoadProfilesAsync(ct).ConfigureAwait(false);
+        return profiles.Where(p => p.IsTemporaryAccount).ToArray();
+    }
+
+    public async Task UpsertProfileAsync(LauncherProfile profile, CancellationToken ct = default)
+    {
+        ValidateProfile(profile);
+        LauncherProfileCatalog catalog = await LoadCatalogAsync(ct).ConfigureAwait(false);
+        var list = new List<LauncherProfile>(catalog.Profiles.Length + 1);
+        bool replaced = false;
+        foreach (LauncherProfile existing in catalog.Profiles)
+        {
+            if (string.Equals(existing.Id, profile.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                list.Add(profile);
+                replaced = true;
+            }
+            else
+            {
+                list.Add(existing);
+            }
+        }
+        if (!replaced) list.Add(profile);
+        await SaveProfilesAsync(list, profile.Id, ct).ConfigureAwait(false);
+    }
+
+    public async Task<bool> DeleteProfileAsync(string profileId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(profileId))
+            throw new ArgumentException("Profile identifier cannot be empty.", nameof(profileId));
+        string targetId = profileId.Trim();
+        LauncherProfileCatalog catalog = await LoadCatalogAsync(ct).ConfigureAwait(false);
+        LauncherProfile[] remaining = catalog.Profiles
+            .Where(p => !string.Equals(p.Id, targetId, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (remaining.Length == catalog.Profiles.Length)
+            return false;
+        string nextActive = string.Equals(catalog.ActiveProfileId, targetId, StringComparison.OrdinalIgnoreCase)
+            ? (remaining.Length > 0 ? remaining[0].Id : "local-dev")
+            : catalog.ActiveProfileId;
+        await SaveProfilesAsync(remaining, nextActive, ct).ConfigureAwait(false);
+        return true;
+    }
+
     public void SaveProfiles(IReadOnlyList<LauncherProfile> profiles, string? activeProfileId = null)
     {
         ArgumentNullException.ThrowIfNull(profiles);

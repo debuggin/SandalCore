@@ -16,6 +16,18 @@ public interface ICredentialVault
     Task<bool> StoreTokenAsync(string profileId, string token, CancellationToken cancellationToken = default);
     Task<string?> RetrieveTokenAsync(string profileId, CancellationToken cancellationToken = default);
     Task<bool> DeleteTokenAsync(string profileId, CancellationToken cancellationToken = default);
+
+    bool DeleteSecret(string profileId)
+    {
+        _ = DeleteTokenAsync(profileId, CancellationToken.None);
+        return true;
+    }
+
+    void SaveTemporaryCredentials(string profileId, string username, string password, bool isTemporaryAccount) =>
+        EphemeralCredentialGuard.SaveTemporaryCredentials(this, profileId, username, password, isTemporaryAccount);
+
+    bool PurgeTemporaryCredentials(string profileId, string? tokenFilePath = null) =>
+        EphemeralCredentialGuard.PurgeTemporaryCredentials(this, profileId, tokenFilePath);
 }
 
 public static class CredentialVaultFactory
@@ -85,9 +97,21 @@ public sealed class InMemoryCredentialVault : ICredentialVault, IDisposable
     public Task<bool> DeleteTokenAsync(string profileId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (_vault.TryRemove(CredentialVaultFactory.NormalizeProfileKey(profileId), out byte[]? removed)) CryptographicOperations.ZeroMemory(removed);
-        return Task.FromResult(true);
+        return Task.FromResult(DeleteSecret(profileId));
     }
+
+    public bool DeleteSecret(string profileId)
+    {
+        if (_vault.TryRemove(CredentialVaultFactory.NormalizeProfileKey(profileId), out byte[]? removed))
+            CryptographicOperations.ZeroMemory(removed);
+        return true;
+    }
+
+    public void SaveTemporaryCredentials(string profileId, string username, string password, bool isTemporaryAccount) =>
+        EphemeralCredentialGuard.SaveTemporaryCredentials(this, profileId, username, password, isTemporaryAccount);
+
+    public bool PurgeTemporaryCredentials(string profileId, string? tokenFilePath = null) =>
+        EphemeralCredentialGuard.PurgeTemporaryCredentials(this, profileId, tokenFilePath);
 
     public void Dispose()
     {
@@ -214,10 +238,21 @@ public sealed class WindowsCredentialVault(string? fallbackDirectory = null) : I
     public Task<bool> DeleteTokenAsync(string profileId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(DeleteSecret(profileId));
+    }
+
+    public bool DeleteSecret(string profileId)
+    {
         string key = CredentialVaultFactory.NormalizeProfileKey(profileId);
         if (OperatingSystem.IsWindows()) _ = CredDeleteW($"SandalCore/Profile/{key}", CredTypeGeneric, 0) || Marshal.GetLastWin32Error() == ErrorNotFound;
-        return Task.FromResult(EncryptedUserBlobStore.DeleteSealedBlob(_fallbackDir, key));
+        return EncryptedUserBlobStore.DeleteSealedBlob(_fallbackDir, key);
     }
+
+    public void SaveTemporaryCredentials(string profileId, string username, string password, bool isTemporaryAccount) =>
+        EphemeralCredentialGuard.SaveTemporaryCredentials(this, profileId, username, password, isTemporaryAccount);
+
+    public bool PurgeTemporaryCredentials(string profileId, string? tokenFilePath = null) =>
+        EphemeralCredentialGuard.PurgeTemporaryCredentials(this, profileId, tokenFilePath);
 
     private static bool TryWriteWinCred(string targetName, string userName, byte[] secretBytes)
     {
@@ -269,7 +304,9 @@ public sealed class LibSecretCredentialVault(string? fallbackDirectory = null) :
     public Task<string?> RetrieveTokenAsync(string profileId, CancellationToken cancellationToken = default) =>
         EncryptedUserBlobStore.RetrieveCliOrBlobAsync((OperatingSystem.IsLinux(), _dir, "secret-tool", ["lookup", "service", "SandalCore", "profile", CredentialVaultFactory.NormalizeProfileKey(profileId)]), profileId, cancellationToken);
     public Task<bool> DeleteTokenAsync(string profileId, CancellationToken cancellationToken = default) =>
-        Task.FromResult(EncryptedUserBlobStore.DeleteSealedBlob(_dir, CredentialVaultFactory.NormalizeProfileKey(profileId)));
+        Task.FromResult(DeleteSecret(profileId));
+    public bool DeleteSecret(string profileId) =>
+        EncryptedUserBlobStore.DeleteSealedBlob(_dir, CredentialVaultFactory.NormalizeProfileKey(profileId));
 }
 
 public sealed class MacKeychainCredentialVault(string? fallbackDirectory = null) : ICredentialVault
@@ -280,5 +317,95 @@ public sealed class MacKeychainCredentialVault(string? fallbackDirectory = null)
     public Task<string?> RetrieveTokenAsync(string profileId, CancellationToken cancellationToken = default) =>
         EncryptedUserBlobStore.RetrieveCliOrBlobAsync((OperatingSystem.IsMacOS(), _dir, "security", ["find-generic-password", "-s", "SandalCore", "-a", CredentialVaultFactory.NormalizeProfileKey(profileId), "-w"]), profileId, cancellationToken);
     public Task<bool> DeleteTokenAsync(string profileId, CancellationToken cancellationToken = default) =>
-        Task.FromResult(EncryptedUserBlobStore.DeleteSealedBlob(_dir, CredentialVaultFactory.NormalizeProfileKey(profileId)));
+        Task.FromResult(DeleteSecret(profileId));
+    public bool DeleteSecret(string profileId) =>
+        EncryptedUserBlobStore.DeleteSealedBlob(_dir, CredentialVaultFactory.NormalizeProfileKey(profileId));
+}
+
+public sealed class EphemeralCredentialGuard(ICredentialVault? vault = null, string? defaultTokenFilePath = null)
+{
+    public const string DefaultIcsTokenRelativePath = "data/ics_auth_token.txt";
+    private readonly ICredentialVault _vault = vault ?? CredentialVaultFactory.CreateDefault();
+    private readonly string? _defaultTokenFilePath = defaultTokenFilePath;
+
+    public ICredentialVault Vault => _vault;
+
+    public void SaveTemporaryCredentials(string profileId, string username, string password, bool isTemporaryAccount) =>
+        SaveTemporaryCredentials(_vault, profileId, username, password, isTemporaryAccount);
+
+    public Task<bool> SaveTemporaryCredentialsAsync(
+        string profileId, string username, string password, bool isTemporaryAccount, CancellationToken ct = default)
+    {
+        ValidateTemporaryCredentialInputs(profileId, username, password, isTemporaryAccount);
+        string secretPayload = $"{username.Trim()}\n{password}";
+        return _vault.StoreTokenAsync(profileId, secretPayload, ct);
+    }
+
+    public bool PurgeTemporaryCredentials(string profileId, string? tokenFilePath = null) =>
+        PurgeTemporaryCredentials(_vault, profileId, tokenFilePath ?? _defaultTokenFilePath);
+
+    public Task<bool> PurgeTemporaryCredentialsAsync(string profileId, string? tokenFilePath = null, CancellationToken ct = default) =>
+        PurgeTemporaryCredentialsAsync(_vault, profileId, tokenFilePath ?? _defaultTokenFilePath, ct);
+
+    public static void SaveTemporaryCredentials(
+        ICredentialVault vault, string profileId, string username, string password, bool isTemporaryAccount)
+    {
+        ArgumentNullException.ThrowIfNull(vault);
+        ValidateTemporaryCredentialInputs(profileId, username, password, isTemporaryAccount);
+        string secretPayload = $"{username.Trim()}\n{password}";
+        _ = vault.StoreTokenAsync(profileId, secretPayload, CancellationToken.None);
+    }
+
+    public static bool PurgeTemporaryCredentials(ICredentialVault vault, string profileId, string? tokenFilePath = null)
+    {
+        ArgumentNullException.ThrowIfNull(vault);
+        if (string.IsNullOrWhiteSpace(profileId)) throw new ArgumentException("Profile identifier cannot be empty.", nameof(profileId));
+        bool deleted = vault.DeleteSecret(profileId);
+        SecureDeleteTokenFiles(tokenFilePath);
+        return deleted;
+    }
+
+    public static async Task<bool> PurgeTemporaryCredentialsAsync(
+        ICredentialVault vault, string profileId, string? tokenFilePath = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(vault);
+        if (string.IsNullOrWhiteSpace(profileId)) throw new ArgumentException("Profile identifier cannot be empty.", nameof(profileId));
+        bool deleted = await vault.DeleteTokenAsync(profileId, ct).ConfigureAwait(false);
+        SecureDeleteTokenFiles(tokenFilePath);
+        return deleted;
+    }
+
+    private static void ValidateTemporaryCredentialInputs(string profileId, string username, string password, bool isTemporaryAccount)
+    {
+        if (!isTemporaryAccount)
+            throw new InvalidOperationException("Never store credentials for normal accounts; only temporary accounts injected into the register process may store credentials.");
+        if (string.IsNullOrWhiteSpace(profileId)) throw new ArgumentException("Profile identifier cannot be empty.", nameof(profileId));
+        if (string.IsNullOrWhiteSpace(username)) throw new ArgumentException("Username cannot be empty.", nameof(username));
+        if (string.IsNullOrEmpty(password)) throw new ArgumentException("Password cannot be empty.", nameof(password));
+    }
+
+    private static void SecureDeleteTokenFiles(string? explicitTokenFilePath)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitTokenFilePath))
+            ScrubAndDeleteFile(explicitTokenFilePath);
+        ScrubAndDeleteFile(Path.Combine(Directory.GetCurrentDirectory(), "data", "ics_auth_token.txt"));
+        ScrubAndDeleteFile(Path.Combine(AppContext.BaseDirectory, "data", "ics_auth_token.txt"));
+    }
+
+    private static void ScrubAndDeleteFile(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return;
+            long len = new FileInfo(path).Length;
+            if (len is > 0 and <= 1024 * 1024)
+            {
+                byte[] zeros = new byte[(int)len];
+                File.WriteAllBytes(path, zeros);
+            }
+            File.Delete(path);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
 }

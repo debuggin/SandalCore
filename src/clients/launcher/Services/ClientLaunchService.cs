@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using SandalLauncher.Models;
+using SandalLauncher.Security;
 
 namespace SandalLauncher.Services;
 
@@ -10,6 +16,7 @@ public sealed class ClientLaunchService
 {
     public const string ShippingExeName = "AOCClient-Win64-Shipping.exe";
     public const string BootstrapExeName = "AOCClient.exe";
+    public const string DefaultIcsTokenRelativePath = "data/ics_auth_token.txt";
 
     private static readonly string[] RelativeCandidates =
     [
@@ -64,4 +71,49 @@ public sealed class ClientLaunchService
             psi.ArgumentList.Add(arg);
         return psi;
     }
+
+    public static async Task<string> WriteIcsAuthTokenFileAsync(
+        string accessToken,
+        string? tokenFilePath = null,
+        CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(accessToken) || !TokenPipeServer.IsValidPrintableAsciiToken(accessToken))
+            throw new ArgumentException("Access token must be non-empty printable ASCII.", nameof(accessToken));
+        string targetPath = Path.GetFullPath(string.IsNullOrWhiteSpace(tokenFilePath) ? DefaultIcsTokenRelativePath : tokenFilePath.Trim());
+        if (Path.GetDirectoryName(targetPath) is { Length: > 0 } dir)
+            Directory.CreateDirectory(dir);
+        string tempPath = $"{targetPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        byte[] utf8 = Encoding.UTF8.GetBytes(accessToken.Trim());
+        try
+        {
+            await using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                await fs.WriteAsync(utf8, ct).ConfigureAwait(false);
+                await fs.FlushAsync(ct).ConfigureAwait(false);
+                fs.Flush(flushToDisk: true);
+            }
+            if (!OperatingSystem.IsWindows())
+            {
+                try { File.SetUnixFileMode(tempPath, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
+                catch (PlatformNotSupportedException) { }
+            }
+            File.Move(tempPath, targetPath, overwrite: true);
+            return targetPath;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(utf8);
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch (IOException) { }
+        }
+    }
+
+    public static IReadOnlyList<AshesProcessInfo> FindRunningAshesProcesses() =>
+        AshesProcessManager.FindRunningAshesProcesses();
+
+    public static Task<AshesTerminationResult> TerminateAshesProcessesAsync(
+        int? trackedPid = null,
+        bool killAllMatching = true,
+        CancellationToken ct = default) =>
+        AshesProcessManager.TerminateAshesProcessesAsync(trackedPid, killAllMatching, ct);
 }
