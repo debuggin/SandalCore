@@ -73,8 +73,19 @@ function Out-Host {
     end {}
 }
 
+function Write-TestStep {
+    param([string]$Message, [bool]$Quiet = $false)
+    if (-not $Quiet -and $env:SANDAL_QUIET -ne '1') {
+        [Console]::Out.WriteLine("[SandalCore] $Message")
+    }
+}
+
+$quiet = [bool]$opts.Json
+if ($quiet) { $env:SANDAL_QUIET = '1' }
 if (-not $opts.DryRun) {
+    Write-TestStep -Message "[Step 1/2] Staging dist/ test assets (config=$($opts.Config))..." -Quiet $quiet
     $null = Sync-SandalDistStage -RepoRoot $rootPath -Config $opts.Config
+    Write-TestStep -Message "[Step 2/2] Running test suites (filter='$($opts.Filter)')..." -Quiet $quiet
     $distConfigDir = Join-Path (Join-Path $rootPath 'dist') $opts.Config
     $prevPath = $env:PATH
     $env:PATH = "$distConfigDir$pathSep$prevPath"
@@ -137,6 +148,8 @@ if (-not $opts.DryRun) {
     } finally {
         $env:PATH = $prevPath
     }
+} else {
+    Write-TestStep -Message "[Step 1/2] (dry-run) Would stage dist/ and run test suites (config=$($opts.Config), filter='$($opts.Filter)')." -Quiet $quiet
 }
 
 $payload = [ordered]@{

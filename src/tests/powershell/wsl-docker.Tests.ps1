@@ -106,7 +106,7 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
         It 'preserves existing settings and returns Changed=false on Enter-to-keep' {
             $tmpFile = Join-Path ([System.IO.Path]::GetTempPath()) "wslconfig-test-$([guid]::NewGuid()).ini"
             try {
-                $initial = "[general]`ninstanceIdleTimeout=-1`n`n[wsl2]`nmemory=12GB`nprocessors=6`nnetworkingMode=mirrored`nhostAddressLoopback=true`nvmIdleTimeout=-1"
+                $initial = "[general]`ninstanceIdleTimeout=-1`n`n[wsl2]`nmemory=12GB`nprocessors=6`nnetworkingMode=mirrored`nvmIdleTimeout=-1`n`n[experimental]`nhostAddressLoopback=true"
                 Set-Content -LiteralPath $tmpFile -Value $initial -Encoding utf8
                 $reader = { param($PromptText, $Key, $CurrentValue) return '' }
                 $res = Confirm-WslConfig -ConfigPath $tmpFile -PromptReader $reader
@@ -149,6 +149,7 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
                 $raw | Should -Match 'instanceIdleTimeout=-1'
                 $raw | Should -Match 'memory=16GB'
                 $raw | Should -Match 'networkingMode=nat'
+                $raw | Should -Match '\[experimental\]'
                 $raw | Should -Match 'hostAddressLoopback=true'
                 $raw | Should -Match 'vmIdleTimeout=-1'
             } finally {
@@ -161,14 +162,14 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
         It 'preserves arbitrary section order, whitespace around =, comments, and LF vs CRLF line endings without duplication' {
             $tmpFile = Join-Path ([System.IO.Path]::GetTempPath()) "wslconfig-fmt-$([guid]::NewGuid()).ini"
             try {
-                $customLf = "# Custom user header`n[experimental]`nautoMemoryReclaim = gradual`n`n[WSL2]`n  memory = 24GB # keep comment`n  networkingMode = mirrored`n  hostAddressLoopback = true`n  vmIdleTimeout = -1 ; vm comment`n`n[General]`n  InstanceIdleTimeout = -1 # never sleep`n"
+                $customLf = "# Custom user header`n[experimental]`nautoMemoryReclaim = gradual`n  hostAddressLoopback = true`n`n[WSL2]`n  memory = 24GB # keep comment`n  networkingMode = mirrored`n  vmIdleTimeout = -1 ; vm comment`n`n[General]`n  InstanceIdleTimeout = -1 # never sleep`n"
                 [System.IO.File]::WriteAllText($tmpFile, $customLf, [System.Text.UTF8Encoding]::new($false))
                 $res = Confirm-WslConfig -ConfigPath $tmpFile -PromptReader { return '' }
                 $res.Changed | Should -Be $false
                 $afterNoOp = [System.IO.File]::ReadAllText($tmpFile, [System.Text.Encoding]::UTF8)
                 $afterNoOp | Should -Be $customLf
 
-                $missingVmIdleCrlf = "# Custom CRLF config`r`n[general]`r`ninstanceIdleTimeout = -1 # keep`r`n`r`n[wsl2]`r`n  networkingMode = mirrored`r`n  hostAddressLoopback = true`r`n"
+                $missingVmIdleCrlf = "# Custom CRLF config`r`n[general]`r`ninstanceIdleTimeout = -1 # keep`r`n`r`n[wsl2]`r`n  networkingMode = mirrored`r`n`r`n[experimental]`r`n  hostAddressLoopback = true`r`n"
                 [System.IO.File]::WriteAllText($tmpFile, $missingVmIdleCrlf, [System.Text.UTF8Encoding]::new($false))
                 $res2 = Confirm-WslConfig -ConfigPath $tmpFile -PromptReader { return '' }
                 $res2.Changed | Should -Be $true
@@ -178,6 +179,7 @@ Describe 'WSL2 & Linux Docker Engine Module (bd-ep04-04)' {
                 $afterMerge | Should -Match '  vmIdleTimeout = -1'
                 ([regex]::Matches($afterMerge, '(?mi)^\s*\[wsl2\]').Count) | Should -Be 1
                 ([regex]::Matches($afterMerge, '(?mi)^\s*\[general\]').Count) | Should -Be 1
+                ([regex]::Matches($afterMerge, '(?mi)^\s*\[experimental\]').Count) | Should -Be 1
                 ([regex]::Matches($afterMerge, '(?mi)^\s*instanceIdleTimeout\s*=').Count) | Should -Be 1
             } finally {
                 if (Test-Path -LiteralPath $tmpFile) {

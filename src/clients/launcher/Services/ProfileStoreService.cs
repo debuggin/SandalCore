@@ -9,8 +9,20 @@ using System.Threading;
 using System.Threading.Tasks;
 using SandalCore.Config;
 using SandalLauncher.Models;
+using SandalLauncher.Security;
 
 namespace SandalLauncher.Services;
+
+public sealed record SavedAccountRecord(
+    string Username,
+    string Password,
+    bool IsTemporary,
+    string ServerUrl)
+{
+    public string DisplayLabel => IsTemporary
+        ? $"{Username}  [Temp · {ServerUrl}]"
+        : $"{Username}  [{ServerUrl}]";
+}
 
 public sealed class ProfileStoreService
 {
@@ -109,6 +121,70 @@ public sealed class ProfileStoreService
     {
         IReadOnlyList<LauncherProfile> profiles = await LoadProfilesAsync(ct).ConfigureAwait(false);
         return profiles.Where(p => p.IsTemporaryAccount).ToArray();
+    }
+
+    public static string GetSavedAccountVaultKey(string username) =>
+        $"saved-acct-{(username ?? string.Empty).Trim().ToLowerInvariant()}";
+
+    public async Task SaveAccountCredentialsAsync(
+        ICredentialVault vault,
+        string username,
+        string password,
+        bool isTemporary,
+        LauncherConfig config,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(vault);
+        ArgumentNullException.ThrowIfNull(config);
+        if (string.IsNullOrWhiteSpace(username)) return;
+        string cleanUser = username.Trim();
+        if (!string.IsNullOrEmpty(password))
+            _ = await vault.StoreTokenAsync(GetSavedAccountVaultKey(cleanUser), password, ct).ConfigureAwait(false);
+        string profileId = isTemporary ? $"temp-{cleanUser}" : $"acct-{cleanUser}";
+        string display = isTemporary ? $"Temp ({cleanUser})" : $"Account ({cleanUser})";
+        LauncherProfile entry = LauncherProfile.FromLauncherConfig(config, profileId, display) with
+        {
+            AccountUsername = cleanUser,
+            IsTemporaryAccount = isTemporary,
+            CreatedAtUtc = DateTimeOffset.UtcNow
+        };
+        await UpsertProfileAsync(entry, ct).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<SavedAccountRecord>> LoadSavedAccountsAsync(
+        ICredentialVault vault,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(vault);
+        IReadOnlyList<LauncherProfile> profiles = await LoadProfilesAsync(ct).ConfigureAwait(false);
+        var list = new List<SavedAccountRecord>();
+        foreach (LauncherProfile p in profiles)
+        {
+            if (string.IsNullOrWhiteSpace(p.AccountUsername)) continue;
+            string? secret = await vault.RetrieveTokenAsync(GetSavedAccountVaultKey(p.AccountUsername), ct).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(secret) && p.IsTemporaryAccount)
+            {
+                string? rawTemp = await vault.RetrieveTokenAsync($"temp-{p.AccountUsername}", ct).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(rawTemp) && rawTemp.IndexOf('\n', StringComparison.Ordinal) is int nl and >= 0)
+                    secret = rawTemp[(nl + 1)..];
+            }
+            list.Add(new SavedAccountRecord(p.AccountUsername, secret ?? string.Empty, p.IsTemporaryAccount, p.GatewayHttpAddr));
+        }
+        return list;
+    }
+
+    public async Task ForgetSavedAccountAsync(
+        ICredentialVault vault,
+        string username,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(vault);
+        if (string.IsNullOrWhiteSpace(username)) return;
+        string cleanUser = username.Trim();
+        _ = await vault.DeleteTokenAsync(GetSavedAccountVaultKey(cleanUser), ct).ConfigureAwait(false);
+        _ = await vault.DeleteTokenAsync($"temp-{cleanUser}", ct).ConfigureAwait(false);
+        _ = await DeleteProfileAsync($"acct-{cleanUser}", ct).ConfigureAwait(false);
+        _ = await DeleteProfileAsync($"temp-{cleanUser}", ct).ConfigureAwait(false);
     }
 
     public async Task UpsertProfileAsync(LauncherProfile profile, CancellationToken ct = default)

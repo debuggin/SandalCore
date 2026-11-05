@@ -86,13 +86,13 @@ function Install-HostDockerCliComponents {
             Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
         }
         if (-not $JsonMode) {
-            Write-Host 'INFO: Active Docker Desktop daemon detected; preserving existing Docker context and skipping DOCKER_HOST=tcp://[::1]:2375 override.'
+            Write-Host 'INFO: Active Docker Desktop daemon detected; preserving existing Docker context and skipping DOCKER_HOST=tcp://127.0.0.1:2375 override.'
         }
         return
     }
-    $env:DOCKER_HOST = 'tcp://[::1]:2375'
+    $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
     if ($IsWindows) {
-        [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://[::1]:2375', 'User')
+        [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://127.0.0.1:2375', 'User')
     }
 }
 

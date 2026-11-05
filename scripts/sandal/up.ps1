@@ -84,7 +84,17 @@ if (-not (Get-Command Ensure-SandalDockerDaemon -ErrorAction SilentlyContinue)) 
     Import-Module (Join-Path $rootPath 'scripts\lib\Env.psm1') -Force -DisableNameChecking
 }
 
+function Write-UpStep {
+    param([string]$Message, [bool]$Quiet = $false)
+    if (-not $Quiet -and $env:SANDAL_QUIET -ne '1') {
+        [Console]::Out.WriteLine("[SandalCore] $Message")
+    }
+}
+
 $opts = Resolve-UpOptions -BaseProfile $Profile -BaseDetach ([bool]$Detach) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
+$quiet = [bool]$opts.Json
+if ($quiet) { $env:SANDAL_QUIET = '1' }
+Write-UpStep -Message '[Step 1/3] Staging deploy/ manifests and environment variables...' -Quiet $quiet
 $deploySync = Sync-SandalDeployStage -RepoRoot $rootPath
 $composeFile = Join-Path $rootPath 'deploy\compose.yml'
 $envFile = Join-Path $rootPath 'deploy\.env'
@@ -93,10 +103,12 @@ $stageChecks = @(Get-UpStageReadiness -RootPath $rootPath)
 $allUpToDate = (@($stageChecks | Where-Object { -not $_.up_to_date }).Count -eq 0)
 
 if (-not $opts.DryRun) {
+    Write-UpStep -Message '[Step 2/3] Verifying WSL2 & Docker daemon readiness...' -Quiet $quiet
     $null = Ensure-SandalDockerDaemon
     if (Get-Command Set-SandalWslComposeMountEnv -ErrorAction SilentlyContinue) {
         Set-SandalWslComposeMountEnv -DeployDir (Join-Path $rootPath 'deploy')
     }
+    Write-UpStep -Message "[Step 3/3] Starting Docker Compose containers (profile=$($opts.Profile), detach=$($opts.Detach))..." -Quiet $quiet
     Push-Location $rootPath
     try {
         & docker @composeArgs
@@ -106,6 +118,9 @@ if (-not $opts.DryRun) {
     } finally {
         Pop-Location
     }
+} else {
+    Write-UpStep -Message '[Step 2/3] (dry-run) Would verify WSL2 & Docker daemon readiness.' -Quiet $quiet
+    Write-UpStep -Message "[Step 3/3] (dry-run) Would run: docker $($composeArgs -join ' ')" -Quiet $quiet
 }
 
 $payload = [ordered]@{

@@ -211,8 +211,18 @@ $modeName = if ($opts.DataFree) { 'verify-standin' } else { 'standard' }
 $toolBinaries = Get-ExtractToolBinaries -RootPath $rootPath
 $stagePlan = @(Get-ExtractStagePlan -RootPath $rootPath -ForceRun $opts.Force -DataFreeMode $opts.DataFree)
 
+function Write-ExtractStep {
+    param([string]$Message, [bool]$Quiet = $false)
+    if (-not $Quiet -and $env:SANDAL_QUIET -ne '1') {
+        [Console]::Out.WriteLine("[SandalCore] $Message")
+    }
+}
+
 $executedStages = @()
+$quiet = [bool]$opts.Json
+if ($quiet) { $env:SANDAL_QUIET = '1' }
 if (-not $opts.DryRun) {
+    Write-ExtractStep -Message "[Step 1/2] Acquiring extraction lock and running pipeline (mode=$modeName)..." -Quiet $quiet
     $lockFile = Join-Path $rootPath 'dist\.stamps\extract.lock.json'
     $stampDir = Split-Path -Parent $lockFile
     if (-not (Test-Path -LiteralPath $stampDir)) {
@@ -221,6 +231,9 @@ if (-not $opts.DryRun) {
     $executedStages = @(Invoke-WithHeavyOperationLock -Operation 'sandal-extract' -LockFilePath $lockFile -ScriptBlock {
         Invoke-ExtractStagePipeline -RootPath $rootPath -TargetOutDir $targetOutDir -StagePlan $stagePlan -Options $opts
     })
+    Write-ExtractStep -Message "[Step 2/2] Extraction complete ($($executedStages.Count) stages processed)." -Quiet $quiet
+} else {
+    Write-ExtractStep -Message "[Step 1/2] (dry-run) Would execute $($stagePlan.Count) extraction stages (mode=$modeName)." -Quiet $quiet
 }
 
 $payload = [ordered]@{

@@ -37,10 +37,11 @@ namespace SandalLauncher
             CliOptions = cliOptions;
             if (cliOptions.MockGameClient)
             {
-                Thread.Sleep(TimeSpan.FromSeconds(Math.Max(1, cliOptions.MockGameSleepSec)));
+                using var mockGate = new ManualResetEventSlim(false);
+                mockGate.Wait(TimeSpan.FromSeconds(Math.Max(1, cliOptions.MockGameSleepSec)));
                 return 0;
             }
-            if (cliOptions.HasAutomationFlags || cliOptions.AutomationPort.HasValue)
+            if (cliOptions.Headless || cliOptions.HasAutomationFlags)
             {
                 return RunSyncBounded(() => RunCliAutomationAsync(cliOptions), cliOptions.TimeoutSec);
             }
@@ -200,7 +201,11 @@ namespace SandalLauncher
         {
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
-                var vm = new MainWindowViewModel();
+                LauncherConfig cfg = SandalConfigLoader.LoadLauncher();
+                string gwUrl = Program.CliOptions is { GatewayUrl.Length: > 0 } cli
+                    ? cli.GatewayUrl
+                    : $"http://{cfg.GatewayHttpAddr}";
+                var vm = new MainWindowViewModel(cfg, new MultiProtocolGatewayClient(gwUrl));
                 desktop.MainWindow = new MainWindow
                 {
                     DataContext = vm
@@ -219,18 +224,6 @@ namespace SandalLauncher
     }
 }
 
-namespace SandalLauncher.Views
-{
-    public partial class MainWindow : Window
-    {
-        public MainWindow()
-        {
-            AvaloniaXamlLoader.Load(this);
-            DataContext ??= new MainWindowViewModel();
-        }
-    }
-}
-
 namespace SandalLauncher.ViewModels
 {
     public sealed partial class MainWindowViewModel : ObservableObject
@@ -238,92 +231,39 @@ namespace SandalLauncher.ViewModels
         private LauncherConfig _config;
         private long _lastSeqId = 1024;
 
-        [ObservableProperty]
-        private string _selectedSection = "Profiles";
-
-        [ObservableProperty]
-        private string _activeSectionTitle = "1. Profiles — Environment & Sandbox Roster";
-
-        [ObservableProperty]
-        private string _activeSectionSubtitle = "Bind local-dev, docker-single, or prod-mesh environment profiles to the Verra client.";
-
-        [ObservableProperty]
-        private string _currentViewState = "populated";
-
-        [ObservableProperty]
-        private bool _isLoadingState;
-
-        [ObservableProperty]
-        private bool _isEmptyState;
-
-        [ObservableProperty]
-        private bool _isErrorState;
-
-        [ObservableProperty]
-        private bool _isDegradedState;
-
-        [ObservableProperty]
-        private bool _isPopulatedState = true;
-
-        [ObservableProperty]
-        private string _realmStatusBadgeText = "● ONLINE — SANCTUM READY";
-
-        [ObservableProperty]
-        private string _realmLatencyText = "12 ms | seq_id #1024";
-
-        [ObservableProperty]
-        private string _activeProfileName = "Profile: local-dev (Verra Sandbox)";
-
-        [ObservableProperty]
-        private string _errorTitle = "■ GATEWAY UNREACHABLE (HTTP 503 Service Unavailable — RFC 9457)";
-
-        [ObservableProperty]
-        private string _errorDetail = "What: Gateway HTTP/ICS probe timed out on 127.0.0.1:8080. Why: Local gateway container or tether daemon is not listening.";
-
-        [ObservableProperty]
-        private string _errorRemediation = "How to fix: Start the gateway service or verify SANDAL_GATEWAY_HTTP_ADVERTISE_ADDR in config/sandal.env, then click Retry Endpoint Probe.";
-
-        [ObservableProperty]
-        private string _degradedSummary = "Stream sequence gap detected (received_seq 1029 > last_seq 1024 + 1). Showing last verified realm snapshot while resyncing.";
-
-        [ObservableProperty]
-        private string _lastUpdatedSummary = "Last verified snapshot: seq_id #1024 | Automatic resync armed";
-
-        [ObservableProperty]
-        private string _clientPakDir = string.Empty;
-
-        [ObservableProperty]
-        private string _gatewayHttpAddr = string.Empty;
-
-        [ObservableProperty]
-        private string _gatewayIcsAddr = string.Empty;
-
-        [ObservableProperty]
-        private string _gatewayGrpcAddr = string.Empty;
-
-        [ObservableProperty]
-        private string _adminHttpAddr = string.Empty;
-
-        [ObservableProperty]
-        private string _adminHttpsAddr = string.Empty;
-
-        [ObservableProperty]
-        private string _eosModeSummary = string.Empty;
-
-        [ObservableProperty]
-        private string _configSourceSummary = string.Empty;
-
-        [ObservableProperty]
-        private string _launchCommandLinePreview = string.Empty;
-
-        [ObservableProperty]
-        private string _diagnosticsReportText = string.Empty;
-
-        [ObservableProperty]
-        private string _statusBannerMessage = "All 5 view states armed; live LauncherConfig SSoT bound.";
-
+        [ObservableProperty] private string _selectedSection = "Profiles";
+        [ObservableProperty] private string _activeSectionTitle = "1. Profiles — Environment & Sandbox Roster";
+        [ObservableProperty] private string _activeSectionSubtitle = "Bind local-dev, docker-single, or prod-mesh environment profiles to the Verra client.";
+        [ObservableProperty] private string _currentViewState = "populated";
+        [ObservableProperty] private bool _isLoadingState;
+        [ObservableProperty] private bool _isEmptyState;
+        [ObservableProperty] private bool _isErrorState;
+        [ObservableProperty] private bool _isDegradedState;
+        [ObservableProperty] private bool _isPopulatedState = true;
+        [ObservableProperty] private string _realmStatusBadgeText = "● ONLINE — SANCTUM READY";
+        [ObservableProperty] private string _realmLatencyText = "12 ms | seq_id #1024";
+        [ObservableProperty] private string _activeProfileName = "Profile: local-dev (Verra Sandbox)";
+        [ObservableProperty] private string _errorTitle = "■ GATEWAY UNREACHABLE (HTTP 503 Service Unavailable — RFC 9457)";
+        [ObservableProperty] private string _errorDetail = "What: Gateway HTTP/ICS probe timed out on 127.0.0.1:8080. Why: Local gateway container or tether daemon is not listening.";
+        [ObservableProperty] private string _errorRemediation = "How to fix: Start the gateway service or verify SANDAL_GATEWAY_HTTP_ADVERTISE_ADDR in config/sandal.env, then click Retry Endpoint Probe.";
+        [ObservableProperty] private string _degradedSummary = "Stream sequence gap detected (received_seq 1029 > last_seq 1024 + 1). Showing last verified realm snapshot while resyncing.";
+        [ObservableProperty] private string _lastUpdatedSummary = "Last verified snapshot: seq_id #1024 | Automatic resync armed";
+        [ObservableProperty] private string _clientPakDir = string.Empty;
+        [ObservableProperty] private string _gatewayHttpAddr = string.Empty;
+        [ObservableProperty] private string _gatewayIcsAddr = string.Empty;
+        [ObservableProperty] private string _gatewayGrpcAddr = string.Empty;
+        [ObservableProperty] private string _adminHttpAddr = string.Empty;
+        [ObservableProperty] private string _adminHttpsAddr = string.Empty;
+        [ObservableProperty] private string _eosModeSummary = string.Empty;
+        [ObservableProperty] private string _configSourceSummary = string.Empty;
+        [ObservableProperty] private string _launchCommandLinePreview = string.Empty;
+        [ObservableProperty] private string _diagnosticsReportText = string.Empty;
+        [ObservableProperty] private string _statusBannerMessage = "Verra Realm Ready — Sign in or create a quick temp account to play.";
         [ObservableProperty] private string _authUsername = string.Empty;
+        [ObservableProperty] private string _authEmail = string.Empty;
         [ObservableProperty] private string _authPassword = string.Empty;
+        [ObservableProperty] private bool _isRegisterMode;
+        [ObservableProperty] private bool _rememberCredentials = true;
         [ObservableProperty] private bool _isAuthenticated;
         [ObservableProperty] private bool _isTemporaryAccount;
         [ObservableProperty] private string _signedInUsername = string.Empty;
@@ -334,17 +274,33 @@ namespace SandalLauncher.ViewModels
         [ObservableProperty] private string _selectedCharacterId = string.Empty;
         [ObservableProperty] private CharacterSelectTicket? _lastCharacterSelectTicket;
         [ObservableProperty] private string _lastJoinTicket = string.Empty;
-        [ObservableProperty] private string _worldEndpoint = string.Empty;
+        [ObservableProperty] private string _worldEndpoint = "127.0.0.1:7777";
         [ObservableProperty] private string _joinTicketBadgeText = "No active join ticket";
         [ObservableProperty] private bool _isAshesProcessRunning;
         [ObservableProperty] private int? _trackedAshesPid;
         [ObservableProperty] private string _lifecyclePhase = "launcher_loaded";
+        [ObservableProperty] private LauncherProfile? _selectedProfile;
+        [ObservableProperty] private SavedAccountRecord? _selectedSavedAccount;
+        [ObservableProperty] private bool _isSettingsOpen;
+        [ObservableProperty] private string _selectedProfileName = "Local Dev (Verra Sandbox)";
+        [ObservableProperty] private string _editGatewayHttpAddr = "127.0.0.1:8080";
+        [ObservableProperty] private string _editWorldEndpoint = "127.0.0.1:7777";
+        [ObservableProperty] private string _editClientPakDir = string.Empty;
+        [ObservableProperty] private string _clientStatusSummary = "Steam / Local Client Ready";
 
         public ObservableCollection<LauncherCharacterSummary> Characters { get; } = [];
+        public ObservableCollection<LauncherProfile> Profiles { get; } = [];
+        public ObservableCollection<SavedAccountRecord> SavedAccounts { get; } = [];
         public MultiProtocolGatewayClient GatewayClient { get; }
         public EphemeralCredentialGuard CredentialGuard { get; }
         public ProfileStoreService ProfileStore { get; }
         public bool IsSignedOut => !IsAuthenticated;
+        public bool IsSignInMode => !IsRegisterMode;
+        public bool HasSavedAccounts => SavedAccounts.Count > 0;
+        public bool IsRealmOnline => !IsErrorState;
+        public bool IsGameStopped => !IsAshesProcessRunning;
+        public string RealmStatusShortText => IsErrorState ? "○ OFFLINE" : "● ONLINE";
+        public string AccountBadgeText => IsTemporaryAccount ? "TEMP PLAYTEST ACCOUNT" : "SAVED VERRA ACCOUNT";
 
         public MainWindowViewModel()
             : this(SandalConfigLoader.LoadLauncher(), null, null, null)
@@ -363,9 +319,18 @@ namespace SandalLauncher.ViewModels
             ProfileStore = profileStore ?? new ProfileStoreService();
             ApplyConfigSnapshot(config);
             ApplyViewState("populated");
+            SeedInitialProfiles(config);
         }
 
         partial void OnIsAuthenticatedChanged(bool value) => OnPropertyChanged(nameof(IsSignedOut));
+        partial void OnIsRegisterModeChanged(bool value) => OnPropertyChanged(nameof(IsSignInMode));
+        partial void OnIsTemporaryAccountChanged(bool value) => OnPropertyChanged(nameof(AccountBadgeText));
+        partial void OnIsAshesProcessRunningChanged(bool value) => OnPropertyChanged(nameof(IsGameStopped));
+        partial void OnIsErrorStateChanged(bool value)
+        {
+            OnPropertyChanged(nameof(IsRealmOnline));
+            OnPropertyChanged(nameof(RealmStatusShortText));
+        }
 
         partial void OnSelectedCharacterChanged(LauncherCharacterSummary? value)
         {
@@ -385,6 +350,11 @@ namespace SandalLauncher.ViewModels
             ConfigSourceSummary = cfg.ConfigFileLoaded ? $"{cfg.ConfigFilePath} (Loaded)" : $"{cfg.ConfigFilePath} (Defaults)";
             LaunchCommandLinePreview = $"AOCClient.exe -GatewayAddr={cfg.GatewayHttpAddr} -IcsAddr={cfg.GatewayIcsAddr} -NoEOS={!cfg.ClientUseEos}";
             DiagnosticsReportText = $"Pak Directory: {ClientPakDir} | Config Source: {ConfigSourceSummary} | Monotonic seq_id: #{_lastSeqId}";
+            EditGatewayHttpAddr = cfg.GatewayHttpAddr;
+            EditClientPakDir = cfg.ClientPakDir;
+            ClientStatusSummary = ClientLaunchService.TryResolveClientExecutable(cfg.ClientPakDir, out _)
+                ? "AoC Shipping Client Verified"
+                : (ClientPathDetector.TryDetectSteamClientPakDir() is not null ? "Steam AoC Client Installed" : "Sandbox Client Ready");
         }
 
         private void ApplyViewState(string state)
@@ -442,20 +412,11 @@ namespace SandalLauncher.ViewModels
             StatusBannerMessage = "Active section: Diagnostics";
         }
 
-        [RelayCommand]
-        private void SetLoadingState() => ApplyViewState("loading");
-
-        [RelayCommand]
-        private void SetEmptyState() => ApplyViewState("empty");
-
-        [RelayCommand]
-        private void SetErrorState() => ApplyViewState("error");
-
-        [RelayCommand]
-        private void SetDegradedState() => ApplyViewState("degraded");
-
-        [RelayCommand]
-        private void SetPopulatedState() => ApplyViewState("populated");
+        [RelayCommand] private void SetLoadingState() => ApplyViewState("loading");
+        [RelayCommand] private void SetEmptyState() => ApplyViewState("empty");
+        [RelayCommand] private void SetErrorState() => ApplyViewState("error");
+        [RelayCommand] private void SetDegradedState() => ApplyViewState("degraded");
+        [RelayCommand] private void SetPopulatedState() => ApplyViewState("populated");
 
         [RelayCommand]
         private void RetryProbe()
@@ -464,7 +425,7 @@ namespace SandalLauncher.ViewModels
             _config = SandalConfigLoader.LoadLauncher();
             ApplyConfigSnapshot(_config);
             ApplyViewState("populated");
-            StatusBannerMessage = $"Endpoint probe recovered at seq_id #{_lastSeqId}.";
+            StatusBannerMessage = $"Realm status refreshed at seq_id #{_lastSeqId}.";
         }
 
         [RelayCommand]
@@ -522,6 +483,8 @@ namespace SandalLauncher.ViewModels
             if (IsTemporaryAccount)
                 CredentialGuard.SaveTemporaryCredentials($"temp-{session.Username}", session.Username, pass, isTemporaryAccount: true);
             await ApplyAuthenticatedSessionAsync(session, IsTemporaryAccount, ct).ConfigureAwait(false);
+            if (RememberCredentials || IsTemporaryAccount)
+                await TrySaveAccountToStoreAsync(session.Username, pass, IsTemporaryAccount, ct).ConfigureAwait(false);
         }
 
         [RelayCommand]
@@ -535,8 +498,8 @@ namespace SandalLauncher.ViewModels
             AuthSessionResult session = await GatewayClient.RegisterAsync(user, pass, isTemporaryAccount: true, ct).ConfigureAwait(false);
             string tempProfileId = $"temp-{session.Username}";
             CredentialGuard.SaveTemporaryCredentials(tempProfileId, session.Username, pass, isTemporaryAccount: true);
-            await SaveTempProfileEntryAsync(tempProfileId, session.Username, ct).ConfigureAwait(false);
             await ApplyAuthenticatedSessionAsync(session, isTemp: true, ct).ConfigureAwait(false);
+            await TrySaveAccountToStoreAsync(session.Username, pass, isTemp: true, ct).ConfigureAwait(false);
         }
 
         [RelayCommand]
@@ -579,10 +542,13 @@ namespace SandalLauncher.ViewModels
                 ? LauncherCliOptions.DefaultHeroName
                 : (name.Contains('_', StringComparison.Ordinal) ? SanitizeAutoCharacterName(name) : name.Trim());
             LauncherCharacterSummary created = await GatewayClient.CreateCharacterAsync(AccessToken, targetName, classId, raceId, ct).ConfigureAwait(false);
-            Characters.Add(created);
-            SelectedCharacter = created;
-            SelectedCharacterId = created.CharacterId;
-            StatusBannerMessage = $"Created character '{created.Name}' ({created.CharacterId}).";
+            await InvokeOnUiIfDesktopAsync(() =>
+            {
+                Characters.Add(created);
+                SelectedCharacter = created;
+                SelectedCharacterId = created.CharacterId;
+                StatusBannerMessage = $"Created character '{created.Name}' ({created.CharacterId}).";
+            }).ConfigureAwait(false);
             return created;
         }
 
@@ -603,22 +569,22 @@ namespace SandalLauncher.ViewModels
             CharacterSelectTicket rawTicket = await GatewayClient.SelectCharacterAsync(AccessToken, resolvedTarget, verifyWorldEnter: true, ct).ConfigureAwait(false);
             string normalizedWorld = NormalizeWorldEndpoint(rawTicket.WorldEndpoint, GatewayClient.BaseUri);
             CharacterSelectTicket ticket = rawTicket with { WorldEndpoint = normalizedWorld };
-            if (matched is not null) SelectedCharacter = matched;
-            SelectedCharacterId = ticket.CharacterId;
-            LastCharacterSelectTicket = ticket;
-            LastJoinTicket = ticket.JoinTicket;
-            WorldEndpoint = normalizedWorld;
-            JoinTicketBadgeText = $"Ticket: {ticket.JoinTicket} -> {normalizedWorld} (Enter={ticket.WorldEnterAllowed})";
             if (spawnClient)
             {
                 EnsureGameProcessStarted();
-                LifecyclePhase = "game_logged_in";
             }
-            else if (IsAshesProcessRunning)
+            await InvokeOnUiIfDesktopAsync(() =>
             {
-                LifecyclePhase = "game_logged_in";
-            }
-            StatusBannerMessage = $"Character '{ticket.CharacterName}' selected; join ticket ready for {normalizedWorld}.";
+                if (matched is not null) SelectedCharacter = matched;
+                SelectedCharacterId = ticket.CharacterId;
+                LastCharacterSelectTicket = ticket;
+                LastJoinTicket = ticket.JoinTicket;
+                WorldEndpoint = normalizedWorld;
+                JoinTicketBadgeText = $"Ticket: {ticket.JoinTicket} -> {normalizedWorld} (Enter={ticket.WorldEnterAllowed})";
+                if (spawnClient || IsAshesProcessRunning)
+                    LifecyclePhase = "game_logged_in";
+                StatusBannerMessage = $"Character '{ticket.CharacterName}' selected; join ticket ready for {normalizedWorld}.";
+            }).ConfigureAwait(false);
             return ticket;
         }
 
@@ -663,12 +629,16 @@ namespace SandalLauncher.ViewModels
             CredentialGuard.PurgeTemporaryCredentials(tempProfileId);
             if (!string.IsNullOrWhiteSpace(user))
             {
-                try { _ = await ProfileStore.DeleteProfileAsync(tempProfileId, ct).ConfigureAwait(false); }
+                try { await ProfileStore.ForgetSavedAccountAsync(CredentialGuard.Vault, user, ct).ConfigureAwait(false); }
                 catch (Exception ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
             }
-            ClearAuthenticatedSessionState();
-            ApplyViewState("empty");
-            StatusBannerMessage = $"Deleted temporary account '{user}' and purged all ephemeral credentials.";
+            await RefreshSavedAccountsAsync(ct).ConfigureAwait(false);
+            await InvokeOnUiIfDesktopAsync(() =>
+            {
+                ClearAuthenticatedSessionState();
+                ApplyViewState("empty");
+                StatusBannerMessage = $"Deleted account '{user}' and purged all ephemeral credentials.";
+            }).ConfigureAwait(false);
         }
 
         [RelayCommand]
@@ -683,39 +653,36 @@ namespace SandalLauncher.ViewModels
 
         private async Task ApplyAuthenticatedSessionAsync(AuthSessionResult session, bool isTemp, CancellationToken ct)
         {
-            AccessToken = session.AccessToken;
-            SignedInUsername = session.Username;
-            IsTemporaryAccount = isTemp || session.IsTemporaryAccount;
-            IsAuthenticated = true;
-            ActiveProfileName = IsTemporaryAccount
-                ? $"Profile: temp-{session.Username} (Ephemeral)"
-                : $"Profile: local-dev ({session.Username})";
             _ = await ClientLaunchService.WriteIcsAuthTokenFileAsync(session.AccessToken, null, ct).ConfigureAwait(false);
-            Characters.Clear();
-            foreach (LauncherCharacterSummary c in await GatewayClient.ListCharactersAsync(session.AccessToken, ct).ConfigureAwait(false))
-                Characters.Add(c);
-            SelectedCharacter = Characters.Count > 0 ? Characters[0] : null;
-            SelectedCharacterId = SelectedCharacter?.CharacterId ?? string.Empty;
-            ApplyViewState("populated");
-            StatusBannerMessage = $"Authenticated as '{session.Username}' ({Characters.Count} character(s) loaded).";
+            var loadedChars = await GatewayClient.ListCharactersAsync(session.AccessToken, ct).ConfigureAwait(false);
+            await InvokeOnUiIfDesktopAsync(() =>
+            {
+                AccessToken = session.AccessToken;
+                SignedInUsername = session.Username;
+                IsTemporaryAccount = isTemp || session.IsTemporaryAccount;
+                IsAuthenticated = true;
+                ActiveProfileName = IsTemporaryAccount
+                    ? $"Profile: temp-{session.Username} (Ephemeral)"
+                    : $"Profile: local-dev ({session.Username})";
+                Characters.Clear();
+                foreach (LauncherCharacterSummary c in loadedChars)
+                    Characters.Add(c);
+                SelectedCharacter = Characters.Count > 0 ? Characters[0] : null;
+                SelectedCharacterId = SelectedCharacter?.CharacterId ?? string.Empty;
+                ApplyViewState("populated");
+                StatusBannerMessage = $"Authenticated as '{session.Username}' ({Characters.Count} character(s) loaded).";
+            }).ConfigureAwait(false);
         }
 
-        private async Task SaveTempProfileEntryAsync(string tempProfileId, string username, CancellationToken ct)
+        private static Task InvokeOnUiIfDesktopAsync(Action action)
         {
-            try
+            if (Avalonia.Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime &&
+                !Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
             {
-                LauncherProfile tempProfile = LauncherProfile.FromLauncherConfig(_config, tempProfileId, $"Temp ({username})") with
-                {
-                    AccountUsername = username,
-                    IsTemporaryAccount = true,
-                    CreatedAtUtc = DateTimeOffset.UtcNow
-                };
-                await ProfileStore.UpsertProfileAsync(tempProfile, ct).ConfigureAwait(false);
+                return Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(action).GetTask();
             }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Trace.WriteLine(ex.Message);
-            }
+            action();
+            return Task.CompletedTask;
         }
 
         private void ClearAuthenticatedSessionState()

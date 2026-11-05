@@ -154,7 +154,9 @@ function Resolve-WslDockerDistro {
         $debMatch = @($distros | Where-Object { $_ -like 'Ubuntu*' -or $_ -like 'Debian*' })
         $resolved = if ($debMatch.Count -gt 0) { [string]$debMatch[0] } else { [string]$distros[0] }
     }
-    Write-Information "INFO: Using existing WSL2 distribution '$resolved'." -InformationAction Continue
+    if ($env:SANDAL_QUIET -ne '1') {
+        Write-Information "INFO: Using existing WSL2 distribution '$resolved'." -InformationAction Continue
+    }
     return $resolved
 }
 
@@ -219,7 +221,7 @@ function Ensure-WslUbuntu {
     $resolvedDistro = Resolve-WslDockerDistro -Distro $Distro -Runner $Runner
     if ($distros -contains $resolvedDistro) {
         if (-not $DryRun -and (Test-WslDistroVersion1 -Distro $resolvedDistro -Runner $Runner)) {
-            Write-Information "INFO: Upgrading WSL distribution '$resolvedDistro' from WSL1 to WSL2..." -InformationAction Continue
+            if ($env:SANDAL_QUIET -ne '1') { Write-Information "INFO: Upgrading WSL distribution '$resolvedDistro' from WSL1 to WSL2..." -InformationAction Continue }
             $null = Invoke-WslRunner -WslArgs @('--set-version', $resolvedDistro, '2') -Runner $Runner
         }
         return [pscustomobject]@{
@@ -280,7 +282,7 @@ function Ensure-LinuxDockerEngine {
     }
     $prov = Invoke-WslRunner -WslArgs @('-d', $Distro, '-u', 'root', '--', 'bash', 'scripts/wsl/provision-docker.sh') -Runner $Runner
     if ($prov.ExitCode -eq 42) {
-        Write-Information "INFO: Restarting WSL2 distro '$Distro' to boot systemd as PID 1..." -InformationAction Continue
+        if ($env:SANDAL_QUIET -ne '1') { Write-Information "INFO: Restarting WSL2 distro '$Distro' to boot systemd as PID 1..." -InformationAction Continue }
         $null = Invoke-WslRunner -WslArgs @('--terminate', $Distro) -Runner $Runner
         $prov = Invoke-WslRunner -WslArgs @('-d', $Distro, '-u', 'root', '--', 'bash', 'scripts/wsl/provision-docker.sh') -Runner $Runner
     }

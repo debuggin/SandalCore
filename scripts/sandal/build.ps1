@@ -67,8 +67,19 @@ function Out-Host {
     end {}
 }
 
+function Write-BuildStep {
+    param([string]$Message, [bool]$Quiet = $false)
+    if (-not $Quiet -and $env:SANDAL_QUIET -ne '1') {
+        [Console]::Out.WriteLine("[SandalCore] $Message")
+    }
+}
+
+$quiet = [bool]$opts.Json
+if ($quiet) { $env:SANDAL_QUIET = '1' }
 if (-not $opts.DryRun) {
+    Write-BuildStep -Message '[Step 1/4] Checking extracted game data in dist/content/...' -Quiet $quiet
     $null = Ensure-SandalGameData -RepoRoot $rootPath -CheckOnly
+    Write-BuildStep -Message "[Step 2/4] Building C++ & .NET targets (config=$($opts.Config))..." -Quiet $quiet
     if ($opts.Json) {
         & (Join-Path $rootPath 'scripts\build.ps1') -Config $opts.Config 6>&1 | Out-Host
     } else {
@@ -77,6 +88,7 @@ if (-not $opts.DryRun) {
     if ($LASTEXITCODE -ne 0) {
         throw "scripts/build.ps1 failed with exit code $LASTEXITCODE."
     }
+    Write-BuildStep -Message '[Step 3/4] Building Go microservices (scripts/services.ps1 -Action build)...' -Quiet $quiet
     if ($opts.Json) {
         & (Join-Path $rootPath 'scripts\services.ps1') -Action build 6>&1 | Out-Host
     } else {
@@ -85,8 +97,11 @@ if (-not $opts.DryRun) {
     if ($LASTEXITCODE -ne 0) {
         throw "scripts/services.ps1 -Action build failed with exit code $LASTEXITCODE."
     }
+    Write-BuildStep -Message '[Step 4/4] Staging dist/ and deploy/ directories...' -Quiet $quiet
     $null = Sync-SandalDistStage -RepoRoot $rootPath -Config $opts.Config
     $null = Sync-SandalDeployStage -RepoRoot $rootPath
+} else {
+    Write-BuildStep -Message "[Step 1/4] (dry-run) Would build C++, .NET, and Go targets (config=$($opts.Config))." -Quiet $quiet
 }
 
 $payload = [ordered]@{

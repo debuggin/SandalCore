@@ -2,658 +2,591 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:SandalLauncher.ViewModels"
         xmlns:models="using:SandalLauncher.Models"
+        xmlns:services="using:SandalLauncher.Services"
         x:Class="SandalLauncher.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
         x:CompileBindings="True"
         MinWidth="960"
-        MinHeight="600"
-        Width="1180"
-        Height="740"
-        Title="SandalCore Launcher — Verra Control Deck"
+        MinHeight="560"
+        Width="1067"
+        Height="600"
+        Title="SandalCore — Ashes of Creation Sanctuary Launcher"
         Background="{DynamicResource SurfacePrimaryBrush}"
         Foreground="{DynamicResource TextPrimaryBrush}"
-        AutomationProperties.Name="SandalCore Launcher Verra Control Deck Window">
+        AutomationProperties.Name="SandalCore Ashes of Creation Sanctuary Launcher Window">
 
-  <Grid RowDefinitions="Auto,*" ColumnDefinitions="260,*">
+  <Grid ColumnDefinitions="5*,5*">
 
-    <!-- Top Realm Status Header Bar (Spans both panes, UX-03/UX-04/UX-05) -->
-    <Border Grid.Row="0"
-            Grid.Column="0"
+    <!-- LAYER 0: Full-Bleed Custom 16:9 Key Art (launcher_background.jpg) + Soft Left-50% Contrast Vignette -->
+    <Border Grid.Column="0"
             Grid.ColumnSpan="2"
-            Background="{DynamicResource SurfaceElevatedBrush}"
-            BorderBrush="{DynamicResource BorderSubtleBrush}"
-            BorderThickness="0,0,0,1"
-            Padding="20,12">
-      <Grid ColumnDefinitions="*,Auto,Auto">
-        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
-          <Border Background="{DynamicResource SurfaceOverlayBrush}"
-                  BorderBrush="{DynamicResource AccentGoldBrush}"
-                  BorderThickness="1"
-                  CornerRadius="4"
-                  Padding="8,4">
-            <TextBlock Text="VERRA C2"
-                       Foreground="{DynamicResource AccentGoldBrush}"
-                       FontWeight="Bold"
-                       FontSize="12" />
-          </Border>
-          <StackPanel Spacing="2" VerticalAlignment="Center">
-            <TextBlock Text="SandalCore Launcher — Verra Control Deck"
-                       Foreground="{DynamicResource TextPrimaryBrush}"
-                       FontSize="16"
-                       FontWeight="SemiBold" />
-            <TextBlock Text="{Binding ActiveProfileName}"
-                       Foreground="{DynamicResource TextMutedBrush}"
-                       FontSize="12" />
-          </StackPanel>
-        </StackPanel>
-
-        <!-- Realm Status Pill Header (Color + Shape + Text Non-Color Redundancy, UX-05) -->
-        <Border Grid.Column="1"
-                x:Name="RealmStatusPill"
-                Background="{DynamicResource SurfaceOverlayBrush}"
-                BorderBrush="{DynamicResource StatusOnlineBrush}"
-                BorderThickness="1"
-                CornerRadius="16"
-                Padding="14,6"
-                Margin="0,0,16,0"
-                VerticalAlignment="Center"
-                AutomationProperties.Name="Realm Status Pill">
-          <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-            <TextBlock Text="{Binding RealmStatusBadgeText}"
-                       Foreground="{DynamicResource StatusOnlineBrush}"
-                       FontWeight="SemiBold"
-                       FontSize="12" />
-            <TextBlock Text="{Binding RealmLatencyText}"
-                       Foreground="{DynamicResource TextMutedBrush}"
-                       FontSize="12" />
-          </StackPanel>
-        </Border>
-
-        <!-- View-State Inspection Switcher (Loading / Empty / Error / Degraded / Populated, UX-02) -->
-        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <Button Content="Populated"
-                  Command="{Binding SetPopulatedStateCommand}"
-                  MinHeight="32"
-                  TabIndex="20"
-                  AutomationProperties.Name="Switch to Populated View State" />
-          <Button Content="Loading"
-                  Command="{Binding SetLoadingStateCommand}"
-                  MinHeight="32"
-                  TabIndex="21"
-                  AutomationProperties.Name="Switch to Loading View State" />
-          <Button Content="Empty"
-                  Command="{Binding SetEmptyStateCommand}"
-                  MinHeight="32"
-                  TabIndex="22"
-                  AutomationProperties.Name="Switch to Empty View State" />
-          <Button Content="Degraded"
-                  Command="{Binding SetDegradedStateCommand}"
-                  MinHeight="32"
-                  TabIndex="23"
-                  AutomationProperties.Name="Switch to Degraded View State" />
-          <Button Content="Error"
-                  Command="{Binding SetErrorStateCommand}"
-                  MinHeight="32"
-                  TabIndex="24"
-                  AutomationProperties.Name="Switch to Error View State" />
-        </StackPanel>
-      </Grid>
+            Background="{DynamicResource AoCHeroFallbackBrush}"
+            IsHitTestVisible="False">
+      <Panel>
+        <Image Source="avares://SandalLauncher/Assets/launcher_background.jpg"
+               Stretch="UniformToFill" />
+        <Border Background="{DynamicResource AoCLeftVignetteBrush}" />
+      </Panel>
     </Border>
 
-    <!-- Left Navigation Rail (2-Pane Responsive Architecture, Fitts >= 44px Targets, Hick <= 5 Items, UX-01/UX-06) -->
-    <Border Grid.Row="1"
-            Grid.Column="0"
-            Background="{DynamicResource SurfaceElevatedBrush}"
+    <!-- LAYER 1: Left 50% Control Deck (Grid.Column="0") — All Interactive Controls Contained in Left 50% -->
+    <Border Grid.Column="0"
+            MaxWidth="485"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Stretch"
+            Margin="22,16,14,16"
+            Background="{DynamicResource AoCFiligreeDeckBrush}"
             BorderBrush="{DynamicResource BorderSubtleBrush}"
-            BorderThickness="0,0,1,0"
-            Padding="16"
-            AutomationProperties.Name="Primary Navigation Rail">
+            BorderThickness="1"
+            CornerRadius="6"
+            Padding="20,16,20,16"
+            AutomationProperties.Name="Left 50 Percent Interactive Launcher Control Deck">
       <Grid RowDefinitions="Auto,*,Auto">
-        <TextBlock Grid.Row="0"
-                   Text="NAVIGATION"
-                   Foreground="{DynamicResource TextMutedBrush}"
-                   FontSize="11"
-                   FontWeight="Bold"
-                   Margin="4,0,0,12" />
 
-        <StackPanel Grid.Row="1" Spacing="8">
-          <Button x:Name="NavProfilesButton"
-                  Content="1. Profiles"
-                  Command="{Binding SelectProfilesCommand}"
-                  HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  MinHeight="44"
-                  Padding="14,10"
-                  TabIndex="1"
-                  AutomationProperties.Name="Profiles Navigation" />
-
-          <Button x:Name="NavRealmControlButton"
-                  Content="2. Realm &amp; Server Control"
-                  Command="{Binding SelectRealmControlCommand}"
-                  HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  MinHeight="44"
-                  Padding="14,10"
-                  TabIndex="2"
-                  AutomationProperties.Name="Realm and Server Control Navigation" />
-
-          <Button x:Name="NavLaunchPresetsButton"
-                  Content="3. Launch Presets"
-                  Command="{Binding SelectLaunchPresetsCommand}"
-                  HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  MinHeight="44"
-                  Padding="14,10"
-                  TabIndex="3"
-                  AutomationProperties.Name="Launch Presets Navigation" />
-
-          <Button x:Name="NavDiagnosticsButton"
-                  Content="4. Diagnostics"
-                  Command="{Binding SelectDiagnosticsCommand}"
-                  HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Left"
-                  MinHeight="44"
-                  Padding="14,10"
-                  TabIndex="4"
-                  AutomationProperties.Name="Diagnostics Navigation" />
-        </StackPanel>
-
-        <!-- Single Isolated Primary CTA in Rail Footer (Von Restorff 1-Isolation Budget & Fitts >= 44px, UX-01) -->
-        <StackPanel Grid.Row="2" Spacing="10" Margin="0,16,0,0">
-          <Border Background="{DynamicResource SurfaceOverlayBrush}"
-                  BorderBrush="{DynamicResource BorderSubtleBrush}"
-                  BorderThickness="1"
-                  CornerRadius="6"
-                  Padding="10,8">
-            <StackPanel Spacing="2">
-              <TextBlock Text="ACTIVE CONFIG SOURCE"
-                         Foreground="{DynamicResource TextMutedBrush}"
-                         FontSize="10"
-                         FontWeight="Bold" />
-              <TextBlock Text="{Binding ConfigSourceSummary}"
-                         Foreground="{DynamicResource TextPrimaryBrush}"
-                         FontSize="12"
-                         TextTrimming="CharacterEllipsis" />
+        <!-- 1. Brand Header + Live Realm Pill + Inline Settings Toggle -->
+        <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,10">
+          <Grid ColumnDefinitions="*,Auto,6,Auto">
+            <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+              <TextBlock Text="SANDALCORE"
+                         FontFamily="Georgia, Times New Roman, serif"
+                         FontSize="19"
+                         FontWeight="Bold"
+                         LetterSpacing="3.0"
+                         Foreground="{DynamicResource AoCHeadlineTextBrush}" />
+              <TextBlock Text="ASHES OF CREATION — SANCTUARY LAUNCHER"
+                         FontSize="9"
+                         FontWeight="SemiBold"
+                         LetterSpacing="1.6"
+                         Foreground="{DynamicResource AccentGoldBrush}" />
             </StackPanel>
-          </Border>
 
-          <Button x:Name="PrimaryLaunchCtaButton"
-                  Content="LAUNCH VERRA CLIENT"
-                  Command="{Binding LaunchClientCommand}"
-                  Background="{DynamicResource AccentGoldBrush}"
-                  Foreground="{DynamicResource SurfacePrimaryBrush}"
-                  FontWeight="Bold"
-                  HorizontalAlignment="Stretch"
-                  HorizontalContentAlignment="Center"
-                  MinHeight="48"
-                  TabIndex="5"
-                  AutomationProperties.AutomationId="LaunchButton"
-                  AutomationProperties.Name="Launch Verra Client Primary Action" />
-        </StackPanel>
-      </Grid>
-    </Border>
-
-    <!-- Main Content Region: 5 Explicit View States (loading, empty, error, degraded, populated — UX-02) -->
-    <ScrollViewer Grid.Row="1"
-                  Grid.Column="1"
-                  Padding="24"
-                  AutomationProperties.Name="Main Content Workspace">
-      <StackPanel Spacing="18">
-
-        <!-- Workspace Section Title Banner -->
-        <Border Background="{DynamicResource SurfaceElevatedBrush}"
-                BorderBrush="{DynamicResource BorderSubtleBrush}"
-                BorderThickness="1"
-                CornerRadius="8"
-                Padding="20,16">
-          <Grid ColumnDefinitions="*,Auto">
-            <StackPanel Grid.Column="0" Spacing="4">
-              <TextBlock Text="{Binding ActiveSectionTitle}"
-                         Foreground="{DynamicResource AccentGoldBrush}"
-                         FontSize="20"
-                         FontWeight="Bold" />
-              <TextBlock Text="{Binding ActiveSectionSubtitle}"
-                         Foreground="{DynamicResource TextMutedBrush}"
-                         FontSize="13"
-                         TextWrapping="Wrap" />
-            </StackPanel>
             <Border Grid.Column="1"
-                    Background="{DynamicResource SurfaceOverlayBrush}"
+                    x:Name="RealmStatusPill"
+                    Background="{DynamicResource AoCInputFillBrush}"
                     BorderBrush="{DynamicResource BorderSubtleBrush}"
                     BorderThickness="1"
                     CornerRadius="4"
-                    Padding="10,6"
-                    VerticalAlignment="Center">
-              <TextBlock Text="{Binding CurrentViewState}"
-                         Foreground="{DynamicResource AccentGoldBrush}"
-                         FontWeight="SemiBold"
-                         FontSize="12" />
-            </Border>
-          </Grid>
-        </Border>
-
-        <!-- STATE 1: loading (Doherty < 400ms Skeleton & Progress Feedback, UX-01/UX-02) -->
-        <Border x:Name="LoadingStatePanel"
-                Tag="loading"
-                IsVisible="{Binding IsLoadingState}"
-                Background="{DynamicResource SurfaceElevatedBrush}"
-                BorderBrush="{DynamicResource AccentGoldBrush}"
-                BorderThickness="1"
-                CornerRadius="8"
-                Padding="24"
-                AutomationProperties.Name="Loading View State Panel">
-          <StackPanel Spacing="12">
-            <TextBlock Text="LOADING — Synchronizing Verra Realm &amp; Pak Manifest"
-                       Foreground="{DynamicResource AccentGoldBrush}"
-                       FontSize="16"
-                       FontWeight="Bold" />
-            <TextBlock Text="Probing Gateway HTTP/ICS/gRPC endpoints and verifying local client pak directory..."
-                       Foreground="{DynamicResource TextMutedBrush}"
-                       FontSize="13"
-                       TextWrapping="Wrap" />
-            <ProgressBar IsIndeterminate="True"
-                         MinHeight="8"
-                         Foreground="{DynamicResource AccentGoldBrush}"
-                         AutomationProperties.Name="Loading Progress Indicator" />
-          </StackPanel>
-        </Border>
-
-        <!-- STATE 2: empty (Zero-Profile Guided Onboarding & Default Recovery Action, UX-02) -->
-        <Border x:Name="EmptyStatePanel"
-                Tag="empty"
-                IsVisible="{Binding IsEmptyState}"
-                Background="{DynamicResource SurfaceElevatedBrush}"
-                BorderBrush="{DynamicResource BorderSubtleBrush}"
-                BorderThickness="1"
-                CornerRadius="8"
-                Padding="24"
-                AutomationProperties.Name="Empty View State Panel">
-          <StackPanel Spacing="12">
-            <TextBlock Text="EMPTY — No Active Launcher Profile Loaded"
-                       Foreground="{DynamicResource TextPrimaryBrush}"
-                       FontSize="16"
-                       FontWeight="Bold" />
-            <TextBlock Text="No environment profile or client pak directory is currently bound. Initialize the default local-dev sandbox profile to populate gateway endpoints."
-                       Foreground="{DynamicResource TextMutedBrush}"
-                       FontSize="13"
-                       TextWrapping="Wrap" />
-            <Button Content="Initialize Default Sandbox Profile"
-                    Command="{Binding ResetToDefaultProfileCommand}"
-                    Background="{DynamicResource AccentGoldBrush}"
-                    Foreground="{DynamicResource SurfacePrimaryBrush}"
-                    FontWeight="SemiBold"
-                    MinHeight="44"
-                    Padding="16,10"
-                    HorizontalAlignment="Left"
-                    TabIndex="6"
-                    AutomationProperties.Name="Initialize Default Sandbox Profile" />
-          </StackPanel>
-        </Border>
-
-        <!-- STATE 3: error (RFC 9110 / RFC 9457 Deterministic Problem Details + Retry Action, UX-02) -->
-        <Border x:Name="ErrorStatePanel"
-                Tag="error"
-                IsVisible="{Binding IsErrorState}"
-                Background="{DynamicResource SurfaceElevatedBrush}"
-                BorderBrush="{DynamicResource StatusOfflineBrush}"
-                BorderThickness="2"
-                CornerRadius="8"
-                Padding="24"
-                AutomationProperties.Name="Error View State Panel">
-          <StackPanel Spacing="12">
-            <TextBlock Text="{Binding ErrorTitle}"
-                       Foreground="{DynamicResource StatusOfflineBrush}"
-                       FontSize="16"
-                       FontWeight="Bold" />
-            <TextBlock Text="{Binding ErrorDetail}"
-                       Foreground="{DynamicResource TextPrimaryBrush}"
-                       FontSize="13"
-                       TextWrapping="Wrap" />
-            <TextBlock Text="{Binding ErrorRemediation}"
-                       Foreground="{DynamicResource TextMutedBrush}"
-                       FontSize="12"
-                       TextWrapping="Wrap" />
-            <Button Content="Retry Endpoint Probe"
-                    Command="{Binding RetryProbeCommand}"
-                    Background="{DynamicResource AccentEmberBrush}"
-                    Foreground="{DynamicResource TextPrimaryBrush}"
-                    FontWeight="SemiBold"
-                    MinHeight="44"
-                    Padding="16,10"
-                    HorizontalAlignment="Left"
-                    TabIndex="7"
-                    AutomationProperties.Name="Retry Endpoint Probe" />
-          </StackPanel>
-        </Border>
-
-        <!-- STATE 4: degraded (Stale Telemetry / Sequence Gap Detection + Snapshot Resync, UX-02) -->
-        <Border x:Name="DegradedStatePanel"
-                Tag="degraded"
-                IsVisible="{Binding IsDegradedState}"
-                Background="{DynamicResource SurfaceElevatedBrush}"
-                BorderBrush="{DynamicResource StatusDegradedBrush}"
-                BorderThickness="2"
-                CornerRadius="8"
-                Padding="20"
-                AutomationProperties.Name="Degraded View State Panel">
-          <StackPanel Spacing="10">
-            <TextBlock Text="▲ DEGRADED / STALE TELEMETRY — Sequence Gap Detected"
-                       Foreground="{DynamicResource StatusDegradedBrush}"
-                       FontSize="15"
-                       FontWeight="Bold" />
-            <TextBlock Text="{Binding DegradedSummary}"
-                       Foreground="{DynamicResource TextPrimaryBrush}"
-                       FontSize="13"
-                       TextWrapping="Wrap" />
-            <TextBlock Text="{Binding LastUpdatedSummary}"
-                       Foreground="{DynamicResource TextMutedBrush}"
-                       FontSize="12" />
-            <Button Content="Resync Telemetry Snapshot"
-                    Command="{Binding ResyncSnapshotCommand}"
-                    MinHeight="44"
-                    Padding="16,10"
-                    HorizontalAlignment="Left"
-                    TabIndex="8"
-                    AutomationProperties.Name="Resync Telemetry Snapshot" />
-          </StackPanel>
-        </Border>
-
-        <!-- STATE 5: populated (Live SSoT LauncherConfig Cards & Section Controls, UX-02/UX-03) -->
-        <StackPanel x:Name="PopulatedStatePanel"
-                    Tag="populated"
-                    IsVisible="{Binding IsPopulatedState}"
-                    Spacing="16"
-                    AutomationProperties.Name="Populated View State Panel">
-
-          <!-- 3-Column Bento Summary Row (<= 4 KPI Cards per Row, UX-01/UX-03) -->
-          <Grid ColumnDefinitions="*,14,*,14,*">
-            <Border Grid.Column="0"
-                    Background="{DynamicResource SurfaceElevatedBrush}"
-                    BorderBrush="{DynamicResource BorderSubtleBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="16">
-              <StackPanel Spacing="6">
-                <TextBlock Text="GATEWAY HTTP / ICS"
-                           Foreground="{DynamicResource TextMutedBrush}"
-                           FontSize="11"
-                           FontWeight="Bold" />
-                <TextBlock Text="{Binding GatewayHttpAddr}"
-                           Foreground="{DynamicResource TextPrimaryBrush}"
-                           FontSize="15"
-                           FontWeight="SemiBold" />
-                <TextBlock Text="{Binding GatewayIcsAddr}"
-                           Foreground="{DynamicResource AccentGoldBrush}"
-                           FontSize="12" />
-              </StackPanel>
-            </Border>
-
-            <Border Grid.Column="2"
-                    Background="{DynamicResource SurfaceElevatedBrush}"
-                    BorderBrush="{DynamicResource BorderSubtleBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="16">
-              <StackPanel Spacing="6">
-                <TextBlock Text="GATEWAY GRPC / ADMIN"
-                           Foreground="{DynamicResource TextMutedBrush}"
-                           FontSize="11"
-                           FontWeight="Bold" />
-                <TextBlock Text="{Binding GatewayGrpcAddr}"
-                           Foreground="{DynamicResource TextPrimaryBrush}"
-                           FontSize="15"
-                           FontWeight="SemiBold" />
-                <TextBlock Text="{Binding AdminHttpAddr}"
-                           Foreground="{DynamicResource StatusOnlineBrush}"
-                           FontSize="12" />
-              </StackPanel>
-            </Border>
-
-            <Border Grid.Column="4"
-                    Background="{DynamicResource SurfaceElevatedBrush}"
-                    BorderBrush="{DynamicResource BorderSubtleBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="16">
-              <StackPanel Spacing="6">
-                <TextBlock Text="EOS SHIM &amp; TLS ADMIN"
-                           Foreground="{DynamicResource TextMutedBrush}"
-                           FontSize="11"
-                           FontWeight="Bold" />
-                <TextBlock Text="{Binding EosModeSummary}"
-                           Foreground="{DynamicResource TextPrimaryBrush}"
-                           FontSize="15"
-                           FontWeight="SemiBold" />
-                <TextBlock Text="{Binding AdminHttpsAddr}"
-                           Foreground="{DynamicResource TextMutedBrush}"
-                           FontSize="12" />
-              </StackPanel>
-            </Border>
-          </Grid>
-
-          <!-- Section Detail Card: Profiles / Realm & Server Control / Launch Presets / Diagnostics -->
-          <Border Background="{DynamicResource SurfaceElevatedBrush}"
-                  BorderBrush="{DynamicResource BorderSubtleBrush}"
-                  BorderThickness="1"
-                  CornerRadius="8"
-                  Padding="20">
-            <StackPanel Spacing="12">
-              <TextBlock Text="CLIENT PAK DIRECTORY &amp; LAUNCH ARGUMENTS"
-                         Foreground="{DynamicResource AccentGoldBrush}"
-                         FontSize="12"
-                         FontWeight="Bold" />
-              <TextBlock Text="{Binding ClientPakDir}"
-                         Foreground="{DynamicResource TextPrimaryBrush}"
-                         FontSize="13"
-                         TextWrapping="Wrap" />
-              <Border Background="{DynamicResource SurfaceOverlayBrush}"
-                      BorderBrush="{DynamicResource BorderSubtleBrush}"
-                      BorderThickness="1"
-                      CornerRadius="6"
-                      Padding="12,10">
-                <TextBlock Text="{Binding LaunchCommandLinePreview}"
-                           Foreground="{DynamicResource TextMutedBrush}"
-                           FontSize="12"
-                           TextWrapping="Wrap" />
-              </Border>
-              <TextBlock Text="{Binding DiagnosticsReportText}"
-                         Foreground="{DynamicResource TextPrimaryBrush}"
-                         FontSize="12"
-                         TextWrapping="Wrap" />
-              <TextBlock x:Name="StatusBanner"
-                         Text="{Binding StatusBannerMessage}"
+                    Padding="9,5"
+                    VerticalAlignment="Center"
+                    AutomationProperties.Name="Realm Status Pill">
+              <TextBlock Text="{Binding RealmStatusShortText}"
                          Foreground="{DynamicResource StatusOnlineBrush}"
-                         FontSize="12"
-                         FontWeight="SemiBold"
-                         AutomationProperties.AutomationId="StatusBanner"
-                         AutomationProperties.Name="Status Banner" />
-            </StackPanel>
-          </Border>
+                         FontWeight="Bold"
+                         FontSize="10.5" />
+            </Border>
 
-          <!-- Sign-In / Temporary Account Registration Panel -->
-          <Border x:Name="SignInPanel"
-                  Background="{DynamicResource SurfaceElevatedBrush}"
-                  BorderBrush="{DynamicResource BorderSubtleBrush}"
-                  BorderThickness="1"
-                  CornerRadius="8"
-                  Padding="20"
-                  AutomationProperties.AutomationId="SignInPanel"
-                  AutomationProperties.Name="Sign In and Temporary Account Registration Panel">
-            <StackPanel Spacing="12">
-              <TextBlock Text="ACCOUNT SIGN-IN &amp; EPHEMERAL REGISTRATION"
-                         Foreground="{DynamicResource AccentGoldBrush}"
-                         FontSize="12"
-                         FontWeight="Bold" />
-              <Grid ColumnDefinitions="*,12,*">
-                <TextBox Grid.Column="0"
-                         x:Name="AuthUsernameInput"
-                         Text="{Binding AuthUsername, Mode=TwoWay}"
-                         Watermark="Username (or leave blank for tmp_&lt;8hex&gt;)"
-                         MinHeight="40"
-                         AutomationProperties.AutomationId="AuthUsernameInput"
-                         AutomationProperties.Name="Account Username Input" />
-                <TextBox Grid.Column="2"
-                         x:Name="AuthPasswordInput"
-                         Text="{Binding AuthPassword, Mode=TwoWay}"
-                         PasswordChar="●"
-                         Watermark="Password"
-                         MinHeight="40"
-                         AutomationProperties.AutomationId="AuthPasswordInput"
-                         AutomationProperties.Name="Account Password Input" />
-              </Grid>
-              <CheckBox x:Name="RegisterTempAccountToggle"
-                        IsChecked="{Binding IsTemporaryAccount, Mode=TwoWay}"
-                        Content="Temporary Account Mode (only store credentials for temporary accounts until deleted)"
-                        Foreground="{DynamicResource TextPrimaryBrush}"
-                        AutomationProperties.AutomationId="RegisterTempAccountToggle"
-                        AutomationProperties.Name="Register Temporary Account Toggle" />
-              <StackPanel Orientation="Horizontal" Spacing="10">
-                <Button x:Name="LoginButton"
-                        Content="Sign In"
-                        Command="{Binding LoginCommand}"
-                        MinHeight="44"
-                        Padding="16,10"
-                        AutomationProperties.AutomationId="LoginButton"
-                        AutomationProperties.Name="Sign In Button" />
-                <Button x:Name="RegisterTempButton"
-                        Content="Register Temp Account"
-                        Command="{Binding RegisterTempCommand}"
-                        Background="{DynamicResource AccentGoldBrush}"
-                        Foreground="{DynamicResource SurfacePrimaryBrush}"
-                        FontWeight="SemiBold"
-                        MinHeight="44"
-                        Padding="16,10"
-                        AutomationProperties.AutomationId="RegisterTempButton"
-                        AutomationProperties.Name="Register Temporary Account Button" />
-              </StackPanel>
-            </StackPanel>
-          </Border>
+            <Button Grid.Column="3"
+                    Content="⚙"
+                    Command="{Binding ToggleSettingsCommand}"
+                    Classes="aoc-filigree-btn"
+                    MinWidth="32"
+                    MinHeight="30"
+                    Padding="7,4"
+                    FontSize="12"
+                    ToolTip.Tip="Configure Server &amp; Steam Client Path"
+                    AutomationProperties.Name="Toggle Inline Server and Client Settings" />
+          </Grid>
 
-          <!-- Post-Login Authenticated Dashboard & Character Select Panel -->
-          <Border x:Name="PostLoginPanel"
-                  IsVisible="{Binding IsAuthenticated}"
-                  Background="{DynamicResource SurfaceElevatedBrush}"
-                  BorderBrush="{DynamicResource StatusOnlineBrush}"
-                  BorderThickness="1"
-                  CornerRadius="8"
-                  Padding="20"
-                  AutomationProperties.AutomationId="PostLoginPanel"
-                  AutomationProperties.Name="Post-Login Authenticated Dashboard Panel">
-            <StackPanel Spacing="12">
-              <Grid ColumnDefinitions="*,Auto">
-                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                  <TextBlock Text="AUTHENTICATED SESSION:"
-                             Foreground="{DynamicResource StatusOnlineBrush}"
-                             FontSize="12"
-                             FontWeight="Bold" />
-                  <TextBlock x:Name="SignedInUsernameText"
-                             Text="{Binding SignedInUsername}"
-                             Foreground="{DynamicResource TextPrimaryBrush}"
-                             FontSize="14"
-                             FontWeight="Bold"
-                             AutomationProperties.AutomationId="SignedInUsernameText"
-                             AutomationProperties.Name="Signed In Username" />
-                </StackPanel>
-                <Border Grid.Column="1"
-                        x:Name="TempAccountBadge"
-                        IsVisible="{Binding IsTemporaryAccount}"
-                        Background="{DynamicResource SurfaceOverlayBrush}"
-                        BorderBrush="{DynamicResource AccentGoldBrush}"
-                        BorderThickness="1"
-                        CornerRadius="4"
-                        Padding="8,4"
-                        AutomationProperties.AutomationId="TempAccountBadge"
-                        AutomationProperties.Name="Temporary Account Badge">
-                  <TextBlock Text="{Binding TempAccountBadgeText}"
-                             Foreground="{DynamicResource AccentGoldBrush}"
-                             FontSize="11"
-                             FontWeight="Bold" />
-                </Border>
-              </Grid>
-
-              <ListBox x:Name="CharacterListBox"
-                       ItemsSource="{Binding Characters}"
-                       SelectedItem="{Binding SelectedCharacter, Mode=TwoWay}"
-                       MaxHeight="180"
-                       AutomationProperties.AutomationId="CharacterListBox"
-                       AutomationProperties.Name="Character Select Roster">
-                <ListBox.ItemsPanel>
-                  <ItemsPanelTemplate>
-                    <VirtualizingStackPanel />
-                  </ItemsPanelTemplate>
-                </ListBox.ItemsPanel>
-                <ListBox.ItemTemplate>
-                  <DataTemplate x:DataType="models:LauncherCharacterSummary" x:CompileBindings="True">
-                    <StackPanel Orientation="Horizontal" Spacing="12">
-                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimaryBrush}" />
-                      <TextBlock Text="{Binding ClassName}" Foreground="{DynamicResource AccentGoldBrush}" />
-                      <TextBlock Text="{Binding ZoneName}" Foreground="{DynamicResource TextMutedBrush}" />
-                    </StackPanel>
-                  </DataTemplate>
-                </ListBox.ItemTemplate>
-              </ListBox>
-
-              <TextBlock x:Name="JoinTicketBadge"
-                         Text="{Binding JoinTicketBadgeText}"
-                         Foreground="{DynamicResource AccentGoldBrush}"
-                         FontSize="12"
-                         FontWeight="SemiBold"
-                         AutomationProperties.AutomationId="JoinTicketBadge"
-                         AutomationProperties.Name="Character Select Join Ticket Badge" />
-
-              <WrapPanel Orientation="Horizontal">
-                <Button x:Name="CreateCharacterButton"
-                        Content="Create Character"
-                        Command="{Binding CreateCharacterCommand}"
-                        MinHeight="44"
-                        Margin="0,0,8,8"
-                        Padding="14,8"
-                        AutomationProperties.AutomationId="CreateCharacterButton"
-                        AutomationProperties.Name="Create Character Button" />
-                <Button x:Name="SelectCharacterButton"
-                        Content="Select Character &amp; Play"
-                        Command="{Binding SelectCharacterCommand}"
-                        Background="{DynamicResource AccentGoldBrush}"
-                        Foreground="{DynamicResource SurfacePrimaryBrush}"
-                        FontWeight="SemiBold"
-                        MinHeight="44"
-                        Margin="0,0,8,8"
-                        Padding="14,8"
-                        AutomationProperties.AutomationId="SelectCharacterButton"
-                        AutomationProperties.Name="Select Character Button" />
-                <Button x:Name="TerminateAshesButton"
-                        Content="Terminate Ashes Client"
-                        Command="{Binding TerminateAshesCommand}"
-                        MinHeight="44"
-                        Margin="0,0,8,8"
-                        Padding="14,8"
-                        AutomationProperties.AutomationId="TerminateAshesButton"
-                        AutomationProperties.Name="Terminate Ashes Client Button" />
-                <Button x:Name="DeleteAccountButton"
-                        Content="Delete Account"
-                        Command="{Binding DeleteAccountCommand}"
-                        Background="{DynamicResource StatusOfflineBrush}"
-                        Foreground="{DynamicResource TextPrimaryBrush}"
-                        FontWeight="SemiBold"
-                        MinHeight="44"
-                        Margin="0,0,8,8"
-                        Padding="14,8"
-                        AutomationProperties.AutomationId="DeleteAccountButton"
-                        AutomationProperties.Name="Delete Account Button" />
-                <Button x:Name="LogoutButton"
-                        Content="Logout"
-                        Command="{Binding LogoutCommand}"
-                        MinHeight="44"
-                        Margin="0,0,0,8"
-                        Padding="14,8"
-                        AutomationProperties.AutomationId="LogoutButton"
-                        AutomationProperties.Name="Logout Button" />
-              </WrapPanel>
-            </StackPanel>
-          </Border>
+          <Border Height="1" Background="{DynamicResource AoCGoldDividerBrush}" />
         </StackPanel>
 
-      </StackPanel>
-    </ScrollViewer>
+        <!-- 2. Scrollable Middle Stack: Realm Bar, Inline Settings Drawer, Saved Accounts & Auth Card -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="9">
+
+            <!-- 2A. Server / Realm Environment Selector Bar -->
+            <Border Background="{DynamicResource AoCInputFillBrush}"
+                    BorderBrush="{DynamicResource BorderSubtleBrush}"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="11,8">
+              <StackPanel Spacing="5">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Grid.Column="0"
+                             Text="SERVER / REALM"
+                             FontSize="9.5"
+                             FontWeight="Bold"
+                             LetterSpacing="1.3"
+                             Foreground="{DynamicResource AccentChampagneGoldBrush}"
+                             VerticalAlignment="Center" />
+                  <Button Grid.Column="1"
+                          Content="↻ Refresh"
+                          Command="{Binding RetryProbeCommand}"
+                          Classes="aoc-filigree-btn"
+                          MinHeight="24"
+                          Padding="8,2"
+                          FontSize="10.5"
+                          AutomationProperties.Name="Refresh Server Status" />
+                </Grid>
+
+                <ComboBox ItemsSource="{Binding Profiles}"
+                          SelectedItem="{Binding SelectedProfile, Mode=TwoWay}"
+                          HorizontalAlignment="Stretch"
+                          MinHeight="34"
+                          Background="{DynamicResource SurfacePrimaryBrush}"
+                          BorderBrush="{DynamicResource BorderSubtleBrush}"
+                          Foreground="{DynamicResource TextPrimaryBrush}"
+                          AutomationProperties.Name="Server Realm Selector">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate x:DataType="models:LauncherProfile" x:CompileBindings="True">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Grid.Column="0"
+                                   Text="{Binding DisplayName}"
+                                   FontWeight="SemiBold"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding GatewayHttpAddr}"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource AccentGoldBrush}"
+                                   Margin="8,0,0,0" />
+                      </Grid>
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+            </Border>
+
+            <!-- 2B. Inline Expandable Settings Drawer (Stays Inside Left 50% Deck) -->
+            <Border IsVisible="{Binding IsSettingsOpen}"
+                    Background="{DynamicResource AoCSettingsCardBrush}"
+                    BorderBrush="{DynamicResource AccentJewelBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="12,10"
+                    AutomationProperties.Name="Server and Client Settings Panel">
+              <StackPanel Spacing="8">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Grid.Column="0"
+                             Text="ENDPOINT &amp; STEAM CLIENT SETTINGS"
+                             FontSize="10"
+                             FontWeight="Bold"
+                             LetterSpacing="1.2"
+                             Foreground="{DynamicResource AccentChampagneGoldBrush}"
+                             VerticalAlignment="Center" />
+                  <Button Grid.Column="1"
+                          Content="Auto-Detect Steam"
+                          Command="{Binding AutoDetectSteamClientCommand}"
+                          Classes="aoc-filigree-btn"
+                          MinHeight="26"
+                          Padding="8,3"
+                          FontSize="10.5"
+                          AutomationProperties.Name="Auto Detect Steam Client Path" />
+                </Grid>
+
+                <Grid ColumnDefinitions="*,8,*">
+                  <StackPanel Grid.Column="0" Spacing="3">
+                    <TextBlock Text="GATEWAY HTTP"
+                               FontSize="9.5"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource AccentGoldBrush}" />
+                    <TextBox Text="{Binding EditGatewayHttpAddr, Mode=TwoWay}"
+                             Watermark="127.0.0.1:8080"
+                             Classes="aoc-input"
+                             MinHeight="32"
+                             FontSize="11.5"
+                             AutomationProperties.Name="Gateway HTTP Address Input" />
+                  </StackPanel>
+                  <StackPanel Grid.Column="2" Spacing="3">
+                    <TextBlock Text="WORLD ENDPOINT"
+                               FontSize="9.5"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource AccentGoldBrush}" />
+                    <TextBox Text="{Binding EditWorldEndpoint, Mode=TwoWay}"
+                             Watermark="127.0.0.1:7777"
+                             Classes="aoc-input"
+                             MinHeight="32"
+                             FontSize="11.5"
+                             AutomationProperties.Name="World Endpoint Input" />
+                  </StackPanel>
+                </Grid>
+
+                <StackPanel Spacing="3">
+                  <TextBlock Text="ASHES OF CREATION CLIENT / PAK DIRECTORY"
+                             FontSize="9.5"
+                             FontWeight="Bold"
+                             Foreground="{DynamicResource AccentGoldBrush}" />
+                  <TextBox Text="{Binding EditClientPakDir, Mode=TwoWay}"
+                           Watermark="C:\Program Files (x86)\Steam\steamapps\common\Ashes of Creation Playtest"
+                           Classes="aoc-input"
+                           MinHeight="32"
+                           FontSize="11.5"
+                           AutomationProperties.Name="Client Pak Directory Input" />
+                </StackPanel>
+
+                <Grid ColumnDefinitions="*,Auto,8,Auto">
+                  <TextBlock Grid.Column="0"
+                             Text="{Binding ClientStatusSummary}"
+                             FontSize="10.5"
+                             Foreground="{DynamicResource StatusOnlineBrush}"
+                             VerticalAlignment="Center"
+                             TextTrimming="CharacterEllipsis" />
+                  <Button Grid.Column="1"
+                          Content="Close"
+                          Command="{Binding ToggleSettingsCommand}"
+                          Classes="aoc-filigree-btn"
+                          MinHeight="28"
+                          Padding="10,4"
+                          FontSize="11"
+                          AutomationProperties.Name="Close Settings Drawer" />
+                  <Button Grid.Column="3"
+                          Content="Save"
+                          Command="{Binding SaveProfileCommand}"
+                          Classes="aoc-jewel-cta"
+                          MinHeight="28"
+                          Padding="12,4"
+                          FontSize="11"
+                          AutomationProperties.Name="Save Server Profile Settings" />
+                </Grid>
+              </StackPanel>
+            </Border>
+
+            <!-- 2C. Saved Accounts 1-Click Quick-Switcher (Visible when HasSavedAccounts is true) -->
+            <Border IsVisible="{Binding HasSavedAccounts}"
+                    Background="{DynamicResource AoCInputFillBrush}"
+                    BorderBrush="{DynamicResource BorderSubtleBrush}"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="11,8"
+                    AutomationProperties.Name="Saved Accounts Switcher Bar">
+              <StackPanel Spacing="5">
+                <TextBlock Text="SAVED ACCOUNTS (1-CLICK SWITCH)"
+                           FontSize="9.5"
+                           FontWeight="Bold"
+                           LetterSpacing="1.2"
+                           Foreground="{DynamicResource AccentChampagneGoldBrush}" />
+                <Grid ColumnDefinitions="*,6,Auto,6,Auto">
+                  <ComboBox Grid.Column="0"
+                            ItemsSource="{Binding SavedAccounts}"
+                            SelectedItem="{Binding SelectedSavedAccount, Mode=TwoWay}"
+                            HorizontalAlignment="Stretch"
+                            MinHeight="32"
+                            Background="{DynamicResource SurfacePrimaryBrush}"
+                            BorderBrush="{DynamicResource BorderSubtleBrush}"
+                            AutomationProperties.Name="Saved Accounts Dropdown">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate x:DataType="services:SavedAccountRecord" x:CompileBindings="True">
+                        <TextBlock Text="{Binding DisplayLabel}"
+                                   FontSize="11.5"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   TextTrimming="CharacterEllipsis" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <Button Grid.Column="2"
+                          Content="Switch"
+                          Command="{Binding SelectSavedAccountCommand}"
+                          Classes="aoc-filigree-btn"
+                          MinHeight="32"
+                          Padding="10,4"
+                          FontSize="11"
+                          AutomationProperties.Name="Switch to Selected Saved Account" />
+                  <Button Grid.Column="4"
+                          Content="✕"
+                          Command="{Binding ForgetSavedAccountCommand}"
+                          Classes="aoc-filigree-btn"
+                          MinWidth="32"
+                          MinHeight="32"
+                          Padding="6,4"
+                          FontSize="11"
+                          ToolTip.Tip="Forget Saved Account"
+                          AutomationProperties.Name="Forget Selected Saved Account" />
+                </Grid>
+              </StackPanel>
+            </Border>
+
+            <!-- 2D. Unauthenticated View: Sign In / Create Account & Quick Temp Account -->
+            <Border x:Name="SignInPanel"
+                    IsVisible="{Binding IsSignedOut}"
+                    AutomationProperties.AutomationId="SignInPanel"
+                    AutomationProperties.Name="Sign In and Account Registration Panel">
+              <StackPanel Spacing="8">
+
+                <!-- Segmented Mode Toggle: SIGN IN vs CREATE ACCOUNT -->
+                <Grid ColumnDefinitions="*,8,*">
+                  <Button Grid.Column="0"
+                          Content="SIGN IN"
+                          Command="{Binding SetSignInModeCommand}"
+                          Classes="aoc-filigree-btn"
+                          HorizontalAlignment="Stretch"
+                          HorizontalContentAlignment="Center"
+                          MinHeight="34"
+                          FontSize="11"
+                          AutomationProperties.Name="Sign In Mode Tab" />
+                  <Button Grid.Column="2"
+                          Content="CREATE ACCOUNT"
+                          Command="{Binding SetRegisterModeCommand}"
+                          Classes="aoc-filigree-btn"
+                          HorizontalAlignment="Stretch"
+                          HorizontalContentAlignment="Center"
+                          MinHeight="34"
+                          FontSize="11"
+                          AutomationProperties.Name="Create Account Mode Tab" />
+                </Grid>
+
+                <StackPanel Spacing="3">
+                  <TextBlock Text="ACCOUNT USERNAME"
+                             FontSize="9.5"
+                             FontWeight="Bold"
+                             LetterSpacing="1.2"
+                             Foreground="{DynamicResource AccentGoldBrush}" />
+                  <TextBox x:Name="AuthUsernameInput"
+                           Text="{Binding AuthUsername, Mode=TwoWay}"
+                           Watermark="Enter Verra account username"
+                           Classes="aoc-input"
+                           MinHeight="36"
+                           AutomationProperties.AutomationId="AuthUsernameInput"
+                           AutomationProperties.Name="Account Username Input" />
+                </StackPanel>
+
+                <StackPanel Spacing="3" IsVisible="{Binding IsRegisterMode}">
+                  <TextBlock Text="EMAIL ADDRESS"
+                             FontSize="9.5"
+                             FontWeight="Bold"
+                             LetterSpacing="1.2"
+                             Foreground="{DynamicResource AccentGoldBrush}" />
+                  <TextBox x:Name="AuthEmailInput"
+                           Text="{Binding AuthEmail, Mode=TwoWay}"
+                           Watermark="adventurer@verra.local"
+                           Classes="aoc-input"
+                           MinHeight="36"
+                           AutomationProperties.AutomationId="AuthEmailInput"
+                           AutomationProperties.Name="Account Email Input" />
+                </StackPanel>
+
+                <StackPanel Spacing="3">
+                  <TextBlock Text="PASSWORD"
+                             FontSize="9.5"
+                             FontWeight="Bold"
+                             LetterSpacing="1.2"
+                             Foreground="{DynamicResource AccentGoldBrush}" />
+                  <TextBox x:Name="AuthPasswordInput"
+                           Text="{Binding AuthPassword, Mode=TwoWay}"
+                           PasswordChar="•"
+                           Watermark="Enter password"
+                           Classes="aoc-input"
+                           MinHeight="36"
+                           AutomationProperties.AutomationId="AuthPasswordInput"
+                           AutomationProperties.Name="Account Password Input" />
+                </StackPanel>
+
+                <CheckBox Content="Remember Account (Save Credentials)"
+                          IsChecked="{Binding RememberCredentials, Mode=TwoWay}"
+                          Foreground="{DynamicResource TextMutedBrush}"
+                          FontSize="11.5"
+                          AutomationProperties.Name="Remember Account Credentials Toggle" />
+
+                <Button x:Name="LoginButton"
+                        Content="SIGN IN"
+                        Command="{Binding LoginCommand}"
+                        IsVisible="{Binding IsSignInMode}"
+                        Classes="aoc-jewel-cta"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Center"
+                        VerticalContentAlignment="Center"
+                        MinHeight="40"
+                        FontSize="12.5"
+                        AutomationProperties.AutomationId="LoginButton"
+                        AutomationProperties.Name="Sign In Primary Button" />
+
+                <Button x:Name="RegisterAccountButton"
+                        Content="CREATE ACCOUNT"
+                        Command="{Binding RegisterAccountCommand}"
+                        IsVisible="{Binding IsRegisterMode}"
+                        Classes="aoc-jewel-cta"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Center"
+                        VerticalContentAlignment="Center"
+                        MinHeight="40"
+                        FontSize="12.5"
+                        AutomationProperties.AutomationId="RegisterAccountButton"
+                        AutomationProperties.Name="Create Account Primary Button" />
+
+                <Button x:Name="RegisterTempButton"
+                        Content="⚡ Quick Temp Account (1-Click Playtest)"
+                        Command="{Binding RegisterTempCommand}"
+                        Classes="aoc-filigree-btn"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Center"
+                        VerticalContentAlignment="Center"
+                        MinHeight="36"
+                        FontSize="11.5"
+                        AutomationProperties.AutomationId="RegisterTempButton"
+                        AutomationProperties.Name="Quick Temporary Account Button" />
+              </StackPanel>
+            </Border>
+
+            <!-- 2E. Authenticated View: Active Account Card & Session Controls -->
+            <Border x:Name="PostLoginPanel"
+                    IsVisible="{Binding IsAuthenticated}"
+                    Background="{DynamicResource AoCInputFillBrush}"
+                    BorderBrush="{DynamicResource AccentJewelBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Padding="14,12"
+                    AutomationProperties.AutomationId="PostLoginPanel"
+                    AutomationProperties.Name="Authenticated Account Card">
+              <StackPanel Spacing="10">
+                <Grid ColumnDefinitions="*,Auto">
+                  <StackPanel Grid.Column="0" Spacing="2">
+                    <TextBlock Text="SIGNED IN AS"
+                               FontSize="9.5"
+                               FontWeight="Bold"
+                               LetterSpacing="1.4"
+                               Foreground="{DynamicResource StatusOnlineBrush}" />
+                    <TextBlock x:Name="SignedInUsernameText"
+                               Text="{Binding SignedInUsername}"
+                               FontSize="17"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource AoCHeadlineTextBrush}"
+                               TextTrimming="CharacterEllipsis"
+                               AutomationProperties.AutomationId="SignedInUsernameText"
+                               AutomationProperties.Name="Signed In Username" />
+                  </StackPanel>
+
+                  <Border Grid.Column="1"
+                          x:Name="TempAccountBadge"
+                          Background="{DynamicResource SurfacePrimaryBrush}"
+                          BorderBrush="{DynamicResource BorderSubtleBrush}"
+                          BorderThickness="1"
+                          CornerRadius="3"
+                          Padding="8,4"
+                          VerticalAlignment="Center"
+                          AutomationProperties.AutomationId="TempAccountBadge"
+                          AutomationProperties.Name="Account Type Badge">
+                    <TextBlock Text="{Binding AccountBadgeText}"
+                               FontSize="9.5"
+                               FontWeight="Bold"
+                               LetterSpacing="1.0"
+                               Foreground="{DynamicResource AccentChampagneGoldBrush}" />
+                  </Border>
+                </Grid>
+
+                <Border Height="1" Background="{DynamicResource AoCGoldDividerBrush}" />
+
+                <StackPanel Spacing="4">
+                  <Grid ColumnDefinitions="Auto,*">
+                    <TextBlock Grid.Column="0"
+                               Text="REALM GATEWAY:"
+                               FontSize="11"
+                               Foreground="{DynamicResource TextMutedBrush}"
+                               Margin="0,0,8,0" />
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding GatewayHttpAddr}"
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               HorizontalAlignment="Right"
+                               TextTrimming="CharacterEllipsis" />
+                  </Grid>
+                  <Grid ColumnDefinitions="Auto,*">
+                    <TextBlock Grid.Column="0"
+                               Text="CLIENT BUILD:"
+                               FontSize="11"
+                               Foreground="{DynamicResource TextMutedBrush}"
+                               Margin="0,0,8,0" />
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding ClientStatusSummary}"
+                               FontSize="11"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource StatusOnlineBrush}"
+                               HorizontalAlignment="Right"
+                               TextTrimming="CharacterEllipsis" />
+                  </Grid>
+                </StackPanel>
+
+                <Grid ColumnDefinitions="*,8,*">
+                  <Button Grid.Column="0"
+                          x:Name="LogoutButton"
+                          Content="Switch / Sign Out"
+                          Command="{Binding LogoutCommand}"
+                          Classes="aoc-filigree-btn"
+                          HorizontalAlignment="Stretch"
+                          HorizontalContentAlignment="Center"
+                          MinHeight="38"
+                          FontSize="11"
+                          AutomationProperties.AutomationId="LogoutButton"
+                          AutomationProperties.Name="Switch Account or Sign Out Button" />
+                  <Button Grid.Column="2"
+                          x:Name="DeleteAccountButton"
+                          Content="Delete Account"
+                          Command="{Binding DeleteAccountCommand}"
+                          Classes="aoc-danger-cta"
+                          HorizontalAlignment="Stretch"
+                          HorizontalContentAlignment="Center"
+                          MinHeight="38"
+                          FontSize="11"
+                          AutomationProperties.AutomationId="DeleteAccountButton"
+                          AutomationProperties.Name="Delete Account Button" />
+                </Grid>
+              </StackPanel>
+            </Border>
+
+          </StackPanel>
+        </ScrollViewer>
+
+        <!-- 3. Bottom of Left 50% Deck: Status Banner, Bioluminescent Readiness Bar & Prominent PLAY CTA -->
+        <StackPanel Grid.Row="2" Spacing="8" Margin="0,10,0,0">
+          <Border Height="1" Background="{DynamicResource AoCGoldDividerBrush}" />
+
+          <StackPanel Spacing="4">
+            <TextBlock x:Name="StatusBanner"
+                       Text="{Binding StatusBannerMessage}"
+                       Foreground="{DynamicResource AccentChampagneGoldBrush}"
+                       FontSize="11"
+                       FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis"
+                       AutomationProperties.AutomationId="StatusBanner"
+                       AutomationProperties.Name="Status Banner" />
+            <ProgressBar Value="100"
+                         Minimum="0"
+                         Maximum="100"
+                         Height="3"
+                         Foreground="{DynamicResource StatusOnlineBrush}"
+                         Background="{DynamicResource AoCInputFillBrush}"
+                         AutomationProperties.Name="Client Readiness Bar" />
+          </StackPanel>
+
+          <Button x:Name="PrimaryLaunchCtaButton"
+                  Command="{Binding LaunchClientCommand}"
+                  IsVisible="{Binding IsGameStopped}"
+                  Classes="aoc-jewel-cta"
+                  HorizontalAlignment="Stretch"
+                  Height="48"
+                  HorizontalContentAlignment="Center"
+                  VerticalContentAlignment="Center"
+                  AutomationProperties.AutomationId="LaunchButton"
+                  AutomationProperties.Name="Play Ashes of Creation Primary Action">
+            <TextBlock Text="PLAY"
+                       FontFamily="Georgia, Times New Roman, serif"
+                       FontSize="18"
+                       FontWeight="Bold"
+                       LetterSpacing="3.5" />
+          </Button>
+
+          <Button x:Name="TerminateAshesButton"
+                  Command="{Binding TerminateAshesCommand}"
+                  IsVisible="{Binding IsAshesProcessRunning}"
+                  Classes="aoc-danger-cta"
+                  HorizontalAlignment="Stretch"
+                  Height="48"
+                  HorizontalContentAlignment="Center"
+                  VerticalContentAlignment="Center"
+                  AutomationProperties.AutomationId="TerminateAshesButton"
+                  AutomationProperties.Name="Stop Running Ashes Client Action">
+            <TextBlock Text="GAME RUNNING — STOP"
+                       FontSize="13"
+                       FontWeight="Bold"
+                       LetterSpacing="1.2" />
+          </Button>
+        </StackPanel>
+
+      </Grid>
+    </Border>
+
+    <!-- LAYER 2: Right 50% Hero Stage (Grid.Column="1") — 100% Unobstructed View of Citadel & Bioluminescent World Tree -->
+    <Panel Grid.Column="1" IsHitTestVisible="False" />
+
   </Grid>
 </Window>

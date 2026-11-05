@@ -144,7 +144,7 @@ function Invoke-WithHeavyOperationLock {
 Export-ModuleMember -Function @(
     'Get-SandalStageGraph', 'Get-SandalStageOrder', 'Compute-SandalStageHash',
     'Read-SandalStageStamp', 'Write-SandalStageStamp', 'Test-SandalStageUpToDate',
-    'Invoke-WithHeavyOperationLock', 'New-SandalCsprngSecret', 'Get-SandalEnvMap',
+    'Invoke-WithHeavyOperationLock', 'Write-SandalStep', 'New-SandalCsprngSecret', 'Get-SandalEnvMap',
     'Set-SandalSecretAcl', 'Initialize-SandalEnv', 'Sync-SandalDistStage',
     'Sync-SandalDeployStage', 'Ensure-SandalGameData'
 )

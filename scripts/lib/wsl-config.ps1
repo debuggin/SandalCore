@@ -139,6 +139,28 @@ function Set-WslSectionKey {
     return [string[]]$out.ToArray()
 }
 
+function Remove-WslSectionKey {
+    param(
+        [AllowEmptyCollection()][string[]]$Lines,
+        [Parameter(Mandatory)][string]$Section,
+        [Parameter(Mandatory)][string]$Key
+    )
+    $out = [System.Collections.Generic.List[string]]::new()
+    $inTarget = $false
+    foreach ($line in $Lines) {
+        if ($line -match '^\s*\[([^\]]+)\]\s*(?:[#;].*)?$') {
+            $inTarget = ($Matches[1].Trim() -ieq $Section)
+            $out.Add($line)
+            continue
+        }
+        if ($inTarget -and $line -notmatch '^\s*[#;]' -and $line -match '^(\s*)([^=#;\s]+)(\s*=\s*)([^#;]*?)(\s*[#;].*)?$' -and ($Matches[2].Trim() -ieq $Key)) {
+            continue
+        }
+        $out.Add($line)
+    }
+    return [string[]]$out.ToArray()
+}
+
 function Get-WslSectionKeyValue {
     param([pscustomobject]$State, [string]$Section, [string]$Key, [string]$DefaultValue)
     if ($State.Sections.ContainsKey($Section) -and $State.Sections[$Section].ContainsKey($Key)) {
@@ -161,24 +183,31 @@ function Confirm-WslConfig {
     $state = Get-WslSectionState -ConfigPath $ConfigPath
     $curInst = Get-WslSectionKeyValue -State $state -Section 'general' -Key 'instanceIdleTimeout' -DefaultValue '-1'
     $curNet = Get-WslSectionKeyValue -State $state -Section 'wsl2' -Key 'networkingMode' -DefaultValue 'mirrored'
-    $curLoop = Get-WslSectionKeyValue -State $state -Section 'wsl2' -Key 'hostAddressLoopback' -DefaultValue 'true'
+    $curLoop = Get-WslSectionKeyValue -State $state -Section 'experimental' -Key 'hostAddressLoopback' -DefaultValue (
+        Get-WslSectionKeyValue -State $state -Section 'wsl2' -Key 'hostAddressLoopback' -DefaultValue 'true'
+    )
     $curIdle = Get-WslSectionKeyValue -State $state -Section 'wsl2' -Key 'vmIdleTimeout' -DefaultValue '-1'
     $instVal = Read-SandalConfigValue -Key 'instanceIdleTimeout' -CurrentValue $curInst -PromptReader $PromptReader
     $netVal = Read-SandalConfigValue -Key 'networkingMode' -CurrentValue $curNet -PromptReader $PromptReader
     $loopVal = Read-SandalConfigValue -Key 'hostAddressLoopback' -CurrentValue $curLoop -PromptReader $PromptReader
     $idleVal = Read-SandalConfigValue -Key 'vmIdleTimeout' -CurrentValue $curIdle -PromptReader $PromptReader
     $specs = @(
-        @{ Section = 'general'; Key = 'instanceIdleTimeout'; Value = $instVal; Reason = 'disable WSL2 distro idle shutdown' },
-        @{ Section = 'wsl2';    Key = 'networkingMode';      Value = $netVal;  Reason = 'enable WSL2 mirrored localhost networking' },
-        @{ Section = 'wsl2';    Key = 'hostAddressLoopback'; Value = $loopVal; Reason = 'enable host-to-container loopback routing' },
-        @{ Section = 'wsl2';    Key = 'vmIdleTimeout';       Value = $idleVal; Reason = 'disable WSL2 utility VM idle shutdown' }
+        @{ Section = 'general';      Key = 'instanceIdleTimeout'; Value = $instVal; Reason = 'disable WSL2 distro idle shutdown' },
+        @{ Section = 'wsl2';         Key = 'networkingMode';      Value = $netVal;  Reason = 'enable WSL2 mirrored localhost networking' },
+        @{ Section = 'wsl2';         Key = 'vmIdleTimeout';       Value = $idleVal; Reason = 'disable WSL2 utility VM idle shutdown' },
+        @{ Section = 'experimental'; Key = 'hostAddressLoopback'; Value = $loopVal; Reason = 'enable host-to-container loopback routing' }
     )
+    $hasStaleWsl2Loopback = $state.Sections.ContainsKey('wsl2') -and $state.Sections['wsl2'].ContainsKey('hostAddressLoopback')
     $pending = @($specs | Where-Object { -not (Test-WslSectionKeyExact -State $state -Section $_.Section -Key $_.Key -ExpectedValue $_.Value) })
-    $changed = (-not $state.Exists) -or ($pending.Count -gt 0)
+    $changed = (-not $state.Exists) -or ($pending.Count -gt 0) -or $hasStaleWsl2Loopback
     if (-not $changed) {
-        Write-Information "INFO: WSL2 config ($ConfigPath) already has [general] instanceIdleTimeout=$instVal and [wsl2] networkingMode=$netVal, hostAddressLoopback=$loopVal, vmIdleTimeout=$idleVal; keeping existing file unchanged." -InformationAction Continue
-    } elseif ($PSCmdlet.ShouldProcess($ConfigPath, 'Merge [general] and [wsl2] configuration')) {
+        Write-Information "INFO: WSL2 config ($ConfigPath) already has [general] instanceIdleTimeout=$instVal, [wsl2] networkingMode=$netVal, vmIdleTimeout=$idleVal, and [experimental] hostAddressLoopback=$loopVal; keeping existing file unchanged." -InformationAction Continue
+    } elseif ($PSCmdlet.ShouldProcess($ConfigPath, 'Merge [general], [wsl2], and [experimental] configuration')) {
         $lines = $state.Lines
+        if ($hasStaleWsl2Loopback) {
+            Write-Information "INFO: Removing deprecated [wsl2] hostAddressLoopback from $ConfigPath (migrated to [experimental])" -InformationAction Continue
+            $lines = Remove-WslSectionKey -Lines $lines -Section 'wsl2' -Key 'hostAddressLoopback'
+        }
         foreach ($item in $pending) {
             Write-Information "INFO: Configuring $ConfigPath -> [$($item.Section)] $($item.Key)=$($item.Value) ($($item.Reason))" -InformationAction Continue
             $lines = Set-WslSectionKey -Lines $lines -Section $item.Section -Key $item.Key -Value $item.Value

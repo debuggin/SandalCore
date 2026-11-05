@@ -77,18 +77,30 @@ if (-not (Get-Command Ensure-SandalDockerDaemon -ErrorAction SilentlyContinue)) 
     Import-Module (Join-Path $PSScriptRoot '../lib/Env.psm1') -Force -DisableNameChecking
 }
 
+function Write-DownStep {
+    param([string]$Message, [bool]$Quiet = $false)
+    if (-not $Quiet -and $env:SANDAL_QUIET -ne '1') {
+        [Console]::Out.WriteLine("[SandalCore] $Message")
+    }
+}
+
 $opts = Resolve-DownOptions -BaseVolumes ([bool]$Volumes) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
+$quiet = [bool]$opts.Json
+if ($quiet) { $env:SANDAL_QUIET = '1' }
 $composeFile = Join-Path $rootPath 'deploy/compose.yml'
 $envFile = Join-Path $rootPath 'deploy/.env'
 $composeArgs = Build-ComposeDownArguments -ComposeFile $composeFile -EnvFile $envFile -IncludeVolumes $opts.Volumes
 
 $stoppedHostPids = @()
 if (-not $opts.DryRun) {
+    Write-DownStep -Message '[Step 1/3] Stopping SandalLauncher and game client processes...' -Quiet $quiet
     $stoppedHostPids = @(Stop-SandalHostClientProcesses -RootDirPath $rootPath)
     if (-not (Test-Path -LiteralPath $composeFile -PathType Leaf)) {
         $null = Sync-SandalDeployStage -RepoRoot $rootPath
     }
+    Write-DownStep -Message '[Step 2/3] Verifying WSL2 & Docker daemon readiness...' -Quiet $quiet
     $null = Ensure-SandalDockerDaemon
+    Write-DownStep -Message "[Step 3/3] Stopping Docker Compose containers (volumes=$($opts.Volumes))..." -Quiet $quiet
     Push-Location $rootPath
     try {
         & docker @composeArgs
@@ -98,6 +110,10 @@ if (-not $opts.DryRun) {
     } finally {
         Pop-Location
     }
+} else {
+    Write-DownStep -Message '[Step 1/3] (dry-run) Would stop SandalLauncher and game client processes.' -Quiet $quiet
+    Write-DownStep -Message '[Step 2/3] (dry-run) Would verify WSL2 & Docker daemon readiness.' -Quiet $quiet
+    Write-DownStep -Message "[Step 3/3] (dry-run) Would run: docker $($composeArgs -join ' ')" -Quiet $quiet
 }
 
 $payload = [ordered]@{

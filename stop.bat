@@ -1,5 +1,9 @@
 @echo off
 setlocal
+echo "%*" | findstr /I "\-Json \-\-json" >nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [SandalCore] Stopping SandalCore stack ^& host processes ^(stop.bat^)...
+)
 if exist "%~dp0scripts\services.ps1" (
     call "%~dp0scripts\ensure_pwsh.bat" -File "%~dp0scripts\services.ps1" -Action stop >nul 2>&1
 )

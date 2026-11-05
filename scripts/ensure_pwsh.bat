@@ -53,5 +53,9 @@ echo ERROR: PowerShell 7 (pwsh.exe) could not be found after installation. Open 
 exit /b 1
 
 :run_pwsh
+echo "%*" | findstr /I "\-Json \-\-json" >nul
+if %ERRORLEVEL% NEQ 0 if not "%SANDAL_QUIET%"=="1" (
+    echo [SandalCore] Using PowerShell 7: %PWSH_EXE%
+)
 "%PWSH_EXE%" -NoProfile -ExecutionPolicy Bypass %*
 exit /b %ERRORLEVEL%

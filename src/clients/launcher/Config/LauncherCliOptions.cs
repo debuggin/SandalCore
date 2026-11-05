@@ -33,6 +33,7 @@ public sealed record LauncherCliOptions
     public bool TerminateAfterCharSelect { get; init; }
     public bool KillExistingClient { get; init; }
     public bool DeleteTempAccountOnExit { get; init; }
+    public bool Headless { get; init; }
     public bool KeepAlive { get; init; }
     public bool MockGameClient { get; init; }
     public int MockGameSleepSec { get; init; } = 300;
@@ -58,7 +59,7 @@ public sealed record LauncherCliOptions
 
     [JsonIgnore]
     public bool HasAutomationFlags =>
-        KeepAlive || RegisterTemp || AutoLogin || VerifyCharSelect || !string.IsNullOrWhiteSpace(SelectCharacter) ||
+        RegisterTemp || AutoLogin || VerifyCharSelect || !string.IsNullOrWhiteSpace(SelectCharacter) ||
         CreateCharacterIfMissing || SpawnClient || TerminateAfterCharSelect || KillExistingClient || DeleteTempAccountOnExit;
 
     public static string GenerateTempUsername() =>
@@ -85,6 +86,7 @@ public sealed record LauncherCliOptions
         "  --terminate-after-char-select      Terminate client after character select (AOC_LAUNCHER_TERMINATE_AFTER_CHAR_SELECT=1)\n" +
         "  --kill-existing-client             Kill any running Ashes client processes (AOC_LAUNCHER_KILL_EXISTING_CLIENT=1)\n" +
         "  --delete-temp-account-on-exit      Delete temporary account and purge creds on exit (AOC_LAUNCHER_DELETE_TEMP_ON_EXIT=1)\n" +
+        "  --headless                         Run CLI automation without desktop GUI window (AOC_LAUNCHER_HEADLESS=1)\n" +
         "  --keep-alive                       Keep automation server alive until /automation/close-launcher (AOC_LAUNCHER_KEEP_ALIVE=1)\n" +
         "  --mock-game-client [sec]           Run headless mock game client process (AOC_LAUNCHER_MOCK_GAME_CLIENT=1)\n" +
         "  --automation-port <port>           Automation listener TCP port (AOC_LAUNCHER_AUTOMATION_PORT)\n" +
@@ -117,7 +119,7 @@ public sealed record LauncherCliOptions
     {
         public bool ShowHelp, ShowVersion, JsonOutput, DryRun, RegisterTemp, AutoLogin;
         public bool CreateCharIfMissing, VerifyCharSelect, SpawnClient, TerminateAfterCharSelect, KillExistingClient, DeleteTempOnExit;
-        public bool KeepAlive, MockGameClient;
+        public bool Headless, KeepAlive, MockGameClient;
         public int MockGameSleepSec = 300;
         public string GatewayUrl, Username, Password, SelectCharacter;
         public int? AutomationPort;
@@ -137,6 +139,7 @@ public sealed record LauncherCliOptions
             TerminateAfterCharSelect = ReadBoolEnv(env, "AOC_LAUNCHER_TERMINATE_AFTER_CHAR_SELECT");
             KillExistingClient = ReadBoolEnv(env, "AOC_LAUNCHER_KILL_EXISTING_CLIENT");
             DeleteTempOnExit = ReadBoolEnv(env, "AOC_LAUNCHER_DELETE_TEMP_ON_EXIT");
+            Headless = ReadBoolEnv(env, "AOC_LAUNCHER_HEADLESS");
             KeepAlive = ReadBoolEnv(env, "AOC_LAUNCHER_KEEP_ALIVE");
             MockGameClient = ReadBoolEnv(env, "AOC_LAUNCHER_MOCK_GAME_CLIENT");
             if (int.TryParse(ReadEnv(env, "AOC_LAUNCHER_AUTOMATION_PORT"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int port) && port is > 0 and <= 65535)
@@ -159,6 +162,11 @@ public sealed record LauncherCliOptions
 
         private bool TryApplyLifecycleFlag(string flag, string? inlineVal, string[] args, ref int i)
         {
+            if (flag == "--headless")
+            {
+                Headless = inlineVal is null || ParseBool(inlineVal, true);
+                return true;
+            }
             if (flag == "--keep-alive")
             {
                 KeepAlive = inlineVal is null || ParseBool(inlineVal, true);
@@ -203,7 +211,7 @@ public sealed record LauncherCliOptions
         {
             switch (flag)
             {
-                case "--gateway": GatewayUrl = NormalizeGatewayUrl(val); break;
+                case "--gateway" or "--gateway-url": GatewayUrl = NormalizeGatewayUrl(val); break;
                 case "--username" or "--email": Username = val.Trim(); break;
                 case "--password": Password = val; break;
                 case "--select-character": SelectCharacter = val.Trim(); break;
@@ -238,7 +246,7 @@ public sealed record LauncherCliOptions
                 CreateCharacterIfMissing = CreateCharIfMissing, VerifyCharSelect = VerifyCharSelect,
                 SpawnClient = SpawnClient, TerminateAfterCharSelect = TerminateAfterCharSelect,
                 KillExistingClient = KillExistingClient, DeleteTempAccountOnExit = DeleteTempOnExit,
-                KeepAlive = KeepAlive, MockGameClient = MockGameClient, MockGameSleepSec = Math.Max(1, MockGameSleepSec),
+                Headless = Headless, KeepAlive = KeepAlive, MockGameClient = MockGameClient, MockGameSleepSec = Math.Max(1, MockGameSleepSec),
                 AutomationPort = AutomationPort, TimeoutSec = Math.Max(1, TimeoutSec)
             };
         }

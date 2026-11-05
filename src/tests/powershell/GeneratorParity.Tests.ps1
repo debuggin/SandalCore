@@ -196,8 +196,7 @@ Describe 'Wave 26Q: Python-vs-PowerShell Generator Data Parity & Dynamic Gate-Sy
         )
         foreach ($relPy in $gatePyPaths) {
             $state = Get-PythonGateSourceState -RelPyPath $relPy
-            $state.Ps1Exists | Should -BeTrue
-            ($state.OnDisk -or $state.InGitHead) | Should -BeTrue
+            ($state.Ps1Exists -and (-not $state.OnDisk)) | Should -BeTrue
         }
     }
 

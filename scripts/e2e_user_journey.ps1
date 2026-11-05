@@ -235,6 +235,7 @@ function Invoke-Phase1LauncherLoaded {
     if ($Ctx.UseHermetic) {
         $dryRunOut = (& pwsh -NoProfile -File (Join-Path $Ctx.RootPath 'sandal.ps1') run -SpawnLauncher -AutomationPort $Ctx.Port -DryRun -Json) -join "`n"
         if ($LASTEXITCODE -ne 0) { throw "sandal.ps1 run -DryRun failed with exit code $LASTEXITCODE" }
+        if ($dryRunOut -match '(?s)(\{.*\})\s*$') { $dryRunOut = $Matches[1] }
         $Ctx.StartReceipt = $dryRunOut | ConvertFrom-Json
         $gwPort = Get-FreeLoopbackPort
         $gwInfo = Start-HermeticMockGateway -GatewayPort $gwPort
@@ -245,6 +246,7 @@ function Invoke-Phase1LauncherLoaded {
         $startBat = Join-Path $Ctx.RootPath 'start.bat'
         $runOut = (& cmd.exe /c "`"$startBat`" -SpawnLauncher -AutomationPort $($Ctx.Port) -Json") -join "`n"
         if ($LASTEXITCODE -ne 0) { throw "start.bat failed with exit code $LASTEXITCODE" }
+        if ($runOut -match '(?s)(\{.*\})\s*$') { $runOut = $Matches[1] }
         $Ctx.StartReceipt = $runOut | ConvertFrom-Json
     }
     $state = Wait-AutomationReady -Port $Ctx.Port -TimeoutMs 8000 -History $Ctx.HttpHistory
@@ -394,14 +396,14 @@ function Invoke-Phase6ClickStop {
     if ($Ctx.UseHermetic) {
         $downOut = (& pwsh -NoProfile -File (Join-Path $Ctx.RootPath 'sandal.ps1') down -DryRun -Json) -join "`n"
         if ($LASTEXITCODE -ne 0) { throw "sandal.ps1 down -DryRun failed with exit code $LASTEXITCODE" }
+        if ($downOut -match '(?s)(\{.*\})\s*$') { $downOut = $Matches[1] }
         $downReceipt = $downOut | ConvertFrom-Json
     } else {
         $stopBat = Join-Path $Ctx.RootPath 'stop.bat'
         $downOut = (& cmd.exe /c "`"$stopBat`" -Json") -join "`n"
         if ($LASTEXITCODE -ne 0) { throw "stop.bat failed with exit code $LASTEXITCODE" }
-        $jsonIdx = $downOut.IndexOf('{')
-        $jsonText = if ($jsonIdx -ge 0) { $downOut.Substring($jsonIdx) } else { $downOut }
-        $downReceipt = $jsonText | ConvertFrom-Json
+        if ($downOut -match '(?s)(\{.*\})\s*$') { $downOut = $Matches[1] }
+        $downReceipt = $downOut | ConvertFrom-Json
     }
     $orphanAlive = ($Ctx.LauncherPid -gt 0 -and $null -ne (Get-Process -Id $Ctx.LauncherPid -ErrorAction SilentlyContinue)) -or
                    ($Ctx.AshesPid -gt 0 -and $null -ne (Get-Process -Id $Ctx.AshesPid -ErrorAction SilentlyContinue))
@@ -450,11 +452,19 @@ $phaseRunners = @(
 )
 
 try {
+    $phaseIdx = 0
     foreach ($entry in $phaseRunners) {
+        $phaseIdx++
+        if (-not $Json) {
+            [Console]::Out.WriteLine("[SandalCore][Phase $phaseIdx/6] Starting $($entry.Name) ($($entry.Transition))...")
+        }
         $phaseSw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $res = & $entry.Fn $ctx
             $phases.Add($res)
+            if (-not $Json) {
+                [Console]::Out.WriteLine("[SandalCore][Phase $phaseIdx/6] PASS $($entry.Name) ($($res.duration_ms) ms).")
+            }
             if ($IncludeDiagnostics -and $entry.Name -eq 'game_logged_in') {
                 $diagnostics = Get-E2EDiagnosticBundle -SkipDocker:$useHermetic -RootDirPath $rootPath -HttpHistory $ctx.HttpHistory
             }
@@ -462,6 +472,9 @@ try {
             $overallOk = $false
             $failedPhase = $entry.Name
             $failureMessage = $_.Exception.Message
+            if (-not $Json) {
+                [Console]::Out.WriteLine("[SandalCore][Phase $phaseIdx/6] FAIL $($entry.Name): $failureMessage")
+            }
             $phases.Add([ordered]@{
                 phase          = $entry.Name
                 transition     = $entry.Transition

@@ -142,11 +142,11 @@ function Install-MissingDockerComponents {
         if ($env:DOCKER_HOST -in @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
             Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
         }
-        Write-Host 'INFO: Active Docker Desktop daemon detected; preserving existing Docker context and skipping DOCKER_HOST=tcp://[::1]:2375 override.' -ForegroundColor Cyan
+        Write-Host 'INFO: Active Docker Desktop daemon detected; preserving existing Docker context and skipping DOCKER_HOST=tcp://127.0.0.1:2375 override.' -ForegroundColor Cyan
         return
     }
-    [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://[::1]:2375', 'User')
-    $env:DOCKER_HOST = 'tcp://[::1]:2375'
+    [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://127.0.0.1:2375', 'User')
+    $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
     if (Get-Command Ensure-LinuxDockerEngine -ErrorAction SilentlyContinue) {
         $null = Ensure-LinuxDockerEngine -Distro 'Ubuntu-24.04'
     } else {

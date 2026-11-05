@@ -9,9 +9,12 @@
     FunctionsToExport = @(
         'Get-SandalStageOrder', 'Get-SandalStageGraph', 'Compute-SandalStageHash',
         'Read-SandalStageStamp', 'Test-SandalStageUpToDate', 'Write-SandalStageStamp',
-        'Invoke-WithHeavyOperationLock', 'New-SandalCsprngSecret', 'Get-SandalEnvMap',
+        'Invoke-WithHeavyOperationLock', 'Write-SandalStep', 'New-SandalCsprngSecret', 'Get-SandalEnvMap',
         'Initialize-SandalEnv', 'Set-SandalSecretAcl', 'Sync-SandalDistStage',
-        'Sync-SandalDeployStage', 'Ensure-SandalDockerDaemon', 'Ensure-SandalGameData'
+        'Sync-SandalDeployStage', 'Start-SandalWslKeepAlive',
+        'Start-SandalIpv6DockerBridge', 'Install-SandalPowerShellDockerAutoWake',
+        'Complete-SandalWslDockerDaemonSetup', 'Ensure-SandalDockerDaemon',
+        'Ensure-SandalGameData'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()

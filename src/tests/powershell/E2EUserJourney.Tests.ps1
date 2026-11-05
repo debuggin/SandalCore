@@ -31,10 +31,24 @@ Describe '6-Phase E2E Operator Lifecycle Journey (start.bat -> launcher -> game 
     }
 
     Context 'CLI Wiring for sandal run -SpawnLauncher -AutomationPort and sandal down' {
-        It 'wires -SpawnLauncher and -AutomationPort in sandal run and dry-run in sandal down' {
-            $runRaw = (& pwsh -NoProfile -File $script:SandalCli run -SpawnLauncher -AutomationPort 19876 -DryRun -Json) -join "`n"
+        It 'wires -SpawnLauncher, -NoLauncher, default interactive spawn, and step-by-step progress output' {
+            $humanOut = (& pwsh -NoProfile -File $script:SandalCli run -DryRun) -join "`n"
             if ($LASTEXITCODE -ne 0) {
                 throw "Expected sandal.ps1 run -DryRun to exit 0, got $LASTEXITCODE"
+            }
+            if ($humanOut -notmatch '\[SandalCore\]\s*\[Step 1/6\]' -or $humanOut -notmatch '\[SandalCore\]\s*\[Step 6/6\].*spawn=True') {
+                throw "Expected step-by-step progress lines [Step 1/6]..[Step 6/6] with default spawn=True, got:`n$humanOut"
+            }
+
+            $noLaunchRaw = (& pwsh -NoProfile -File $script:SandalCli run -NoLauncher -DryRun -Json) -join "`n"
+            $noLaunchObj = $noLaunchRaw | ConvertFrom-Json
+            if ($noLaunchObj.spawn_launcher) {
+                throw "Expected spawn_launcher=false when -NoLauncher is specified, got: $noLaunchRaw"
+            }
+
+            $runRaw = (& pwsh -NoProfile -File $script:SandalCli run -SpawnLauncher -AutomationPort 19876 -DryRun -Json) -join "`n"
+            if ($LASTEXITCODE -ne 0) {
+                throw "Expected sandal.ps1 run -DryRun -Json to exit 0, got $LASTEXITCODE"
             }
             $runObj = $runRaw | ConvertFrom-Json
             if (-not $runObj.ok -or -not $runObj.spawn_launcher -or [int]$runObj.automation_port -ne 19876) {
