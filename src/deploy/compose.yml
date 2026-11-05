@@ -337,7 +337,7 @@ services:
       - "-mesh=${MESH_GRPC_ADDR:-mesh:50054}"
       - "-citynode=${CITYNODE_GRPC_ADDR:-citynode:50056}"
       - "-quest=${QUEST_GRPC_ADDR:-quest:50057}"
-      - "-worldd-admin=${WORLDD_ADMIN_GRPC_ADDR:-worldd:50061}"
+      - "-worldd-admin=${WORLDD_ADMIN_GRPC_ADDR:-world:50061}"
     environment:
       AOC_ENV: ${AOC_ENV:-production}
       AOC_ALLOW_INSECURE_DB: "1"
@@ -351,11 +351,11 @@ services:
       AOC_QUESTS_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
       AOC_QUEST_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
       QUEST_GRPC_ADDR: ${QUEST_GRPC_ADDR:-quest:50057}
-      AOC_WORLD_ADMIN_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-worldd:50061}
-      AOC_WORLDD_ADMIN_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-worldd:50061}
-      WORLDD_ADMIN_GRPC_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-worldd:50061}
-      AOC_WORLD_STREAM_ADDR: ${WORLDD_STREAM_GRPC_ADDR:-worldd:50062}
-      AOC_WORLDD_STREAM_ADDR: ${WORLDD_STREAM_GRPC_ADDR:-worldd:50062}
+      AOC_WORLD_ADMIN_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-world:50061}
+      AOC_WORLDD_ADMIN_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-world:50061}
+      WORLDD_ADMIN_GRPC_ADDR: ${WORLDD_ADMIN_GRPC_ADDR:-world:50061}
+      AOC_WORLD_STREAM_ADDR: ${WORLDD_STREAM_GRPC_ADDR:-world:50062}
+      AOC_WORLDD_STREAM_ADDR: ${WORLDD_STREAM_GRPC_ADDR:-world:50062}
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
     depends_on:
@@ -367,7 +367,7 @@ services:
         condition: service_healthy
       quest:
         condition: service_healthy
-      worldd:
+      world:
         condition: service_healthy
     networks:
       - service_net
@@ -405,14 +405,14 @@ services:
       start_period: 5s
       retries: 5
 
-  tether_server:
+  tether:
     <<: *hardened
     container_name: aoc-tether
-    hostname: tether_server
+    hostname: tether
     build:
       context: ..
       dockerfile: src/deploy/docker/cpp.Dockerfile
-      target: tether_server
+      target: tether
       args:
         TARGET_BINARY: tether
         TETHER_TCP_PORT: ${TETHER_TCP_PORT:-50051}
@@ -420,7 +420,7 @@ services:
     image: sandal-tether:local
     cpus: 2.0
     mem_limit: 1g
-    entrypoint: ["/app/tether_server"]
+    entrypoint: ["/app/tether"]
     command:
       - "--port=${TETHER_TCP_PORT:-50051}"
       - "--admin-port=${TETHER_ADMIN_PORT:-50055}"
@@ -434,33 +434,33 @@ services:
     depends_on:
       gateway:
         condition: service_healthy
-      worldd:
+      world:
         condition: service_healthy
     networks:
       - service_net
     healthcheck:
-      test: ["CMD", "/app/tether_server", "--healthcheck", "http://127.0.0.1:50055/livez"]
+      test: ["CMD", "/app/tether", "--healthcheck", "http://127.0.0.1:50055/livez"]
       interval: 5s
       timeout: 3s
       start_period: 5s
       retries: 5
 
-  worldd:
+  world:
     <<: *hardened
-    container_name: aoc-worldd
-    hostname: worldd
+    container_name: aoc-world
+    hostname: world
     build:
       context: ..
       dockerfile: src/deploy/docker/cpp.Dockerfile
-      target: worldd
+      target: world
       args:
         TARGET_BINARY: world
         WORLDD_UDP_PORT: ${WORLDD_UDP_PORT:-7777}
         WORLDD_ADMIN_PORT: ${WORLDD_ADMIN_PORT:-50061}
-    image: sandal-worldd:local
+    image: sandal-world:local
     cpus: 4.0
     mem_limit: 4g
-    entrypoint: ["/app/worldd"]
+    entrypoint: ["/app/world"]
     command:
       - "--mesh=mesh:50054"
       - "--gateway=gateway:50050"
@@ -497,7 +497,7 @@ services:
       - edge_net
       - service_net
     healthcheck:
-      test: ["CMD", "/app/worldd", "--healthcheck", "http://127.0.0.1:50061/livez"]
+      test: ["CMD", "/app/world", "--healthcheck", "http://127.0.0.1:50061/livez"]
       interval: 5s
       timeout: 3s
       start_period: 5s
@@ -545,9 +545,9 @@ services:
         condition: service_healthy
       mesh:
         condition: service_healthy
-      tether_server:
+      tether:
         condition: service_healthy
-      worldd:
+      world:
         condition: service_healthy
     networks:
       - edge_net

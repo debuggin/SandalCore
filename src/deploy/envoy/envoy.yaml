@@ -481,7 +481,7 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      address: worldd
+                      address: world
                       port_value: 50061
 
     - name: gateway_tls
@@ -531,6 +531,6 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      address: tether_server
+                      address: tether
                       port_value: 50051
 

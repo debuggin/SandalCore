@@ -127,7 +127,7 @@ x-hardened: &hardened
   cpus: 2.0
   mem_limit: 2g
 services:
-  worldd:
+  world:
     <<: *hardened
     depends_on:
       postgres:
@@ -416,9 +416,9 @@ networks:
 
             $expectedServices = @(
                 'postgres', 'auth', 'character', 'citynode', 'quest', 'mesh',
-                'gateway', 'meshgw', 'web-admin', 'tether_server', 'worldd', 'ingress-proxy'
+                'gateway', 'meshgw', 'web-admin', 'tether', 'world', 'ingress-proxy'
             )
-            $excludedFromDataNet = @('ingress-proxy', 'web-admin', 'tether_server', 'worldd')
+            $excludedFromDataNet = @('ingress-proxy', 'web-admin', 'tether', 'world')
             $requiredOnDataNet = @('postgres', 'auth', 'character', 'citynode', 'quest', 'gateway', 'meshgw')
 
             foreach ($cPath in $composePaths) {
@@ -458,7 +458,7 @@ networks:
                     if ($requiredOnDataNet -contains $svc) {
                         $svcBlock.Contains('- data_net') | Should -BeTrue
                     }
-                    if ($svc -in @('ingress-proxy', 'worldd')) {
+                    if ($svc -in @('ingress-proxy', 'world')) {
                         $svcBlock.Contains('ports:') | Should -BeTrue
                         $svcBlock.Contains('- edge_net') | Should -BeTrue
                     } else {

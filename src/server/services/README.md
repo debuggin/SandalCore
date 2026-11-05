@@ -3,36 +3,38 @@
 Platform services for the live backend (architecture spec:
 `docs/superpowers/specs/2026-09-28-backend-architecture-design.md`).
 
-| Binary | Listens | Role |
+| Binary / Container | Listens | Role |
 |---|---|---|
-| `auth` | HTTP `127.0.0.1:8081`, gRPC `127.0.0.1:50051` | The launcher's login/register API; `AuthService.ValidateToken` for other services |
-| `character` | gRPC `127.0.0.1:50052` | `CharacterService`: the runtime writer of character records (`charimport` is the offline exception); checks a new character's race, gender, class and customization against `content.db` (below), gives it its class's starting kit and saves its items ("Items and inventory") |
-| `citynode` | gRPC `127.0.0.1:50055` | `CityNodeService` (Nodes 1): the live state of the game world's city nodes (level, XP, vassal link), the node clock and the stream of changes; API-first, see "City nodes" below |
-| `quests` | gRPC `127.0.0.1:50058` | `QuestService` (quests, slice 1): the saved quest log of each character (the quests it took, finished and the variables), the inbox of GM commands for a character; API-first, see "The quest service" below |
+| `ingress-proxy` (Envoy) | HTTP/2 & Web Admin `:8080`, gRPC `:9090`, ICS TLS `:50061`, Tether `:50051`, Envoy admin `:9901` | Edge reverse proxy (`src/deploy/envoy/envoy.yaml`) terminating client TLS and routing HTTP/2, gRPC, and `web-admin` traffic across `edge_net` and `app_net` |
+| `auth` | HTTP `127.0.0.1:8081`, gRPC `127.0.0.1:50051` (`:50052` in container) | The launcher's login/register API; `AuthService.ValidateToken` for other services |
+| `character` | gRPC `127.0.0.1:50052` (`:50053` in container) | `CharacterService`: the runtime writer of character records (`charimport` is the offline exception); checks a new character's race, gender, class and customization against `content.db` (below), gives it its class's starting kit and saves its items ("Items and inventory") |
+| `citynode` | gRPC `127.0.0.1:50055` (`:50056` in container) | `CityNodeService` (Nodes 1): the live state of the game world's city nodes (level, XP, vassal link), the node clock and the stream of changes; API-first, see "City nodes" below |
+| `quest` (`quests`) | gRPC `127.0.0.1:50058` (`:50057` in container) | `QuestService` (quests, slice 1): the saved quest log of each character (the quests it took, finished and the variables), the inbox of GM commands for a character; API-first, see "The quest service" below |
 | `charimport` | - | Carries the legacy `dist/Release/data/characters.json` into the database (race, gender, class and appearance taken from each character's `create_info`) |
-| `mesh` | gRPC `127.0.0.1:50053` | `MeshService`: world-server registry and placement (one world: worldd when it has registered, else the configured static world `AOC_MESH_STATIC_WORLD`, none by default) |
-| `gateway` | ICS gRPC over TLS `127.0.0.1:443`, gRPC `127.0.0.1:50054` | The game client's session, world and character screens and Play; `GatewayService.RedeemTicket` for world servers |
+| `mesh` | gRPC `127.0.0.1:50053` (`:50054` in container) | `MeshService`: world-server registry and placement (one world: `world` when it has registered, else the configured static world `AOC_MESH_STATIC_WORLD`, none by default) |
+| `meshgw` | HTTP/SSE `127.0.0.1:8082` | Mesh HTTP and Server-Sent Events (SSE) gateway exposing live node, world, and GM telemetry |
+| `web-admin` (`admin`) | HTTP `http://127.0.0.1:8080/` via Envoy (`:8088` internal) | Browser-based operator control plane (Nginx + Admin UI/BFF) |
+| `gateway` | ICS gRPC over TLS `127.0.0.1:443` (`:50061` in container), HTTP `:8081`, gRPC `127.0.0.1:50054` (`:50050` in container) | The game client's session, world and character screens and Play; `GatewayService.RedeemTicket` for world servers |
+| `tether` | `:50051` in container (`127.0.0.1:19021/udp` standalone) | C++23 session tether handing client auth tokens to `AOCClient.exe` |
+| `world` | UDP `127.0.0.1:7777`, gRPC `:50061`/`:50062` | C++23 authoritative 30 Hz world server (`src/server/world`; see [`../world/README.md`](../world/README.md)) |
 
-The C++ world server, `worldd` (`server/worldd`, UDP `127.0.0.1:7777`), is started by `run`; see
-`server/worldd/README.md`.
-
-Every internal gRPC server (auth, character, citynode, mesh, and the gateway's internal port) refuses calls
+Every internal gRPC server (auth, character, citynode, quest, mesh, and the gateway's internal port) refuses calls
 without the service token (`internal/svcauth`): "authorization: Bearer" and 64 hex digits from
 `dist\services\service.token`. `run` creates that file once, readable by this user only; the
-gateway and worldd send it. The game client's ICS stream does not use it.
+gateway and `world` send it. The game client's ICS stream does not use it.
 
 ## Run
 
 ```powershell
-scripts\services.ps1 up      # PostgreSQL + NATS in Docker
-scripts\services.ps1 build   # build auth, character, citynode, nodectl, worldctl, charimport, mesh and gateway into dist\services
-scripts\services.ps1 run     # build, then start auth, character, citynode, mesh, gateway and dist\Release\worldd.exe hidden, logging to files
-scripts\services.ps1 stop    # stop those processes (worldd included)
-scripts\services.ps1 login   # sign in with config\dev_login.local.json, save the token for tether_server
+scripts\services.ps1 up      # Full 12-container stack in WSL2 Docker
+scripts\services.ps1 build   # build auth, character, citynode, quest, meshgw, nodectl, worldctl, charimport, mesh and gateway into dist\services
+scripts\services.ps1 run     # build, then start auth, character, citynode, mesh, gateway and dist\Release\world.exe hidden, logging to files
+scripts\services.ps1 stop    # stop those processes (world included)
+scripts\services.ps1 login   # sign in with config\dev_login.local.json, save the token for tether
 scripts\services.ps1 down    # stop the containers (the data volume is kept)
 ```
 
-`run` starts auth, character, citynode, mesh, gateway and worldd without windows. Each writes its log (slog, on
+`run` starts auth, character, citynode, mesh, gateway and `world` without windows. Each writes its log (slog, on
 stderr) to `dist\services\logs\<name>.log` and anything on stdout to `<name>.out.log`; the previous
 run's files are kept as `<name>.prev.log` and `<name>.out.prev.log`. It waits a moment and fails,
 naming the service, its exit code and its log, if one has already exited. It refuses to start
@@ -41,18 +43,18 @@ terminates the processes outright (there is no graceful drain). The services kee
 outlives them, but the gateway's live client sessions are dropped: a game client connected to it
 loses its session. `stop` needs neither Go nor Docker.
 
-`run` clears `AOC_MESH_STATIC_WORLD`: worldd registers itself, and a static world would take players
-whenever worldd's heartbeats lapse, with tickets worldd could never redeem.
+`run` clears `AOC_MESH_STATIC_WORLD`: `world` registers itself, and a static world would take players
+whenever `world`'s heartbeats lapse, with tickets `world` could never redeem.
 
 The whole stack with the game client is `start.bat` (`scripts\launch_all.ps1` does the work and
-takes no arguments): the Go services and worldd, the tether and the launcher window. Build worldd
-first (`scripts\build.ps1 -Target worldd`). It first stops any of them left running from this checkout.
-`scripts\launch_all.ps1` checks that the process on each port it waits for (TCP, and the UDP ports of worldd, 7777,
-and tether_server, 19021) is the expected program running from this checkout. The same program from another
+takes no arguments): the Go services and `world`, `tether` and the launcher window. Build `world`
+first (`scripts\build.ps1 -Target world`). It first stops any of them left running from this checkout.
+`scripts\launch_all.ps1` checks that the process on each port it waits for (TCP, and the UDP ports of `world`, 7777,
+and `tether`, 19021) is the expected program running from this checkout. The same program from another
 checkout or worktree fails the launch, as does anything else, with `port N is held by <name> (pid P) at
 <path>`. Stop the other checkout's servers first. When it fails, it points to the log files above.
 
-The game client learns its session token from tether_server. `scripts\launch_all.ps1` starts it with
+The game client learns its session token from `tether`. `scripts\launch_all.ps1` starts it with
 `--login-token-file`, which makes it hand a game client on this machine (127.0.0.0/8 only) the
 token launcher.exe saved at login, `dist\Release\data\ics_auth_token.txt`; without the flag it sends
 the emulator token, which the gateway refuses, and never reads the file. `scripts\launch_all.ps1` deletes
@@ -64,7 +66,7 @@ account registered through the launcher in `src\config\dev_login.local.json`
 
     {"username": "admin", "password": "..."}
 
-and `scripts\services.ps1 login` signs in with it and saves the token for tether_server. The file
+and `scripts\services.ps1 login` signs in with it and saves the token for `tether`. The file
 is read as UTF-8, so passwords with non-ASCII characters work.
 
 The gateway serves TLS with `dist\certs\server.pem` and `dist\certs\server.key`, relative to the directory

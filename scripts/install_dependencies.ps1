@@ -8,7 +8,7 @@
 
 .DESCRIPTION
   Checks: winget, Visual Studio 2022 Build Tools (C++ workload), CMake, Git, vcpkg, Go, the .NET 8 SDK (mapc), Python 3.10 or newer (the
-  generators of scripts\extract_game_data.ps1) and standalone Windows Docker CLI + WSL2 Docker Engine (PostgreSQL + NATS for the Go services).
+  generators of scripts\extract_game_data.ps1) and standalone Windows Docker CLI + WSL2 Docker Engine (the 12 Linux server containers including PostgreSQL 17, Envoy ingress-proxy, Go services, tether, and world).
   Missing items are installed with winget after you confirm each one (or all at once with -Yes).
   vcpkg is cloned to %USERPROFILE%\vcpkg and VCPKG_ROOT is set for your user.
   The C++ libraries themselves (grpc, protobuf, openssl, ...) are installed by vcpkg during the first build;
@@ -19,7 +19,7 @@
 .PARAMETER Yes
   Install everything missing without asking.
 .PARAMETER SkipDocker
-  Do not offer standalone Windows Docker CLI + WSL2 Docker Engine (you run PostgreSQL and NATS some other way).
+  Do not offer standalone Windows Docker CLI + WSL2 Docker Engine (you run PostgreSQL 17 and the server services natively without containers).
 #>
 [CmdletBinding()]
 param(
@@ -204,7 +204,7 @@ if ($CheckOnly) {
     Write-Host 'Everything required is installed.'; exit 0
 }
 if (-not $missing.Count) {
-    Write-Host 'Everything is installed. Next: scripts\build.ps1 -Target all, then scripts\launch_all.bat.' -ForegroundColor Green
+    Write-Host 'Everything is installed. Next: scripts\build.ps1 -Target all, then start.bat.' -ForegroundColor Green
     exit 0
 }
 
@@ -268,5 +268,5 @@ if (-not $items['Python 3.10+'] -and (Confirm-Install 'Python 3.12 (runs the gen
 Write-Host ''
 Write-Host 'Done. Open a NEW terminal (so PATH changes apply) and run this script with -CheckOnly to confirm.' -ForegroundColor Green
 Write-Host 'Then: scripts\build.ps1 -Target all (it builds the game data from your own Ashes of Creation install, then the programs; the first build downloads and compiles the C++ libraries and can take a long time),'
-Write-Host 'then: scripts\launch_all.bat'
+Write-Host 'then: start.bat'
 exit 0

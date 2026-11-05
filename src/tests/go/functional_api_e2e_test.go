@@ -458,7 +458,7 @@ func verifyEnvoyAndComposeGrpcContractParity(t *testing.T) {
 		{"src/libs/aocproto/proto/internal/aoc/mesh/v1/mesh.proto", "/aoc.mesh.v1.", "mesh_grpc", "src/server/services/cmd/mesh/main.go", "mesh:"},
 		{"src/libs/aocproto/proto/internal/aoc/citynode/v1/citynode.proto", "/aoc.citynode.v1.", "citynode_grpc", "src/server/services/cmd/citynode/main.go", "citynode:"},
 		{"src/libs/aocproto/proto/internal/aoc/quest/v1/quest.proto", "/aoc.quest.v1.", "quest_grpc", "src/server/services/cmd/quest/main.go", "quest:"},
-		{"src/libs/aocproto/proto/internal/aoc/worldadmin/v1/worldadmin.proto", "/aoc.worldadmin.v1.", "worldd_admin_grpc", "src/server/services/cmd/worldctl/main.go", "worldd:"},
+		{"src/libs/aocproto/proto/internal/aoc/worldadmin/v1/worldadmin.proto", "/aoc.worldadmin.v1.", "worldd_admin_grpc", "src/server/services/cmd/worldctl/main.go", "world:"},
 	} {
 		pkgName := strings.Trim(c.grpcPrefix, "/.")
 		if !strings.Contains(readRepoFile(t, c.protoFile), "package "+pkgName+";") {
