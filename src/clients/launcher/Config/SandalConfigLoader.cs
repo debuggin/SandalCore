@@ -40,6 +40,27 @@ public static class SandalConfigLoader
         envFile.TryGetValue("SANDAL_" + suffix, out string? v3) && !string.IsNullOrEmpty(v3) ? v3 :
         envFile.TryGetValue("AOC_" + suffix, out string? v4) && !string.IsNullOrEmpty(v4) ? v4 : fallback;
 
+    public static string NormalizeIcsEndpoint(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "127.0.0.1:50061";
+        string trimmed = raw.Trim();
+        if (trimmed.Equals("127.0.0.1:8444", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("localhost:8444", StringComparison.OrdinalIgnoreCase))
+            return "127.0.0.1:50061";
+        int colon = trimmed.LastIndexOf(':');
+        if (colon > 0)
+        {
+            string host = trimmed[..colon];
+            string port = trimmed[(colon + 1)..];
+            if (port == "8444") port = "50061";
+            if (host.Equals("gateway", StringComparison.OrdinalIgnoreCase) ||
+                host.Equals("aoc-gateway", StringComparison.OrdinalIgnoreCase) ||
+                host.Equals("0.0.0.0", StringComparison.OrdinalIgnoreCase))
+                return $"127.0.0.1:{port}";
+        }
+        return trimmed;
+    }
+
     public static LauncherConfig Load(string? explicitEnvFilePath = null)
     {
         string envPath = string.IsNullOrWhiteSpace(explicitEnvFilePath) ? Resolve(new Dictionary<string, string>(), "CONFIG_FILE", Path.Combine("config", "sandal.env")) : explicitEnvFilePath;
@@ -48,7 +69,7 @@ public static class SandalConfigLoader
         return new LauncherConfig(
             Resolve(vars, "CLIENT_PAK_DIR", @"C:\Program Files\Intrepid Studios\Ashes of Creation\AOC\Content\Paks"),
             Resolve(vars, "GATEWAY_HTTP_ADVERTISE_ADDR", "127.0.0.1:8080"),
-            Resolve(vars, "GATEWAY_ICS_ADVERTISE_ADDR", "127.0.0.1:8444"),
+            NormalizeIcsEndpoint(Resolve(vars, "GATEWAY_ICS_ADVERTISE_ADDR", "127.0.0.1:50061")),
             Resolve(vars, "GATEWAY_GRPC_ADVERTISE_ADDR", "127.0.0.1:50050"),
             Resolve(vars, "ADMIN_HTTP_ADVERTISE_ADDR", "127.0.0.1:8090"),
             Resolve(vars, "ADMIN_HTTPS_ADVERTISE_ADDR", "127.0.0.1:8443"),

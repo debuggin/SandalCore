@@ -3,7 +3,7 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
 #include "libs/aoccore/auth/ics_token_file.h"
-#include "server/tether/tether_wire.h"
+#include "../../libs/aocnet/tether_wire.h"
 #include "spawns/area.h"
 #include "world/mesh_border.h"
 #include "world/relevancy.h"

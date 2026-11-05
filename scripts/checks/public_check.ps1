@@ -31,6 +31,42 @@ function Test-SandalTestsDirectoryBounds {
     }
 }
 
+function Add-SandalLocalConfigLeakPatterns {
+    param([string]$CfgDir, [System.Collections.Generic.List[string]]$Patterns)
+    if (-not (Test-Path -LiteralPath $CfgDir -PathType Container)) { return }
+    foreach ($lf in @(Get-ChildItem -LiteralPath $CfgDir -Filter '*.local.json' -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+        $tplPath = $lf.FullName -replace '\.local\.json$', '.json'
+        $tplObj = if (Test-Path -LiteralPath $tplPath -PathType Leaf) { try { Get-Content -LiteralPath $tplPath -Raw | ConvertFrom-Json } catch { $null } } else { $null }
+        $locObj = try { Get-Content -LiteralPath $lf.FullName -Raw | ConvertFrom-Json } catch { $null }
+        if ($null -eq $locObj) { continue }
+        foreach ($prop in $locObj.PSObject.Properties) {
+            $val = [string]$prop.Value
+            $tplVal = if ($null -ne $tplObj -and $null -ne $tplObj.PSObject.Properties[$prop.Name]) { [string]$tplObj.PSObject.Properties[$prop.Name].Value } else { '' }
+            if ($val -and $val -ne $tplVal -and $val.Length -ge 8 -and $val -notmatch '^(?i)(?:localhost|127\.0\.0\.1|0\.0\.0\.0|CHANGE_ME)') { $Patterns.Add([regex]::Escape($val)) }
+        }
+    }
+    foreach ($ef in @(Get-ChildItem -LiteralPath $CfgDir -Filter '*.local.env' -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+        foreach ($line in [System.IO.File]::ReadAllLines($ef.FullName)) {
+            if ($line -notmatch '^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.+)$') { continue }
+            $val = $Matches[1].Trim().Trim('"', "'")
+            if ($val.Length -ge 8 -and $val -notmatch '^(?i)(?:localhost|127\.0\.0\.1|0\.0\.0\.0|CHANGE_ME)') { $Patterns.Add([regex]::Escape($val)) }
+        }
+    }
+}
+
+function Get-SandalDynamicLeakRegex {
+    param([Parameter(Mandatory)][string]$RootPath)
+    $patterns = [System.Collections.Generic.List[string]]::new()
+    $patterns.Add('(?i)[C-Z]:[/\\]+Users[/\\]+(?!(?:Public|Default|All Users|AliceVerra)[/\\])[A-Za-z0-9_.-]+[/\\]')
+    foreach ($idVal in @($env:USERNAME, $env:COMPUTERNAME)) {
+        if (-not [string]::IsNullOrWhiteSpace($idVal) -and $idVal.Length -ge 4 -and $idVal -notin @('root', 'user', 'admin', 'ubuntu', 'runner', 'docker', 'system')) {
+            $patterns.Add("(?i)\b$([regex]::Escape($idVal))\b")
+        }
+    }
+    Add-SandalLocalConfigLeakPatterns -CfgDir (Join-Path $RootPath 'src\config') -Patterns $patterns
+    return ($patterns -join '|')
+}
+
 function Test-SandalGitTrackedAssets {
     [CmdletBinding()]
     [Alias('Test-SandalTrackedFiles')]
@@ -43,7 +79,7 @@ function Test-SandalGitTrackedAssets {
     if ($LASTEXITCODE -ne 0) {
         throw "git ls-files failed with exit code $LASTEXITCODE"
     }
-    $localLeakRegex = 'andis\.' + 'network|8a02a4030c447486' + '5cc02c73b73e6b3b4b1f83033c1149bd|zenith-cliff-' + 'marsh-spruce'
+    $localLeakRegex = Get-SandalDynamicLeakRegex -RootPath $RootPath
     foreach ($entry in $tracked) {
         if ([string]::IsNullOrWhiteSpace($entry)) {
             continue

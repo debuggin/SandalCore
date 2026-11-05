@@ -20,7 +20,7 @@ namespace SandalLauncher.Models
         public string GatewayHttpAddr { get; init; } = "127.0.0.1:8080";
 
         [JsonPropertyName("gatewayIcsAddr")]
-        public string GatewayIcsAddr { get; init; } = "127.0.0.1:8444";
+        public string GatewayIcsAddr { get; init; } = "127.0.0.1:50061";
 
         [JsonPropertyName("gatewayGrpcAddr")]
         public string GatewayGrpcAddr { get; init; } = "127.0.0.1:50050";
@@ -60,7 +60,7 @@ namespace SandalLauncher.Models
                 Id = string.IsNullOrWhiteSpace(id) ? "local-dev" : id.Trim(),
                 DisplayName = string.IsNullOrWhiteSpace(displayName) ? "Local Dev (Verra Sandbox)" : displayName.Trim(),
                 GatewayHttpAddr = config.GatewayHttpAddr,
-                GatewayIcsAddr = config.GatewayIcsAddr,
+                GatewayIcsAddr = SandalConfigLoader.NormalizeIcsEndpoint(config.GatewayIcsAddr),
                 GatewayGrpcAddr = config.GatewayGrpcAddr,
                 AdminHttpAddr = config.AdminHttpAddr,
                 ClientPakDir = config.ClientPakDir,

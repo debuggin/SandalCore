@@ -17,7 +17,6 @@ public sealed class ClientLaunchService
 {
     public const string ShippingExeName = "AOCClient-Win64-Shipping.exe";
     public const string BootstrapExeName = "AOCClient.exe";
-    public const string DefaultIcsTokenRelativePath = "data/ics_auth_token.txt";
 
     private static readonly string[] RelativeCandidates =
     [
@@ -40,8 +39,10 @@ public sealed class ClientLaunchService
         }
         if (Directory.Exists(canonical))
         {
-            string? p1 = Directory.GetParent(canonical)?.FullName, p2 = p1 is not null ? Directory.GetParent(p1)?.FullName : null;
-            foreach (string? root in new[] { canonical, p1, p2 })
+            string? p1 = Directory.GetParent(canonical)?.FullName;
+            string? p2 = p1 is not null ? Directory.GetParent(p1)?.FullName : null;
+            string? p3 = p2 is not null ? Directory.GetParent(p2)?.FullName : null;
+            foreach (string? root in new[] { canonical, p1, p2, p3 })
                 if (!string.IsNullOrEmpty(root))
                     foreach (string rel in RelativeCandidates)
                         if (Path.Combine(root, rel) is var candidate && File.Exists(candidate))
@@ -73,40 +74,39 @@ public sealed class ClientLaunchService
         return psi;
     }
 
-    public static async Task<string> WriteIcsAuthTokenFileAsync(
-        string accessToken,
-        string? tokenFilePath = null,
-        CancellationToken ct = default)
+    public static string? ResolveRootCaCertificatePath()
     {
-        ct.ThrowIfCancellationRequested();
-        if (string.IsNullOrWhiteSpace(accessToken) || !TokenPipeServer.IsValidPrintableAsciiToken(accessToken))
-            throw new ArgumentException("Access token must be non-empty printable ASCII.", nameof(accessToken));
-        string targetPath = Path.GetFullPath(string.IsNullOrWhiteSpace(tokenFilePath) ? DefaultIcsTokenRelativePath : tokenFilePath.Trim());
-        if (Path.GetDirectoryName(targetPath) is { Length: > 0 } dir)
-            Directory.CreateDirectory(dir);
-        string tempPath = $"{targetPath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
-        byte[] utf8 = Encoding.UTF8.GetBytes(accessToken.Trim());
-        try
+        string[] roots = [Directory.GetCurrentDirectory(), AppContext.BaseDirectory];
+        string[] rels =
+        [
+            Path.Combine("dist", "certs", "ca.crt"),
+            Path.Combine("deploy", "certs", "ca.crt"),
+            Path.Combine("certs", "ca.crt"),
+            Path.Combine("..", "certs", "ca.crt"),
+            Path.Combine("..", "dist", "certs", "ca.crt")
+        ];
+        foreach (string r in roots)
         {
-            await using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            if (string.IsNullOrWhiteSpace(r)) continue;
+            foreach (string rel in rels)
             {
-                await fs.WriteAsync(utf8, ct).ConfigureAwait(false);
-                await fs.FlushAsync(ct).ConfigureAwait(false);
-                fs.Flush(flushToDisk: true);
+                string full = Path.GetFullPath(Path.Combine(r, rel));
+                if (File.Exists(full)) return full;
             }
-            if (!OperatingSystem.IsWindows())
-            {
-                try { File.SetUnixFileMode(tempPath, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
-                catch (PlatformNotSupportedException ex) { Trace.WriteLine(ex.Message); }
-            }
-            File.Move(tempPath, targetPath, overwrite: true);
-            return targetPath;
         }
-        finally
+        return null;
+    }
+
+    public static void ConfigureTlsEnvironment(ProcessStartInfo psi, string? explicitCaCertPath = null)
+    {
+        ArgumentNullException.ThrowIfNull(psi);
+        string? caPath = !string.IsNullOrWhiteSpace(explicitCaCertPath) && File.Exists(explicitCaCertPath)
+            ? Path.GetFullPath(explicitCaCertPath)
+            : ResolveRootCaCertificatePath();
+        if (!string.IsNullOrWhiteSpace(caPath))
         {
-            CryptographicOperations.ZeroMemory(utf8);
-            try { if (File.Exists(tempPath)) File.Delete(tempPath); }
-            catch (IOException ex) { Trace.WriteLine(ex.Message); }
+            psi.Environment["SSL_CERT_FILE"] = caPath;
+            psi.Environment["GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"] = caPath;
         }
     }
 
@@ -125,9 +125,20 @@ public sealed class ClientLaunchService
         }
     }
 
-    public static Process StartGameOrMockProcess(LauncherConfig? config, bool allowMockFallback = true, int mockSleepSeconds = 300)
+    public static Process StartGameOrMockProcess(
+        LauncherConfig? config,
+        bool allowMockFallback = true,
+        int mockSleepSeconds = 300,
+        int tetherPort = 19021)
     {
-        if (config is not null && TryResolveClientExecutable(config.ClientPakDir, out string realExe))
+        string? candidateDir = config?.ClientPakDir;
+        if (!TryResolveClientExecutable(candidateDir, out string realExe) &&
+            Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime)
+        {
+            candidateDir = SandalLauncher.Views.ClientPathDetector.TryDetectSteamClientPakDir();
+            _ = TryResolveClientExecutable(candidateDir, out realExe);
+        }
+        if (config is not null && !string.IsNullOrEmpty(realExe) && File.Exists(realExe))
         {
             try
             {
@@ -135,12 +146,14 @@ public sealed class ClientLaunchService
                 {
                     WorkingDirectory = Path.GetDirectoryName(realExe) ?? string.Empty,
                     UseShellExecute = false,
-                    CreateNoWindow = true
+                    CreateNoWindow = false
                 };
                 realPsi.ArgumentList.Add($"-GatewayAddr={config.GatewayHttpAddr}");
                 realPsi.ArgumentList.Add($"-IcsAddr={config.GatewayIcsAddr}");
+                realPsi.ArgumentList.Add($"-LauncherTetherPort={(tetherPort > 0 ? tetherPort : 19021)}");
                 realPsi.ArgumentList.Add($"-UseEOS={(config.ClientUseEos ? "true" : "false")}");
                 realPsi.ArgumentList.Add("-NoEAC");
+                ConfigureTlsEnvironment(realPsi);
                 if (Process.Start(realPsi) is { } startedReal)
                     return startedReal;
             }

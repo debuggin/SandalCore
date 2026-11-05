@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System;
 using System.Buffers.Binary;
+using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -28,6 +30,9 @@ public sealed class LocalTetherListener : IAsyncDisposable, IDisposable
     public const string LauncherProcessorId = "launcher-id-101";
     private static readonly byte[] ProcessorIdBytes = Encoding.ASCII.GetBytes(LauncherProcessorId);
     private readonly UdpClient _udp;
+    private readonly byte[]?[] _sentPayloads = new byte[]?[64];
+    private long _sendSeq;
+    private long _recvSeq;
 
     public LocalTetherListener(int port = 0)
     {
@@ -37,6 +42,9 @@ public sealed class LocalTetherListener : IAsyncDisposable, IDisposable
     }
 
     public int Port { get; }
+    public string ActiveAccessToken { get; set; } = string.Empty;
+    public string IcsEndpoint { get; set; } = "127.0.0.1:50061";
+
     public static uint BuildMagic(byte version, MsgId msgId) => (AppNumber << 16) | ((uint)version << 8) | (uint)msgId;
 
     public static bool TryParseHeader(ReadOnlySpan<byte> packet, out ArqHeader header)
@@ -84,9 +92,211 @@ public sealed class LocalTetherListener : IAsyncDisposable, IDisposable
     public async Task<bool> ProcessNextDatagramAsync(CancellationToken cancellationToken = default)
     {
         UdpReceiveResult res = await _udp.ReceiveAsync(cancellationToken).ConfigureAwait(false);
-        if (!TryParseHeader(res.Buffer, out ArqHeader hdr) || BuildReplyPacket(in hdr) is not { } reply) return false;
+        if (!TryParseHeader(res.Buffer, out ArqHeader hdr)) return false;
+        if (hdr.MsgId == MsgId.Connect)
+        {
+            _recvSeq = hdr.SequenceNumber;
+            _sendSeq = 0;
+            Array.Clear(_sentPayloads);
+        }
+        if (hdr.MsgId == MsgId.AskWindow && hdr.NextExpectedRecvSeq < _sendSeq &&
+            _sentPayloads[hdr.NextExpectedRecvSeq % 64] is { Length: > 0 } cached)
+        {
+            byte[] retransmit = FrameDataPacket(in hdr, hdr.NextExpectedRecvSeq, cached);
+            await _udp.SendAsync(retransmit, res.RemoteEndPoint, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        if (BuildReplyPacket(in hdr) is not { } reply) return false;
         await _udp.SendAsync(reply, res.RemoteEndPoint, cancellationToken).ConfigureAwait(false);
+        if (hdr.MsgId == MsgId.Data && res.Buffer.Length > HeaderSize)
+        {
+            _recvSeq = hdr.SequenceNumber;
+            if (TryBuildDataReplyPayload(res.Buffer.AsSpan(HeaderSize), out byte[]? dataPayload) && dataPayload is not null)
+            {
+                long seq = _sendSeq++;
+                _sentPayloads[seq % 64] = dataPayload;
+                byte[] dataPkt = FrameDataPacket(in hdr, seq, dataPayload);
+                await _udp.SendAsync(dataPkt, res.RemoteEndPoint, cancellationToken).ConfigureAwait(false);
+            }
+        }
         return true;
+    }
+
+    private byte[] FrameDataPacket(in ArqHeader req, long seq, byte[] payload)
+    {
+        byte[] pkt = new byte[HeaderSize + payload.Length];
+        WriteHeader(pkt, new ArqHeader(
+            BuildMagic(req.Version, MsgId.Data), req.SessionId, DefaultWindowSize, 0,
+            (ushort)payload.Length, seq, _recvSeq + 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+        payload.CopyTo(pkt.AsSpan(HeaderSize));
+        return pkt;
+    }
+
+    private bool TryBuildDataReplyPayload(ReadOnlySpan<byte> payload, out byte[]? encodedReply)
+    {
+        encodedReply = null;
+        (Dictionary<string, string> tags, string dataStr, byte[] dataBytes) = DecodeWireMessage(payload);
+        if (!tags.TryGetValue("message_type_name", out string? msgType) || string.IsNullOrWhiteSpace(msgType))
+            return false;
+        (string host, string port) = SplitEndpoint(IcsEndpoint);
+        string ep = $"{host}:{port}";
+        if (msgType == "request_open_session")
+        {
+            string tok = !string.IsNullOrWhiteSpace(ActiveAccessToken) ? ActiveAccessToken : "emulator-token";
+            tags["auth_endpoint"] = $"https://{ep}";
+            tags["auth_token"] = tok;
+            tags["refresh_token"] = tok;
+            tags["auth0_accesstoken"] = "basin-timber-topaz-crane-5247bc426ad3b74b";
+            tags["user_agent_prefix"] = "AOC/1.0";
+            tags["grpc_metadata_magic_key"] = "x-ics-auth";
+            tags["grpc_metadata_magic_val"] = "emulator-magic";
+            tags["eac_deployment_id"] = "aoc-emulator";
+            tags["eac_sandbox_id"] = "emulator-sandbox";
+            PopulateIcsEndpointTags(tags, host, port, ep);
+        }
+        else if (msgType == "request_game_client_connection_info")
+        {
+            tags["message_type_name"] = "reply_game_client_connection_info";
+            tags["type"] = "reply_game_client_connection_info";
+            tags["result"] = "ok";
+            PopulateIcsEndpointTags(tags, host, port, ep);
+        }
+        else if (msgType == "request_echo")
+        {
+            tags["message_type_name"] = "reply_echo";
+            tags["type"] = "reply_echo";
+        }
+        else if (msgType == "request_close_session")
+        {
+            tags.Clear();
+            tags["message_type_name"] = "reply_close_session";
+            tags["type"] = "reply_close_session";
+            dataStr = string.Empty;
+            dataBytes = [];
+        }
+        else return false;
+        encodedReply = EncodeWireMessage(tags, dataStr, dataBytes);
+        return true;
+    }
+
+    private static void PopulateIcsEndpointTags(Dictionary<string, string> tags, string host, string port, string ep)
+    {
+        tags["ics_host"] = host;
+        tags["ics_port"] = port;
+        tags["ics_endpoint"] = ep;
+        tags["ics_address"] = ep;
+        tags["connection_address"] = ep;
+        tags["connection_host"] = host;
+        tags["connection_port"] = port;
+    }
+
+    private static (string Host, string Port) SplitEndpoint(string raw)
+    {
+        string trimmed = SandalCore.Config.SandalConfigLoader.NormalizeIcsEndpoint(raw);
+        int colon = trimmed.LastIndexOf(':');
+        return colon > 0 ? (trimmed[..colon], trimmed[(colon + 1)..]) : (trimmed, "50061");
+    }
+
+    public static (Dictionary<string, string> Tags, string DataString, byte[] DataBytes) DecodeWireMessage(ReadOnlySpan<byte> buf)
+    {
+        var tags = new Dictionary<string, string>(StringComparer.Ordinal);
+        string dataStr = string.Empty;
+        byte[] dataBytes = [];
+        int off = 0;
+        while (off < buf.Length)
+        {
+            int saved = off;
+            ulong tag = ReadVarint(buf, ref off);
+            if (off == saved) break;
+            uint fn = (uint)(tag >> 3);
+            int wt = (int)(tag & 7);
+            if (wt == 0) _ = ReadVarint(buf, ref off);
+            else if (wt == 2)
+            {
+                int sz = (int)ReadVarint(buf, ref off);
+                if (sz < 0 || off + sz > buf.Length) break;
+                ReadOnlySpan<byte> slice = buf.Slice(off, sz);
+                off += sz;
+                if (fn == 1) DecodeTagEntry(slice, tags);
+                else if (fn == 2) dataStr = Encoding.UTF8.GetString(slice);
+                else if (fn == 3) dataBytes = slice.ToArray();
+            }
+            else if (wt == 1) off = Math.Min(buf.Length, off + 8);
+            else if (wt == 5) off = Math.Min(buf.Length, off + 4);
+            else break;
+        }
+        return (tags, dataStr, dataBytes);
+    }
+
+    private static void DecodeTagEntry(ReadOnlySpan<byte> buf, Dictionary<string, string> tags)
+    {
+        string k = string.Empty, v = string.Empty;
+        int off = 0;
+        while (off < buf.Length)
+        {
+            int saved = off;
+            ulong tag = ReadVarint(buf, ref off);
+            if (off == saved || (int)(tag & 7) != 2) break;
+            int sz = (int)ReadVarint(buf, ref off);
+            if (sz < 0 || off + sz > buf.Length) break;
+            string s = Encoding.UTF8.GetString(buf.Slice(off, sz));
+            off += sz;
+            if ((tag >> 3) == 1) k = s;
+            else if ((tag >> 3) == 2) v = s;
+        }
+        if (!string.IsNullOrEmpty(k)) tags[k] = v;
+    }
+
+    public static byte[] EncodeWireMessage(IReadOnlyDictionary<string, string> tags, string dataStr = "", byte[]? dataBytes = null)
+    {
+        using var ms = new MemoryStream(512);
+        using var entryMs = new MemoryStream(128);
+        foreach (KeyValuePair<string, string> kv in tags)
+        {
+            entryMs.SetLength(0);
+            WriteStringField(entryMs, 1, kv.Key);
+            WriteStringField(entryMs, 2, kv.Value);
+            WriteBytesField(ms, 1, entryMs.GetBuffer().AsSpan(0, (int)entryMs.Length));
+        }
+        if (!string.IsNullOrEmpty(dataStr)) WriteStringField(ms, 2, dataStr);
+        if (dataBytes is { Length: > 0 }) WriteBytesField(ms, 3, dataBytes);
+        return ms.ToArray();
+    }
+
+    private static void WriteStringField(MemoryStream ms, uint fn, string s) =>
+        WriteBytesField(ms, fn, Encoding.UTF8.GetBytes(s));
+
+    private static void WriteBytesField(MemoryStream ms, uint fn, ReadOnlySpan<byte> bytes)
+    {
+        WriteVarint(ms, ((ulong)fn << 3) | 2UL);
+        WriteVarint(ms, (ulong)bytes.Length);
+        ms.Write(bytes);
+    }
+
+    private static void WriteVarint(MemoryStream ms, ulong v)
+    {
+        do
+        {
+            byte b = (byte)(v & 0x7FUL);
+            v >>= 7;
+            if (v != 0) b |= 0x80;
+            ms.WriteByte(b);
+        } while (v != 0);
+    }
+
+    private static ulong ReadVarint(ReadOnlySpan<byte> buf, ref int off)
+    {
+        ulong r = 0;
+        int shift = 0;
+        while (off < buf.Length)
+        {
+            byte b = buf[off++];
+            r |= (ulong)(b & 0x7F) << shift;
+            if ((b & 0x80) == 0) return r;
+            shift += 7;
+            if (shift >= 64) break;
+        }
+        return r;
     }
 
     public async Task RunAsync(CancellationToken cancellationToken = default, int maxPackets = int.MaxValue)

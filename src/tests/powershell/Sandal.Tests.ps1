@@ -166,7 +166,7 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
             $sample = @(
                 'level=info subsystem=gateway rtt_ms=9',
                 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig',
-                'ics_token=zenith-cliff-secret-token-999',
+                'ics_token=mock-ics-secret-token-999',
                 'AOC_MASTER_KEY=master_key_value_12345',
                 'redis://default:redis_secret_pw@127.0.0.1:6379/0',
                 $pem
@@ -176,7 +176,7 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
             if ($scrubbed -notmatch 'level=info subsystem=gateway rtt_ms=9') {
                 throw 'Expected non-sensitive telemetry line to remain intact.'
             }
-            foreach ($secret in @('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9', 'zenith-cliff-secret-token-999', 'master_key_value_12345', 'redis_secret_pw', $pem)) {
+            foreach ($secret in @('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9', 'mock-ics-secret-token-999', 'master_key_value_12345', 'redis_secret_pw', $pem)) {
                 if ($scrubbed.Contains($secret)) {
                     throw "Secret '$secret' was not redacted from output: $scrubbed"
                 }
@@ -233,7 +233,7 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                         throw "Expected $launcherScript to be materialized by Sync-SandalDistStage"
                     }
                 }
-                $mockLauncherOut = Join-Path $tmpRepo 'build\dotnet\bin\SandalLauncher\Release\net8.0'
+                $mockLauncherOut = Join-Path $tmpRepo 'build\dotnet\bin\SandalLauncher\Release\net10.0'
                 $null = New-Item -ItemType Directory -Path $mockLauncherOut -Force
                 [System.IO.File]::WriteAllText((Join-Path $mockLauncherOut 'SandalLauncher.exe'), 'MZ-mock')
                 [System.IO.File]::WriteAllText((Join-Path $mockLauncherOut 'SandalLauncher.pdb'), 'PDB-mock')

@@ -176,7 +176,7 @@ function Get-ContainerDiagnosticSnapshot {
             $null = $_
         }
     }
-    foreach ($name in @('aoc-ingress-proxy', 'aoc-gateway', 'aoc-auth', 'aoc-character', 'aoc-tether', 'aoc-world')) {
+    foreach ($name in @('aoc-ingress-proxy', 'aoc-gateway', 'aoc-auth', 'aoc-character', 'aoc-world')) {
         try {
             $st = (& docker inspect --format '{{.State.Status}} ({{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}})' $name 2>$null) -join ''
             $containers[$name] = if ($LASTEXITCODE -eq 0 -and $st) { $st.Trim() } else { 'not-found' }
@@ -204,7 +204,7 @@ function Get-E2EDiagnosticBundle {
     )
     $dockerSnap = Get-ContainerDiagnosticSnapshot -SkipDocker:$SkipDocker -RootDirPath $RootDirPath
     $ports = [ordered]@{}
-    foreach ($port in @(8080, 9090, 50051, 50061, 7777)) {
+    foreach ($port in @(8080, 9090, 50061, 7777)) {
         $client = [System.Net.Sockets.TcpClient]::new()
         try {
             $task = $client.ConnectAsync('127.0.0.1', $port)
@@ -215,7 +215,7 @@ function Get-E2EDiagnosticBundle {
             $client.Dispose()
         }
     }
-    $procs = @(Get-Process -Name @('SandalLauncher', 'AOCClient-Win64-Shipping', 'tether', 'tether_server', 'world', 'worldd') -ErrorAction SilentlyContinue | ForEach-Object {
+    $procs = @(Get-Process -Name @('SandalLauncher', 'AOCClient-Win64-Shipping', 'world', 'worldd') -ErrorAction SilentlyContinue | ForEach-Object {
         [pscustomobject]@{ id = $_.Id; name = $_.ProcessName }
     })
     return [ordered]@{

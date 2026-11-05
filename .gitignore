@@ -548,5 +548,4 @@ dist/certs/*.srl
 
 # --- Local untracked workspace applications & research notes ---
 /src/tools/control-app/
-/docs/notes/
 

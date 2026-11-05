@@ -125,12 +125,16 @@ public sealed class MultiProtocolGatewayClient
     }
 
     public async Task<AuthSessionResult> RegisterAsync(
-        string username, string password, bool isTemporaryAccount = false, CancellationToken ct = default)
+        string username, string password, bool isTemporaryAccount = false, CancellationToken ct = default, string? emailOverride = null)
     {
         if (string.IsNullOrWhiteSpace(username)) throw new ArgumentException("Username is required.", nameof(username));
         if (string.IsNullOrEmpty(password)) throw new ArgumentException("Password is required.", nameof(password));
         string trimmedUser = username.Trim();
-        string email = trimmedUser.Contains('@', StringComparison.Ordinal) ? trimmedUser : $"{trimmedUser}@sandalcore.local";
+        string email = isTemporaryAccount
+            ? $"{trimmedUser}_{Guid.NewGuid().ToString("N")[..6]}@temp.sandalcore.local"
+            : (!string.IsNullOrWhiteSpace(emailOverride)
+                ? emailOverride.Trim()
+                : (trimmedUser.Contains('@', StringComparison.Ordinal) ? trimmedUser : $"{trimmedUser}@sandalcore.local"));
         string json = JsonSerializer.Serialize(new { username = trimmedUser, email, password, temporary = isTemporaryAccount });
         using var req = CreateRequest(HttpMethod.Post, "/api/v1/auth/register", null, null);
         string resp = await SendJsonAsync(req, "/api/v1/auth/register", json, ct).ConfigureAwait(false);

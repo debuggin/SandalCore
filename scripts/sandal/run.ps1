@@ -79,7 +79,6 @@ function Ensure-SandalLauncherBinary {
     $releaseExe = Join-Path $RootDirPath "dist/Release/SandalLauncher$ExeExtension"
     $launcherDll = Join-Path $RootDirPath 'dist/launcher/SandalLauncher.dll'
     if ((Test-Path -LiteralPath $launcherExe -PathType Leaf) -or (Test-Path -LiteralPath $releaseExe -PathType Leaf) -or (Test-Path -LiteralPath $launcherDll -PathType Leaf)) {
-        Write-RunStep -Message "[Step 2/6] SandalLauncher binary is ready ($launcherExe)." -Quiet $Quiet
         return
     }
     $launcherCsproj = Join-Path $RootDirPath 'src/clients/launcher/SandalLauncher.csproj'
@@ -166,7 +165,11 @@ function Invoke-RunPipeline {
     $distRelDir = Join-Path $RootDirPath 'dist/Release'
     $distSvcDir = Join-Path $RootDirPath 'dist/services'
     $prevPath = $env:PATH
+    $prevSuppress = $env:SANDAL_SUPPRESS_SUBSTEPS
+    $prevFromRun = $env:SANDAL_FROM_RUN
     $env:PATH = "$distRelDir$PathSeparator$distSvcDir$PathSeparator$prevPath"
+    $env:SANDAL_SUPPRESS_SUBSTEPS = '1'
+    $env:SANDAL_FROM_RUN = '1'
     try {
         Write-RunStep -Message '[Step 1/6] Checking extracted game data in dist/content/...' -Quiet $quiet
         $null = Ensure-SandalGameData -RepoRoot $RootDirPath
@@ -181,20 +184,21 @@ function Invoke-RunPipeline {
         if (-not (Test-Path -LiteralPath (Join-Path $certsDir 'server.crt') -PathType Leaf) -and (Test-Path -LiteralPath $certsScript -PathType Leaf)) {
             $null = & $certsScript -OutputDir $certsDir -RepoRoot $RootDirPath -Json
         }
-        Write-RunStep -Message "[Step 5/6] Waking WSL2 Docker daemon and starting SandalCore containers (profile=$($Options.Profile))..." -Quiet $quiet
+        Write-RunStep -Message "[Step 5/6] Starting SandalCore Docker containers (profile=$($Options.Profile))..." -Quiet $quiet
         $null = Ensure-SandalDockerDaemon
         $upScript = Join-Path $RootDirPath 'scripts/sandal/up.ps1'
         if ($quiet) { $null = & $upScript -Profile $Options.Profile -Detach -RepoRoot $RootDirPath -Json } else { & $upScript -Profile $Options.Profile -Detach -RepoRoot $RootDirPath }
         if ($Options.SpawnLauncher) {
-            Write-RunStep -Message '[Step 6/6] Launching SandalLauncher desktop window...' -Quiet $quiet
+            Write-RunStep -Message '[Step 6/6] Opening SandalLauncher desktop window...' -Quiet $quiet
             $spawnedPid = Start-SandalLauncherProcess -RootDirPath $RootDirPath -ExeExtension $ExeExtension -Port $Options.AutomationPort
-            Write-RunStep -Message "[Step 6/6] SandalLauncher is open and running (PID $spawnedPid)." -Quiet $quiet
             return $spawnedPid
         }
         Write-RunStep -Message '[Step 6/6] Skipping SandalLauncher launch (-NoLauncher specified).' -Quiet $quiet
         return $null
     } finally {
         $env:PATH = $prevPath
+        if ($null -eq $prevSuppress) { Remove-Item Env:\SANDAL_SUPPRESS_SUBSTEPS -ErrorAction SilentlyContinue } else { $env:SANDAL_SUPPRESS_SUBSTEPS = $prevSuppress }
+        if ($null -eq $prevFromRun) { Remove-Item Env:\SANDAL_FROM_RUN -ErrorAction SilentlyContinue } else { $env:SANDAL_FROM_RUN = $prevFromRun }
     }
 }
 

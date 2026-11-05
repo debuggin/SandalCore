@@ -78,9 +78,15 @@ $outDir    = Join-Path $distDir 'content'
 $stampDir  = Join-Path $repoRoot 'build' '.extract'
 $toolsDir  = Join-Path $distDir 'tools'
 $usmapSrc  = Join-Path $repoRoot 'src\config\layouts\aoc.usmap'
-$mapcDll         = Join-Path $repoRoot 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll'
-$npcAbilitiesDll = Join-Path $repoRoot 'build\dotnet\bin\npcabilities\Release\net8.0\npcabilities.dll'
-$itemNamesDll    = Join-Path $repoRoot 'build\dotnet\bin\itemnames\Release\net8.0\itemnames.dll'
+function Resolve-DotnetToolRelPath([string]$tool) {
+    $net10Rel = "build\dotnet\bin\$tool\Release\net10.0\$tool.dll"
+    $net8Rel  = "build\dotnet\bin\$tool\Release\net8.0\$tool.dll"
+    if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $net10Rel)) -and (Test-Path -LiteralPath (Join-Path $repoRoot $net8Rel))) { return $net8Rel }
+    return $net10Rel
+}
+$mapcDll         = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'mapc')
+$npcAbilitiesDll = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'npcabilities')
+$itemNamesDll    = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'itemnames')
 $pwshExe   = (Get-Process -Id $PID).Path
 if (-not $pwshExe) { $pwshExe = 'pwsh' }
 $exeExt    = if ($IsWindows) { '.exe' } else { '' }
@@ -270,10 +276,16 @@ function Find-Exe([string]$name, [string[]]$extra = @()) {
     return $null
 }
 
-function Find-DotnetSdk8 {
-    $dn = Find-Exe 'dotnet' @("$env:ProgramFiles\dotnet\dotnet.exe")
-    if (-not $dn) { return $null }
-    foreach ($s in @(& $dn --list-sdks 2>$null)) { if ($s -match '^(\d+)\.' -and [int]$Matches[1] -eq 8) { return $dn } }
+function Find-DotnetSdk10 {
+    $candidates = @()
+    $dn = Find-Exe 'dotnet' @("$env:ProgramFiles\dotnet\dotnet.exe", (Join-Path $HOME '.dotnet\dotnet.exe'), (Join-Path $HOME '.dotnet\dotnet'))
+    if ($dn) { $candidates += $dn }
+    foreach ($extra in @((Join-Path $HOME '.dotnet\dotnet.exe'), (Join-Path $HOME '.dotnet\dotnet'), "$env:ProgramFiles\dotnet\dotnet.exe")) {
+        if ((Test-Path -LiteralPath $extra -PathType Leaf) -and ($extra -notin $candidates)) { $candidates += $extra }
+    }
+    foreach ($exe in $candidates) {
+        foreach ($s in @(& $exe --list-sdks 2>$null)) { if ($s -match '^(\d+)\.' -and [int]$Matches[1] -ge 10) { return $exe } }
+    }
     return $null
 }
 
@@ -384,10 +396,10 @@ foreach ($pak in (Get-ChildItem -LiteralPath $gamePaks -File)) { $paks.Add(('{0}
 $paks.Sort([System.StringComparer]::OrdinalIgnoreCase)
 $gameId = Get-TextHash (($paks -join "`n") + "`n" + ('exe {0} {1}' -f $exeLen, $exeTicks) + "`n" + ('dbc {0} {1}' -f $dbcLen, $dbcItem.LastWriteTimeUtc.Ticks))
 
-$dotnet = Find-DotnetSdk8
+$dotnet = Find-DotnetSdk10
 $go     = Find-Exe 'go' @('C:\Program Files\Go\bin\go.exe')
 $missing = @()
-if (-not $dotnet) { $missing += 'the .NET 8 SDK (dotnet)' }
+if (-not $dotnet) { $missing += 'the .NET 10 SDK (dotnet)' }
 if (-not $go)     { $missing += 'Go (go on PATH)' }
 if (-not (Test-Path -LiteralPath $usmapSrc)) { $missing += 'src\config\layouts\aoc.usmap (part of the repository)' }
 if ($missing.Count -gt 0) {
@@ -495,29 +507,32 @@ $steps = @(
         }
         $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'; $env:DOTNET_NOLOGO = '1'
         Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\mapc'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build'
-        Assert-Files @('build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'the mapc build did not produce it'
+        $script:mapcDll = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'mapc')
+        Assert-Files @((Resolve-DotnetToolRelPath 'mapc')) 'the mapc build did not produce it'
         Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\npcabilities'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build_npcabilities'
-        Assert-Files @('build\dotnet\bin\npcabilities\Release\net8.0\npcabilities.dll') 'the npcabilities build did not produce it'
+        $script:npcAbilitiesDll = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'npcabilities')
+        Assert-Files @((Resolve-DotnetToolRelPath 'npcabilities')) 'the npcabilities build did not produce it'
         Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\itemnames'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build_itemnames'
-        Assert-Files @('build\dotnet\bin\itemnames\Release\net8.0\itemnames.dll') 'the itemnames build did not produce it'
+        $script:itemNamesDll = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'itemnames')
+        Assert-Files @((Resolve-DotnetToolRelPath 'itemnames')) 'the itemnames build did not produce it'
         New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
         $svc = Join-Path $repoRoot 'src\server\services'
         Invoke-Checked $go @('build', '-trimpath', '-buildvcs=false', '-o', $contentc, './cmd/contentc') 'go_build_contentc' $svc
         Invoke-Checked $go @('build', '-trimpath', '-buildvcs=false', '-o', $statprog, './internal/statprog/cmd/statprog') 'go_build_statprog' $svc
     } },
     @{ Name = 'config'; Title = "Export the game's Config files and copy aoc.usmap"; Outputs = @('dist\content\client_config\DefaultCombat.ini', 'dist\content\client_config\DefaultAoCRecordConstants.ini', 'dist\content\aoc.usmap'); Run = {
-        Assert-Files @('build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the tools step first'
+        Assert-Files @((Resolve-DotnetToolRelPath 'mapc')) 'run the tools step first'
         Copy-Item -Force -LiteralPath $usmapSrc -Destination (Join-Path $outDir 'aoc.usmap')
         Invoke-Checked $dotnet @($mapcDll, 'export-config', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_config'
     } },
     @{ Name = 'curves'; Title = 'Read the profession curves and the mounts from the game containers (mapc)'; Outputs = @('dist\content\artisan_curves.tsv', 'dist\content\mount_speeds.tsv', 'dist\content\mount_riders.tsv'); Run = {
-        Assert-Files @('build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the tools step first'
+        Assert-Files @((Resolve-DotnetToolRelPath 'mapc')) 'run the tools step first'
         $common = @('--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir)
         Invoke-Checked $dotnet (@($mapcDll, 'artisan-curves') + $common) 'mapc_artisan_curves'
         Invoke-Checked $dotnet (@($mapcDll, 'mount-speeds') + $common) 'mapc_mount_speeds'
     } },
     @{ Name = 'names'; Title = "Read the words the items are named with from the game containers (itemnames; a few seconds)"; Outputs = @('dist\content\item_names.tsv'); Run = {
-        Assert-Files @('build\dotnet\bin\itemnames\Release\net8.0\itemnames.dll') 'run the tools step first'
+        Assert-Files @((Resolve-DotnetToolRelPath 'itemnames')) 'run the tools step first'
         $nameArgs = @($itemNamesDll, 'read', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir)
         foreach ($t in $StringTables) { $nameArgs += @('--table', $t) }
         Invoke-Checked $dotnet $nameArgs 'itemnames_read'
@@ -532,7 +547,7 @@ $steps = @(
         } finally { $env:GOMEMLIMIT = $savedLimit }
     } },
     @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'build\gen\fixtures\region\riverlands_rects.json', 'build\gen\fixtures\region\riverlands_zoi_rects.json', 'build\gen\world\spawns\region_data.h', 'build\gen\nav\region_rects.tsv'); Run = {
-        Assert-Files @('dist\content\content.db', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the earlier steps first'
+        Assert-Files @('dist\content\content.db', (Resolve-DotnetToolRelPath 'mapc')) 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'export-zoi', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_zoi'
         $gen = Join-Path $repoRoot 'src\tools\schemagen'
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $gen 'gen_region_rects.ps1'), '--chunks', (Join-Path $outDir 'zoi_chunks'), '--content-db', (Join-Path $outDir 'content.db')) 'gen_region_rects'
@@ -560,7 +575,7 @@ $steps = @(
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'scripts\build.ps1'), '-Target', 'aoc_navbuild', '-Jobs', "$Jobs") 'build_navbuild'
     } },
     @{ Name = 'roads'; Title = 'Read the road splines of the Riverlands (mapc) and resolve them (contentc)'; Outputs = @('dist\content\roads_raw.tsv', 'dist\content\roads.tsv', 'dist\content\roads_levels.tsv'); Run = {
-        Assert-Files @('dist\content\content.db', 'build\gen\nav\region_rects.tsv', "dist\tools\contentc$exeExt", 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the earlier steps first'
+        Assert-Files @('dist\content\content.db', 'build\gen\nav\region_rects.tsv', "dist\tools\contentc$exeExt", (Resolve-DotnetToolRelPath 'mapc')) 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'roads', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_roads'
         $db = Join-Path $outDir 'content.db'
         $raw = Join-Path $outDir 'roads_raw.tsv'
@@ -568,16 +583,16 @@ $steps = @(
         Invoke-Checked $contentc @('roads', '--levels', '--content', $db, '--raw', $raw, '--out', (Join-Path $outDir 'roads_levels.tsv')) 'contentc_roads_levels'
     } },
     @{ Name = 'townfloors'; Title = 'Read the floor of the five towns from the two city platform maps (mapc; a few seconds)'; Outputs = @('dist\content\town_platforms.bin'); Run = {
-        Assert-Files @('build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the tools step first'
+        Assert-Files @((Resolve-DotnetToolRelPath 'mapc')) 'run the tools step first'
         Invoke-Checked $dotnet @($mapcDll, 'town-floors', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_town_floors'
     } },
     @{ Name = 'townlayouts'; Title = 'Read the buildings, walls and terraces of the five towns (a list from content.db, then the meshes it names from the game, mapc; a few seconds)'; Outputs = @('dist\content\town_layout_items.tsv', 'dist\content\town_layouts.bin'); Run = {
-        Assert-Files @('dist\content\content.db', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the tools and database steps first'
+        Assert-Files @('dist\content\content.db', (Resolve-DotnetToolRelPath 'mapc')) 'run the tools and database steps first'
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\schemagen\gen_town_layouts.ps1'), '--content-db', (Join-Path $outDir 'content.db'), '--out', (Join-Path $outDir 'town_layout_items.tsv')) 'gen_town_layouts'
         Invoke-Checked $dotnet @($mapcDll, 'town-layouts', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir, '--min-free-gb', '8') 'mapc_town_layouts'
     } },
     @{ Name = 'npcabilities'; Title = 'Read the creature Blueprints and animation montages that give the creatures their attacks, what every creature notices and how far it follows, and the humanoid Blueprints and records that dress and name the people (src/tools/npcabilities; about two minutes)'; Outputs = @('dist\content\npc_abilities.tsv', 'dist\content\npc_montages.tsv', 'dist\content\npc_targeting.tsv', 'dist\content\npc_senses.tsv', 'dist\content\npc_aggro_curves.tsv', 'dist\content\npc_looks.tsv', 'dist\content\npc_appearances.tsv', 'dist\content\npc_names.tsv', 'dist\content\npc_trees.tsv'); Run = {
-        Assert-Files @('build\dotnet\bin\npcabilities\Release\net8.0\npcabilities.dll', 'dist\content\content.db') 'run the tools and database steps first'
+        Assert-Files @((Resolve-DotnetToolRelPath 'npcabilities'), 'dist\content\content.db') 'run the tools and database steps first'
         $npcArgs = @($npcAbilitiesDll, 'read', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir)
         foreach ($f in $NpcFolders) { $npcArgs += @('--dir', $f) }
         foreach ($f in $NpcAnimEndFolders) { $npcArgs += @('--anim-end-dir', $f) }
@@ -593,7 +608,7 @@ $steps = @(
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\npcabilities\looks.ps1'), '--content-db', (Join-Path $outDir 'content.db'), '--out-dir', $outDir) 'npcabilities_names'
     } },
     @{ Name = 'navmesh'; Title = 'Read the map and build the navigation mesh, the NPC motion table and the foliage (mapc; the longest step)'; Outputs = @('dist\content\npc_motion.tsv', 'dist\content\region_foliage.tsv', 'dist\content\area_geom.bin', 'dist\content\area_nav.bin'); Run = {
-        Assert-Files @('build\gen\nav\region_rects.tsv', "dist\Release\aoc_navbuild$exeExt", 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll', 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'
+        Assert-Files @('build\gen\nav\region_rects.tsv', "dist\Release\aoc_navbuild$exeExt", (Resolve-DotnetToolRelPath 'mapc'), 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'
         $savedHeap = $env:DOTNET_GCHeapHardLimit
         if (-not $env:DOTNET_GCHeapHardLimit) { $env:DOTNET_GCHeapHardLimit = '0x100000000' }     # the NPC Blueprint pass peaks at 7.7 GB without this limit and at 4.0 GB with it, in the same time; the map read's child programs set their own
         try {

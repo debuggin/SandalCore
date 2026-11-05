@@ -4,19 +4,13 @@ $ErrorActionPreference = 'Stop'
 
 function Write-SandalStep {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$Step,
-        [Parameter(Mandatory)][string]$Message,
-        [switch]$Quiet
-    )
-    if ($Quiet -or $env:SANDAL_QUIET -eq '1') { return }
+    param([Parameter(Mandatory)][string]$Step, [Parameter(Mandatory)][string]$Message, [switch]$Quiet)
+    if ($Quiet -or $env:SANDAL_QUIET -eq '1' -or $env:SANDAL_SUPPRESS_SUBSTEPS -eq '1') { return }
     $callerJson = [bool](Get-Variable -Name AsJson -ValueOnly -ErrorAction SilentlyContinue) -or
                   [bool](Get-Variable -Name Json -ValueOnly -ErrorAction SilentlyContinue)
     if (-not $callerJson) {
         $callerOpts = Get-Variable -Name opts -ValueOnly -ErrorAction SilentlyContinue
-        if ($null -ne $callerOpts -and $null -ne $callerOpts.PSObject.Properties['Json'] -and [bool]$callerOpts.Json) {
-            $callerJson = $true
-        }
+        if ($null -ne $callerOpts -and $null -ne $callerOpts.PSObject.Properties['Json'] -and [bool]$callerOpts.Json) { $callerJson = $true }
     }
     if ($callerJson) { return }
     [Console]::Out.WriteLine("[SandalCore][$Step] $Message")
@@ -34,9 +28,7 @@ function Get-SandalEnvMap {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$EnvPath)
     $map = [ordered]@{}
-    if (-not (Test-Path -LiteralPath $EnvPath -PathType Leaf)) {
-        return $map
-    }
+    if (-not (Test-Path -LiteralPath $EnvPath -PathType Leaf)) { return $map }
     foreach ($line in [System.IO.File]::ReadAllLines($EnvPath, [System.Text.Encoding]::UTF8)) {
         $trimmed = $line.Trim()
         if ($trimmed.Length -gt 0 -and -not $trimmed.StartsWith('#') -and $trimmed -match '^([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$') {
@@ -52,9 +44,7 @@ function Set-SandalSecretAcl {
     if ($IsWindows) {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         $null = & icacls $LiteralPath /inheritance:r /grant:r "${identity}:(F)" 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to apply restrictive ACL on '$LiteralPath' (icacls exit $LASTEXITCODE)."
-        }
+        if ($LASTEXITCODE -ne 0) { throw "Failed to apply restrictive ACL on '$LiteralPath' (icacls exit $LASTEXITCODE)." }
     } else {
         $null = & chmod 0600 $LiteralPath
     }
@@ -78,14 +68,22 @@ function Get-SandalLocalOverlayMap {
     return [ordered]@{}
 }
 
+function Use-SandalUserDotnet10 {
+    $dn = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($dn -and (@(& $dn.Source --list-sdks 2>$null) | Where-Object { $_ -match '^(\d+)\.' -and [int]$Matches[1] -ge 10 })) { return }
+    $userDotnet = Join-Path $HOME '.dotnet'
+    $userExe = Join-Path $userDotnet $(if ($IsWindows) { 'dotnet.exe' } else { 'dotnet' })
+    if ((Test-Path -LiteralPath $userExe -PathType Leaf) -and (@(& $userExe --list-sdks 2>$null) | Where-Object { $_ -match '^(\d+)\.' -and [int]$Matches[1] -ge 10 })) {
+        $sep = [System.IO.Path]::PathSeparator
+        $env:DOTNET_ROOT = $userDotnet
+        $env:PATH = "${userDotnet}${sep}$($env:PATH)"
+    }
+}
+
 function Initialize-SandalEnv {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$EnvPath,
-        [Alias('ExamplePath')][string]$TemplatePath = '',
-        [string[]]$SecretKeys = @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY'),
-        [switch]$Force
-    )
+    param([Parameter(Mandatory)][string]$EnvPath, [Alias('ExamplePath')][string]$TemplatePath = '', [string[]]$SecretKeys = @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY'), [switch]$Force)
+    Use-SandalUserDotnet10
     $parent = Split-Path -Parent $EnvPath
     if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
     $existingMap = if (Test-Path -LiteralPath $EnvPath -PathType Leaf) { Get-SandalEnvMap -EnvPath $EnvPath } else { [ordered]@{} }
@@ -109,8 +107,7 @@ function Initialize-SandalEnv {
         if (-not $Force -and $existingVal -and -not $existingVal.StartsWith('CHANGE_ME')) {
             $val = $existingVal
         } elseif ($Force -or [string]::IsNullOrWhiteSpace($val) -or $val.StartsWith('CHANGE_ME')) {
-            $val = New-SandalCsprngSecret -ByteLength 32
-            $generated.Add($key)
+            $val = New-SandalCsprngSecret -ByteLength 32; $generated.Add($key)
         }
         $outLines.Add("${key}=${val}")
     }
@@ -118,16 +115,14 @@ function Initialize-SandalEnv {
         if ($seenKeys.Contains($extraKey)) { continue }
         $val = [string]$existingMap[$extraKey]
         if ($extraKey -in $SecretKeys -and ($Force -or [string]::IsNullOrWhiteSpace($val) -or $val.StartsWith('CHANGE_ME'))) {
-            $val = New-SandalCsprngSecret -ByteLength 32
-            $generated.Add($extraKey)
+            $val = New-SandalCsprngSecret -ByteLength 32; $generated.Add($extraKey)
         }
         if ($extraKey -in $SecretKeys) { $null = $seenSecrets.Add($extraKey) }
         $outLines.Add("${extraKey}=${val}")
     }
     foreach ($key in $SecretKeys) {
         if (-not $seenSecrets.Contains($key)) {
-            $outLines.Add("${key}=$(New-SandalCsprngSecret -ByteLength 32)")
-            $generated.Add($key)
+            $outLines.Add("${key}=$(New-SandalCsprngSecret -ByteLength 32)"); $generated.Add($key)
         }
     }
     $tmpPath = "${EnvPath}.tmp.${PID}"
@@ -138,11 +133,7 @@ function Initialize-SandalEnv {
 }
 
 function Merge-SandalLocalJsonOverlay {
-    param(
-        [Parameter(Mandatory)][string]$TemplateJsonPath,
-        [Parameter(Mandatory)][string]$TargetJsonPath,
-        [string]$LocalJsonPath = ''
-    )
+    param([Parameter(Mandatory)][string]$TemplateJsonPath, [Parameter(Mandatory)][string]$TargetJsonPath, [string]$LocalJsonPath = '')
     if (-not (Test-Path -LiteralPath $TargetJsonPath -PathType Leaf)) {
         Copy-Item -LiteralPath $TemplateJsonPath -Destination $TargetJsonPath -Force
     } else {
@@ -224,9 +215,9 @@ function Write-SandalDistServerScripts {
         '    }',
         '    $env:AOC_SERVICE_TOKEN = (Get-Content -LiteralPath $tokenFile -Raw).Trim()',
         '}',
-        '$names = @(''auth'', ''character'', ''citynode'', ''quests'', ''mesh'', ''gateway'', ''meshgw'', ''admin'', ''tether_server'', ''worldd'')',
+        '$names = @(''auth'', ''character'', ''citynode'', ''quests'', ''mesh'', ''gateway'', ''meshgw'', ''admin'', ''worldd'')',
         'foreach ($name in $names) {',
-        '    $exe = if ($name -in @(''tether_server'', ''worldd'')) { Join-Path $relDir "$name$exeExt" } else { Join-Path $svcDir "$name$exeExt" }',
+        '    $exe = if ($name -eq ''worldd'') { Join-Path $relDir "$name$exeExt" } else { Join-Path $svcDir "$name$exeExt" }',
         '    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }',
         '    $argList = if ($name -in @(''worldd'', ''character'') -and (Test-Path -LiteralPath $contentDb -PathType Leaf)) { @(''--content-db'', $contentDb) } else { @() }',
         '    if ($DryRun) { Write-Output "DRYRUN start $exe $($argList -join '' '')"; continue }',
@@ -240,7 +231,7 @@ function Write-SandalDistServerScripts {
         'param([switch]$DryRun)',
         'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''',
         '$distRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)',
-        '$names = @(''worldd'', ''world'', ''tether_server'', ''tether'', ''gateway'', ''meshgw'', ''admin'', ''mesh'', ''quests'', ''citynode'', ''character'', ''auth'')',
+        '$names = @(''worldd'', ''world'', ''gateway'', ''meshgw'', ''admin'', ''mesh'', ''quests'', ''citynode'', ''character'', ''auth'')',
         '$procs = @(Get-Process -Name $names -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($distRoot, [System.StringComparison]::OrdinalIgnoreCase) })',
         'if ($DryRun) { Write-Output "DRYRUN stop $($procs.Count) process(es) under $distRoot"; exit 0 }',
         'foreach ($p in $procs) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }'
@@ -283,15 +274,14 @@ function Sync-SandalLauncherStage {
         if (Test-Path -LiteralPath $d -PathType Container) { Get-ChildItem -LiteralPath $d -Filter '*.pdb' -Recurse -File -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
     }
     if (Test-Path -LiteralPath $configDir -PathType Container) {
-        foreach ($pair in @(@('world.exe', 'worldd.exe'), @('tether.exe', 'tether_server.exe'))) {
-            $srcExe = Join-Path $configDir $pair[0]
-            $dstExe = Join-Path $configDir $pair[1]
-            if ((Test-Path -LiteralPath $srcExe -PathType Leaf) -and ((-not (Test-Path -LiteralPath $dstExe -PathType Leaf)) -or ((Get-Item -LiteralPath $srcExe).LastWriteTimeUtc -gt (Get-Item -LiteralPath $dstExe).LastWriteTimeUtc))) {
-                Copy-Item -LiteralPath $srcExe -Destination $dstExe -Force
-            }
+        $srcExe = Join-Path $configDir 'world.exe'
+        $dstExe = Join-Path $configDir 'worldd.exe'
+        if ((Test-Path -LiteralPath $srcExe -PathType Leaf) -and ((-not (Test-Path -LiteralPath $dstExe -PathType Leaf)) -or ((Get-Item -LiteralPath $srcExe).LastWriteTimeUtc -gt (Get-Item -LiteralPath $dstExe).LastWriteTimeUtc))) {
+            Copy-Item -LiteralPath $srcExe -Destination $dstExe -Force
         }
     }
-    $buildOut = Join-Path $RepoRoot "build\dotnet\bin\SandalLauncher\$Config\net8.0"
+    $buildOut = Join-Path $RepoRoot "build\dotnet\bin\SandalLauncher\$Config\net10.0"
+    if (-not (Test-Path -LiteralPath $buildOut -PathType Container)) { $buildOut = Join-Path $RepoRoot "build\dotnet\bin\SandalLauncher\$Config\net8.0" }
     if (-not (Test-Path -LiteralPath $buildOut -PathType Container)) { return }
     $srcPrimary = @('SandalLauncher.dll', 'SandalLauncher.exe', 'SandalLauncher') | ForEach-Object { Join-Path $buildOut $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
     if (-not $srcPrimary) { return }
@@ -315,10 +305,8 @@ function Sync-SandalLauncherStage {
 
 function Sync-SandalDistStage {
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$RepoRoot,
-        [string]$Config = 'Release'
-    )
+    param([Parameter(Mandatory)][string]$RepoRoot, [string]$Config = 'Release')
+    Use-SandalUserDotnet10
     $distDir = Join-Path $RepoRoot 'dist'
     Write-SandalStep -Step 'DistStage' -Message "Staging runtime configs, SQL migrations, and launcher into $distDir..."
     foreach ($sub in @('config', 'sql', 'services', 'tools', 'content', 'nav', 'certs', 'logs', 'launcher', 'sql\migrations', 'sql\seed', "$Config\config", "$Config\sql\migrations")) {
@@ -327,16 +315,19 @@ function Sync-SandalDistStage {
     $srcConfig = Join-Path $RepoRoot 'src\config'
     Copy-SandalConfigStage -SourceDir $srcConfig -DestDir (Join-Path $distDir 'config')
     Copy-SandalConfigStage -SourceDir $srcConfig -DestDir (Join-Path $distDir "$Config\config")
-
     $srcMigrations = Join-Path $RepoRoot 'src\server\services\sql\migrations'
     Copy-SandalSqlFiles -SourceDir $srcMigrations -DestDir (Join-Path $distDir 'sql\migrations')
     Copy-SandalSqlFiles -SourceDir $srcMigrations -DestDir (Join-Path $distDir "$Config\sql\migrations")
     Copy-SandalSqlFiles -SourceDir (Join-Path $RepoRoot 'src\config\hotfixes') -DestDir (Join-Path $distDir 'sql\seed')
     Copy-SandalSqlFiles -SourceDir (Join-Path $RepoRoot 'src\deploy\postgres\init') -DestDir (Join-Path $distDir 'sql\seed')
-
     $caBundle = Join-Path $RepoRoot 'src\config\certs\amazon_ca_bundle.pem'
-    if (Test-Path -LiteralPath $caBundle -PathType Leaf) {
-        Copy-Item -LiteralPath $caBundle -Destination (Join-Path $distDir 'certs\amazon_ca_bundle.pem') -Force
+    if (Test-Path -LiteralPath $caBundle -PathType Leaf) { Copy-Item -LiteralPath $caBundle -Destination (Join-Path $distDir 'certs\amazon_ca_bundle.pem') -Force }
+    $goMod = Join-Path $RepoRoot 'src\server\services\go.mod'
+    if (Test-Path -LiteralPath $goMod -PathType Leaf) {
+        $goVer = if ([System.IO.File]::ReadAllText($goMod) -match '(?m)^go\s+([0-9.]+)') { $Matches[1] } else { '1.27.0' }
+        $goWork = Join-Path $distDir 'go.work'
+        [System.IO.File]::WriteAllText($goWork, "go $goVer`nuse ../src/server/services`n", [System.Text.UTF8Encoding]::new($false))
+        $env:GOWORK = $goWork
     }
     Sync-SandalLauncherStage -RepoRoot $RepoRoot -DistDir $distDir -Config $Config
     Write-SandalLauncherScripts -DistDir $distDir
@@ -495,6 +486,9 @@ function Test-SandalDockerDaemonReady {
         $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
         Set-SandalUserDockerHost -Endpoint 'tcp://127.0.0.1:2375' -CommandRunner $CommandRunner
     }
+    if ($null -eq $CommandRunner -and $IsWindows -and ($env:DOCKER_HOST -like '*:2375' -or [string]::IsNullOrWhiteSpace($env:DOCKER_HOST))) {
+        Start-SandalIpv6DockerBridge -CommandRunner $CommandRunner
+    }
     if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) {
         return @{ Ready = $true; Mode = 'current'; Endpoint = [string]$env:DOCKER_HOST }
     }
@@ -638,7 +632,13 @@ function Start-SandalIpv6DockerBridge {
         '}'
     )
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes(($bridgeLines -join "`n")))
-    Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', $encoded) -WindowStyle Hidden | Out-Null
+    $pwshExe = (Get-Process -Id $PID).Path
+    try {
+        $si = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }
+        $null = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$pwshExe`" -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand $encoded"; ProcessStartupInformation = $si } -ErrorAction Stop
+    } catch {
+        Start-Process -FilePath $pwshExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', $encoded) -WindowStyle Hidden | Out-Null
+    }
     for ($p = 0; $p -lt 10; $p++) {
         $chk = [System.Net.Sockets.TcpClient]::new([System.Net.Sockets.AddressFamily]::InterNetworkV6)
         try {

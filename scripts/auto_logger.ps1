@@ -61,15 +61,6 @@ function Generate-Summary($destDir, $runId) {
     $summary.Add("================================================================")
     $summary.Add("")
 
-    $tetherTxt = Join-Path $destDir "tether.txt"
-    if (Test-Path $tetherTxt) {
-        $tContent = Get-Content -LiteralPath $tetherTxt -ErrorAction SilentlyContinue
-        $sessionOk = ($tContent | Select-String "Session \d+ established").Count -gt 0
-        $summary.Add("[Tether Server]")
-        $summary.Add("  Session Established: " + ($(if ($sessionOk) { "YES" } else { "NO" })))
-        $summary.Add("")
-    }
-
     $gcTxt = Join-Path $destDir "game_client.txt"
     if (Test-Path $gcTxt) {
         $gcContent = Get-Content -LiteralPath $gcTxt -ErrorAction SilentlyContinue
@@ -97,14 +88,14 @@ Write-Host "[AutoLogger] Background auto-logger active. Streaming all 4 applicat
 
 while ($true) {
     $clientProc = Get-Process -Name "AOCClient-Win64-Shipping" -ErrorAction SilentlyContinue | Select-Object -First 1
-    $tetherProc = Get-Process -Name "tether", "tether_server" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $launcherProc = Get-Process -Name "SandalLauncher" -ErrorAction SilentlyContinue | Select-Object -First 1
     # The Go services and world from this checkout: the run is named after the first of them to start.
     $goProc = Get-Process -Name world, worldd, gateway -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($RepoRoot, [System.StringComparison]::OrdinalIgnoreCase) } |
         Sort-Object StartTime | Select-Object -First 1
     $runProc = $goProc
 
-    $anyRunning = ($clientProc -or $tetherProc -or $goProc)
+    $anyRunning = ($clientProc -or $launcherProc -or $goProc)
     if ($anyRunning) {
         $sawProcessesRunning = $true
         $idleSecondsAfterStop = 0
@@ -142,19 +133,6 @@ while ($true) {
         $allDests = @($repoDest, $privateDest, $distDest)
 
         $needsSummaryUpdate = $false
-
-        $latestTether = Get-ChildItem -Path $DistLogsDir -Filter "tether-*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($latestTether) {
-            $szKey = "tether_" + $latestTether.FullName
-            $curSz = $latestTether.Length
-            if ($lastSizes[$szKey] -ne $curSz) {
-                $lastSizes[$szKey] = $curSz
-                foreach ($d in $allDests) {
-                    Sync-FileSafe $latestTether.FullName (Join-Path $d "tether.txt") | Out-Null
-                }
-                $needsSummaryUpdate = $true
-            }
-        }
 
         foreach ($name in 'auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'world', 'worldd') {
             $svcLog = Join-Path $GoLogsDir "$name.log"

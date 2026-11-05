@@ -294,8 +294,8 @@ networks:
                 @{
                     Name        = 'cpp.Dockerfile'
                     Users       = @('USER 65532:65532')
-                    ExposePorts = @('7777/udp', '50061/tcp', '50051/tcp', '50055/tcp')
-                    ArgsAndEnvs = @('TARGET_BINARY', 'WORLDD_UDP_PORT', 'WORLDD_ADMIN_PORT', 'TETHER_TCP_PORT', 'TETHER_ADMIN_PORT', 'SERVICE_BIND_ADDR')
+                    ExposePorts = @('7777/udp', '50061/tcp')
+                    ArgsAndEnvs = @('TARGET_BINARY', 'WORLDD_UDP_PORT', 'WORLDD_ADMIN_PORT', 'SERVICE_BIND_ADDR')
                 },
                 @{
                     Name        = 'go.Dockerfile'
@@ -404,11 +404,13 @@ networks:
             )) {
                 $envoyRaw.Contains($token) | Should -BeTrue
             }
+            $envoyRaw.Contains('ingress_tether_tcp') | Should -BeFalse
+            $envoyRaw.Contains('tether_tcp') | Should -BeFalse
         }
     }
 
-    Context '6. 12-Service Compose Topology, 3-Zone Network Isolation & Docker Compose Config Validation (OPS-03, SEC-11)' {
-        It 'Validates all 12 services, 3-zone network isolation (edge_net, internal service_net, internal data_net), cap_drop/no-new-privileges/read_only/tmpfs hardening, 127.0.0.1 launcher ports, and docker compose config --quiet' {
+    Context '6. 11-Service Compose Topology, 3-Zone Network Isolation & Docker Compose Config Validation (OPS-03, SEC-11)' {
+        It 'Validates all 11 services, 3-zone network isolation (edge_net, internal service_net, internal data_net), cap_drop/no-new-privileges/read_only/tmpfs hardening, 127.0.0.1 launcher ports, and docker compose config --quiet' {
             $composePaths = @($script:ComposeFile)
             if (Test-Path -LiteralPath $script:MaterializedComposeFile) {
                 $composePaths += $script:MaterializedComposeFile
@@ -416,13 +418,16 @@ networks:
 
             $expectedServices = @(
                 'postgres', 'auth', 'character', 'citynode', 'quest', 'mesh',
-                'gateway', 'meshgw', 'web-admin', 'tether', 'world', 'ingress-proxy'
+                'gateway', 'meshgw', 'web-admin', 'world', 'ingress-proxy'
             )
-            $excludedFromDataNet = @('ingress-proxy', 'web-admin', 'tether', 'world')
+            $excludedFromDataNet = @('ingress-proxy', 'web-admin', 'world')
             $requiredOnDataNet = @('postgres', 'auth', 'character', 'citynode', 'quest', 'gateway', 'meshgw')
 
             foreach ($cPath in $composePaths) {
                 $raw = [System.IO.File]::ReadAllText($cPath, [System.Text.Encoding]::UTF8)
+                $raw.Contains('aoc-tether') | Should -BeFalse
+                ($raw -match '(?m)^  tether:\s*$') | Should -BeFalse
+                $raw.Contains('GRPC_ENFORCE_ALPN_ENABLED: "false"') | Should -BeTrue
 
                 $anchorMatch = [regex]::Match($raw, '(?ms)^x-hardened:\s*&hardened\r?\n(.*?)(?=^services:\r?\n)')
                 $anchorMatch.Success | Should -BeTrue
@@ -476,11 +481,11 @@ networks:
                     '127.0.0.1:${INGRESS_HTTP_PORT:-8080}:8080/tcp',
                     '127.0.0.1:${INGRESS_GRPC_PORT:-9090}:9090/tcp',
                     '127.0.0.1:${GATEWAY_TLS_PORT:-50061}:50061/tcp',
-                    '127.0.0.1:${TETHER_TCP_PORT:-50051}:50051/tcp',
                     '127.0.0.1:${WORLDD_UDP_PORT:-7777}:7777/udp'
                 )) {
                     $raw.Contains($portBinding) | Should -BeTrue
                 }
+                $raw.Contains('50051:50051') | Should -BeFalse
                 $raw.Contains('5432:5432') | Should -BeFalse
                 $raw.Contains('9901:9901') | Should -BeFalse
             }

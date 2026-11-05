@@ -5,7 +5,7 @@ Platform services for the live backend (architecture spec:
 
 | Binary / Container | Listens | Role |
 |---|---|---|
-| `ingress-proxy` (Envoy) | HTTP/2 & Web Admin `:8080`, gRPC `:9090`, ICS TLS `:50061`, Tether `:50051`, Envoy admin `:9901` | Edge reverse proxy (`src/deploy/envoy/envoy.yaml`) terminating client TLS and routing HTTP/2, gRPC, and `web-admin` traffic across `edge_net` and `service_net` |
+| `ingress-proxy` (Envoy) | HTTP/2 & Web Admin `:8080`, gRPC `:9090`, ICS TLS `:50061`, Envoy admin `:9901` | Edge reverse proxy (`src/deploy/envoy/envoy.yaml`) terminating client TLS and routing HTTP/2, gRPC, and `web-admin` traffic across `edge_net` and `service_net` |
 | `auth` | HTTP `127.0.0.1:8081`, gRPC `127.0.0.1:50051` (`:50052` in container) | The launcher's login/register API; `AuthService.ValidateToken` for other services |
 | `character` | gRPC `127.0.0.1:50052` (`:50053` in container) | `CharacterService`: the runtime writer of character records (`charimport` is the offline exception); checks a new character's race, gender, class and customization against `content.db` (below), gives it its class's starting kit and saves its items ("Items and inventory") |
 | `citynode` | gRPC `127.0.0.1:50055` (`:50056` in container) | `CityNodeService` (Nodes 1): the live state of the game world's city nodes (level, XP, vassal link), the node clock and the stream of changes; API-first, see "City nodes" below |
@@ -15,7 +15,7 @@ Platform services for the live backend (architecture spec:
 | `meshgw` | HTTP/SSE `127.0.0.1:8082` | Mesh HTTP and Server-Sent Events (SSE) gateway exposing live node, world, and GM telemetry |
 | `web-admin` (`admin`) | HTTP `http://127.0.0.1:8080/` via Envoy (`:8088` internal) | Browser-based operator control plane (Nginx + Admin UI/BFF) |
 | `gateway` | ICS gRPC over TLS `127.0.0.1:443` (`:50061` in container), HTTP `:8081`, gRPC `127.0.0.1:50054` (`:50050` in container) | The game client's session, world and character screens and Play; `GatewayService.RedeemTicket` for world servers |
-| `tether` | `:50051` in container (`127.0.0.1:19021/udp` standalone) | C++23 session tether handing client auth tokens to `AOCClient.exe` |
+| `SandalLauncher` (`LocalTetherListener`) | `127.0.0.1:19021/udp` (in-process on Windows host) | In-memory UDP session tether inside `SandalLauncher` handing client auth tokens to `AOCClient.exe` |
 | `world` | UDP `127.0.0.1:7777`, gRPC `:50061`/`:50062` | C++23 authoritative 30 Hz world server (`src/server/world`; see [`../world/README.md`](../world/README.md)) |
 
 Every internal gRPC server (auth, character, citynode, quest, mesh, and the gateway's internal port) refuses calls
@@ -26,13 +26,13 @@ gateway and `world` send it. The game client's ICS stream does not use it.
 ## Run
 
 ```powershell
-pwsh -File sandal.ps1 up     # Start the 12-container stack in WSL2 Docker (src/deploy/compose.yml)
+pwsh -File sandal.ps1 up     # Start the 11-container stack in WSL2 Docker (src/deploy/compose.yml)
 scripts\services.ps1 up      # Start PostgreSQL in Docker
 scripts\services.ps1 test    # buf lint + generated-code check, go vet + go test
 scripts\services.ps1 build   # build auth, character, citynode, quest, meshgw, nodectl, questctl, worldctl, charimport, mesh, gateway and admin into dist\services
 scripts\services.ps1 run     # build, then start the Go services and world hidden, logging to files
 scripts\services.ps1 stop    # stop those processes (world included)
-scripts\services.ps1 login   # sign in with src\config\dev_login.local.json, save the token for tether
+scripts\services.ps1 login   # sign in with src\config\dev_login.local.json, save the session token
 scripts\services.ps1 down    # stop the containers (the data volume is kept)
 ```
 
@@ -49,25 +49,18 @@ loses its session. `stop` needs neither Go nor Docker.
 whenever `world`'s heartbeats lapse, with tickets `world` could never redeem.
 
 The whole stack with the game client is `start.bat` (`scripts\launch_all.ps1` does the work and
-takes no arguments): the 12-container WSL2 Docker stack (or local services) and the launcher window. It first stops any processes left running from this checkout.
-`scripts\launch_all.ps1` checks that the process on each port it waits for (TCP, and the UDP ports of `world`, 7777,
-and `tether`, 19021) is the expected program running from this checkout. The same program from another
+takes no arguments): the 11-container WSL2 Docker stack (or local services) and the launcher window. It first stops any processes left running from this checkout.
+`scripts\launch_all.ps1` checks that the process on each port it waits for (TCP, and the UDP port of `world`, 7777) is the expected program running from this checkout. The same program from another
 checkout or worktree fails the launch, as does anything else, with `port N is held by <name> (pid P) at
 <path>`. Stop the other checkout's servers first. When it fails, it points to the log files above.
 
-The game client learns its session token from `tether`. `scripts\launch_all.ps1` starts it with
-`--login-token-file`, which makes it hand a game client on this machine (127.0.0.0/8 only) the
-token launcher.exe saved at login, `dist\Release\data\ics_auth_token.txt`; without the flag it sends
-the emulator token, which the gateway refuses, and never reads the file. `scripts\launch_all.ps1` deletes
-the file from an earlier sign-in first. It then just opens the launcher window: you sign in there
-(or "Keep me signed in" does it) and press LAUNCH GAME, which starts the game client with the tether
-port and the arguments of `src\config\server.json`. To sign in without the launcher window, put an
+The game client learns its session token from `SandalLauncher`'s in-memory `LocalTetherListener` on UDP `19021`, which hands a game client on this machine (`127.0.0.1`) the session token directly from memory without writing plaintext token files to disk. You sign in through `SandalLauncher` (or "Keep me signed in" does it) and press LAUNCH GAME, which starts the game client with the tether port and the arguments of `src\config\server.json`. To sign in without the launcher window, put an
 account registered through the launcher in `src\config\dev_login.local.json`
 (git-ignored):
 
     {"username": "admin", "password": "..."}
 
-and `scripts\services.ps1 login` signs in with it and saves the token for `tether`. The file
+and `scripts\services.ps1 login` signs in with it and saves the token. The file
 is read as UTF-8, so passwords with non-ASCII characters work.
 
 The gateway serves TLS with `dist\certs\server.pem` and `dist\certs\server.key`, relative to the directory

@@ -212,6 +212,173 @@ public sealed class LauncherHeadlessTests
         Assert.True(await closeTcs.Task.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
+    [Fact]
+    public async Task LocalTetherListener_CppWireParity_HandlesConnectOpenSessionConnectionInfoEchoCloseAndAskWindow()
+    {
+        await using var tether = new LocalTetherListener(0)
+        {
+            ActiveAccessToken = "live_mem_jwt_token_50061",
+            IcsEndpoint = "127.0.0.1:50061"
+        };
+        using var udp = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        var ep = new IPEndPoint(IPAddress.Loopback, tether.Port);
+
+        byte[] c1 = await SendTetherHeaderOnlyAsync(udp, ep, tether, 1, MsgId.Connect, 42u, 1L, 0L);
+        Assert.Equal(LocalTetherListener.HeaderSize, c1.Length);
+        byte[] c2 = await SendTetherHeaderOnlyAsync(udp, ep, tether, 2, MsgId.Connect, 42u, 5L, 0L);
+        Assert.Equal(LocalTetherListener.HeaderSize + 4 + LocalTetherListener.LauncherProcessorId.Length, c2.Length);
+
+        var openTags = await SendTetherDataAndReadReplyAsync(udp, ep, tether, 42u, 6L, "request_open_session");
+        Assert.Equal("live_mem_jwt_token_50061", openTags["auth_token"]);
+        Assert.Equal("127.0.0.1", openTags["ics_host"]);
+        Assert.Equal("50061", openTags["ics_port"]);
+        Assert.Equal("127.0.0.1:50061", openTags["ics_endpoint"]);
+        Assert.Equal("https://127.0.0.1:50061", openTags["auth_endpoint"]);
+        Assert.Equal("x-ics-auth", openTags["grpc_metadata_magic_key"]);
+        Assert.Equal("AOC/1.0", openTags["user_agent_prefix"]);
+
+        var infoTags = await SendTetherDataAndReadReplyAsync(udp, ep, tether, 42u, 7L, "request_game_client_connection_info");
+        Assert.Equal("reply_game_client_connection_info", infoTags["message_type_name"]);
+        Assert.Equal("ok", infoTags["result"]);
+        Assert.Equal("127.0.0.1:50061", infoTags["ics_endpoint"]);
+
+        var echoTags = await SendTetherDataAndReadReplyAsync(udp, ep, tether, 42u, 8L, "request_echo");
+        Assert.Equal("reply_echo", echoTags["message_type_name"]);
+
+        var closeTags = await SendTetherDataAndReadReplyAsync(udp, ep, tether, 42u, 9L, "request_close_session");
+        Assert.Equal("reply_close_session", closeTags["message_type_name"]);
+
+        byte[] retransmit = await SendTetherHeaderOnlyAsync(udp, ep, tether, 2, MsgId.AskWindow, 42u, 9L, 0L);
+        Assert.True(LocalTetherListener.TryParseHeader(retransmit, out ArqHeader rHdr) && rHdr.MsgId == MsgId.Data && rHdr.SequenceNumber == 0L);
+        byte[] tellWin = await SendTetherHeaderOnlyAsync(udp, ep, tether, 2, MsgId.AskWindow, 42u, 9L, 99L);
+        Assert.True(LocalTetherListener.TryParseHeader(tellWin, out ArqHeader twHdr) && twHdr.MsgId == MsgId.TellWindow);
+    }
+
+    [Fact]
+    public void SandalConfigAndProfileStore_NormalizesIcsPort50061SingleLocalDevServerAndTlsEnvVars()
+    {
+        Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint(null));
+        Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint("127.0.0.1:8444"));
+        Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint("gateway:50061"));
+        Assert.Equal("127.0.0.1:50061", SandalConfigLoader.NormalizeIcsEndpoint("0.0.0.0:50061"));
+
+        string tempDir = Path.Combine(Path.GetTempPath(), $"sandal-28c-cfg-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var store = new ProfileStoreService(Path.Combine(tempDir, "LauncherProfiles.json"));
+            var defaults = store.CreateDefaultProfiles();
+            Assert.Single(defaults);
+            Assert.Equal("local-dev", defaults[0].Id);
+            Assert.Equal("127.0.0.1:50061", defaults[0].GatewayIcsAddr);
+
+            string legacyJson = "{\"schemaVersion\":1,\"activeProfileId\":\"local-dev\",\"profiles\":[{\"id\":\"local-dev\",\"displayName\":\"Local\",\"gatewayHttpAddr\":\"127.0.0.1:8080\",\"gatewayIcsAddr\":\"127.0.0.1:8444\",\"gatewayGrpcAddr\":\"127.0.0.1:50050\",\"adminHttpAddr\":\"127.0.0.1:8090\"},{\"id\":\"docker-single\",\"displayName\":\"Docker\",\"gatewayHttpAddr\":\"127.0.0.1:8080\",\"gatewayIcsAddr\":\"gateway:50061\",\"gatewayGrpcAddr\":\"127.0.0.1:50050\",\"adminHttpAddr\":\"127.0.0.1:8090\"}]}";
+            File.WriteAllText(store.StoreFilePath, legacyJson, Encoding.UTF8);
+            var servers = store.LoadServerProfiles();
+            Assert.Single(servers);
+            Assert.Equal("local-dev", servers[0].Id);
+            Assert.Equal("127.0.0.1:50061", servers[0].GatewayIcsAddr);
+
+            string caFile = Path.Combine(tempDir, "ca.crt");
+            File.WriteAllText(caFile, "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----");
+            var psi = new System.Diagnostics.ProcessStartInfo("dotnet");
+            ClientLaunchService.ConfigureTlsEnvironment(psi, caFile);
+            Assert.Equal(Path.GetFullPath(caFile), psi.Environment["SSL_CERT_FILE"]);
+            Assert.Equal(Path.GetFullPath(caFile), psi.Environment["GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"]);
+        }
+        finally { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); }
+    }
+
+    [Fact]
+    public async Task SteamDiscoveryAndPlayGate_ParsesVdfDiscoversMultiInstallsAndBlocksLaunchOnAuthFailure()
+    {
+        string vdf = "\"libraryfolders\"\n{\n  \"0\" { \"path\" \"C:\\\\Program Files (x86)\\\\Steam\" }\n  \"1\" { \"path\" \"D:\\\\SteamLibrary\" }\n}";
+        var libs = ClientPathDetector.ParseLibraryFoldersVdf(vdf);
+        Assert.Equal(2, libs.Count);
+        Assert.Equal(@"C:\Program Files (x86)\Steam", libs[0]);
+        Assert.Equal(@"D:\SteamLibrary", libs[1]);
+
+        string tempDir = Path.Combine(Path.GetTempPath(), $"sandal-28c-steam-{Guid.NewGuid():N}");
+        try
+        {
+            string retailBin = Path.Combine(tempDir, "Ashes of Creation", "Game", "AOC", "Binaries", "Win64");
+            string playtestBin = Path.Combine(tempDir, "Ashes of Creation Playtest", "Game", "AOC", "Binaries", "Win64");
+            Directory.CreateDirectory(retailBin);
+            Directory.CreateDirectory(playtestBin);
+            await File.WriteAllBytesAsync(Path.Combine(retailBin, ClientLaunchService.ShippingExeName), "MZ"u8.ToArray());
+            await File.WriteAllBytesAsync(Path.Combine(playtestBin, ClientLaunchService.ShippingExeName), "MZ"u8.ToArray());
+
+            var installs = ClientPathDetector.DiscoverSteamInstallations([tempDir]);
+            Assert.Equal(2, installs.Count);
+            Assert.Contains(installs, i => i.Label == "Ashes of Creation (Retail)");
+            Assert.Contains(installs, i => i.Label == "Ashes of Creation Playtest");
+
+            using var failHttp = new HttpClient(new UnauthorizedGatewayHandler()) { BaseAddress = new Uri("http://127.0.0.1:8080") };
+            var vm = new MainWindowViewModel(
+                SandalConfigLoader.LoadLauncher() with { ClientPakDir = string.Empty },
+                new MultiProtocolGatewayClient(failHttp, new Uri("http://127.0.0.1:8080")),
+                new InMemoryCredentialVault(),
+                new ProfileStoreService(Path.Combine(tempDir, "LauncherProfiles.json")));
+
+            vm.InitializeClientDiscovery([installs[0]]);
+            Assert.False(vm.IsClientPathModalOpen);
+            Assert.Equal(installs[0].PakDir, vm.EditClientPakDir);
+
+            vm.InitializeClientDiscovery(installs);
+            Assert.Equal(2, vm.DiscoveredClientInstalls.Count);
+
+            vm.AuthUsername = "bad_user";
+            vm.AuthPassword = "wrong_password";
+            await vm.PlayGameAsync();
+            Assert.False(vm.IsAuthenticated);
+            Assert.False(vm.IsAshesProcessRunning);
+            Assert.Equal("Login error: invalid username or password.", vm.StatusBannerMessage);
+        }
+        finally { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); }
+    }
+
+    private static async Task<byte[]> SendTetherHeaderOnlyAsync(
+        UdpClient udp, IPEndPoint ep, LocalTetherListener tether, byte ver, MsgId msgId, uint sessionId, long seq, long nextRecv)
+    {
+        byte[] pkt = new byte[LocalTetherListener.HeaderSize];
+        var hdr = new ArqHeader(LocalTetherListener.BuildMagic(ver, msgId), sessionId, LocalTetherListener.DefaultWindowSize, 0, 0, seq, nextRecv, 1000L);
+        LocalTetherListener.WriteHeader(pkt, in hdr);
+        Task<bool> serve = tether.ProcessNextDatagramAsync();
+        await udp.SendAsync(pkt, ep);
+        UdpReceiveResult res = await udp.ReceiveAsync();
+        Assert.True(await serve);
+        return res.Buffer;
+    }
+
+    private static async Task<System.Collections.Generic.Dictionary<string, string>> SendTetherDataAndReadReplyAsync(
+        UdpClient udp, IPEndPoint ep, LocalTetherListener tether, uint sessionId, long seq, string messageTypeName)
+    {
+        byte[] payload = LocalTetherListener.EncodeWireMessage(
+            new System.Collections.Generic.Dictionary<string, string> { ["message_type_name"] = messageTypeName },
+            "echo-payload");
+        byte[] pkt = new byte[LocalTetherListener.HeaderSize + payload.Length];
+        var hdr = new ArqHeader(LocalTetherListener.BuildMagic(2, MsgId.Data), sessionId, LocalTetherListener.DefaultWindowSize, 0, (ushort)payload.Length, seq, 0L, 1000L);
+        LocalTetherListener.WriteHeader(pkt, in hdr);
+        payload.CopyTo(pkt.AsSpan(LocalTetherListener.HeaderSize));
+        Task<bool> serve = tether.ProcessNextDatagramAsync();
+        await udp.SendAsync(pkt, ep);
+        UdpReceiveResult ackRes = await udp.ReceiveAsync();
+        UdpReceiveResult dataRes = await udp.ReceiveAsync();
+        Assert.True(await serve);
+        Assert.True(LocalTetherListener.TryParseHeader(ackRes.Buffer, out ArqHeader ackHdr) && ackHdr.MsgId == MsgId.Ack);
+        Assert.True(LocalTetherListener.TryParseHeader(dataRes.Buffer, out ArqHeader dataHdr) && dataHdr.MsgId == MsgId.Data);
+        return LocalTetherListener.DecodeWireMessage(dataRes.Buffer.AsSpan(LocalTetherListener.HeaderSize)).Tags;
+    }
+
+    private sealed class UnauthorizedGatewayHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)
+            {
+                Content = new StringContent("{\"error\":\"invalid credentials\"}", Encoding.UTF8, "application/json")
+            });
+    }
+
     private static async Task<LauncherAutomationStateSnapshot> GetSnapshotAsync(HttpClient client)
     {
         string json = await client.GetStringAsync("/automation/state");

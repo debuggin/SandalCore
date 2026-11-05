@@ -206,7 +206,7 @@ if (-not $needConfigure -and $vcpkgRoot -and (Test-Path $cacheFile) -and
 
 # -- Build target(s) ------------------------------------------------------
 $targets = if ($Target -eq 'all') {
-    @('tether_server','launcher','world')
+    @('launcher','world')
 } else {
     @($Target)
 }

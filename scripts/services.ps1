@@ -21,7 +21,7 @@
                                  the service starts but refuses to create characters, saying why
     scripts\services.ps1 stop    stop those processes, worldd included (drops the gateway's live
                                  client sessions); needs neither Go nor Docker
-    scripts\services.ps1 login   sign in with src\config\dev_login.local.json and save the token for tether_server
+    scripts\services.ps1 login   sign in with src\config\dev_login.local.json and save the session token
     scripts\services.ps1 down    stop the containers (data volume kept)
   contentc, the content.db builder (plan C1), is not built or started here: see src\server\services\README.md.
   run creates dist\services\service.token once: the internal services' shared secret, readable
@@ -216,8 +216,8 @@ try {
             }
         }
         'login' {
-            # Signs in as launcher.exe does and saves the token where
-            # tether_server reads it, for launches that skip the launcher window.
+            # Signs in as SandalLauncher does and saves the session token
+            # for launches that skip the launcher window.
             $creds = Join-Path $root 'src' 'config' 'dev_login.local.json'
             if (-not (Test-Path $creds)) {
                 throw "missing ${creds}: create it as {""username"": ""..."", ""password"": ""...""} for an account registered through the launcher"
@@ -242,7 +242,7 @@ try {
             New-Item -ItemType Directory -Force (Split-Path $loginFile) | Out-Null
             [System.IO.File]::WriteAllText($loginFile, $resp.access_token)
             Set-OwnerOnly $loginFile
-            Write-Host "signed in as $($resp.username); token saved for tether_server"
+            Write-Host "signed in as $($resp.username); token saved"
         }
         'build' { Build }
         'run' {

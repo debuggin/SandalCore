@@ -94,9 +94,8 @@ function Assert-LaunchDistBinaries {
     }
     $missing = [System.Collections.Generic.List[string]]::new()
     $specs = @(
-        @{ Primary = 'tether';   Fallback = 'tether_server' },
-        @{ Primary = 'launcher'; Fallback = '' },
-        @{ Primary = 'world';    Fallback = 'worldd' }
+        @{ Primary = 'SandalLauncher'; Fallback = 'launcher' },
+        @{ Primary = 'world';          Fallback = 'worldd' }
     )
     foreach ($spec in $specs) {
         $binPath = Resolve-DistBinaryPath -DistDirPath $DistDirPath -PrimaryName $spec.Primary -FallbackName $spec.Fallback -ExeExtension $ExeExtension
@@ -194,7 +193,6 @@ function Wait-LaunchEndpoint {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $names = switch ($ServiceName) {
         'world'  { @('world', 'worldd') }
-        'tether' { @('tether', 'tether_server') }
         default  { @($ServiceName) }
     }
     while ((Get-Date) -lt $deadline) {
@@ -220,11 +218,11 @@ function Wait-LaunchEndpoint {
 function Stop-StaleDistProcesses {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param([Parameter(Mandatory)][string]$DistDirPath)
-    if (-not $PSCmdlet.ShouldProcess($DistDirPath, 'Stop stale tether and launcher processes')) {
+    if (-not $PSCmdlet.ShouldProcess($DistDirPath, 'Stop stale launcher processes')) {
         return
     }
     $resolvedDist = (Resolve-Path -LiteralPath $DistDirPath).Path
-    Get-Process -Name @('tether', 'tether_server', 'launcher') -ErrorAction SilentlyContinue | Where-Object {
+    Get-Process -Name @('SandalLauncher', 'launcher') -ErrorAction SilentlyContinue | Where-Object {
         $_.Path -and $_.Path.StartsWith($resolvedDist, [System.StringComparison]::OrdinalIgnoreCase)
     } | Stop-Process -Force
 }
@@ -265,21 +263,10 @@ function Start-LaunchClientCompanions {
         [Parameter(Mandatory)][string]$DistDirPath,
         [Parameter(Mandatory)][AllowEmptyString()][string]$ExeExtension
     )
-    if (-not $PSCmdlet.ShouldProcess($DistDirPath, 'Start tether, launcher, and auto_logger')) {
+    if (-not $PSCmdlet.ShouldProcess($DistDirPath, 'Start SandalLauncher and auto_logger')) {
         return
     }
-    $tetherExe = Resolve-DistBinaryPath -DistDirPath $DistDirPath -PrimaryName 'tether' -FallbackName 'tether_server' -ExeExtension $ExeExtension
-    $tetherSvcName = [System.IO.Path]::GetFileNameWithoutExtension($tetherExe)
-    $null = Start-Process -FilePath $tetherExe -ArgumentList @('--login-token-file') -WorkingDirectory $DistDirPath
-    $null = Wait-LaunchEndpoint -Protocol 'UDP' -Port 19021 -ServiceName $tetherSvcName -TimeoutSeconds 15 -RootDirPath $RootDirPath
-    $tokenFile = Join-Path $DistDirPath 'data/ics_auth_token.txt'
-    if (Test-Path -LiteralPath $tokenFile -PathType Leaf) {
-        Remove-Item -LiteralPath $tokenFile -Force
-        if (Test-Path -LiteralPath $tokenFile -PathType Leaf) {
-            throw "Could not delete stale login token file: $tokenFile"
-        }
-    }
-    $launcherExe = Join-Path $DistDirPath "launcher$ExeExtension"
+    $launcherExe = Resolve-DistBinaryPath -DistDirPath $DistDirPath -PrimaryName 'SandalLauncher' -FallbackName 'launcher' -ExeExtension $ExeExtension
     $null = Start-Process -FilePath $launcherExe -WorkingDirectory $DistDirPath
     $autoLogger = Join-Path $RootDirPath 'scripts/auto_logger.ps1'
     if (Test-Path -LiteralPath $autoLogger -PathType Leaf) {

@@ -3,8 +3,8 @@
   Checks for the Windows host tools Sandal Core needs to build and run, and installs what is missing.
 
 .DESCRIPTION
-  Checks: winget, Git, .NET 8 SDK (SandalLauncher, aoc-extractor, mapc), WSL2, and Docker (Docker Desktop or standalone Windows Docker CLI + Compose + Buildx connected to WSL2 Docker Engine).
-  All C++ (world, tether) and Go microservices compile inside Linux Docker containers.
+  Checks: winget, Git, .NET 10 SDK (SandalLauncher, aoc-extractor, mapc), WSL2, and Docker (Docker Desktop or standalone Windows Docker CLI + Compose + Buildx connected to WSL2 Docker Engine).
+  All C++ (world) and Go microservices compile inside Linux Docker containers.
 
 .PARAMETER CheckOnly
   Only report what is installed and what is missing; change nothing.
@@ -46,11 +46,19 @@ function Update-SessionPath {
                 [Environment]::GetEnvironmentVariable('Path', 'User')
 }
 
-function Find-DotnetSdk8 {
+function Find-DotnetSdk10 {
+    $candidates = @()
     $dn = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $dn) { return $null }
-    foreach ($s in @(& $dn.Source --list-sdks 2>$null)) {
-        if ($s -match '^(\d+)\.' -and [int]$Matches[1] -eq 8) { return $dn.Source }
+    if ($dn) { $candidates += $dn.Source }
+    $userDotnetDir = Join-Path $HOME '.dotnet'
+    foreach ($binName in @('dotnet.exe', 'dotnet')) {
+        $userExe = Join-Path $userDotnetDir $binName
+        if ((Test-Path -LiteralPath $userExe -PathType Leaf) -and ($userExe -notin $candidates)) { $candidates += $userExe }
+    }
+    foreach ($exe in $candidates) {
+        foreach ($s in @(& $exe --list-sdks 2>$null)) {
+            if ($s -match '^(\d+)\.' -and [int]$Matches[1] -ge 10) { return $exe }
+        }
     }
     return $null
 }
@@ -160,11 +168,11 @@ function Install-MissingDockerComponents {
 $script:winget = Find-Winget
 $dockerCliState = if ($SkipDocker) { [pscustomobject]@{ AllCliReady = [bool](Get-Command docker -ErrorAction SilentlyContinue) } } else { Get-DockerCliState }
 $items = [ordered]@{
-    'winget'     = [bool]$script:winget
-    'Git'        = [bool](Get-Command git -ErrorAction SilentlyContinue)
-    '.NET 8 SDK' = [bool](Find-DotnetSdk8)
-    'WSL2'       = [bool](Test-Wsl2HostReady)
-    'Docker'     = [bool]$dockerCliState.AllCliReady
+    'winget'      = [bool]$script:winget
+    'Git'         = [bool](Get-Command git -ErrorAction SilentlyContinue)
+    '.NET 10 SDK' = [bool](Find-DotnetSdk10)
+    'WSL2'        = [bool](Test-Wsl2HostReady)
+    'Docker'      = [bool]$dockerCliState.AllCliReady
 }
 
 Write-Host ''
@@ -196,8 +204,8 @@ if (-not $script:winget) {
 if (-not $items['Git'] -and (Confirm-Install 'Git')) {
     [void](Install-Winget 'Git.Git' 'Git')
 }
-if (-not $items['.NET 8 SDK'] -and (Confirm-Install '.NET 8 SDK (builds SandalLauncher, aoc-extractor, and mapc)')) {
-    [void](Install-Winget 'Microsoft.DotNet.SDK.8' '.NET 8 SDK')
+if (-not $items['.NET 10 SDK'] -and (Confirm-Install '.NET 10 SDK (builds SandalLauncher, aoc-extractor, and mapc)')) {
+    [void](Install-Winget 'Microsoft.DotNet.SDK.10' '.NET 10 SDK')
 }
 if (-not $SkipDocker -and -not $items['WSL2'] -and (Confirm-Install 'WSL2 Ubuntu environment (wsl.exe --status / Ensure-WslUbuntu)')) {
     if (Get-Command Ensure-WslUbuntu -ErrorAction SilentlyContinue) {

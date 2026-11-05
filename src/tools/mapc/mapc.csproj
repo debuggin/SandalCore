@@ -7,7 +7,7 @@
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -15,7 +15,7 @@
     <AssemblyName>mapc</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
     <Deterministic>true</Deterministic>
-    <NoWarn>$(NoWarn);CS8600;CS8601;CS8602;CS8603;CS8604;CS8618;CS8619;CS8620;CS8625;CS8765;CS8767;CS0108;CS0114;CS0168;CS0169;CS0219;CS0649;CS0414;CS0659;CS0661;CS8981;CS1591;CS0618;SYSLIB0011;CS8632;CS0067;CS8509;CS8524;CS8073;CA2022;IDE0059</NoWarn>
+    <NoWarn>$(NoWarn);CS8600;CS8601;CS8602;CS8603;CS8604;CS8618;CS8619;CS8620;CS8625;CS8765;CS8767;CS0108;CS0114;CS0168;CS0169;CS0219;CS0649;CS0414;CS0659;CS0660;CS0661;CS8981;CS1591;CS0618;SYSLIB0011;SYSLIB0021;CS8631;CS8632;CS0067;CS8509;CS8524;CS8073;CA1857;CA2022;IDE0059</NoWarn>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
@@ -35,6 +35,7 @@
     <PackageReference Include="GenericReader" Version="2.3.0" />
     <PackageReference Include="Infrablack.UE4Config" Version="0.7.2.97" />
     <PackageReference Include="LZMA-SDK" Version="22.1.1" />
+    <PackageReference Include="MessagePack" Version="3.1.12" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="OffiUtils" Version="3.0.0" />
     <PackageReference Include="Oodle.NET" Version="2.2.0" />

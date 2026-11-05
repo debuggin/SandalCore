@@ -47,7 +47,7 @@ function Build-ComposeDownArguments {
 function Stop-SandalHostClientProcesses {
     [CmdletBinding()]
     param([string]$RootDirPath = '')
-    $targetNames = @('SandalLauncher', 'tether', 'tether_server', 'AOCClient-Win64-Shipping')
+    $targetNames = @('SandalLauncher', 'AOCClient-Win64-Shipping')
     $stoppedPids = [System.Collections.Generic.List[int]]::new()
     foreach ($proc in @(Get-Process -Name $targetNames -ErrorAction SilentlyContinue)) {
         try {

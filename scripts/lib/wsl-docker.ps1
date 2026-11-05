@@ -130,6 +130,9 @@ function Get-InstalledWslLinuxDistros {
     return @($clean -split '\r?\n' | ForEach-Object { ($_ -replace '^\*\s*', '').Trim() } | Where-Object { $_ -ne '' -and $_ -notlike 'docker-desktop*' })
 }
 
+$script:CachedRequestedWslDistro = ''
+$script:CachedResolvedWslDistro = ''
+
 function Resolve-WslDockerDistro {
     [CmdletBinding()]
     param(
@@ -138,6 +141,9 @@ function Resolve-WslDockerDistro {
     )
     if (-not $PSBoundParameters.ContainsKey('Distro') -and -not [string]::IsNullOrWhiteSpace($env:SANDAL_WSL_DISTRO)) {
         $Distro = $env:SANDAL_WSL_DISTRO.Trim()
+    }
+    if ($null -eq $Runner -and $script:CachedRequestedWslDistro -eq $Distro -and -not [string]::IsNullOrWhiteSpace($script:CachedResolvedWslDistro)) {
+        return $script:CachedResolvedWslDistro
     }
     $distros = @(Get-InstalledWslLinuxDistros -Runner $Runner)
     if ($distros.Count -eq 0) {
@@ -154,8 +160,9 @@ function Resolve-WslDockerDistro {
         $debMatch = @($distros | Where-Object { $_ -like 'Ubuntu*' -or $_ -like 'Debian*' })
         $resolved = if ($debMatch.Count -gt 0) { [string]$debMatch[0] } else { [string]$distros[0] }
     }
-    if ($env:SANDAL_QUIET -ne '1') {
-        Write-Information "INFO: Using existing WSL2 distribution '$resolved'." -InformationAction Continue
+    if ($null -eq $Runner) {
+        $script:CachedRequestedWslDistro = $Distro
+        $script:CachedResolvedWslDistro = $resolved
     }
     return $resolved
 }

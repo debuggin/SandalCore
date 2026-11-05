@@ -93,38 +93,6 @@ add_subdirectory(tools/navbuild)
 add_subdirectory(server/world)
 add_custom_target(worldd DEPENDS world)
 
-# ── Tether server (standalone UDP ARQ executable) ───────────────────────────
-add_executable(tether
-    server/tether/tether_server_main.cpp
-    server/tether/tether_service.h
-)
-add_custom_target(tether_server DEPENDS tether)
-
-target_include_directories(tether PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/server/tether"
-    "${CMAKE_CURRENT_SOURCE_DIR}/libs/aoccore"
-)
-
-target_link_libraries(tether
-    PRIVATE
-        spdlog::spdlog
-        nlohmann_json::nlohmann_json
-        $<$<PLATFORM_ID:Windows>:ws2_32>
-)
-
-target_compile_features(tether PRIVATE cxx_std_20)
-
-if(MSVC)
-    target_compile_definitions(tether PRIVATE
-        _CRT_SECURE_NO_WARNINGS
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        _WIN32_WINNT=0x0A00
-    )
-endif()
-
-set_target_properties(tether PROPERTIES FOLDER "Servers")
-
 # ── Launcher GUI application ─────────────────────────────────────────────────
 # Self-contained Win32 GUI.  Reads config\paths.json for the game exe path
 # and config\server.json for auth_server_host/auth_server_port/tether_port.

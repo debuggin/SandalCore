@@ -5,11 +5,11 @@
 
   <Application.Resources>
     <ResourceDictionary>
-      <!-- Tier 1 Primitive Histogram-Matched Palette for launcher_background.jpg (WCAG 2.2 AA / APCA Lc >= 75 Verified) -->
+      <!-- Tier 1 Primitive Histogram-Matched Palette for launcher_background_0..2.jpg (WCAG 2.2 AA / APCA Lc >= 75) -->
       <Color x:Key="VerraObsidian100">#FF0B0E17</Color>
-      <Color x:Key="VerraSlate200">#FF101724</Color>
-      <Color x:Key="VerraSlate300">#FF192334</Color>
-      <Color x:Key="VerraBorder400">#FF8C6C42</Color>
+      <Color x:Key="VerraSlate200">#F0121926</Color>
+      <Color x:Key="VerraSlate300">#F21A2436</Color>
+      <Color x:Key="VerraBorder400">#AA8C6C42</Color>
       <Color x:Key="VerraRelicGold500">#FFE8B25A</Color>
       <Color x:Key="VerraChampagneGold400">#FFF6CC7E</Color>
       <Color x:Key="VerraJewelGoldBorder500">#FFE8B25A</Color>
@@ -18,8 +18,8 @@
       <Color x:Key="VerraCautionAmber500">#FFF5C469</Color>
       <Color x:Key="VerraRuinCrimson500">#FFE05258</Color>
       <Color x:Key="VerraAlabaster100">#FFF4F1EA</Color>
-      <Color x:Key="VerraSilver400">#FFB4C0D0</Color>
-      <Color x:Key="VerraMutedAsh400">#FFB4C0D0</Color>
+      <Color x:Key="VerraSilver400">#FFB8C4D4</Color>
+      <Color x:Key="VerraMutedAsh400">#FFB8C4D4</Color>
 
       <!-- Tier 2 Semantic Surface, Filigree, Status & Typography Brushes (UX-03, UX-05) -->
       <SolidColorBrush x:Key="SurfacePrimaryBrush" Color="{StaticResource VerraObsidian100}" />
@@ -36,46 +36,42 @@
       <SolidColorBrush x:Key="TextPrimaryBrush" Color="{StaticResource VerraAlabaster100}" />
       <SolidColorBrush x:Key="TextMutedBrush" Color="{StaticResource VerraMutedAsh400}" />
 
-      <!-- Tier 3 Left-50% Control Deck, Card Surfaces & World-Tree Bioluminescent Teal / Citadel Gold Gradients -->
+      <!-- Tier 3 Semi-Transparent Main Card (~60% Opacity) + 92%–95% Opacity Controls on Top -->
       <LinearGradientBrush x:Key="AoCFiligreeDeckBrush" StartPoint="0%,0%" EndPoint="100%,100%">
-        <GradientStop Offset="0.0" Color="#E00B0E17" />
-        <GradientStop Offset="0.7" Color="#CC101724" />
-        <GradientStop Offset="1.0" Color="#B8131B28" />
+        <GradientStop Offset="0.0" Color="#960B0E17" />
+        <GradientStop Offset="1.0" Color="#A3101724" />
       </LinearGradientBrush>
 
-      <SolidColorBrush x:Key="AoCInputFillBrush" Color="#D8131B28" />
-      <SolidColorBrush x:Key="AoCSettingsCardBrush" Color="#E8101724" />
-      <SolidColorBrush x:Key="AoCBottomBarBrush" Color="#DC0B0E17" />
+      <SolidColorBrush x:Key="AoCCardBorderBrush" Color="#778C6C42" />
+      <SolidColorBrush x:Key="AoCInputFillBrush" Color="#EB121926" />
+      <SolidColorBrush x:Key="AoCInputFocusBrush" Color="#F2182232" />
+      <SolidColorBrush x:Key="AoCSecondaryBtnBrush" Color="#EB161E2E" />
+      <SolidColorBrush x:Key="AoCSecondaryBtnHoverBrush" Color="#F21F2A40" />
+      <SolidColorBrush x:Key="AoCModalBackdropBrush" Color="#B006080E" />
+      <SolidColorBrush x:Key="AoCModalCardBrush" Color="#F20E1420" />
       <SolidColorBrush x:Key="AoCHeadlineTextBrush" Color="#FFF4F1EA" />
 
       <LinearGradientBrush x:Key="AoCGoldDividerBrush" StartPoint="0%,50%" EndPoint="100%,50%">
         <GradientStop Offset="0.0" Color="#008C6C42" />
-        <GradientStop Offset="0.5" Color="#CCE8B25A" />
+        <GradientStop Offset="0.5" Color="#AAE8B25A" />
         <GradientStop Offset="1.0" Color="#008C6C42" />
       </LinearGradientBrush>
 
       <LinearGradientBrush x:Key="AoCJewelTealBrush" StartPoint="0%,0%" EndPoint="100%,100%">
-        <GradientStop Offset="0.0" Color="#FF0B4252" />
-        <GradientStop Offset="0.5" Color="#FF126E82" />
-        <GradientStop Offset="1.0" Color="#FF1896A8" />
+        <GradientStop Offset="0.0" Color="#EE0B4252" />
+        <GradientStop Offset="0.5" Color="#EE126E82" />
+        <GradientStop Offset="1.0" Color="#EE1896A8" />
       </LinearGradientBrush>
 
       <LinearGradientBrush x:Key="AoCJewelTealHoverBrush" StartPoint="0%,0%" EndPoint="100%,100%">
-        <GradientStop Offset="0.0" Color="#FF10586B" />
-        <GradientStop Offset="0.5" Color="#FF1889A0" />
-        <GradientStop Offset="1.0" Color="#FF22B8CA" />
+        <GradientStop Offset="0.0" Color="#F210586B" />
+        <GradientStop Offset="0.5" Color="#F21889A0" />
+        <GradientStop Offset="1.0" Color="#F222B8CA" />
       </LinearGradientBrush>
 
       <LinearGradientBrush x:Key="AoCDangerCrimsonBrush" StartPoint="0%,0%" EndPoint="100%,100%">
-        <GradientStop Offset="0.0" Color="#FF5A1D26" />
-        <GradientStop Offset="1.0" Color="#FF942E3B" />
-      </LinearGradientBrush>
-
-      <LinearGradientBrush x:Key="AoCLeftVignetteBrush" StartPoint="0%,50%" EndPoint="100%,50%">
-        <GradientStop Offset="0.0" Color="#CC0B0E17" />
-        <GradientStop Offset="0.46" Color="#880C101B" />
-        <GradientStop Offset="0.56" Color="#000B0E17" />
-        <GradientStop Offset="1.0" Color="#000B0E17" />
+        <GradientStop Offset="0.0" Color="#EB5A1D26" />
+        <GradientStop Offset="1.0" Color="#EB942E3B" />
       </LinearGradientBrush>
 
       <RadialGradientBrush x:Key="AoCHeroFallbackBrush" Center="70%,45%" GradientOrigin="70%,45%" RadiusX="85%" RadiusY="85%">
@@ -94,8 +90,10 @@
       <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource AccentJewelBorderBrush}" />
       <Setter Property="BorderThickness" Value="1.5" />
-      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="CornerRadius" Value="5" />
       <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
     <Style Selector="Button.aoc-jewel-cta:pointerover /template/ ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource AoCJewelTealHoverBrush}" />
@@ -107,21 +105,25 @@
       <Setter Property="Background" Value="{DynamicResource AoCDangerCrimsonBrush}" />
       <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource StatusOfflineBrush}" />
-      <Setter Property="BorderThickness" Value="1.5" />
-      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="5" />
       <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
 
     <Style Selector="Button.aoc-filigree-btn">
-      <Setter Property="Background" Value="{DynamicResource AoCInputFillBrush}" />
-      <Setter Property="Foreground" Value="{DynamicResource AccentGoldBrush}" />
+      <Setter Property="Background" Value="{DynamicResource AoCSecondaryBtnBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource AccentChampagneGoldBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource BorderSubtleBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="CornerRadius" Value="5" />
       <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
     <Style Selector="Button.aoc-filigree-btn:pointerover /template/ ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource SurfaceOverlayBrush}" />
+      <Setter Property="Background" Value="{DynamicResource AoCSecondaryBtnHoverBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource AccentChampagneGoldBrush}" />
       <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
     </Style>
@@ -131,8 +133,16 @@
       <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource BorderSubtleBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="4" />
-      <Setter Property="Padding" Value="10,7" />
+      <Setter Property="CornerRadius" Value="5" />
+      <Setter Property="Padding" Value="10,8" />
+    </Style>
+
+    <Style Selector="ComboBox">
+      <Setter Property="Background" Value="{DynamicResource AoCInputFillBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource BorderSubtleBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="5" />
     </Style>
   </Application.Styles>
 </Application>

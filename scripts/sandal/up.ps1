@@ -93,9 +93,13 @@ function Write-UpStep {
 
 $opts = Resolve-UpOptions -BaseProfile $Profile -BaseDetach ([bool]$Detach) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
 $quiet = [bool]$opts.Json
+$fromRun = ($env:SANDAL_FROM_RUN -eq '1')
 if ($quiet) { $env:SANDAL_QUIET = '1' }
-Write-UpStep -Message '[Step 1/3] Staging deploy/ manifests and environment variables...' -Quiet $quiet
-$deploySync = Sync-SandalDeployStage -RepoRoot $rootPath
+$deploySync = $null
+if (-not $fromRun) {
+    Write-UpStep -Message '[Step 1/3] Staging deploy/ manifests and environment variables...' -Quiet $quiet
+    $deploySync = Sync-SandalDeployStage -RepoRoot $rootPath
+}
 $composeFile = Join-Path $rootPath 'deploy\compose.yml'
 $envFile = Join-Path $rootPath 'deploy\.env'
 $composeArgs = Build-ComposeUpArguments -ComposeFile $composeFile -EnvFile $envFile -ProfileName $opts.Profile -IsDetach $opts.Detach
@@ -103,12 +107,14 @@ $stageChecks = @(Get-UpStageReadiness -RootPath $rootPath)
 $allUpToDate = (@($stageChecks | Where-Object { -not $_.up_to_date }).Count -eq 0)
 
 if (-not $opts.DryRun) {
-    Write-UpStep -Message '[Step 2/3] Verifying WSL2 & Docker daemon readiness...' -Quiet $quiet
-    $null = Ensure-SandalDockerDaemon
+    if (-not $fromRun) {
+        Write-UpStep -Message '[Step 2/3] Verifying WSL2 & Docker daemon readiness...' -Quiet $quiet
+        $null = Ensure-SandalDockerDaemon
+        Write-UpStep -Message "[Step 3/3] Starting Docker Compose containers (profile=$($opts.Profile), detach=$($opts.Detach))..." -Quiet $quiet
+    }
     if (Get-Command Set-SandalWslComposeMountEnv -ErrorAction SilentlyContinue) {
         Set-SandalWslComposeMountEnv -DeployDir (Join-Path $rootPath 'deploy')
     }
-    Write-UpStep -Message "[Step 3/3] Starting Docker Compose containers (profile=$($opts.Profile), detach=$($opts.Detach))..." -Quiet $quiet
     Push-Location $rootPath
     try {
         & docker @composeArgs
@@ -119,8 +125,8 @@ if (-not $opts.DryRun) {
         Pop-Location
     }
 } else {
-    Write-UpStep -Message '[Step 2/3] (dry-run) Would verify WSL2 & Docker daemon readiness.' -Quiet $quiet
-    Write-UpStep -Message "[Step 3/3] (dry-run) Would run: docker $($composeArgs -join ' ')" -Quiet $quiet
+    Write-UpStep -Message '[Step 2/3] (dry-run) Would verify WSL2 & Docker daemon readiness.' -Quiet ($quiet -or $fromRun)
+    Write-UpStep -Message "[Step 3/3] (dry-run) Would run: docker $($composeArgs -join ' ')" -Quiet ($quiet -or $fromRun)
 }
 
 $payload = [ordered]@{
@@ -132,7 +138,7 @@ $payload = [ordered]@{
     dry_run           = [bool]$opts.DryRun
     no_color          = $useNoColor
     env_path          = $envFile
-    env_initialized   = ($null -ne $deploySync)
+    env_initialized   = ($null -ne $deploySync) -or (Test-Path -LiteralPath $envFile -PathType Leaf)
     compose_file      = $composeFile
     docker_args       = $composeArgs
     stages_up_to_date = $allUpToDate
@@ -141,6 +147,6 @@ $payload = [ordered]@{
 
 if ($opts.Json) {
     Write-Output ($payload | ConvertTo-Json -Depth 6)
-} else {
+} elseif (-not $fromRun) {
     Write-Output ("SandalCore 'up' (profile={0}, detach={1}, dry_run={2}): docker {3}" -f $opts.Profile, $opts.Detach, $opts.DryRun, ($composeArgs -join ' '))
 }

@@ -160,6 +160,39 @@ function Test-ExistingCertsValid {
     }
 }
 
+function Install-SandalRootCaToCurrentUserStore {
+    param([string]$CaCertPath)
+    if (-not $IsWindows -or -not (Test-Path -LiteralPath $CaCertPath -PathType Leaf)) {
+        return $false
+    }
+    $cert = $null
+    $roStore = $null
+    try {
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($CaCertPath)
+        $roStore = [System.Security.Cryptography.X509Certificates.X509Store]::new('Root', 'CurrentUser')
+        $roStore.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+        $found = $roStore.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint, $cert.Thumbprint, $false)
+        if ($found.Count -gt 0) {
+            return $true
+        }
+        $roStore.Close()
+        if ($env:CI -eq 'true' -or $env:SANDAL_QUIET -eq '1') {
+            return $false
+        }
+        $proc = Start-Process -FilePath 'certutil.exe' -ArgumentList @('-user', '-addstore', '-f', 'Root', $CaCertPath) -WindowStyle Hidden -PassThru -ErrorAction Stop
+        if (-not $proc.WaitForExit(1500)) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+        return ($proc.ExitCode -eq 0)
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $roStore) { $roStore.Close(); $roStore.Dispose() }
+        if ($null -ne $cert) { $cert.Dispose() }
+    }
+}
+
 $inheritedJson = [bool](Get-Variable -Name AsJson -ValueOnly -ErrorAction SilentlyContinue)
 $inheritedDryRun = [bool](Get-Variable -Name IsDryRun -ValueOnly -ErrorAction SilentlyContinue)
 $inheritedNoColor = [bool](Get-Variable -Name UseNoColor -ValueOnly -ErrorAction SilentlyContinue)
@@ -186,6 +219,7 @@ if (-not $opts.DryRun) {
         $action = 'generated'
         $artifacts = @(Invoke-DotNetPkiGeneration -TargetDir $targetDir)
     }
+    $null = Install-SandalRootCaToCurrentUserStore -CaCertPath (Join-Path $targetDir 'ca.crt')
 }
 
 $payload = [ordered]@{

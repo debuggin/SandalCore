@@ -200,9 +200,7 @@ function Confirm-WslConfig {
     $hasStaleWsl2Loopback = $state.Sections.ContainsKey('wsl2') -and $state.Sections['wsl2'].ContainsKey('hostAddressLoopback')
     $pending = @($specs | Where-Object { -not (Test-WslSectionKeyExact -State $state -Section $_.Section -Key $_.Key -ExpectedValue $_.Value) })
     $changed = (-not $state.Exists) -or ($pending.Count -gt 0) -or $hasStaleWsl2Loopback
-    if (-not $changed) {
-        Write-Information "INFO: WSL2 config ($ConfigPath) already has [general] instanceIdleTimeout=$instVal, [wsl2] networkingMode=$netVal, vmIdleTimeout=$idleVal, and [experimental] hostAddressLoopback=$loopVal; keeping existing file unchanged." -InformationAction Continue
-    } elseif ($PSCmdlet.ShouldProcess($ConfigPath, 'Merge [general], [wsl2], and [experimental] configuration')) {
+    if ($changed -and $PSCmdlet.ShouldProcess($ConfigPath, 'Merge [general], [wsl2], and [experimental] configuration')) {
         $lines = $state.Lines
         if ($hasStaleWsl2Loopback) {
             Write-Information "INFO: Removing deprecated [wsl2] hostAddressLoopback from $ConfigPath (migrated to [experimental])" -InformationAction Continue

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -13,19 +14,27 @@ using SandalLauncher.Security;
 
 namespace SandalLauncher.Services;
 
+public sealed record DiscoveredClientInstall(
+    string Label,
+    string InstallDir,
+    string PakDir,
+    string ExecutablePath)
+{
+    public string DisplayLabel => $"{Label}  —  {InstallDir}";
+}
+
 public sealed record SavedAccountRecord(
     string Username,
     string Password,
     bool IsTemporary,
     string ServerUrl)
 {
-    public string DisplayLabel => IsTemporary
-        ? $"{Username}  [Temp · {ServerUrl}]"
-        : $"{Username}  [{ServerUrl}]";
+    public string DisplayLabel => $"{Username}  ({ServerUrl})";
 }
 
 public sealed class ProfileStoreService
 {
+    private readonly ConcurrentDictionary<string, LauncherProfile> _ephemeralTempProfiles = new(StringComparer.OrdinalIgnoreCase);
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         WriteIndented = true,
@@ -70,19 +79,7 @@ public sealed class ProfileStoreService
         LauncherConfig cfg = _configProvider();
         return
         [
-            LauncherProfile.FromLauncherConfig(cfg, "local-dev", "Local Dev (Verra Sandbox)"),
-            new LauncherProfile
-            {
-                Id = "docker-single",
-                DisplayName = "Docker Single-Node Realm",
-                GatewayHttpAddr = "127.0.0.1:8080",
-                GatewayIcsAddr = "127.0.0.1:8444",
-                GatewayGrpcAddr = "127.0.0.1:50050",
-                AdminHttpAddr = "127.0.0.1:8090",
-                ClientPakDir = cfg.ClientPakDir,
-                UseEos = false,
-                LastUsedUtc = DateTimeOffset.UtcNow
-            }
+            LauncherProfile.FromLauncherConfig(cfg, "local-dev", "Local Dev (Verra Sandbox)")
         ];
     }
 
@@ -120,11 +117,51 @@ public sealed class ProfileStoreService
     public async Task<IReadOnlyList<LauncherProfile>> GetTemporaryProfilesAsync(CancellationToken ct = default)
     {
         IReadOnlyList<LauncherProfile> profiles = await LoadProfilesAsync(ct).ConfigureAwait(false);
-        return profiles.Where(p => p.IsTemporaryAccount).ToArray();
+        return profiles.Where(p => p.IsTemporaryAccount)
+            .Concat(_ephemeralTempProfiles.Values)
+            .GroupBy(p => p.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.Last())
+            .ToArray();
+    }
+
+    public static bool IsServerEnvironmentProfile(LauncherProfile p) =>
+        p is not null &&
+        !p.IsTemporaryAccount &&
+        !string.Equals(p.Id, "docker-single", StringComparison.OrdinalIgnoreCase) &&
+        !p.Id.StartsWith("temp-", StringComparison.OrdinalIgnoreCase) &&
+        !p.Id.StartsWith("acct-", StringComparison.OrdinalIgnoreCase) &&
+        string.IsNullOrWhiteSpace(p.AccountUsername);
+
+    public IReadOnlyList<LauncherProfile> LoadServerProfiles()
+    {
+        LauncherProfile[] servers = LoadProfiles().Where(IsServerEnvironmentProfile).ToArray();
+        return servers.Length > 0 ? servers : CreateDefaultProfiles();
     }
 
     public static string GetSavedAccountVaultKey(string username) =>
         $"saved-acct-{(username ?? string.Empty).Trim().ToLowerInvariant()}";
+
+    public void TrackEphemeralSessionProfile(string username, LauncherConfig config)
+    {
+        if (string.IsNullOrWhiteSpace(username)) return;
+        string cleanUser = username.Trim();
+        string profileId = $"temp-{cleanUser}";
+        LauncherProfile entry = LauncherProfile.FromLauncherConfig(config, profileId, $"Temp ({cleanUser})") with
+        {
+            AccountUsername = cleanUser,
+            IsTemporaryAccount = true,
+            CreatedAtUtc = DateTimeOffset.UtcNow
+        };
+        _ephemeralTempProfiles[profileId] = entry;
+    }
+
+    public void UntrackEphemeralSessionProfile(string username)
+    {
+        if (string.IsNullOrWhiteSpace(username)) return;
+        string cleanUser = username.Trim();
+        _ = _ephemeralTempProfiles.TryRemove($"temp-{cleanUser}", out _);
+        _ = _ephemeralTempProfiles.TryRemove(cleanUser, out _);
+    }
 
     public async Task SaveAccountCredentialsAsync(
         ICredentialVault vault,
@@ -138,14 +175,18 @@ public sealed class ProfileStoreService
         ArgumentNullException.ThrowIfNull(config);
         if (string.IsNullOrWhiteSpace(username)) return;
         string cleanUser = username.Trim();
+        if (isTemporary)
+        {
+            TrackEphemeralSessionProfile(cleanUser, config);
+            return;
+        }
         if (!string.IsNullOrEmpty(password))
             _ = await vault.StoreTokenAsync(GetSavedAccountVaultKey(cleanUser), password, ct).ConfigureAwait(false);
-        string profileId = isTemporary ? $"temp-{cleanUser}" : $"acct-{cleanUser}";
-        string display = isTemporary ? $"Temp ({cleanUser})" : $"Account ({cleanUser})";
-        LauncherProfile entry = LauncherProfile.FromLauncherConfig(config, profileId, display) with
+        string profileId = $"acct-{cleanUser}";
+        LauncherProfile entry = LauncherProfile.FromLauncherConfig(config, profileId, $"Account ({cleanUser})") with
         {
             AccountUsername = cleanUser,
-            IsTemporaryAccount = isTemporary,
+            IsTemporaryAccount = false,
             CreatedAtUtc = DateTimeOffset.UtcNow
         };
         await UpsertProfileAsync(entry, ct).ConfigureAwait(false);
@@ -160,15 +201,12 @@ public sealed class ProfileStoreService
         var list = new List<SavedAccountRecord>();
         foreach (LauncherProfile p in profiles)
         {
-            if (string.IsNullOrWhiteSpace(p.AccountUsername)) continue;
+            if (p.IsTemporaryAccount || p.Id.StartsWith("temp-", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (string.IsNullOrWhiteSpace(p.AccountUsername))
+                continue;
             string? secret = await vault.RetrieveTokenAsync(GetSavedAccountVaultKey(p.AccountUsername), ct).ConfigureAwait(false);
-            if (string.IsNullOrEmpty(secret) && p.IsTemporaryAccount)
-            {
-                string? rawTemp = await vault.RetrieveTokenAsync($"temp-{p.AccountUsername}", ct).ConfigureAwait(false);
-                if (!string.IsNullOrEmpty(rawTemp) && rawTemp.IndexOf('\n', StringComparison.Ordinal) is int nl and >= 0)
-                    secret = rawTemp[(nl + 1)..];
-            }
-            list.Add(new SavedAccountRecord(p.AccountUsername, secret ?? string.Empty, p.IsTemporaryAccount, p.GatewayHttpAddr));
+            list.Add(new SavedAccountRecord(p.AccountUsername, secret ?? string.Empty, false, p.GatewayHttpAddr));
         }
         return list;
     }
@@ -181,6 +219,7 @@ public sealed class ProfileStoreService
         ArgumentNullException.ThrowIfNull(vault);
         if (string.IsNullOrWhiteSpace(username)) return;
         string cleanUser = username.Trim();
+        UntrackEphemeralSessionProfile(cleanUser);
         _ = await vault.DeleteTokenAsync(GetSavedAccountVaultKey(cleanUser), ct).ConfigureAwait(false);
         _ = await vault.DeleteTokenAsync($"temp-{cleanUser}", ct).ConfigureAwait(false);
         _ = await DeleteProfileAsync($"acct-{cleanUser}", ct).ConfigureAwait(false);
@@ -295,8 +334,17 @@ public sealed class ProfileStoreService
             ? new LauncherProfileCatalog { SchemaVersion = 1, Profiles = JsonSerializer.Deserialize<LauncherProfile[]>(rawJson, SerializerOptions) ?? [] }
             : JsonSerializer.Deserialize<LauncherProfileCatalog>(rawJson, SerializerOptions);
         if (catalog?.Profiles is null) throw new InvalidDataException("LauncherProfiles.json could not be deserialized.");
-        foreach (LauncherProfile profile in catalog.Profiles) ValidateProfile(profile);
-        return catalog;
+        LauncherProfile[] normalized = new LauncherProfile[catalog.Profiles.Length];
+        for (int i = 0; i < catalog.Profiles.Length; i++)
+        {
+            LauncherProfile profile = catalog.Profiles[i] with
+            {
+                GatewayIcsAddr = SandalConfigLoader.NormalizeIcsEndpoint(catalog.Profiles[i].GatewayIcsAddr)
+            };
+            ValidateProfile(profile);
+            normalized[i] = profile;
+        }
+        return catalog with { Profiles = normalized };
     }
 
     public static void ValidateProfile(LauncherProfile profile)

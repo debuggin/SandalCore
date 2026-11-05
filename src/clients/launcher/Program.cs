@@ -205,7 +205,10 @@ namespace SandalLauncher
                 string gwUrl = Program.CliOptions is { GatewayUrl.Length: > 0 } cli
                     ? cli.GatewayUrl
                     : $"http://{cfg.GatewayHttpAddr}";
-                var vm = new MainWindowViewModel(cfg, new MultiProtocolGatewayClient(gwUrl));
+                var vm = new MainWindowViewModel(
+                    cfg,
+                    new MultiProtocolGatewayClient(gwUrl),
+                    CredentialVaultFactory.CreateDefault());
                 desktop.MainWindow = new MainWindow
                 {
                     DataContext = vm
@@ -230,6 +233,8 @@ namespace SandalLauncher.ViewModels
     {
         private LauncherConfig _config;
         private long _lastSeqId = 1024;
+        private LocalTetherListener? _tetherListener;
+        private CancellationTokenSource? _tetherCts;
 
         [ObservableProperty] private string _selectedSection = "Profiles";
         [ObservableProperty] private string _activeSectionTitle = "1. Profiles — Environment & Sandbox Roster";
@@ -281,7 +286,12 @@ namespace SandalLauncher.ViewModels
         [ObservableProperty] private string _lifecyclePhase = "launcher_loaded";
         [ObservableProperty] private LauncherProfile? _selectedProfile;
         [ObservableProperty] private SavedAccountRecord? _selectedSavedAccount;
+        [ObservableProperty] private DiscoveredClientInstall? _selectedDiscoveredInstall;
+        [ObservableProperty] private Avalonia.Media.Imaging.Bitmap? _backgroundImage;
         [ObservableProperty] private bool _isSettingsOpen;
+        [ObservableProperty] private bool _isClientPathModalOpen;
+        [ObservableProperty] private string _clientPathModalTitle = "SELECT GAME CLIENT VERSION";
+        [ObservableProperty] private string _clientPathModalSubtitle = "Multiple Ashes of Creation installations were found in your Steam libraries. Choose which version to launch, or paste a custom path:";
         [ObservableProperty] private string _selectedProfileName = "Local Dev (Verra Sandbox)";
         [ObservableProperty] private string _editGatewayHttpAddr = "127.0.0.1:8080";
         [ObservableProperty] private string _editWorldEndpoint = "127.0.0.1:7777";
@@ -291,16 +301,21 @@ namespace SandalLauncher.ViewModels
         public ObservableCollection<LauncherCharacterSummary> Characters { get; } = [];
         public ObservableCollection<LauncherProfile> Profiles { get; } = [];
         public ObservableCollection<SavedAccountRecord> SavedAccounts { get; } = [];
+        public ObservableCollection<DiscoveredClientInstall> DiscoveredClientInstalls { get; } = [];
         public MultiProtocolGatewayClient GatewayClient { get; }
         public EphemeralCredentialGuard CredentialGuard { get; }
         public ProfileStoreService ProfileStore { get; }
         public bool IsSignedOut => !IsAuthenticated;
         public bool IsSignInMode => !IsRegisterMode;
         public bool HasSavedAccounts => SavedAccounts.Count > 0;
+        public bool HasDiscoveredClientInstalls => DiscoveredClientInstalls.Count > 0;
         public bool IsRealmOnline => !IsErrorState;
         public bool IsGameStopped => !IsAshesProcessRunning;
         public string RealmStatusShortText => IsErrorState ? "○ OFFLINE" : "● ONLINE";
         public string AccountBadgeText => IsTemporaryAccount ? "TEMP PLAYTEST ACCOUNT" : "SAVED VERRA ACCOUNT";
+        public string SignOutButtonLabel => IsTemporaryAccount
+            ? $"Sign Out & Remove Temp ({SignedInUsername})"
+            : $"Sign Out ({SignedInUsername})";
 
         public MainWindowViewModel()
             : this(SandalConfigLoader.LoadLauncher(), null, null, null)
@@ -324,7 +339,12 @@ namespace SandalLauncher.ViewModels
 
         partial void OnIsAuthenticatedChanged(bool value) => OnPropertyChanged(nameof(IsSignedOut));
         partial void OnIsRegisterModeChanged(bool value) => OnPropertyChanged(nameof(IsSignInMode));
-        partial void OnIsTemporaryAccountChanged(bool value) => OnPropertyChanged(nameof(AccountBadgeText));
+        partial void OnSignedInUsernameChanged(string value) => OnPropertyChanged(nameof(SignOutButtonLabel));
+        partial void OnIsTemporaryAccountChanged(bool value)
+        {
+            OnPropertyChanged(nameof(AccountBadgeText));
+            OnPropertyChanged(nameof(SignOutButtonLabel));
+        }
         partial void OnIsAshesProcessRunningChanged(bool value) => OnPropertyChanged(nameof(IsGameStopped));
         partial void OnIsErrorStateChanged(bool value)
         {
@@ -376,41 +396,10 @@ namespace SandalLauncher.ViewModels
             };
         }
 
-        [RelayCommand]
-        private void SelectProfiles()
-        {
-            SelectedSection = "Profiles";
-            ActiveSectionTitle = "1. Profiles — Environment & Sandbox Roster";
-            ActiveSectionSubtitle = "Bind local-dev, docker-single, or prod-mesh environment profiles to the Verra client.";
-            StatusBannerMessage = "Active section: Profiles";
-        }
-
-        [RelayCommand]
-        private void SelectRealmControl()
-        {
-            SelectedSection = "Realm & Server Control";
-            ActiveSectionTitle = "2. Realm & Server Control — Gateway, Tether & World Mesh";
-            ActiveSectionSubtitle = "Inspect live HTTP/ICS/gRPC endpoints and coordinate local realm processes.";
-            StatusBannerMessage = "Active section: Realm & Server Control";
-        }
-
-        [RelayCommand]
-        private void SelectLaunchPresets()
-        {
-            SelectedSection = "Launch Presets";
-            ActiveSectionTitle = "3. Launch Presets — Client Arguments & EOS Bypass";
-            ActiveSectionSubtitle = "Configure deterministic client command-line flags, pak paths, and authentication shims.";
-            StatusBannerMessage = "Active section: Launch Presets";
-        }
-
-        [RelayCommand]
-        private void SelectDiagnostics()
-        {
-            SelectedSection = "Diagnostics";
-            ActiveSectionTitle = "4. Diagnostics — Telemetry Stream & Config Audit";
-            ActiveSectionSubtitle = "Verify monotonic sequence integrity, redact DSN credentials, and inspect endpoint health.";
-            StatusBannerMessage = "Active section: Diagnostics";
-        }
+        [RelayCommand] private void SelectProfiles() => SelectedSection = "Profiles";
+        [RelayCommand] private void SelectRealmControl() => SelectedSection = "Realm & Server Control";
+        [RelayCommand] private void SelectLaunchPresets() => SelectedSection = "Launch Presets";
+        [RelayCommand] private void SelectDiagnostics() => SelectedSection = "Diagnostics";
 
         [RelayCommand] private void SetLoadingState() => ApplyViewState("loading");
         [RelayCommand] private void SetEmptyState() => ApplyViewState("empty");
@@ -457,6 +446,9 @@ namespace SandalLauncher.ViewModels
         [RelayCommand]
         public void CloseLauncher()
         {
+            if (IsAuthenticated && IsTemporaryAccount)
+                Logout();
+            StopInMemoryTether();
             LifecyclePhase = "launcher_closed";
             StatusBannerMessage = "Launcher closed via automation.";
         }
@@ -468,9 +460,54 @@ namespace SandalLauncher.ViewModels
                 IsAshesProcessRunning = true;
                 return;
             }
-            using System.Diagnostics.Process proc = ClientLaunchService.StartGameOrMockProcess(_config, allowMockFallback: true);
+            int tetherPort = EnsureInMemoryTetherRunning();
+            using System.Diagnostics.Process proc = ClientLaunchService.StartGameOrMockProcess(
+                _config,
+                allowMockFallback: true,
+                tetherPort: tetherPort);
             TrackedAshesPid = proc.Id;
             IsAshesProcessRunning = true;
+        }
+
+        private int EnsureInMemoryTetherRunning()
+        {
+            if (_tetherListener is not null)
+            {
+                _tetherListener.ActiveAccessToken = AccessToken;
+                _tetherListener.IcsEndpoint = _config.GatewayIcsAddr;
+                return _tetherListener.Port;
+            }
+            try
+            {
+                try { _tetherListener = new LocalTetherListener(19021); }
+                catch (Exception) { _tetherListener = new LocalTetherListener(0); }
+                _tetherListener.ActiveAccessToken = AccessToken;
+                _tetherListener.IcsEndpoint = _config.GatewayIcsAddr;
+                _tetherCts = new CancellationTokenSource();
+                _ = _tetherListener.RunAsync(_tetherCts.Token);
+                return _tetherListener.Port;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine(ex.Message);
+                return 19021;
+            }
+        }
+
+        private void StopInMemoryTether()
+        {
+            try
+            {
+                _tetherCts?.Cancel();
+                _tetherCts?.Dispose();
+                _tetherCts = null;
+                _tetherListener?.Dispose();
+                _tetherListener = null;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine(ex.Message);
+            }
         }
 
         [RelayCommand]
@@ -483,23 +520,32 @@ namespace SandalLauncher.ViewModels
             if (IsTemporaryAccount)
                 CredentialGuard.SaveTemporaryCredentials($"temp-{session.Username}", session.Username, pass, isTemporaryAccount: true);
             await ApplyAuthenticatedSessionAsync(session, IsTemporaryAccount, ct).ConfigureAwait(false);
-            if (RememberCredentials || IsTemporaryAccount)
-                await TrySaveAccountToStoreAsync(session.Username, pass, IsTemporaryAccount, ct).ConfigureAwait(false);
+            if (RememberCredentials && !IsTemporaryAccount)
+                await TrySaveAccountToStoreAsync(session.Username, pass, isTemp: false, ct).ConfigureAwait(false);
         }
 
         [RelayCommand]
         public async Task RegisterTempAsync(CancellationToken ct = default)
         {
-            string user = string.IsNullOrWhiteSpace(AuthUsername) ? LauncherCliOptions.GenerateTempUsername() : AuthUsername.Trim();
-            string pass = string.IsNullOrEmpty(AuthPassword) ? LauncherCliOptions.GenerateStrongPassword() : AuthPassword;
+            if (IsAuthenticated && IsTemporaryAccount)
+                Logout();
+            bool desktopClick = IsDesktopInteractiveMode();
+            string user = desktopClick || string.IsNullOrWhiteSpace(AuthUsername)
+                ? LauncherCliOptions.GenerateTempUsername()
+                : AuthUsername.Trim();
+            string pass = desktopClick || string.IsNullOrEmpty(AuthPassword)
+                ? LauncherCliOptions.GenerateStrongPassword()
+                : AuthPassword;
             AuthUsername = user;
             AuthPassword = string.Empty;
             IsTemporaryAccount = true;
             AuthSessionResult session = await GatewayClient.RegisterAsync(user, pass, isTemporaryAccount: true, ct).ConfigureAwait(false);
             string tempProfileId = $"temp-{session.Username}";
             CredentialGuard.SaveTemporaryCredentials(tempProfileId, session.Username, pass, isTemporaryAccount: true);
+            ProfileStore.TrackEphemeralSessionProfile(session.Username, _config);
             await ApplyAuthenticatedSessionAsync(session, isTemp: true, ct).ConfigureAwait(false);
-            await TrySaveAccountToStoreAsync(session.Username, pass, isTemp: true, ct).ConfigureAwait(false);
+            if (desktopClick)
+                await EnsureCharacterAndLaunchAsync(ct).ConfigureAwait(false);
         }
 
         [RelayCommand]
@@ -644,20 +690,49 @@ namespace SandalLauncher.ViewModels
         [RelayCommand]
         public void Logout()
         {
-            if (IsTemporaryAccount && !string.IsNullOrWhiteSpace(SignedInUsername))
-                CredentialGuard.PurgeTemporaryCredentials($"temp-{SignedInUsername}");
+            string prevUser = SignedInUsername;
+            string prevToken = AccessToken;
+            bool wasTemp = IsTemporaryAccount;
+            if (wasTemp && !string.IsNullOrWhiteSpace(prevUser))
+            {
+                CredentialGuard.PurgeTemporaryCredentials($"temp-{prevUser}");
+                ProfileStore.UntrackEphemeralSessionProfile(prevUser);
+                if (string.Equals(AuthUsername, prevUser, StringComparison.OrdinalIgnoreCase))
+                    AuthUsername = string.Empty;
+                _ = DeleteTempAccountRemoteAsync(prevToken, prevUser);
+            }
             ClearAuthenticatedSessionState();
             ApplyViewState("populated");
-            StatusBannerMessage = "Signed out of Verra session.";
+            StatusBannerMessage = wasTemp && !string.IsNullOrWhiteSpace(prevUser)
+                ? $"Signed out and removed temporary account '{prevUser}'."
+                : "Signed out of Verra session.";
+        }
+
+        private async Task DeleteTempAccountRemoteAsync(string token, string user)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(token))
+                    _ = await GatewayClient.DeleteAccountAsync(token, user, null, CancellationToken.None).ConfigureAwait(false);
+                await ProfileStore.ForgetSavedAccountAsync(CredentialGuard.Vault, user, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine(ex.Message);
+            }
         }
 
         private async Task ApplyAuthenticatedSessionAsync(AuthSessionResult session, bool isTemp, CancellationToken ct)
         {
-            _ = await ClientLaunchService.WriteIcsAuthTokenFileAsync(session.AccessToken, null, ct).ConfigureAwait(false);
             var loadedChars = await GatewayClient.ListCharactersAsync(session.AccessToken, ct).ConfigureAwait(false);
             await InvokeOnUiIfDesktopAsync(() =>
             {
                 AccessToken = session.AccessToken;
+                if (_tetherListener is not null)
+                {
+                    _tetherListener.ActiveAccessToken = session.AccessToken;
+                    _tetherListener.IcsEndpoint = _config.GatewayIcsAddr;
+                }
                 SignedInUsername = session.Username;
                 IsTemporaryAccount = isTemp || session.IsTemporaryAccount;
                 IsAuthenticated = true;
@@ -695,6 +770,8 @@ namespace SandalLauncher.ViewModels
             WorldEndpoint = string.Empty;
             JoinTicketBadgeText = "No active join ticket";
             AccessToken = string.Empty;
+            if (_tetherListener is not null)
+                _tetherListener.ActiveAccessToken = string.Empty;
             SignedInUsername = string.Empty;
             AuthPassword = string.Empty;
             IsAuthenticated = false;
