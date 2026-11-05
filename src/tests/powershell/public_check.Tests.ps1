@@ -301,4 +301,32 @@ Describe 'Test-SandalRootDirectoryHierarchy' {
             if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
         }
     }
+
+    It 'enforces NoPythonInScripts by rejecting any *.py file inside scripts/' {
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-hierarchy-nopy-' + [guid]::NewGuid().ToString('N'))
+        try {
+            $scriptsDir = Join-Path $tmpRoot 'scripts\sub'
+            $null = New-Item -ItemType Directory -Path $scriptsDir -Force
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'scripts\nav_inputs.ps1') -Value '# ok' -Encoding utf8
+            $cleanFindings = Test-SandalNoPythonInScripts -RootPath $tmpRoot
+            if (@($cleanFindings).Count -ne 0) {
+                throw "Expected 0 NoPythonInScripts findings when scripts/ contains only .ps1, got: $($cleanFindings -join '; ')"
+            }
+
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'scripts\nav_inputs.py') -Value 'print(1)' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $scriptsDir 'helper.py') -Value 'print(2)' -Encoding utf8
+            $pyFindings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRoot
+            $joined = $pyFindings -join "`n"
+            foreach ($expectedPattern in @(
+                'NoPythonInScripts:.*scripts/nav_inputs\.py',
+                'NoPythonInScripts:.*scripts/sub/helper\.py'
+            )) {
+                if ($joined -notmatch $expectedPattern) {
+                    throw "Expected findings to match '$expectedPattern', got: $joined"
+                }
+            }
+        } finally {
+            if (Test-Path -LiteralPath $tmpRoot) { Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
 }

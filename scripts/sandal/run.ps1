@@ -43,12 +43,14 @@ $inheritedJson = [bool](Get-Variable -Name AsJson -ValueOnly -ErrorAction Silent
 $inheritedDryRun = [bool](Get-Variable -Name IsDryRun -ValueOnly -ErrorAction SilentlyContinue)
 $inheritedNoColor = [bool](Get-Variable -Name UseNoColor -ValueOnly -ErrorAction SilentlyContinue)
 
-$rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
+$exeExt = if ($IsWindows) { '.exe' } else { '' }
+$pathSep = [System.IO.Path]::PathSeparator
+$rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path }
 if (-not (Get-Command Sync-SandalDistStage -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $rootPath 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
+    Import-Module (Join-Path $rootPath 'scripts/lib/SandalCore.psd1') -Force -DisableNameChecking
 }
 if (-not (Get-Command Ensure-SandalDockerDaemon -ErrorAction SilentlyContinue)) {
-    Import-Module (Join-Path $rootPath 'scripts\lib\Env.psm1') -Force -DisableNameChecking
+    Import-Module (Join-Path $rootPath 'scripts/lib/Env.psm1') -Force -DisableNameChecking
 }
 
 $opts = Resolve-RunOptions `
@@ -71,38 +73,49 @@ function Out-Host {
 }
 
 if (-not $opts.DryRun) {
-    $null = Ensure-SandalGameData -RepoRoot $rootPath
-    $worlddExe = Join-Path $rootPath 'dist\Release\worldd.exe'
-    if (-not (Test-Path -LiteralPath $worlddExe -PathType Leaf)) {
-        if ($opts.Json) {
-            & (Join-Path $rootPath 'scripts\build.ps1') -Config Release 6>&1 | Out-Host
-        } else {
-            & (Join-Path $rootPath 'scripts\build.ps1') -Config Release
+    $distRelDir = Join-Path $rootPath 'dist/Release'
+    $distSvcDir = Join-Path $rootPath 'dist/services'
+    $prevPath = $env:PATH
+    $env:PATH = "$distRelDir$pathSep$distSvcDir$pathSep$prevPath"
+    try {
+        $null = Ensure-SandalGameData -RepoRoot $rootPath
+        $worlddExe = Join-Path $distRelDir "worldd$exeExt"
+        if (-not (Test-Path -LiteralPath $worlddExe -PathType Leaf)) {
+            $buildScript = Join-Path $rootPath 'scripts/build.ps1'
+            if ($opts.Json) {
+                & $buildScript -Config Release 6>&1 | Out-Host
+            } else {
+                & $buildScript -Config Release
+            }
+            if ($LASTEXITCODE -ne 0) {
+                throw "scripts/build.ps1 failed with exit code $LASTEXITCODE."
+            }
         }
-        if ($LASTEXITCODE -ne 0) {
-            throw "scripts/build.ps1 failed with exit code $LASTEXITCODE."
+        $gatewayExe = Join-Path $distSvcDir "gateway$exeExt"
+        if (-not (Test-Path -LiteralPath $gatewayExe -PathType Leaf)) {
+            $servicesScript = Join-Path $rootPath 'scripts/services.ps1'
+            if ($opts.Json) {
+                & $servicesScript -Action build 6>&1 | Out-Host
+            } else {
+                & $servicesScript -Action build
+            }
+            if ($LASTEXITCODE -ne 0) {
+                throw "scripts/services.ps1 -Action build failed with exit code $LASTEXITCODE."
+            }
         }
+        $null = Sync-SandalDistStage -RepoRoot $rootPath -Config 'Release'
+        $null = Sync-SandalDeployStage -RepoRoot $rootPath
+        $certsDir = Join-Path $rootPath 'dist/certs'
+        $serverCrt = Join-Path $certsDir 'server.crt'
+        $certsScript = Join-Path $rootPath 'scripts/sandal/certs.ps1'
+        if (-not (Test-Path -LiteralPath $serverCrt -PathType Leaf) -and (Test-Path -LiteralPath $certsScript -PathType Leaf)) {
+            $null = & $certsScript -OutputDir $certsDir -RepoRoot $rootPath -Json
+        }
+        $null = Ensure-SandalDockerDaemon
+        $null = & (Join-Path $rootPath 'scripts/sandal/up.ps1') -Profile $opts.Profile -Detach -RepoRoot $rootPath -Json:$opts.Json
+    } finally {
+        $env:PATH = $prevPath
     }
-    $gatewayExe = Join-Path $rootPath 'dist\services\gateway.exe'
-    if (-not (Test-Path -LiteralPath $gatewayExe -PathType Leaf)) {
-        if ($opts.Json) {
-            & (Join-Path $rootPath 'scripts\services.ps1') -Action build 6>&1 | Out-Host
-        } else {
-            & (Join-Path $rootPath 'scripts\services.ps1') -Action build
-        }
-        if ($LASTEXITCODE -ne 0) {
-            throw "scripts/services.ps1 -Action build failed with exit code $LASTEXITCODE."
-        }
-    }
-    $null = Sync-SandalDistStage -RepoRoot $rootPath -Config 'Release'
-    $null = Sync-SandalDeployStage -RepoRoot $rootPath
-    $serverCrt = Join-Path $rootPath 'dist\certs\server.crt'
-    $certsScript = Join-Path $rootPath 'scripts\sandal\certs.ps1'
-    if (-not (Test-Path -LiteralPath $serverCrt -PathType Leaf) -and (Test-Path -LiteralPath $certsScript -PathType Leaf)) {
-        $null = & $certsScript -OutputDir (Join-Path $rootPath 'dist\certs') -RepoRoot $rootPath -Json
-    }
-    $null = Ensure-SandalDockerDaemon
-    $null = & (Join-Path $rootPath 'scripts\sandal\up.ps1') -Profile $opts.Profile -Detach -RepoRoot $rootPath -Json:$opts.Json
 }
 
 $payload = [ordered]@{

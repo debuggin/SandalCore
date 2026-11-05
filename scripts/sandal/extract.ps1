@@ -49,14 +49,61 @@ function Resolve-ExtractOptions {
     }
 }
 
-function Get-ExtractStageMap {
-    param()
+function Get-ExtractToolBinaries {
+    param([string]$RootPath)
+    $exeExt = if ($IsWindows) { '.exe' } else { '' }
     return [ordered]@{
-        'extract-db'    = 'database'
-        'extract-vmap'  = 'navmesh'
-        'navbuild'      = 'navbuild'
-        'extract-tiles' = 'region'
+        contentc      = Join-Path $RootPath "dist/tools/contentc$exeExt"
+        statprog      = Join-Path $RootPath "dist/tools/statprog$exeExt"
+        navbuild      = Join-Path $RootPath "dist/Release/aoc_navbuild$exeExt"
+        itemnames     = Join-Path $RootPath 'src/tools/itemnames'
+        npcabilities  = Join-Path $RootPath 'src/tools/npcabilities'
+        nav_inputs    = Join-Path $RootPath 'scripts/nav_inputs.ps1'
     }
+}
+
+function Get-ExtractStageMap {
+    param([switch]$DataFreeOnly)
+    if ($DataFreeOnly) {
+        return [ordered]@{
+            'extract-db'    = 'database'
+            'extract-vmap'  = 'navmesh'
+            'navbuild'      = 'navbuild'
+            'extract-tiles' = 'region'
+        }
+    }
+    return [ordered]@{
+        'config'        = 'config'
+        'curves'        = 'curves'
+        'names'         = 'names'
+        'extract-db'    = 'database'
+        'extract-tiles' = 'region'
+        'headers'       = 'headers'
+        'fixtures'      = 'fixtures'
+        'navbuild'      = 'navbuild'
+        'roads'         = 'roads'
+        'townfloors'    = 'townfloors'
+        'townlayouts'   = 'townlayouts'
+        'npcabilities'  = 'npcabilities'
+        'extract-vmap'  = 'navmesh'
+    }
+}
+
+function Get-ExtractNavInputSalt {
+    param([string]$RootPath)
+    $navScript = Join-Path $RootPath 'scripts/nav_inputs.ps1'
+    $contentDb = Join-Path $RootPath 'dist/content/content.db'
+    if (-not (Test-Path -LiteralPath $navScript -PathType Leaf) -or -not (Test-Path -LiteralPath $contentDb -PathType Leaf)) {
+        return @{}
+    }
+    $pwshExe = (Get-Process -Id $PID).Path
+    if (-not $pwshExe) { $pwshExe = 'pwsh' }
+    $rows = @(& $pwshExe -NoProfile -File $navScript $contentDb 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $rows.Count -gt 0) {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes(($rows -join "`n"))
+        return @{ city_node = [System.Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant() }
+    }
+    return @{}
 }
 
 function Test-ExtractStageReady {
@@ -74,14 +121,16 @@ function Test-ExtractStageReady {
 }
 
 function Get-ExtractStagePlan {
-    param([string]$RootPath, [bool]$ForceRun)
-    $map = Get-ExtractStageMap
+    param([string]$RootPath, [bool]$ForceRun, [bool]$DataFreeMode = $false)
+    $map = Get-ExtractStageMap -DataFreeOnly:$DataFreeMode
+    $navSalt = if ($DataFreeMode) { @{} } else { Get-ExtractNavInputSalt -RootPath $RootPath }
     $plan = [System.Collections.Generic.List[object]]::new()
     foreach ($entry in $map.GetEnumerator()) {
         $stageName = [string]$entry.Key
         $graphStage = [string]$entry.Value
         $upToDate = Test-ExtractStageReady -StageName $stageName -GraphStage $graphStage -RootPath $RootPath
-        $hash = Compute-SandalStageHash -Stage $graphStage -RepoRoot $RootPath
+        $salt = if ($graphStage -eq 'navmesh') { $navSalt } else { @{} }
+        $hash = Compute-SandalStageHash -Stage $graphStage -RepoRoot $RootPath -Salt $salt
         $plan.Add([pscustomobject]@{
             stage       = $stageName
             graph_stage = $graphStage
@@ -159,7 +208,8 @@ $defaults = @{
 $opts = Resolve-ExtractOptions -Defaults $defaults -RawArgs (@($Arguments) + @($RemainingArgs))
 $targetOutDir = if ($opts.OutputDir) { [System.IO.Path]::GetFullPath($opts.OutputDir) } else { Join-Path $rootPath 'dist\extracted' }
 $modeName = if ($opts.DataFree) { 'verify-standin' } else { 'standard' }
-$stagePlan = @(Get-ExtractStagePlan -RootPath $rootPath -ForceRun $opts.Force)
+$toolBinaries = Get-ExtractToolBinaries -RootPath $rootPath
+$stagePlan = @(Get-ExtractStagePlan -RootPath $rootPath -ForceRun $opts.Force -DataFreeMode $opts.DataFree)
 
 $executedStages = @()
 if (-not $opts.DryRun) {
@@ -183,6 +233,7 @@ $payload = [ordered]@{
     force      = [bool]$opts.Force
     dry_run    = [bool]$opts.DryRun
     no_color   = $useNoColor
+    binaries   = $toolBinaries
     stages     = if ($opts.DryRun) { $stagePlan } else { $executedStages }
 }
 

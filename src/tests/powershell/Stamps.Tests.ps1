@@ -33,6 +33,9 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
         $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
         $script:ManifestPath = Join-Path $script:RepoRoot 'scripts\lib\SandalCore.psd1'
         $script:SandalCliPath = Join-Path $script:RepoRoot 'sandal.ps1'
+        Remove-Module SandalCore, Stamps, Env -Force -ErrorAction SilentlyContinue
+        Import-Module (Join-Path $script:RepoRoot 'scripts\lib\Env.psm1') -Force -DisableNameChecking
+        Import-Module (Join-Path $script:RepoRoot 'scripts\lib\Stamps.psm1') -Force -DisableNameChecking
         Import-Module $script:ManifestPath -Force -DisableNameChecking
 
         function New-TestRepoFixture {
@@ -54,6 +57,10 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
                 'config/seeds/citynode_seed.json'          = '{"nodes":{"lionhold":{"level":3}}}'
                 'libs/aocnav/nav.cpp'                      = 'int nav = 1;'
                 'tools/navbuild/main.cpp'                  = 'int main() { return 0; }'
+                'tools/itemnames/Program.cs'               = 'class ItemNames {}'
+                'tools/npcabilities/Program.cs'            = 'class NpcAbilities {}'
+                'server/services/cmd/statprog/main.go'     = 'package main'
+                'scripts/nav_inputs.ps1'                   = '# nav_inputs'
                 'build/third_party/recastnavigation/recast.cpp' = 'int rc = 1;'
                 'vcpkg.json'                               = '{"name":"sandal"}'
             }
@@ -97,11 +104,14 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
         }
     }
 
-    Context 'Stamps.psm1 11-Stage Topological Order & Upstream Invalidation Propagation' {
-        It 'Returns all 11 stages in valid topological order where every dependency precedes its dependent' {
-            $order = @(Get-SandalStageOrder)
-            $order.Count | Should -Be 11
+    Context 'Stamps.psm1 Stage DAG Topological Order & Upstream Invalidation Propagation' {
+        It 'Returns all stages in valid topological order where every dependency precedes its dependent' {
+            $defaultOrder = @(Get-SandalStageOrder)
+            $defaultOrder.Count | Should -Be 11
+            $order = @(Get-SandalStageOrder -All)
             $graph = Get-SandalStageGraph
+            $order.Count | Should -Be $graph.Count
+            $order.Count | Should -Be 13
             $indexMap = @{}
             for ($i = 0; $i -lt $order.Count; $i++) {
                 $indexMap[$order[$i]] = $i
@@ -113,8 +123,34 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
                     ($depIdx -lt $stageIdx) | Should -BeTrue
                 }
             }
+            foreach ($coreStage in @('config', 'curves', 'names', 'database', 'region', 'headers', 'fixtures', 'navbuild', 'roads', 'townfloors', 'townlayouts', 'npcabilities', 'navmesh')) {
+                ($graph.Contains($coreStage)) | Should -BeTrue
+            }
             ($graph['navbuild'].Inputs -contains 'build/third_party/recastnavigation') | Should -BeTrue
             ($graph['navbuild'].Inputs -contains 'third_party/recastnavigation') | Should -BeFalse
+            ($graph['navmesh'].Inputs -contains 'scripts/nav_inputs.ps1') | Should -BeTrue
+        }
+
+        It 'Integrates platform-independent scripts/nav_inputs.ps1 and covers the full stage graph' {
+            $navInputsPs1 = Join-Path $script:RepoRoot 'scripts/nav_inputs.ps1'
+            $navInputsPy = Join-Path $script:RepoRoot 'scripts/nav_inputs.py'
+            (Test-Path -LiteralPath $navInputsPs1 -PathType Leaf) | Should -BeTrue
+            (Test-Path -LiteralPath $navInputsPy) | Should -BeFalse
+            $extractScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/extract_game_data.ps1') -Raw
+            $extractScript | Should -Not -Match 'nav_inputs\.py'
+            $extractScript | Should -Match 'nav_inputs\.ps1'
+            $tmpRepo = New-TestRepoFixture
+            try {
+                Copy-Item -LiteralPath $navInputsPs1 -Destination (Join-Path $tmpRepo 'scripts/nav_inputs.ps1') -Force
+                $navHash1 = Compute-SandalStageHash -Stage 'navmesh' -RepoRoot $tmpRepo
+                $navHash2 = Compute-SandalStageHash -Stage 'navmesh' -RepoRoot $tmpRepo
+                $navHash1 | Should -Match '^[0-9a-f]{64}$'
+                $navHash1 | Should -Be $navHash2
+            } finally {
+                if (Test-Path -LiteralPath $tmpRepo) {
+                    Remove-Item -LiteralPath $tmpRepo -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
         }
 
         It 'Verifies fetch_cue4parse and schemagen generators target build/third_party and build/gen' {
@@ -129,7 +165,8 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
         It 'Propagates upstream hash invalidation to all transitive downstream stages while preserving independent branches' {
             $tmpRepo = New-TestRepoFixture
             try {
-                $order = @(Get-SandalStageOrder)
+                $order = @(Get-SandalStageOrder -All)
+                $graph = Get-SandalStageGraph
                 $before = @{}
                 foreach ($s in $order) {
                     $before[$s] = Compute-SandalStageHash -Stage $s -RepoRoot $tmpRepo
@@ -144,18 +181,24 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
                     [System.IO.File]::WriteAllText($contentcFile, 'package main // v2', [System.Text.UTF8Encoding]::new($false))
                 }
 
-                # Root stages 'config', 'curves', 'townfloors' do NOT depend on 'database'
-                foreach ($unchanged in @('config', 'curves', 'townfloors')) {
-                    $afterHash = Compute-SandalStageHash -Stage $unchanged -RepoRoot $tmpRepo
-                    $afterHash | Should -Be $before[$unchanged]
-                    (Test-SandalStageUpToDate -Stage $unchanged -RepoRoot $tmpRepo) | Should -BeTrue
+                $dependsOnDb = @{ 'database' = $true }
+                foreach ($s in $order) {
+                    foreach ($dep in $graph[$s].Upstream) {
+                        if ($dependsOnDb.ContainsKey($dep)) {
+                            $dependsOnDb[$s] = $true
+                        }
+                    }
                 }
 
-                # 'database' and all its transitive dependents ('region', 'headers', 'fixtures', 'navbuild', 'roads', 'townlayouts', 'navmesh') must invalidate
-                foreach ($invalidated in @('database', 'region', 'headers', 'fixtures', 'navbuild', 'roads', 'townlayouts', 'navmesh')) {
-                    $afterHash = Compute-SandalStageHash -Stage $invalidated -RepoRoot $tmpRepo
-                    ($afterHash -ne $before[$invalidated]) | Should -BeTrue
-                    (Test-SandalStageUpToDate -Stage $invalidated -RepoRoot $tmpRepo) | Should -BeFalse
+                foreach ($s in $order) {
+                    $afterHash = Compute-SandalStageHash -Stage $s -RepoRoot $tmpRepo
+                    if ($dependsOnDb.ContainsKey($s)) {
+                        ($afterHash -ne $before[$s]) | Should -BeTrue
+                        (Test-SandalStageUpToDate -Stage $s -RepoRoot $tmpRepo) | Should -BeFalse
+                    } else {
+                        $afterHash | Should -Be $before[$s]
+                        (Test-SandalStageUpToDate -Stage $s -RepoRoot $tmpRepo) | Should -BeTrue
+                    }
                 }
             } finally {
                 if (Test-Path -LiteralPath $tmpRepo) {
@@ -338,7 +381,7 @@ public static class SandalMutexTestHelper {
             $LASTEXITCODE | Should -Be 0
             $statusObj = ($statusOut -join "`n") | ConvertFrom-Json
             $statusObj.command | Should -Be 'status'
-            $statusObj.stages.Count | Should -Be 11
+            $statusObj.stages.Count | Should -Be @(Get-SandalStageOrder).Count
 
             $badOut = @(& pwsh -NoProfile -File $script:SandalCliPath unknown-subcommand 2>&1 | ForEach-Object { "$_" })
             $LASTEXITCODE | Should -Be 2

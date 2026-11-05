@@ -29,6 +29,7 @@
 #     with these settings.
 # ============================================================================
 
+#Requires -Version 7.2
 [CmdletBinding()]
 param(
     [string]   $Target  = 'all',
@@ -45,31 +46,32 @@ $ErrorActionPreference = 'Stop'
 
 # -- Resolve paths from script location ----------------------------------
 $repoRoot   = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$buildDir   = Join-Path $repoRoot 'build\x64'
-$distDir    = Join-Path $repoRoot "dist\$Config"
+$buildDir   = Join-Path $repoRoot 'build' 'x64'
+$distDir    = Join-Path $repoRoot 'dist' $Config
+$pathSep    = [System.IO.Path]::PathSeparator
+$userHome   = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 
 Write-Host "Repo root: $repoRoot"
 Write-Host "Build dir: $buildDir"
 Write-Host "Config   : $Config"
 
-# -- Find vswhere (used below to help locate cmake) ----------------------
-$vswhere = "$env:ProgramFiles (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
-if (-not (Test-Path $vswhere)) {
-    $vswhere = "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe"
-}
-if (-not (Test-Path $vswhere)) {
-    throw "vswhere.exe not found - Visual Studio 2022 (Build Tools) required."
-}
-
-# Find cmake (VS2022 ships it under Common7\IDE\CommonExtensions\...)
+# -- Find cmake (and vswhere on Windows when cmake is not on PATH) -------
 $cmake = Get-Command cmake -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
-if (-not $cmake) {
+if (-not $cmake -and $IsWindows) {
+    $progFilesX86 = ${env:ProgramFiles(x86)}
+    $vswhere = if ($progFilesX86) { Join-Path $progFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe' } else { '' }
+    if (-not $vswhere -or -not (Test-Path $vswhere)) {
+        $vswhere = Join-Path $env:ProgramFiles 'Microsoft Visual Studio\Installer\vswhere.exe'
+    }
+    if (-not (Test-Path $vswhere)) {
+        throw "vswhere.exe not found - Visual Studio 2022 (Build Tools) or CMake on PATH required."
+    }
     $cmakeCandidate = & $vswhere -latest -find 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' |
                       Select-Object -First 1
     if ($cmakeCandidate -and (Test-Path $cmakeCandidate)) { $cmake = $cmakeCandidate }
 }
 if (-not $cmake) {
-    throw "cmake.exe not found. Install CMake or use the VS2022 CMake component."
+    throw "cmake not found. Install CMake or use the VS2022 CMake component."
 }
 Write-Host "cmake    : $cmake"
 
@@ -81,13 +83,15 @@ if ($Clean -and (Test-Path $buildDir)) {
 
 # -- Go Protobuf Codegen (build/gen/go) -----------------------------------
 function Ensure-GoProtoGen {
-    $svcDir = Join-Path $repoRoot 'src\server\services'
-    $genDir = Join-Path $repoRoot 'build\gen\go'
+    $svcDir = Join-Path $repoRoot 'src' 'server' 'services'
+    $genDir = Join-Path $repoRoot 'build' 'gen' 'go'
     if (-not (Test-Path $svcDir)) { return }
     New-Item -ItemType Directory -Force -Path $genDir | Out-Null
     $savedPath = $env:Path
-    $miseShims = (Join-Path $env:LOCALAPPDATA 'mise\shims')
-    $env:Path = "$miseShims;$env:USERPROFILE\go\bin;$env:Path"
+    $miseBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $userHome '.local' 'share' }
+    $miseShims = Join-Path $miseBase 'mise' 'shims'
+    $goUserBin = Join-Path $userHome 'go' 'bin'
+    $env:Path = @($miseShims, $goUserBin, $env:Path) -join $pathSep
     $bufCmd = Get-Command buf -ErrorAction SilentlyContinue
     if ($bufCmd) {
         Push-Location $svcDir
@@ -108,12 +112,12 @@ function Ensure-GoProtoGen {
     $goModPath = Join-Path $genDir 'go.mod'
     $goModContent = "module aocrop/services/gen`n`ngo 1.24.0`n`nrequire (`n`tgoogle.golang.org/grpc v1.79.3`n`tgoogle.golang.org/protobuf v1.36.11`n)`n"
     [System.IO.File]::WriteAllText($goModPath, $goModContent, [System.Text.UTF8Encoding]::new($false))
-    $nodeConsts = Join-Path $genDir 'citynodeconsts\constants_gen.go'
+    $nodeConsts = Join-Path $genDir 'citynodeconsts' 'constants_gen.go'
     if (-not (Test-Path -LiteralPath $nodeConsts)) {
-        $env:PYTHONPYCACHEPREFIX = Join-Path $repoRoot 'build\pycache'
-        $ini = Join-Path $repoRoot 'dist\content\client_config\DefaultAoCRecordConstants.ini'
+        $env:PYTHONPYCACHEPREFIX = Join-Path $repoRoot 'build' 'pycache'
+        $ini = Join-Path $repoRoot 'dist' 'content' 'client_config' 'DefaultAoCRecordConstants.ini'
         if (Test-Path -LiteralPath $ini) {
-            & python (Join-Path $repoRoot 'src\tools\schemagen\gen_node_constants.py') --ini $ini
+            & python (Join-Path $repoRoot 'src' 'tools' 'schemagen' 'gen_node_constants.py') --ini $ini
             if ($LASTEXITCODE -ne 0) { throw "gen_node_constants.py failed (exit $LASTEXITCODE)" }
         }
     }
@@ -122,26 +126,25 @@ Ensure-GoProtoGen
 # == C | O | A | Cyb ==
 
 # -- Locate vcpkg --------------------------------------------------------
-# Check $env:VCPKG_ROOT first, then fall back to common locations including
-# the VS2022-integrated vcpkg.
 function Find-Vcpkg {
-    if ($env:VCPKG_ROOT -and (Test-Path (Join-Path $env:VCPKG_ROOT 'scripts\buildsystems\vcpkg.cmake'))) {
+    if ($env:VCPKG_ROOT -and (Test-Path (Join-Path $env:VCPKG_ROOT 'scripts' 'buildsystems' 'vcpkg.cmake'))) {
         return $env:VCPKG_ROOT
     }
-    $drive = Split-Path $repoRoot -Qualifier
-    $candidates = @(
-        (Join-Path $repoRoot '..\vcpkg'),
-        (Join-Path $drive '\vcpkg'),
-        'C:\vcpkg',
-        "$env:USERPROFILE\vcpkg",
-        "$env:USERPROFILE\source\repos\vcpkg",
-        'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg',
-        'C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\vcpkg',
-        'C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\vcpkg',
-        'C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\vcpkg'
-    )
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $candidates.Add((Join-Path $repoRoot '..' 'vcpkg'))
+    $candidates.Add((Join-Path $userHome 'vcpkg'))
+    $candidates.Add((Join-Path $userHome 'source' 'repos' 'vcpkg'))
+    if ($IsWindows) {
+        $drive = Split-Path $repoRoot -Qualifier
+        if ($drive) { $candidates.Add((Join-Path $drive '\vcpkg')) }
+        $candidates.Add('C:\vcpkg')
+        $candidates.Add('C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg')
+        $candidates.Add('C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\vcpkg')
+        $candidates.Add('C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\vcpkg')
+        $candidates.Add('C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\vcpkg')
+    }
     foreach ($p in $candidates) {
-        if (Test-Path (Join-Path $p 'scripts\buildsystems\vcpkg.cmake')) { return $p }
+        if ($p -and (Test-Path (Join-Path $p 'scripts' 'buildsystems' 'vcpkg.cmake'))) { return $p }
     }
     return $null
 }
@@ -154,14 +157,13 @@ if ($vcpkgRoot) {
 }
 
 # -- Configure (CMake) if needed -----------------------------------------
-# A build folder copied along with the repo still points at the old folder; start it fresh.
 $srcDir    = Join-Path $repoRoot 'src'
 $cacheFile = Join-Path $buildDir 'CMakeCache.txt'
 if (Test-Path $cacheFile) {
     $homeLine = Select-String -Path $cacheFile -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$' | Select-Object -First 1
     if ($homeLine) {
-        $cachedRoot  = [IO.Path]::GetFullPath($homeLine.Matches[0].Groups[1].Value.Trim()).TrimEnd('\')
-        $currentRoot = [IO.Path]::GetFullPath($srcDir).TrimEnd('\')
+        $cachedRoot  = [IO.Path]::GetFullPath($homeLine.Matches[0].Groups[1].Value.Trim()).TrimEnd('\', '/')
+        $currentRoot = [IO.Path]::GetFullPath($srcDir).TrimEnd('\', '/')
         if ($cachedRoot -ne $currentRoot) {
             Write-Warning "Build folder was set up for '$cachedRoot'; reconfiguring for '$currentRoot'."
             Remove-Item $cacheFile -Force
@@ -175,17 +177,21 @@ if ($needConfigure) {
     New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
     Push-Location $buildDir
     try {
-        $cmakeArgs = @(
-            '-S', $srcDir,
-            '-B', $buildDir,
-            '-G', 'Visual Studio 17 2022',
-            '-A', 'x64'
-        )
+        $cmakeArgs = [System.Collections.Generic.List[string]]::new()
+        $cmakeArgs.AddRange([string[]]@('-S', $srcDir, '-B', $buildDir))
+        if ($IsWindows) {
+            $cmakeArgs.AddRange([string[]]@('-G', 'Visual Studio 17 2022', '-A', 'x64'))
+        } else {
+            $gen = if (Get-Command ninja -ErrorAction SilentlyContinue) { 'Ninja' } else { 'Unix Makefiles' }
+            $cmakeArgs.AddRange([string[]]@('-G', $gen, "-DCMAKE_BUILD_TYPE=$Config"))
+        }
         if ($vcpkgRoot) {
-            $cmakeArgs += "-DCMAKE_TOOLCHAIN_FILE=$vcpkgRoot\scripts\buildsystems\vcpkg.cmake"
-            $cmakeArgs += "-DVCPKG_TARGET_TRIPLET=x64-windows"
-            # the DLLs are copied once after the build (below), not after every program
-            $cmakeArgs += "-DVCPKG_APPLOCAL_DEPS=OFF"
+            $toolchain = Join-Path $vcpkgRoot 'scripts' 'buildsystems' 'vcpkg.cmake'
+            $cmakeArgs.Add("-DCMAKE_TOOLCHAIN_FILE=$toolchain")
+            if ($IsWindows) {
+                $cmakeArgs.Add('-DVCPKG_TARGET_TRIPLET=x64-windows')
+                $cmakeArgs.Add('-DVCPKG_APPLOCAL_DEPS=OFF')
+            }
         }
         & $cmake @cmakeArgs
         if ($LASTEXITCODE -ne 0) {
@@ -206,21 +212,29 @@ $targets = if ($Target -eq 'all') {
     @($Target)
 }
 
-# -Jobs N: N projects at a time (/m:N) and at most N compiler processes at a time (builds that run together share that limit). Without -Jobs: every core
-# for projects, and for the compilers as many as the free memory allows (about 1.5 GB each), at most one per processor.
 $mArg = if ($Jobs -gt 0) { "/m:$Jobs" } else { '/m' }
 $clCount = $Jobs
 if ($clCount -le 0) {
     $freeGB = 0.0
-    try { $freeGB = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1MB } catch { }
-    $clCount = [int][math]::Max(2, [math]::Min([Environment]::ProcessorCount, [math]::Floor($freeGB / 1.5)))
+    if ($IsWindows) {
+        try { $freeGB = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1MB } catch { }
+    }
+    if ($freeGB -gt 0.0) {
+        $clCount = [int][math]::Max(2, [math]::Min([Environment]::ProcessorCount, [math]::Floor($freeGB / 1.5)))
+    } else {
+        $clCount = [int][math]::Max(2, [Environment]::ProcessorCount)
+    }
 }
 $msbuildArgs = @($mArg, '/p:UseMultiToolTask=true', '/p:EnforceProcessCountAcrossBuilds=true', "/p:CL_MPCount=$clCount", '/nr:false', '/v:minimal', '/nologo')
 Write-Host "Projects at a time: $(if ($Jobs -gt 0) { $Jobs } else { 'all cores' }); compiler processes at a time: $clCount"
 foreach ($t in $targets) {
     Write-Host ""
     Write-Host "Building $t ..."
-    & $cmake --build $buildDir --config $Config --target $t -- @msbuildArgs
+    if ($IsWindows) {
+        & $cmake --build $buildDir --config $Config --target $t -- @msbuildArgs
+    } else {
+        & $cmake --build $buildDir --config $Config --target $t --parallel $clCount
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Build failed for target: $t"
     }
@@ -237,7 +251,15 @@ if (Test-Path $cacheFile) {
         elseif ($line -match '^VCPKG_TARGET_TRIPLET:[A-Z]+=(.+)$') { $triplet = $Matches[1].Trim() }
     }
 }
-$dllSource = if ($vcpkgInstalled) { Join-Path (Join-Path $vcpkgInstalled $triplet) $(if ($Config -eq 'Debug') { 'debug\bin' } else { 'bin' }) } else { $null }
+$dllSource = if ($vcpkgInstalled) {
+    if ($Config -eq 'Debug') {
+        Join-Path $vcpkgInstalled $triplet 'debug' 'bin'
+    } else {
+        Join-Path $vcpkgInstalled $triplet 'bin'
+    }
+} else {
+    $null
+}
 if ($dllSource -and (Test-Path $dllSource)) {
     New-Item -ItemType Directory -Force -Path $distDir | Out-Null
     $copied = 0
@@ -252,7 +274,7 @@ if ($dllSource -and (Test-Path $dllSource)) {
     Write-Host "Runtime DLLs: $copied copied, $kept already up to date ($dllSource)"
 }
 
-Import-Module (Join-Path $repoRoot 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
+Import-Module (Join-Path $repoRoot 'scripts' 'lib' 'SandalCore.psd1') -Force -DisableNameChecking
 $null = Sync-SandalDistStage -RepoRoot $repoRoot -Config $Config
 
 # -- Run tests if requested ----------------------------------------------

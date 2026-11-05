@@ -23,6 +23,7 @@
 #  -NoBuild runs whatever test_*.exe is already present in dist\<Config>,
 #  including leftovers from a test target since dropped from CMake.
 # ============================================================================
+#Requires -Version 7.2
 [CmdletBinding()]
 param(
     [ValidateSet('Release','Debug')] [string] $Config = 'Release',
@@ -35,37 +36,35 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($SaveBaseline -and $CompareTo) { throw "use -SaveBaseline or -CompareTo, not both" }
-$root  = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$dist     = Join-Path $root "dist\$Config"
-$testDist = Join-Path $root "dist\tests\$Config"
+$root     = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+$dist     = Join-Path $root 'dist' $Config
+$testDist = Join-Path $root 'dist' 'tests' $Config
+$pathSep  = [System.IO.Path]::PathSeparator
 # ~ CoA :: C Y B ~
 
 if (-not $NoBuild) {
-    # Drop stale test exes first: a test target dropped from CMake in a later
-    # change would otherwise keep "passing" using its old binary. Test exes
-    # link straight into dist\<Config> via CMAKE_RUNTIME_OUTPUT_DIRECTORY, so
-    # MSBuild relinks the current ones below.
-    Remove-Item (Join-Path $testDist 'test_*.exe'), (Join-Path $testDist 'fuzz_*.exe'), (Join-Path $dist 'test_*.exe'), (Join-Path $dist 'fuzz_*.exe') -ErrorAction SilentlyContinue
-    # build.ps1 sets the build folder up when there is none, builds every target the fast way and copies the vcpkg DLLs next to the programs;
-    # it stops with an error when the build fails
-    & (Join-Path $PSScriptRoot 'build.ps1') -Target ALL_BUILD -Config $Config -Jobs $Jobs
+    $testGlob = if ($IsWindows) { 'test_*.exe' } else { 'test_*' }
+    $fuzzGlob = if ($IsWindows) { 'fuzz_*.exe' } else { 'fuzz_*' }
+    Remove-Item (Join-Path $testDist $testGlob), (Join-Path $testDist $fuzzGlob), (Join-Path $dist $testGlob), (Join-Path $dist $fuzzGlob) -ErrorAction SilentlyContinue
+    $allTarget = if ($IsWindows) { 'ALL_BUILD' } else { 'all' }
+    & (Join-Path $PSScriptRoot 'build.ps1') -Target $allTarget -Config $Config -Jobs $Jobs
 }
 
-# Windows PowerShell 5.1 turns a native program's redirected stderr into a
-# terminating NativeCommandError when $ErrorActionPreference is 'Stop'.
-# Failing tests write to stderr, so run them under 'Continue' and keep only
-# the exit code.
 $ErrorActionPreference = 'Continue'
 Push-Location $root
 try {
     $oldPath = $env:PATH
-    $env:PATH = "$dist;$oldPath"
+    $env:PATH = "$dist$pathSep$oldPath"
     $heavyTests = @('test_world_region_load', 'test_worldd_region_load')
     $skippers = New-Object System.Collections.Generic.List[string]
-    $lines = @(foreach ($exe in Get-ChildItem $testDist -Filter 'test_*.exe' | Where-Object { $Heavy -or ($heavyTests -notcontains $_.BaseName) } | Sort-Object Name) {
-        # test_worldd_node_pop has a half that is opt-in because it reads the baked ground (AOC_REAL_GROUND=1: the five city nodes' bowls on the real heightfield, 0.2 s): it runs whenever
-        # dist\content\area_nav.bin is there (Nodes 1 review B, M7: the town floor's constants are tuned on exactly that data)
-        $realGround = ($exe.BaseName -in @('test_world_node_pop', 'test_worldd_node_pop')) -and (Test-Path -LiteralPath (Join-Path $root 'dist\content\area_nav.bin'))
+    $testBinaries = if ($IsWindows) {
+        Get-ChildItem -LiteralPath $testDist -Filter 'test_*.exe' -File -ErrorAction SilentlyContinue
+    } else {
+        Get-ChildItem -LiteralPath $testDist -Filter 'test_*' -File -ErrorAction SilentlyContinue |
+            Where-Object { [string]::IsNullOrEmpty($_.Extension) -or $_.Extension -eq '.exe' }
+    }
+    $lines = @(foreach ($exe in $testBinaries | Where-Object { $Heavy -or ($heavyTests -notcontains $_.BaseName) } | Sort-Object Name) {
+        $realGround = ($exe.BaseName -in @('test_world_node_pop', 'test_worldd_node_pop')) -and (Test-Path -LiteralPath (Join-Path $root 'dist' 'content' 'area_nav.bin'))
         if ($realGround) { $env:AOC_REAL_GROUND = '1' }
         $text = & $exe.FullName 2>&1 | Out-String
         $code = $LASTEXITCODE
@@ -76,7 +75,7 @@ try {
     })
 } finally { $env:PATH = $oldPath; Pop-Location; $ErrorActionPreference = 'Stop' }
 
-if ($lines.Count -eq 0) { throw "no test_*.exe in $testDist" }
+if ($lines.Count -eq 0) { throw "no test_* binaries in $testDist" }
 
 $lines | ForEach-Object { Write-Host $_ }
 if (-not $Heavy) { Write-Host ("NOTE: not run (heavy, -Heavy): " + ($heavyTests -join ', ')) }

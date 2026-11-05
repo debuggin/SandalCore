@@ -31,26 +31,33 @@
 # Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
+#Requires -Version 7.2
+[CmdletBinding()]
 param(
     [Parameter(Mandatory)] [ValidateSet('up', 'test', 'build', 'run', 'stop', 'login', 'down')] [string] $Action
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-Import-Module (Join-Path $root 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
-$compose = Join-Path $root 'deploy\compose.yml'
-$envFile = Join-Path $root 'deploy\.env'
-$svc = Join-Path $root 'src\server\services'
-$out = Join-Path $root 'dist\services'
-$logs = Join-Path $out 'logs'
+Import-Module (Join-Path $root 'scripts' 'lib' 'SandalCore.psd1') -Force -DisableNameChecking
+$compose  = Join-Path $root 'deploy' 'compose.yml'
+$envFile  = Join-Path $root 'deploy' '.env'
+$svc      = Join-Path $root 'src' 'server' 'services'
+$out      = Join-Path $root 'dist' 'services'
+$logs     = Join-Path $out 'logs'
+$exeExt   = if ($IsWindows) { '.exe' } else { '' }
+$pathSep  = [System.IO.Path]::PathSeparator
+$userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 
 function Ensure-GoProtoGen {
-    $genDir = Join-Path $root 'build\gen\go'
+    $genDir = Join-Path $root 'build' 'gen' 'go'
     New-Item -ItemType Directory -Force -Path $genDir | Out-Null
     $savedPath = $env:Path
-    $miseShims = (Join-Path $env:LOCALAPPDATA 'mise\shims')
+    $miseBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $userHome '.local' 'share' }
+    $miseShims = Join-Path $miseBase 'mise' 'shims'
     $goBin = Join-Path (& go env GOPATH) 'bin'
-    $env:Path = "$miseShims;$goBin;$env:USERPROFILE\go\bin;$env:Path"
+    $goUserBin = Join-Path $userHome 'go' 'bin'
+    $env:Path = @($miseShims, $goBin, $goUserBin, $env:Path) -join $pathSep
     Push-Location $svc
     try {
         & buf generate ../../libs/aocproto/proto/internal
@@ -66,12 +73,12 @@ function Ensure-GoProtoGen {
     $goModPath = Join-Path $genDir 'go.mod'
     $goModContent = "module aocrop/services/gen`n`ngo 1.24.0`n`nrequire (`n`tgoogle.golang.org/grpc v1.79.3`n`tgoogle.golang.org/protobuf v1.36.11`n)`n"
     [System.IO.File]::WriteAllText($goModPath, $goModContent, [System.Text.UTF8Encoding]::new($false))
-    $nodeConsts = Join-Path $genDir 'citynodeconsts\constants_gen.go'
+    $nodeConsts = Join-Path $genDir 'citynodeconsts' 'constants_gen.go'
     if (-not (Test-Path -LiteralPath $nodeConsts)) {
-        $env:PYTHONPYCACHEPREFIX = Join-Path $root 'build\pycache'
-        $ini = Join-Path $root 'dist\content\client_config\DefaultAoCRecordConstants.ini'
+        $env:PYTHONPYCACHEPREFIX = Join-Path $root 'build' 'pycache'
+        $ini = Join-Path $root 'dist' 'content' 'client_config' 'DefaultAoCRecordConstants.ini'
         if (Test-Path -LiteralPath $ini) {
-            & python (Join-Path $root 'src\tools\schemagen\gen_node_constants.py') --ini $ini
+            & python (Join-Path $root 'src' 'tools' 'schemagen' 'gen_node_constants.py') --ini $ini
             if ($LASTEXITCODE -ne 0) { throw "gen_node_constants.py failed (exit $LASTEXITCODE)" }
         }
     }
@@ -84,7 +91,7 @@ function Build {
     try {
         foreach ($name in 'auth', 'character', 'citynode', 'nodectl', 'quests', 'questctl', 'worldctl', 'charimport', 'mesh', 'gateway') {
             $pkg = if ($name -eq 'quests') { './cmd/quest' } else { "./cmd/$name" }
-            & go build -o (Join-Path $out "$name.exe") $pkg
+            & go build -o (Join-Path $out "$name$exeExt") $pkg
             if ($LASTEXITCODE -ne 0) { throw "go build $name failed" }
         }
     } finally { Pop-Location }
@@ -92,16 +99,16 @@ function Build {
 }
 # [C O A + Cyb]
 
-$worldd = Join-Path $root 'dist\Release\worldd.exe'
+$worldd = Join-Path $root 'dist' 'Release' "worldd$exeExt"
 $tokenFile = Join-Path $out 'service.token'
 # content.db, the file worldd values characters from and the character service checks new characters against
 # (plan C1's contentc, src\server\services\README.md "Content").
-$contentDb = if ($env:AOC_CONTENT_DB) { $env:AOC_CONTENT_DB } else { Join-Path $root 'dist\content\content.db' }
+$contentDb = if ($env:AOC_CONTENT_DB) { $env:AOC_CONTENT_DB } else { Join-Path $root 'dist' 'content' 'content.db' }
 
 # The auth, character, citynode, quests, mesh, gateway and worldd processes running from this
 # checkout (not another checkout's copy).
 function Get-ServiceProcess {
-    $exes = @('auth', 'character', 'citynode', 'quests', 'mesh', 'gateway' | ForEach-Object { Join-Path $out "$_.exe" }) + $worldd
+    $exes = @('auth', 'character', 'citynode', 'quests', 'mesh', 'gateway' | ForEach-Object { Join-Path $out "$_$exeExt" }) + $worldd
     Get-Process -Name auth, character, citynode, quests, mesh, gateway, worldd -ErrorAction SilentlyContinue |
         Where-Object { $exes -contains $_.Path }
 }
@@ -117,8 +124,13 @@ function Stop-ServiceProcesses($procs) { # WHY: stop worldd first so its gRPC st
 
 # Lets only this user open $path (like the launcher's saved login token).
 function Set-OwnerOnly($path) {
-    & icacls $path /inheritance:r /grant:r "${env:USERDOMAIN}\${env:USERNAME}:(F)" | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "could not restrict $path to ${env:USERNAME}" }
+    if ($IsWindows) {
+        & icacls $path /inheritance:r /grant:r "${env:USERDOMAIN}\${env:USERNAME}:(F)" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "could not restrict $path to ${env:USERNAME}" }
+    } else {
+        & chmod 600 $path
+        if ($LASTEXITCODE -ne 0) { throw "could not chmod 600 $path" }
+    }
 }
 
 # The internal services' shared secret (src/server/services/internal/svcauth): 32 random
@@ -169,7 +181,7 @@ try {
             $env:AOC_TEST_DATABASE_URL = 'postgres://aoc:aoc@127.0.0.1:5432/aoc_test?sslmode=disable'
             # The tests of the creation rules read the real content.db when there is one (they skip without).
             if (Test-Path $contentDb) { $env:AOC_CONTENT_DB = $contentDb }
-            $env:Path = (Join-Path (& go env GOPATH) 'bin') + ';' + $env:Path   # buf and its plugins
+            $env:Path = (Join-Path (& go env GOPATH) 'bin') + $pathSep + $env:Path   # buf and its plugins
             Push-Location $svc
             try {
                 & buf lint ../../libs/aocproto/proto/internal
@@ -189,7 +201,7 @@ try {
         'login' {
             # Signs in as launcher.exe does and saves the token where
             # tether_server reads it, for launches that skip the launcher window.
-            $creds = Join-Path $root 'src\config\dev_login.local.json'
+            $creds = Join-Path $root 'src' 'config' 'dev_login.local.json'
             if (-not (Test-Path $creds)) {
                 throw "missing ${creds}: create it as {""username"": ""..."", ""password"": ""...""} for an account registered through the launcher"
             }
@@ -209,7 +221,7 @@ try {
                 throw "login failed: auth answered HTTP ${status}: $($_.Exception.Message)"
             }
             if (-not $resp.access_token) { throw 'login failed: the reply has no access_token' }
-            $loginFile = Join-Path $root 'dist\Release\data\ics_auth_token.txt'
+            $loginFile = Join-Path $root 'dist' 'Release' 'data' 'ics_auth_token.txt'
             New-Item -ItemType Directory -Force (Split-Path $loginFile) | Out-Null
             [System.IO.File]::WriteAllText($loginFile, $resp.access_token)
             Set-OwnerOnly $loginFile
@@ -221,16 +233,16 @@ try {
                 throw "$worldd is missing: build it with scripts\build.ps1 -Target worldd"
             }
             if (-not (Test-Path $contentDb)) {
-                & (Join-Path $root 'scripts\extract_game_data.ps1')
+                & (Join-Path $root 'scripts' 'extract_game_data.ps1')
             }
             if (-not (Test-Path $contentDb)) {
                 $who = 'the character service will refuse to create characters and worldd every login'
                 Write-Host "warning: $contentDb does not exist: $who. Build it: cd src\server\services; go run ./cmd/contentc (src\server\services\README.md, 'Content')" -ForegroundColor Yellow
             }
-            $serverCrt = Join-Path $root 'dist\certs\server.crt'
-            $localhostCrt = Join-Path $root 'dist\Release\certs\localhost.crt'
+            $serverCrt = Join-Path $root 'dist' 'certs' 'server.crt'
+            $localhostCrt = Join-Path $root 'dist' 'Release' 'certs' 'localhost.crt'
             if (-not (Test-Path -LiteralPath $serverCrt) -and -not (Test-Path -LiteralPath $localhostCrt)) {
-                $null = & (Join-Path $root 'scripts\sandal\certs.ps1') -OutputDir (Join-Path $root 'dist\certs') -RepoRoot $root -Json
+                $null = & (Join-Path $root 'scripts' 'sandal' 'certs.ps1') -OutputDir (Join-Path $root 'dist' 'certs') -RepoRoot $root -Json
             }
 
             # Check running processes first to prevent compiling locked binaries
@@ -243,7 +255,7 @@ try {
             }
 
             New-ServiceToken
-            $started = @()
+            $started = [System.Collections.Generic.List[object]]::new()
             $names = @('auth', 'character', 'citynode', 'quests', 'mesh', 'gateway', 'worldd')
             $savedStatic = $env:AOC_MESH_STATIC_WORLD
             $env:AOC_MESH_STATIC_WORLD = ''
@@ -252,7 +264,7 @@ try {
 
             try {
                 foreach ($name in $names) {
-                    $exe = if ($name -eq 'worldd') { $worldd } else { Join-Path $out "$name.exe" }
+                    $exe = if ($name -eq 'worldd') { $worldd } else { Join-Path $out "$name$exeExt" }
 
                     $alreadyRunning = $runningProcs | Where-Object { $_.Path -eq $exe -and -not $_.HasExited }
                     if ($alreadyRunning) {
@@ -267,28 +279,26 @@ try {
                         if (Test-Path $f) { Move-Item -Force $f ($f -replace '\.log$', '.prev.log') }
                     }
 
-                    $cmdString = "/d /s /c `"`"$exe`"$exeArgs 1>`"$outLog`" 2>`"$log`"`""
-
-                    # Define startup configuration specifically as a Win32_ProcessStartup object
-                    $startup = New-CimInstance -ClassName Win32_ProcessStartup -Property @{
-                        ShowWindow = [uint16]0  # 0 = SW_HIDE, explicitly typed as uint16 for CIM
-                    } -ClientOnly
-
-                    # Explicitly cast arguments to strings to prevent CIM Type mismatch
-                    $cimArgs = @{
-                        CommandLine               = [string]"`"$env:ComSpec`" $cmdString"
-                        CurrentDirectory          = [string]$root
-                        ProcessStartupInformation = $startup
+                    if ($IsWindows) {
+                        $cmdString = "/d /s /c `"`"$exe`"$exeArgs 1>`"$outLog`" 2>`"$log`"`""
+                        $startup = New-CimInstance -ClassName Win32_ProcessStartup -Property @{
+                            ShowWindow = [uint16]0
+                        } -ClientOnly
+                        $cimArgs = @{
+                            CommandLine               = [string]"`"$env:ComSpec`" $cmdString"
+                            CurrentDirectory          = [string]$root
+                            ProcessStartupInformation = $startup
+                        }
+                        $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $cimArgs
+                        if ($result.ReturnValue -ne 0) {
+                            throw "Failed to start $name (WMI ReturnValue: $($result.ReturnValue))"
+                        }
+                        $p = Get-Process -Id $result.ProcessId -ErrorAction SilentlyContinue
+                    } else {
+                        $argList = if ($name -eq 'worldd' -or $name -eq 'character') { @('--content-db', $contentDb) } else { @() }
+                        $p = Start-Process -FilePath $exe -ArgumentList $argList -WorkingDirectory $root -RedirectStandardOutput $outLog -RedirectStandardError $log -PassThru
                     }
-
-                    $result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $cimArgs
-
-                    if ($result.ReturnValue -ne 0) {
-                        throw "Failed to start $name (WMI ReturnValue: $($result.ReturnValue))"
-                    }
-
-                    $p = Get-Process -Id $result.ProcessId -ErrorAction SilentlyContinue
-                    $started += [pscustomobject]@{ Name = $name; Process = $p; Log = $log }
+                    $started.Add([pscustomobject]@{ Name = $name; Process = $p; Log = $log })
                 }
             } finally {
                 $env:AOC_MESH_STATIC_WORLD = $savedStatic

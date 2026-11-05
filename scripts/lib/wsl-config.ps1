@@ -82,7 +82,7 @@ function Set-WslSectionKey {
 function Confirm-WslConfig {
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [string]$ConfigPath = (Join-Path $env:USERPROFILE '.wslconfig'),
+        [string]$ConfigPath = (Join-Path $(if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }) '.wslconfig'),
         [scriptblock]$PromptReader = $null
     )
     $state = Get-WslSectionState -ConfigPath $ConfigPath

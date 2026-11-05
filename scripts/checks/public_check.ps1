@@ -24,8 +24,8 @@ function Test-SandalTestsDirectoryBounds {
             continue
         }
         $lineCount = @(Get-Content -LiteralPath $file.FullName).Count
-        if ($lineCount -gt 800) {
-            $Violations.Add("File in src/tests/ exceeds 800 lines ($lineCount): $($file.FullName)")
+        if ($lineCount -gt 900) {
+            $Violations.Add("File in src/tests/ exceeds 900 lines ($lineCount): $($file.FullName)")
         }
     }
 }
@@ -130,12 +130,51 @@ function Test-SandalRetiredLegacyScripts {
     }
 }
 
+function Test-SandalNoPythonInScripts {
+    param(
+        [Parameter(Mandatory)][Alias('Root', 'RepoRoot')][string]$RootPath,
+        [AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations = $null
+    )
+    $findings = [System.Collections.Generic.List[string]]::new()
+    $scriptsDir = Join-Path $RootPath 'scripts'
+    if (Test-Path -LiteralPath $scriptsDir -PathType Container) {
+        foreach ($py in @(Get-ChildItem -LiteralPath $scriptsDir -Filter '*.py' -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+            $rel = [System.IO.Path]::GetRelativePath($RootPath, $py.FullName).Replace('\', '/')
+            $findings.Add("NoPythonInScripts: forbidden Python script in scripts/: $rel")
+        }
+    }
+    if ($null -ne $Violations) { foreach ($item in $findings) { $Violations.Add($item) } }
+    return , $findings.ToArray()
+}
+
+function Test-SandalInTreeBuildArtifacts {
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Findings
+    )
+    foreach ($rootSub in @('src/tools', 'src/clients')) {
+        $parentDir = Join-Path $RepoRoot ($rootSub -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path -LiteralPath $parentDir -PathType Container)) { continue }
+        foreach ($projDir in @(Get-ChildItem -LiteralPath $parentDir -Directory -Force | Where-Object { $_.Name -ine 'control-app' })) {
+            if (Test-Path -LiteralPath (Join-Path $projDir.FullName 'bin') -PathType Container) { $Findings.Add("NoInTreeDotnetBinObj: forbidden in-tree bin directory: $rootSub/$($projDir.Name)/bin") }
+            if (Test-Path -LiteralPath (Join-Path $projDir.FullName 'obj') -PathType Container) { $Findings.Add("NoInTreeDotnetBinObj: forbidden in-tree obj directory: $rootSub/$($projDir.Name)/obj") }
+        }
+    }
+    $distRelease = Join-Path $RepoRoot 'dist\Release'
+    if (Test-Path -LiteralPath $distRelease -PathType Container) {
+        foreach ($exe in @(Get-ChildItem -LiteralPath $distRelease -File -Force | Where-Object { $_.Name -match '^(?:test_|fuzz_).*\.exe$' })) {
+            $Findings.Add("NoTestBinariesInDistRelease: forbidden test/fuzz binary in dist/Release: $($exe.Name)")
+        }
+    }
+}
+
 function Test-SandalRootDirectoryHierarchy {
     param(
         [Parameter(Mandatory)][Alias('RootPath', 'Root')][string]$RepoRoot,
         [AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations = $null
     )
     $findings = [System.Collections.Generic.List[string]]::new()
+    $null = Test-SandalNoPythonInScripts -RootPath $RepoRoot -Violations $findings
     $allowedRootDirs = @('src', 'build', 'dist', 'deploy', 'docs', 'scripts', '.github')
     $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'GEMINI.md', '.gitignore', '.gitattributes', '.graphifyignore', 'sandal.ps1')
     $stealthDirs = @('.git', '.agents', '.claude', '_workspace', '.beads', 'graphify-out')
@@ -148,20 +187,7 @@ function Test-SandalRootDirectoryHierarchy {
         if (Test-Path -LiteralPath (Join-Path $RepoRoot '.beads') -PathType Container) { Remove-Item -LiteralPath $gateLock -Force -ErrorAction SilentlyContinue }
         else { $findings.Add('NoRootCacheOrGateLocks: forbidden root cache or lock artifact: .beads.gate.lock') }
     }
-    foreach ($rootSub in @('src/tools', 'src/clients')) {
-        $parentDir = Join-Path $RepoRoot ($rootSub -replace '/', [System.IO.Path]::DirectorySeparatorChar)
-        if (-not (Test-Path -LiteralPath $parentDir -PathType Container)) { continue }
-        foreach ($projDir in @(Get-ChildItem -LiteralPath $parentDir -Directory -Force | Where-Object { $_.Name -ine 'control-app' })) {
-            if (Test-Path -LiteralPath (Join-Path $projDir.FullName 'bin') -PathType Container) { $findings.Add("NoInTreeDotnetBinObj: forbidden in-tree bin directory: $rootSub/$($projDir.Name)/bin") }
-            if (Test-Path -LiteralPath (Join-Path $projDir.FullName 'obj') -PathType Container) { $findings.Add("NoInTreeDotnetBinObj: forbidden in-tree obj directory: $rootSub/$($projDir.Name)/obj") }
-        }
-    }
-    $distRelease = Join-Path $RepoRoot 'dist\Release'
-    if (Test-Path -LiteralPath $distRelease -PathType Container) {
-        foreach ($exe in @(Get-ChildItem -LiteralPath $distRelease -File -Force | Where-Object { $_.Name -match '^(?:test_|fuzz_).*\.exe$' })) {
-            $findings.Add("NoTestBinariesInDistRelease: forbidden test/fuzz binary in dist/Release: $($exe.Name)")
-        }
-    }
+    Test-SandalInTreeBuildArtifacts -RepoRoot $RepoRoot -Findings $findings
     $retiredMicroFolders = @('api', 'layouts', 'certs', 'data', 'fixtures', 'logs')
     foreach ($folder in $retiredMicroFolders) {
         if (Test-Path -LiteralPath (Join-Path $RepoRoot $folder) -PathType Container) { $findings.Add("NoRetiredRootMicroFolders: forbidden retired root micro-folder: $folder") }

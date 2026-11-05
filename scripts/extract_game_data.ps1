@@ -1,3 +1,4 @@
+#Requires -Version 7.2
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
@@ -81,9 +82,12 @@ $usmapSrc  = Join-Path $repoRoot 'src\config\layouts\aoc.usmap'
 $mapcDll         = Join-Path $repoRoot 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll'
 $npcAbilitiesDll = Join-Path $repoRoot 'build\dotnet\bin\npcabilities\Release\net8.0\npcabilities.dll'
 $itemNamesDll    = Join-Path $repoRoot 'build\dotnet\bin\itemnames\Release\net8.0\itemnames.dll'
-$contentc  = Join-Path $toolsDir 'contentc.exe'
-$statprog  = Join-Path $toolsDir 'statprog.exe'
-$navbuild  = Join-Path $distDir 'Release\aoc_navbuild.exe'
+$pwshExe   = (Get-Process -Id $PID).Path
+if (-not $pwshExe) { $pwshExe = 'pwsh' }
+$exeExt    = if ($IsWindows) { '.exe' } else { '' }
+$contentc  = Join-Path $toolsDir "contentc$exeExt"
+$statprog  = Join-Path $toolsDir "statprog$exeExt"
+$navbuild  = Join-Path $distDir "Release\aoc_navbuild$exeExt"
 $logFile   = Join-Path $stampDir 'current.log'
 $lastLog   = Join-Path $stampDir 'last_run.log'
 # The creature kinds that attack with their own animation: one container folder of the game's files per kind (its Blueprints and the animation montages beside them).
@@ -186,6 +190,47 @@ function Get-RegistryString([string]$path, [string]$name) {
     try { return [string](Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction Stop).$name } catch { return '' }
 }
 
+function Get-SteamLibraryFolders {
+    $libs = New-Object System.Collections.Generic.List[string]
+    $roots = New-Object System.Collections.Generic.List[string]
+    if ($IsWindows) {
+        foreach ($pair in @(@('HKCU:\Software\Valve\Steam', 'SteamPath'), @('HKLM:\SOFTWARE\Valve\Steam', 'InstallPath'), @('HKLM:\SOFTWARE\WOW6432Node\Valve\Steam', 'InstallPath'))) {
+            $v = Get-RegistryString $pair[0] $pair[1]
+            if ($v) { $roots.Add(($v -replace '/', '\')) }
+        }
+    } else {
+        foreach ($rel in @('.steam/steam', '.local/share/Steam', 'Library/Application Support/Steam')) {
+            if ($HOME) { $roots.Add((Join-Path $HOME $rel)) }
+        }
+    }
+    foreach ($v in $roots) {
+        if (-not $v) { continue }
+        $libs.Add($v)
+        $vdf = Join-Path $v 'steamapps\libraryfolders.vdf'
+        if (Test-Path -LiteralPath $vdf) {
+            foreach ($line in (Get-Content -LiteralPath $vdf)) {
+                if ($line -match '"path"\s+"([^"]+)"') { $libs.Add(($Matches[1] -replace '\\\\', '\')) }
+            }
+        }
+    }
+    return $libs
+}
+
+function Get-FixedDriveCandidates {
+    $dirs = New-Object System.Collections.Generic.List[string]
+    if (-not $IsWindows) { return $dirs }
+    foreach ($d in [IO.DriveInfo]::GetDrives()) {
+        if ($d.DriveType -ne 'Fixed') { continue }
+        $root = $d.Name.TrimEnd('\')
+        foreach ($sub in @('', '\Program Files (x86)\Steam', '\Steam', '\Games', '\Ashes of Creation', '\AshesOfCreation')) {
+            $dirs.Add("$root$sub\steamapps\common\Ashes of Creation\Game")
+            $dirs.Add("$root$sub\Game")
+            $dirs.Add("$root$sub")
+        }
+    }
+    return $dirs
+}
+
 function Find-GameRoot {
     if ($GameRoot) {
         $r = Resolve-GameRoot $GameRoot
@@ -198,40 +243,17 @@ function Find-GameRoot {
         return [pscustomobject]@{ Path = $r; Via = '-GameRoot' }
     }
     $candidates = New-Object System.Collections.Generic.List[object]
-    function Add-Candidate([string]$path, [string]$via) { $candidates.Add([pscustomobject]@{ Path = $path; Via = $via }) }
-    if ($env:GAME_ROOT) { Add-Candidate $env:GAME_ROOT 'GAME_ROOT' }
-    if ($env:AOC_PAKS_DIR) { Add-Candidate $env:AOC_PAKS_DIR 'AOC_PAKS_DIR' }
-    if ($env:AOC_CLIENT_PATH) { Add-Candidate $env:AOC_CLIENT_PATH 'AOC_CLIENT_PATH' }
+    function Add-Candidate([string]$path, [string]$via) { if ($path) { $candidates.Add([pscustomobject]@{ Path = $path; Via = $via }) } }
+    Add-Candidate $env:GAME_ROOT 'GAME_ROOT'
+    Add-Candidate $env:AOC_PAKS_DIR 'AOC_PAKS_DIR'
+    Add-Candidate $env:AOC_CLIENT_PATH 'AOC_CLIENT_PATH'
     foreach ($cfg in @((Join-Path $repoRoot 'src\config\paths.json'), (Join-Path $repoRoot 'dist\Release\config\paths.json'))) {
         if (Test-Path -LiteralPath $cfg) {
-            try { $exe = (Get-Content -LiteralPath $cfg -Raw | ConvertFrom-Json).game_executable; if ($exe) { Add-Candidate ([string]$exe) 'game_executable in paths.json' } } catch { }
+            try { Add-Candidate ([string](Get-Content -LiteralPath $cfg -Raw | ConvertFrom-Json).game_executable) 'game_executable in paths.json' } catch { }
         }
     }
-    # Steam: its install folder and every library in libraryfolders.vdf (the launcher's Auto-Detect looks in the same places)
-    $libs = New-Object System.Collections.Generic.List[string]
-    foreach ($pair in @(@('HKCU:\Software\Valve\Steam', 'SteamPath'), @('HKLM:\SOFTWARE\Valve\Steam', 'InstallPath'), @('HKLM:\SOFTWARE\WOW6432Node\Valve\Steam', 'InstallPath'))) {
-        $v = Get-RegistryString $pair[0] $pair[1]
-        if (-not $v) { continue }
-        $v = $v -replace '/', '\'
-        $libs.Add($v)
-        $vdf = Join-Path $v 'steamapps\libraryfolders.vdf'
-        if (Test-Path -LiteralPath $vdf) {
-            foreach ($line in (Get-Content -LiteralPath $vdf)) {
-                if ($line -match '"path"\s+"([^"]+)"') { $libs.Add(($Matches[1] -replace '\\', '\')) }
-            }
-        }
-    }
-    foreach ($l in $libs) { Add-Candidate (Join-Path $l 'steamapps\common\Ashes of Creation\Game') 'a Steam library' }
-    # the usual folders on every fixed drive
-    foreach ($d in [IO.DriveInfo]::GetDrives()) {
-        if ($d.DriveType -ne 'Fixed') { continue }
-        $root = $d.Name.TrimEnd('\')
-        foreach ($sub in @('', '\Program Files (x86)\Steam', '\Steam', '\Games', '\Ashes of Creation', '\AshesOfCreation')) {
-            Add-Candidate "$root$sub\steamapps\common\Ashes of Creation\Game" 'a usual folder'
-            Add-Candidate "$root$sub\Game" 'a usual folder'
-            Add-Candidate "$root$sub" 'a usual folder'
-        }
-    }
+    foreach ($l in (Get-SteamLibraryFolders)) { Add-Candidate (Join-Path $l 'steamapps\common\Ashes of Creation\Game') 'a Steam library' }
+    foreach ($d in (Get-FixedDriveCandidates)) { Add-Candidate $d 'a usual folder' }
     foreach ($c in $candidates) {
         $r = Resolve-GameRoot $c.Path
         if ($r) { return [pscustomobject]@{ Path = $r; Via = $c.Via } }
@@ -428,8 +450,8 @@ function Get-NodeRowsHash {
         $oldPref = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            $pyArgs = @($python.Prefix) + @('-I', (Join-Path $PSScriptRoot 'nav_inputs.py'), $db)
-            $rows = @(& $python.Exe @pyArgs 2>$null)
+            $navScript = Join-Path $PSScriptRoot 'nav_inputs.ps1'
+            $rows = @(& $pwshExe -NoProfile -File $navScript $db 2>$null)
             if ($LASTEXITCODE -eq 0) { return Get-TextHash ($rows -join "`n") }
         } catch { } finally { $ErrorActionPreference = $oldPref }
     }
@@ -493,7 +515,7 @@ $steps = @(
         $fetch = Join-Path $repoRoot 'src\tools\mapc\fetch_cue4parse.ps1'
         if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'build\third_party\CUE4Parse\CUE4Parse\CUE4Parse.csproj'))) {
             if ($env:SANDAL_CUE4PARSE_DIR) { Say "Copying CUE4Parse from $($env:SANDAL_CUE4PARSE_DIR) ..." } else { Say 'Fetching CUE4Parse (the pinned commit; needs git and the network) ...' }
-            Invoke-Checked 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $fetch) 'fetch_cue4parse'
+            Invoke-Checked $pwshExe @('-NoProfile', '-File', $fetch) 'fetch_cue4parse'
         }
         $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'; $env:DOTNET_NOLOGO = '1'
         Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\mapc'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build'
@@ -525,7 +547,7 @@ $steps = @(
         Invoke-Checked $dotnet $nameArgs 'itemnames_read'
     } },
     @{ Name = 'database'; Title = 'Build content.db from CacheDB.dbc (contentc)'; Outputs = @('dist\content\content.db'); Run = {
-        Assert-Files @('dist\tools\contentc.exe', 'dist\content\client_config\DefaultCombat.ini', 'dist\content\artisan_curves.tsv', 'dist\content\item_names.tsv') 'run the tools, config, curves and names steps first'
+        Assert-Files @("dist\tools\contentc$exeExt", 'dist\content\client_config\DefaultCombat.ini', 'dist\content\artisan_curves.tsv', 'dist\content\item_names.tsv') 'run the tools, config, curves and names steps first'
         $savedLimit = $env:GOMEMLIMIT
         if (-not $env:GOMEMLIMIT) { $env:GOMEMLIMIT = '3GiB' }     # contentc peaks at 4.4 GB without it and at 2.9 GB with it, in the same time
         try {
@@ -549,7 +571,7 @@ $steps = @(
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $gen 'gen_gm_garden.py'), '--content-db', $db)) 'gen_gm_garden'
     } },
     @{ Name = 'fixtures'; Title = 'Generate the test fixtures'; Outputs = @('build\gen\fixtures\corpus.txt', 'build\gen\world\tests\talent_fixture.sql', 'build\gen\world\tests\gear_fixture.h', 'build\gen\world\tests\tooltip_key.h'); Run = {
-        Assert-Files @('dist\content\content.db', 'dist\tools\statprog.exe') 'run the earlier steps first'
+        Assert-Files @('dist\content\content.db', "dist\tools\statprog$exeExt") 'run the earlier steps first'
         $db = Join-Path $outDir 'content.db'
         New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot 'build\gen\fixtures') | Out-Null
         Invoke-Checked $statprog @('corpus', '--db', $db, '--out', (Join-Path $repoRoot 'build\gen\fixtures\corpus.txt')) 'statprog_corpus'
@@ -557,12 +579,12 @@ $steps = @(
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\schemagen\gen_gear_fixture.py'), $db)) 'gen_gear_fixture'
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\schemagen\gen_tooltips.py'), '--db', $db)) 'gen_tooltips'
     } },
-    @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++; the first build also builds the C++ libraries with vcpkg)'; Outputs = @('dist\Release\aoc_navbuild.exe'); Run = {
+    @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++; the first build also builds the C++ libraries with vcpkg)'; Outputs = @("dist\Release\aoc_navbuild$exeExt"); Run = {
         Assert-Files @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\spawns\region_data.h', 'build\gen\world\spawns\garden_defs.h') 'run the earlier steps first'
-        Invoke-Checked 'powershell.exe' @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $repoRoot 'scripts\build.ps1'), '-Target', 'aoc_navbuild', '-Jobs', "$Jobs") 'build_navbuild'
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'scripts\build.ps1'), '-Target', 'aoc_navbuild', '-Jobs', "$Jobs") 'build_navbuild'
     } },
     @{ Name = 'roads'; Title = 'Read the road splines of the Riverlands (mapc) and resolve them (contentc)'; Outputs = @('dist\content\roads_raw.tsv', 'dist\content\roads.tsv', 'dist\content\roads_levels.tsv'); Run = {
-        Assert-Files @('dist\content\content.db', 'build\gen\nav\region_rects.tsv', 'dist\tools\contentc.exe', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the earlier steps first'
+        Assert-Files @('dist\content\content.db', 'build\gen\nav\region_rects.tsv', "dist\tools\contentc$exeExt", 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll') 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'roads', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_roads'
         $db = Join-Path $outDir 'content.db'
         $raw = Join-Path $outDir 'roads_raw.tsv'
@@ -595,7 +617,7 @@ $steps = @(
         Invoke-Checked $python.Exe ($python.Prefix + @('-I', '-u', (Join-Path $repoRoot 'src\tools\npcabilities\looks.py'), '--content-db', (Join-Path $outDir 'content.db'), '--out-dir', $outDir)) 'npcabilities_names'
     } },
     @{ Name = 'navmesh'; Title = 'Read the map and build the navigation mesh, the NPC motion table and the foliage (mapc; the longest step)'; Outputs = @('dist\content\npc_motion.tsv', 'dist\content\region_foliage.tsv', 'dist\content\area_geom.bin', 'dist\content\area_nav.bin'); Run = {
-        Assert-Files @('build\gen\nav\region_rects.tsv', 'dist\Release\aoc_navbuild.exe', 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll', 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'
+        Assert-Files @('build\gen\nav\region_rects.tsv', "dist\Release\aoc_navbuild$exeExt", 'build\dotnet\bin\mapc\Release\net8.0\mapc.dll', 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'
         $savedHeap = $env:DOTNET_GCHeapHardLimit
         if (-not $env:DOTNET_GCHeapHardLimit) { $env:DOTNET_GCHeapHardLimit = '0x100000000' }     # the NPC Blueprint pass peaks at 7.7 GB without this limit and at 4.0 GB with it, in the same time; the map read's child programs set their own
         try {

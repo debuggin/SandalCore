@@ -83,13 +83,13 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                 $null = New-Item -ItemType Directory -Path $cfgDir -Force
 
                 [System.IO.File]::WriteAllText((Join-Path $testsDir 'bad.inc'), '// inc')
-                $oversized = (1..805 | ForEach-Object { "line $_" }) -join "`n"
+                $oversized = (1..905 | ForEach-Object { "line $_" }) -join "`n"
                 [System.IO.File]::WriteAllText((Join-Path $testsDir 'huge.txt'), $oversized)
 
                 $boundsViolations = [System.Collections.Generic.List[string]]::new()
                 Test-SandalTestsDirectoryBounds -RootPath $tmpRoot -Violations $boundsViolations
                 if ($boundsViolations.Count -ne 2) {
-                    throw "Expected 2 bounds violations (.inc and >800 lines), got $($boundsViolations.Count)"
+                    throw "Expected 2 bounds violations (.inc and >900 lines), got $($boundsViolations.Count)"
                 }
 
                 $pemHdr = 'BEGIN ' + 'RSA PRIVATE KEY'

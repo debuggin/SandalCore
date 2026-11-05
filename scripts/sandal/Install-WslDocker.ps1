@@ -12,9 +12,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-. (Join-Path $repoRoot 'scripts\lib\wsl-config.ps1')
-. (Join-Path $repoRoot 'scripts\lib\wsl-docker.ps1')
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
+. (Join-Path $repoRoot 'scripts/lib/wsl-config.ps1')
+. (Join-Path $repoRoot 'scripts/lib/wsl-docker.ps1')
 
 function Resolve-WslDockerInstallOptions {
     param(
@@ -56,10 +56,15 @@ $opts = Resolve-WslDockerInstallOptions -BaseDistro $Distro -BaseDryRun ([bool](
 
 if (-not $opts.DryRun -and -not $PSBoundParameters.ContainsKey('Runner') -and $null -eq $Runner) {
     $env:DOCKER_HOST = 'tcp://[::1]:2375'
-    [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://[::1]:2375', 'User')
-    if ($null -eq (Get-Command docker -ErrorAction SilentlyContinue)) {
-        foreach ($pkg in @('Docker.DockerCLI', 'Docker.DockerCompose', 'Docker.DockerBuildx')) {
-            & winget install --id $pkg -e --source winget --accept-package-agreements --accept-source-agreements
+    if ($IsWindows) {
+        [Environment]::SetEnvironmentVariable('DOCKER_HOST', 'tcp://[::1]:2375', 'User')
+        if ($null -eq (Get-Command docker -ErrorAction SilentlyContinue)) {
+            foreach ($pkg in @('Docker.DockerCLI', 'Docker.DockerCompose', 'Docker.DockerBuildx')) {
+                & winget install --id $pkg -e --source winget --accept-package-agreements --accept-source-agreements
+                if ($LASTEXITCODE -ne 0) {
+                    throw "winget install failed for $pkg with exit code $LASTEXITCODE."
+                }
+            }
         }
     }
 }
@@ -77,7 +82,7 @@ $promptReader = if ($opts.DryRun -or $opts.Json -or ($null -ne $Runner)) {
     $null
 }
 
-$wslConfigPath = Join-Path $env:USERPROFILE '.wslconfig'
+$wslConfigPath = Join-Path $(if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }) '.wslconfig'
 $wslConfig = if ($opts.DryRun) {
     $state = Get-WslSectionState -ConfigPath $wslConfigPath
     [pscustomobject]@{
