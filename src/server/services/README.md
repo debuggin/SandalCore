@@ -10,9 +10,9 @@ In the 11-container Linux Docker Compose stack ([`src/deploy/compose.yml`](../..
 
 | Container / Binary | Listen Ports (Docker Compose / `loader.go` Bare-Metal Default) | Role |
 |:---|:---|:---|
-| **`aoc-ingress-proxy`** (Envoy) | HTTP/2 & Web Admin `127.0.0.1:8080`, HTTPS `:8443`, gRPC `127.0.0.1:9090`, ICS TLS `127.0.0.1:50061`, Admin `:9901` | Edge reverse proxy (`src/deploy/envoy/envoy.yaml`) terminating client TLS and routing HTTP/2, gRPC, and `web-admin` traffic across `edge_net` and `service_net`. |
-| **`aoc-gateway`** (`cmd/gateway`) | Compose: ICS TLS `:50061`, HTTP `:8081`, Internal gRPC `:50050` \| Bare-metal default (`loader.go`): ICS `:443`, Internal gRPC `127.0.0.1:50054` | Terminates the game client's ICS gRPC stream (session auth, realm/character screens, `PlayRequest` placement) and serves `GatewayService.RedeemTicket` to `world`. |
-| **`aoc-auth`** (`cmd/auth`) | Compose: HTTP `:8081`, gRPC `:50052` \| Bare-metal default (`loader.go`): HTTP `127.0.0.1:8081`, gRPC `127.0.0.1:50051` | Serves launcher registration/login endpoints and `AuthService.ValidateToken` for internal services. |
+| **`aoc-ingress-proxy`** (Envoy v1.33 `envoyproxy/envoy:v1.33-latest`) | HTTP/1.1 & Web Admin `127.0.0.1:8080`, gRPC HTTP/2 `127.0.0.1:9090`, ICS TLS passthrough `127.0.0.1:50061`, Admin `:9901` | Edge reverse proxy (`src/deploy/envoy/envoy.yaml`) routing `/api/v1/auth`, `/api/v1/characters`, `/api/v1/world`, and `/api/v1/sessions` to `gateway_http` (`gateway:8000` / `gateway:8081` in Compose, which forwards `/api/v1/auth` requests to `auth:50051` / `auth:50052` over gRPC; `127.0.0.1:8080` / `127.0.0.1:8081` on bare-metal), `/api/v1/gm` to `mesh_gateway_http` (`mesh-gateway:8082`), `/` to `web_admin_http` (`web-admin:8088`), `:9090` gRPC services, and `:50061` ICS TLS passthrough to `gateway_tls` (`gateway:50061`). |
+| **`aoc-gateway`** (`cmd/gateway`) | Compose: ICS TLS `:50061`, HTTP `:8000` / `:8081`, Internal gRPC `:50050` \| Bare-metal default (`loader.go`): HTTP `127.0.0.1:8080` / `127.0.0.1:8081`, ICS `:443`, Internal gRPC `127.0.0.1:50054` | Terminates the game client's ICS gRPC stream (session auth, realm/character screens, `PlayRequest` placement), proxies `/api/v1/auth` to `auth` over gRPC, and serves `GatewayService.RedeemTicket` to `world`. |
+| **`aoc-auth`** (`cmd/auth`) | Compose: HTTP `:8081`, gRPC `:50051` / `:50052` \| Bare-metal default (`loader.go`): HTTP `127.0.0.1:8081`, gRPC `127.0.0.1:50051` | Serves launcher registration/login endpoints and `AuthService.ValidateToken` for internal services. |
 | **`aoc-character`** (`cmd/character`) | Compose: gRPC `:50053` \| Bare-metal default (`loader.go`): gRPC `127.0.0.1:50052` | Serves `CharacterService`: validates character creation against `content.db`, grants starting kits, and persists inventory, stats, progression, talents, professions, wallet, processing jobs, recipes, tutorials, warehouse tabs, and Emberspring attunements. |
 | **`aoc-citynode`** (`cmd/citynode`) | Compose: gRPC `citynode:50056` \| Bare-metal default (`loader.go`): gRPC `127.0.0.1:50055` | Serves `CityNodeService`: maintains live state for all 46 city nodes (level, XP, vassal links, node clock, seed application) and streams ordered state changes via `WatchNodes`. |
 | **`aoc-quest`** (`cmd/quest`) | Compose: gRPC `quest:50057` \| Bare-metal default (`loader.go`): gRPC `127.0.0.1:50058` | Serves `QuestService`: persists per-character active/completed quests and quest variables, and queues GM quest commands for `world`. |
@@ -35,12 +35,12 @@ flowchart LR
     end
 
     subgraph Edge["Docker edge_net"]
-        Envoy["aoc-ingress-proxy (Envoy :8080, :8443, :9090, :50061)"]
+        Envoy["aoc-ingress-proxy (Envoy v1.33 :8080, :9090, :50061, :9901)"]
     end
 
     subgraph ServiceNet["Docker service_net"]
-        Gateway["aoc-gateway (ICS :50061, HTTP :8081, gRPC :50050)"]
-        Auth["aoc-auth (HTTP :8081, gRPC :50052)"]
+        Gateway["aoc-gateway (ICS :50061, HTTP :8000/:8081, gRPC :50050)"]
+        Auth["aoc-auth (HTTP :8081, gRPC :50051/:50052)"]
         Char["aoc-character (gRPC :50053)"]
         City["aoc-citynode (gRPC :50056)"]
         Quest["aoc-quest (gRPC :50057)"]
@@ -54,15 +54,15 @@ flowchart LR
         Postgres["aoc-postgres (TCP :5432)"]
     end
 
-    Launcher -->|"HTTP/2 :8080 / :8443"| Envoy
+    Launcher -->|"HTTP/1.1 :8080 & gRPC :9090"| Envoy
     Client -->|"UDP :19021"| Launcher
     Client -->|"ICS TLS 1.3 :50061"| Envoy
     Client -->|"UE5 UDP :7777"| World
-    Envoy -->|"HTTP :8081 / gRPC :50061"| Gateway
+    Envoy -->|"HTTP :8000/:8081 & ICS TLS :50061"| Gateway
     Envoy -->|"HTTP :8088"| WebAdmin
     Envoy -->|"HTTP/SSE :8082"| MeshGateway
     Envoy -->|"gRPC :9090 -> :50061"| World
-    Gateway -->|"gRPC :50052"| Auth
+    Gateway -->|"gRPC :50051/:50052"| Auth
     Gateway -->|"gRPC :50053"| Char
     Gateway -->|"gRPC :50056"| City
     Gateway -->|"gRPC :50057"| Quest

@@ -79,9 +79,9 @@ flowchart LR
 
 | `sandal.ps1` Subcommand | Script (`scripts/sandal/`) | Supported Options | Purpose |
 |---|---|---|---|
-| `run` (`start.bat`) | `run.ps1` | `-Profile <default\|dev\|admin\|full>`, `-SpawnLauncher`, `-NoLauncher`, `-AutomationPort <port>`, `-DryRun`, `-Json`, `-NoColor` | Verifies `content.db` v40, provisions TLS certs, stages `dist/` & `deploy/`, starts the 11-container stack, and opens `SandalLauncher.exe` |
+| `run` (`start.bat`, alias `start`) | `run.ps1` | `-Profile <default\|dev\|admin\|full>`, `-SpawnLauncher`, `-NoLauncher`, `-AutomationPort <port>`, `-DryRun`, `-Json`, `-NoColor` | Verifies `content.db` v40, provisions TLS certs, stages `dist/` & `deploy/`, starts the 11-container stack, and opens `SandalLauncher.exe` |
 | `build` (`build.bat`) | `build.ps1` | `-Config <Debug\|Release>`, `-DryRun`, `-Json`, `-NoColor` | Compiles C++23 `world`, Go services, `.NET 10` tools, and publishes `SandalLauncher` into `dist/` |
-| `down` (`stop.bat`) | `down.ps1` | `-Volumes`, `-DryRun`, `-Json`, `-NoColor` | Stops `SandalLauncher` / `AOCClient-Win64-Shipping` host processes and brings down the Docker Compose stack |
+| `down` (`stop.bat`, alias `stop`) | `down.ps1` | `-Volumes`, `-DryRun`, `-Json`, `-NoColor` | Stops `SandalLauncher` / `AOCClient-Win64-Shipping` host processes and brings down the Docker Compose stack |
 | `up` | `up.ps1` | `-Profile <default\|dev\|admin\|full>`, `-Detach`, `-DryRun`, `-Json`, `-NoColor` | Starts the 11-container Docker Compose stack and waits for healthchecks |
 | `extract` | `extract.ps1` | `-PakDir <path>`, `-OutputDir <path>`, `-DataFree`, `-Force`, `-DryRun`, `-Json`, `-NoColor` | Acquires the extraction lock, runs `scripts/extract_game_data.ps1`, and verifies `content.db` v40 via `Ensure-SandalContentDbCurrent` |
 | `certs` | `certs.ps1` | `-OutputDir <path>`, `-Force`, `-DryRun`, `-Json`, `-NoColor` | Reuses existing `dist/certs/server.pem` + `server.key` or generates a local Root CA + SAN leaf cert and trusts `ca.crt` in `Cert:\CurrentUser\Root` |
@@ -103,13 +103,13 @@ flowchart LR
     end
 
     subgraph edge_net["WSL2 Docker — Edge Tier (edge_net)"]
-        envoy["ingress-proxy (Envoy v1.31.2 :8080 / :8443 / :9090 / :50061)"]
+        envoy["ingress-proxy (Envoy v1.33 :8080 / :9090 / :50061)"]
         webadmin["web-admin (Nginx + Admin UI/BFF :8088)"]
     end
 
     subgraph service_net["WSL2 Docker — Service Tier (service_net)"]
-        gateway["gateway (Go :8081 / :50050 / :50061)"]
-        auth["auth (Go :8081 / :50052)"]
+        gateway["gateway (Go :8000/:8081 HTTP / :50050 gRPC / :50061 ICS)"]
+        auth["auth (Go :8081 / :50051-:50052 gRPC)"]
         character["character (Go :50053)"]
         citynode["citynode (Go :50056)"]
         quest["quest (Go :50057)"]
@@ -122,18 +122,18 @@ flowchart LR
         postgres["postgres (PostgreSQL 17 :5432)"]
     end
 
-    browser -->|"HTTP (:8080 / :8443)"| envoy
-    launcher -->|"HTTP/2 + gRPC (:8080, :9090)"| envoy
+    browser -->|"HTTP (:8080)"| envoy
+    launcher -->|"HTTP/1.1 + gRPC (:8080, :9090)"| envoy
     client -->|"Tether (:19021/udp)"| launcher
     client -->|"ICS TLS (:50061)"| envoy
     client -->|"UE5 Replication (:7777/udp)"| world
 
     envoy -->|"HTTP (:8088)"| webadmin
-    envoy -->|"HTTP/2, gRPC & ICS TLS"| gateway
-    envoy -->|"HTTP/2 & gRPC"| auth
+    envoy -->|"HTTP, gRPC & ICS TLS"| gateway
+    envoy -->|"gRPC (:9090 -> :50052)"| auth
     envoy -->|"HTTP/SSE (:8082)"| mesh_gateway
 
-    gateway -->|"gRPC (:50052-50057)"| auth
+    gateway -->|"gRPC (:50051-:50057)"| auth
     gateway -->|"gRPC"| character
     gateway -->|"gRPC"| mesh
     mesh_gateway -->|"gRPC"| mesh
@@ -152,7 +152,7 @@ flowchart LR
 
 | # | Service (`container_name`) | Runtime | Ports (Host Published / Internal Container) | Role |
 |---:|---|---|---|---|
-| 1 | `ingress-proxy` (`aoc-ingress-proxy`) | Envoy v1.31.2 | Host `127.0.0.1:8080` (`:8443` TLS), `127.0.0.1:9090` gRPC, `127.0.0.1:50061` ICS TLS / Container `:8080`, `:9090`, `:50061`, `:9901` Envoy admin | Edge reverse proxy routing browser, launcher, and client traffic across `edge_net` and `service_net` |
+| 1 | `ingress-proxy` (`aoc-ingress-proxy`) | Envoy v1.33 (`envoyproxy/envoy:v1.33-latest`) | Host `127.0.0.1:8080` HTTP/1.1, `127.0.0.1:9090` gRPC HTTP/2, `127.0.0.1:50061` ICS TLS passthrough / Container `:8080`, `:9090`, `:50061`, `:9901` Envoy admin | Edge reverse proxy routing browser, launcher, and client traffic across `edge_net` and `service_net` |
 | 2 | `gateway` (`aoc-gateway`) | Go | Internal `:8081` HTTP, `:50050` gRPC, `:50061` ICS TLS (exposed via Envoy `:8080`, `:9090`, `:50061`) | Client session & ICS TLS gateway, character screen, and world handoff tickets |
 | 3 | `auth` (`aoc-auth`) | Go | Internal `:8081` HTTP, `:50052` gRPC | Account registration, login, and session token validation |
 | 4 | `character` (`aoc-character`) | Go | Internal `:50053` gRPC | Character creation, inventory, equipment, starting kits, and persistence |
@@ -405,8 +405,8 @@ SandalCore separates transient build intermediates from self-contained runtime b
 - **`deploy/`**: Self-contained 11-container stack (`deploy/compose.yml`, `deploy/up.ps1`, `deploy/down.ps1`, `deploy/.env`, `deploy/content/`, `deploy/nav/`, `deploy/certs/`, `deploy/config/`). Works standalone if copied anywhere.
 
 Root entrypoints:
-- `start.bat` (`pwsh -File sandal.ps1 run`), `build.bat` (`pwsh -File sandal.ps1 build`), and `stop.bat` (`pwsh -File sandal.ps1 stop` / `pwsh -File sandal.ps1 down`): One-click Windows wrappers that delegate through `scripts\ensure_pwsh.bat` (which checks for PowerShell 7 `pwsh` and prompts to install the latest PowerShell 7 via `winget` if not present).
-- `sandal.ps1`: Unified CLI (`doctor`, `status`, `up`, `down`, `extract`, `certs`, `build`, `deploy`, `test`, `run`, `install-wsl-docker`, `help`).
+- `start.bat` (`pwsh -File sandal.ps1 run` / `pwsh -File sandal.ps1 start`), `build.bat` (`pwsh -File sandal.ps1 build`), and `stop.bat` (`pwsh -File sandal.ps1 down` / `pwsh -File sandal.ps1 stop`): One-click Windows wrappers that delegate through `scripts\ensure_pwsh.bat` (which checks for PowerShell 7 `pwsh` and prompts to install the latest PowerShell 7 via `winget` if not present).
+- `sandal.ps1`: Unified CLI (`doctor`, `status`, `up`, `down` / `stop`, `extract`, `certs`, `build`, `deploy`, `test`, `run` / `start`, `install-wsl-docker`, `help`).
 - `scripts\extract_game_data.ps1` and `scripts\generators.ps1` (`src\tools\schemagen\gen_*.ps1`): Game-data extraction pipeline and PowerShell 7 schema/table generation scripts.
 
 ---
@@ -505,16 +505,15 @@ Key runtime environment variables and settings include:
 - **Database Connection**: Configured via `deploy/compose.yml` (`deploy/.env`) or connection string (`postgres://aoc:<password>@127.0.0.1:5432/aoc?sslmode=disable`).
 - **Launcher Path**: Configured in `src/config/paths.json` or optional `src/config/paths.local.json` (auto-detected from `GAME_ROOT`).
 - **Network Ports (`deploy/compose.yml` & `src/deploy/envoy/envoy.yaml`)**:
-  - `http://127.0.0.1:8080` (`https://127.0.0.1:8443` TLS): Envoy HTTP/2 edge ingress & `web-admin` browser UI (`src/deploy/envoy/envoy.yaml:65-115`):
-    - `/api/v1/auth` -> `auth_http` (`auth:8081` in Compose / `127.0.0.1:8080` on bare-metal)
-    - `/api/v1/characters`, `/api/v1/world`, `/api/v1/sessions` -> `gateway_http` (`gateway:8081` in Compose / `127.0.0.1:8081` on bare-metal)
+  - `http://127.0.0.1:8080`: Envoy v1.33 (`envoyproxy/envoy:v1.33-latest`) HTTP/1.1 & WebSocket/SSE edge ingress & `web-admin` browser UI (`src/deploy/envoy/envoy.yaml:46-116,208-284`):
+    - `/api/v1/auth`, `/api/v1/characters`, `/api/v1/world`, `/api/v1/sessions` (plus `/api/v1/catalog` and `/v1/account`) -> `gateway_http` (`gateway:8000` / `gateway:8081` in Compose, which forwards `/api/v1/auth` requests to `auth:50051` / `auth:50052` over gRPC; `127.0.0.1:8080` / `127.0.0.1:8081` on bare-metal)
     - `/api/v1/gm` -> `mesh_gateway_http` (`mesh-gateway:8082` in Compose / `127.0.0.1:8082` on bare-metal)
     - `/` -> `web_admin_http` (`web-admin:8088` in Compose / `127.0.0.1:8088` on bare-metal)
-  - `127.0.0.1:9090`: Envoy gRPC ingress (`auth.v1` -> `auth:50051`, `character.v1` -> `character:50052`, `citynode.v1` -> `citynode:50053`, `quest.v1` -> `quest:50054`, `mesh.v1` -> `mesh:50055`, `gateway.v1` -> `gateway:50056`, `ics.v1` -> `gateway:50061`, `worldadmin.v1` -> `world:50061`)
-  - `127.0.0.1:50061`: Envoy ICS TLS 1.3 edge listener (forwarded to `gateway:50061`)
+  - `127.0.0.1:9090`: Envoy gRPC HTTP/2 ingress (`auth.v1` -> `auth_grpc`, `character.v1` -> `character_grpc`, `citynode.v1` -> `citynode_grpc`, `quest.v1` -> `quest_grpc`, `mesh.v1` -> `mesh_grpc`, `gateway.v1` -> `gateway_grpc`, `worldadmin.v1` -> `world_admin_grpc`)
+  - `127.0.0.1:50061`: Envoy ICS TLS 1.3 passthrough edge listener (forwarded to `gateway_tls` `gateway:50061`)
   - `127.0.0.1:50055 -> :50061/tcp`: Host-published `aoc-world` `WorldAdmin` gRPC (`worldctl` -> `aoc-world:50061`)
   - `127.0.0.1:19021/udp`: `SandalLauncher` in-memory `LocalTetherListener` (serves `ActiveAccessToken` and `127.0.0.1:50061` ICS TLS endpoint directly from memory to `AOC\Binaries\Win64\AOCClient-Win64-Shipping.exe`, never writing a token file to disk)
-  - `127.0.0.1:9901`: Envoy local admin interface (container-internal)
+  - `:9901`: Envoy container-internal admin interface (`http://127.0.0.1:9901/ready`)
   - `127.0.0.1:7777/udp`: `world` (`aoc-world`) authoritative UE5 replication listener (`world --bind`, configured via `WORLD_UDP_PORT` / `WORLD_PORT`)
   - `127.0.0.1:5432`: PostgreSQL 17 (`postgres` / `aoc-postgres`)
 
