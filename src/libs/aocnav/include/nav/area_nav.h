@@ -241,6 +241,7 @@ private:
     // the window
     bool windowed_ = false;
     std::string path_;
+    std::vector<uint8_t> memory_file_;
     std::vector<Slot> slots_;                                // one per directory row
     std::unordered_map<uint64_t, uint32_t> slot_by_key_;
     std::deque<uint32_t> arrived_, unload_queue_;

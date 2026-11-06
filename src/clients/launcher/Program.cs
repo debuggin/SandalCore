@@ -461,12 +461,27 @@ namespace SandalLauncher.ViewModels
                 return;
             }
             int tetherPort = EnsureInMemoryTetherRunning();
-            using System.Diagnostics.Process proc = ClientLaunchService.StartGameOrMockProcess(
-                _config,
-                allowMockFallback: true,
-                tetherPort: tetherPort);
-            TrackedAshesPid = proc.Id;
+            System.Diagnostics.Process proc = ClientLaunchService.StartGameOrMockProcess(_config, allowMockFallback: true, tetherPort: tetherPort);
+            int spawnedPid = proc.Id;
+            TrackedAshesPid = spawnedPid;
             IsAshesProcessRunning = true;
+            _ = MonitorGameProcessExitAsync(proc, spawnedPid);
+        }
+
+        private async Task MonitorGameProcessExitAsync(System.Diagnostics.Process proc, int spawnedPid)
+        {
+            try { await proc.WaitForExitAsync().ConfigureAwait(false); }
+            catch (Exception ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
+            finally { proc.Dispose(); }
+            for (int poll = 0; poll < 172800 && TrackedAshesPid == spawnedPid &&
+                 (ClientLaunchService.IsProcessAlive(spawnedPid) || ClientLaunchService.FindRunningAshesProcesses().Count > 0); poll++)
+                await Task.Delay(500).ConfigureAwait(false);
+            await InvokeOnUiIfDesktopAsync(() =>
+            {
+                if (TrackedAshesPid != spawnedPid) return;
+                (IsAshesProcessRunning, TrackedAshesPid, LifecyclePhase) = (false, null, "game_closed");
+                StatusBannerMessage = $"Game client (PID {spawnedPid}) closed.";
+            }).ConfigureAwait(false);
         }
 
         private int EnsureInMemoryTetherRunning()

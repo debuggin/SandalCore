@@ -22,7 +22,9 @@
 #include "stats/character_stats.h"
 
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace aoc::worldd::combat {
@@ -52,8 +54,22 @@ public:
     static int engine_level(int data_level);
 
 private:
-    const stats::StatBundle*   bundle_;
-    const stats::GearCatalog*  gear_;
+    struct CacheKey {
+        int             profile = 0;
+        int             level = 0;
+        stats::NpcShape shape{};
+        bool operator<(const CacheKey& o) const {
+            if (profile != o.profile) return profile < o.profile;
+            if (level != o.level) return level < o.level;
+            if (shape.elite_rank != o.shape.elite_rank) return shape.elite_rank < o.shape.elite_rank;
+            return shape.dist < o.shape.dist;
+        }
+    };
+
+    const stats::StatBundle*                           bundle_;
+    const stats::GearCatalog*                          gear_;
+    mutable std::unique_ptr<std::mutex>                cache_mu_ = std::make_unique<std::mutex>();
+    mutable std::map<CacheKey, stats::CharacterStats>  cache_;
 };
 
 }  // namespace aoc::worldd::combat

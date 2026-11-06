@@ -584,3 +584,49 @@ func TestDeleteAccountCascadesDBRows(t *testing.T) {
 		}
 	}
 }
+
+func TestPurgeStaleTemporaryAccounts(t *testing.T) {
+	s := newStoreOrMem(t)
+	ctx := context.Background()
+
+	staleNames := []string{"tmp_1234abcd", "temp_9999", "e2e_deadbeef", "ephem_hero"}
+	realNames := []string{"tester", "player_one"}
+	tokens := make(map[string]string, len(staleNames)+len(realNames))
+
+	for _, name := range append(append([]string(nil), staleNames...), realNames...) {
+		acc, err := s.Register(ctx, name, "secret1")
+		if err != nil {
+			t.Fatalf("Register(%q): %v", name, err)
+		}
+		tok, err := s.IssueToken(ctx, acc.ID)
+		if err != nil {
+			t.Fatalf("IssueToken(%q): %v", name, err)
+		}
+		tokens[name] = tok.Value
+	}
+
+	deleted, err := s.PurgeStaleTemporaryAccounts(ctx)
+	if err != nil || deleted != int64(len(staleNames)) {
+		t.Fatalf("PurgeStaleTemporaryAccounts = (%d, %v), want (%d, nil)", deleted, err, len(staleNames))
+	}
+	for _, name := range staleNames {
+		if _, err := s.FindByUsername(ctx, name); !errors.Is(err, ErrAccountNotFound) {
+			t.Errorf("FindByUsername(%q) after purge = %v, want ErrAccountNotFound", name, err)
+		}
+		if _, err := s.ValidateToken(ctx, tokens[name]); !errors.Is(err, ErrInvalidToken) {
+			t.Errorf("ValidateToken(%q) after purge = %v, want ErrInvalidToken", name, err)
+		}
+	}
+	for _, name := range realNames {
+		if _, err := s.FindByUsername(ctx, name); err != nil {
+			t.Errorf("FindByUsername(%q) after purge = %v, want preserved account", name, err)
+		}
+		if _, err := s.ValidateToken(ctx, tokens[name]); err != nil {
+			t.Errorf("ValidateToken(%q) after purge = %v, want valid token", name, err)
+		}
+	}
+	if again, err := s.PurgeStaleTemporaryAccounts(ctx); err != nil || again != 0 {
+		t.Errorf("second PurgeStaleTemporaryAccounts = (%d, %v), want (0, nil)", again, err)
+	}
+}
+

@@ -120,6 +120,8 @@ CREATE TABLE record (
     UNIQUE (type_id, guid)
 );
 CREATE INDEX record_by_table ON record (table_index);
+CREATE INDEX record_by_guid ON record (guid, schema, name);
+CREATE INDEX record_by_schema_guid ON record (schema, guid, name);
 
 -- StatTypeDef. replication is the row's Replication byte, a mask of
 -- EReplicationRules (1 autonomous = the owner, 2 simulated, 4 proxy); audience
@@ -149,6 +151,7 @@ CREATE TABLE stat_def (
     display_pct            INTEGER NOT NULL DEFAULT 0   -- bDisplayAsPercentage (contentc version 33): the client shows the stat as a percentage and does not round an item's value of it to a whole number
 );
 CREATE INDEX stat_def_by_name ON stat_def (name);
+CREATE INDEX stat_def_display_pct ON stat_def (guid) WHERE display_pct = 1;
 
 -- StatCurve: one row per curve, and its keys. level is the key's Time (the
 -- character level for the player curves).
@@ -170,6 +173,7 @@ CREATE TABLE stat_curve (
     leave_tangent  REAL NOT NULL,     -- points the first key's leave and the next key's arrive tangents make
     PRIMARY KEY (guid, ord)
 ) WITHOUT ROWID;
+CREATE INDEX stat_curve_by_name_ord ON stat_curve (name, ord, level, value);
 
 -- StatInitializerList: the entries of each list, in file order. stat_guid 0 is
 -- a null reference in the database (stat_name '').
@@ -183,6 +187,7 @@ CREATE TABLE stat_init (
     PRIMARY KEY (list_guid, ord)
 ) WITHOUT ROWID;
 CREATE INDEX stat_init_by_list_stat ON stat_init (list_guid, stat_guid);
+CREATE INDEX stat_init_by_name_ord ON stat_init (list_name, ord);
 
 -- The eight player classes (CharacterClasses rows named like the class enum
 -- without the "Stage" duplicates). archetype_id is the wire archetype record id
@@ -216,6 +221,7 @@ CREATE TABLE class_stat_base (
     rounding_ambiguous INTEGER NOT NULL,
     PRIMARY KEY (class_guid, level, stat_guid)
 ) WITHOUT ROWID;
+CREATE INDEX class_stat_base_by_name_level ON class_stat_base (class_name, level);
 
 -- Abilities (Sprint and Dodge): the row, its cost groups (one row per stat
 -- cost) and the effects and hits it lists.
@@ -439,6 +445,7 @@ CREATE TABLE item (
     stack_stats              INTEGER NOT NULL DEFAULT 0    -- Glint tiers (contentc version 24): the record's bMaxStackSizeAffectedByStats: 1 when the stat of the bag that holds a stack (bag_stack_mod) adds to its max_stack_size
 );
 CREATE INDEX item_by_name ON item (name);
+CREATE INDEX item_by_name_nocase ON item (name COLLATE NOCASE, guid);
 -- The slots an item may be worn in, in the order of the record's EquipSlots (the first free one is used when the client
 -- does not ask for a slot). An item that is not worn has none.
 CREATE TABLE item_equip_slot (
@@ -610,6 +617,7 @@ CREATE TABLE leveling_type (
     uses_debt         INTEGER NOT NULL,
     xp_mult_stat_guid INTEGER NOT NULL
 );
+CREATE INDEX leveling_type_by_exp_guid ON leveling_type (experience_type, guid, name);
 CREATE TABLE leveling_curve (
     type_guid INTEGER NOT NULL,
     level     INTEGER NOT NULL,
@@ -633,6 +641,7 @@ CREATE TABLE skill_auto_grant (
     effect_guid        INTEGER NOT NULL,
     PRIMARY KEY (tree_guid, node_guid)
 ) WITHOUT ROWID;
+CREATE INDEX skill_auto_grant_by_leveling ON skill_auto_grant (leveling_type_guid, level_requirement, node_guid);
 CREATE TABLE skill_rank_stat_mod (
     rank_guid INTEGER NOT NULL,
     ord       INTEGER NOT NULL,
@@ -679,6 +688,8 @@ CREATE TABLE skill_tree (
     class_guid         INTEGER NOT NULL,
     weapon_line_guid   INTEGER NOT NULL
 );
+CREATE INDEX skill_tree_by_class ON skill_tree (class_guid);
+CREATE INDEX skill_tree_by_name ON skill_tree (name);
 CREATE TABLE skill_node (
     tree_guid         INTEGER NOT NULL,
     node_guid         INTEGER NOT NULL,
@@ -695,6 +706,7 @@ CREATE TABLE skill_node (
     slot_guid         INTEGER NOT NULL,
     PRIMARY KEY (tree_guid, node_guid, ord, opt)
 ) WITHOUT ROWID;
+CREATE INDEX skill_node_auto_granted ON skill_node (tree_guid, skill_guid, level_requirement) WHERE auto_granted = 1;
 CREATE TABLE skill_node_require (
     tree_guid       INTEGER NOT NULL,
     node_guid       INTEGER NOT NULL,
@@ -747,53 +759,15 @@ func Create(db *sql.DB) error {
 	if _, err := db.Exec(AbilityDDL); err != nil {
 		return fmt.Errorf("content: create the ability tables: %w", err)
 	}
-	if err := createPopulation(db); err != nil {
-		return err
+	for _, fn := range []func(*sql.DB) error{
+		createPopulation, createCombat, createLoot, createMounts, createNodes,
+		createGather, createResource, createFoliage, createDialogue, createVendors,
+		createCrafting, createRespawn, createQuests, createCurrency, createSystem16,
+		createWarehouse, createEffectControl, // extends ab_effect: after the ability tables
+	} {
+		if err := fn(db); err != nil {
+			return err
+		}
 	}
-	if err := createCombat(db); err != nil {
-		return err
-	}
-	if err := createLoot(db); err != nil {
-		return err
-	}
-	if err := createMounts(db); err != nil {
-		return err
-	}
-	if err := createNodes(db); err != nil {
-		return err
-	}
-	if err := createGather(db); err != nil {
-		return err
-	}
-	if err := createResource(db); err != nil {
-		return err
-	}
-	if err := createFoliage(db); err != nil {
-		return err
-	}
-	if err := createDialogue(db); err != nil {
-		return err
-	}
-	if err := createVendors(db); err != nil {
-		return err
-	}
-	if err := createCrafting(db); err != nil {
-		return err
-	}
-	if err := createRespawn(db); err != nil {
-		return err
-	}
-	if err := createQuests(db); err != nil {
-		return err
-	}
-	if err := createCurrency(db); err != nil {
-		return err
-	}
-	if err := createSystem16(db); err != nil {
-		return err
-	}
-	if err := createWarehouse(db); err != nil {
-		return err
-	}
-	return createEffectControl(db) // extends ab_effect: after the ability tables
+	return nil
 }

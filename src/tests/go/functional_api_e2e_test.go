@@ -557,7 +557,7 @@ var (
 func TestFlow5_ComposeAndEnvoyIngressContract(t *testing.T) { TestLiveComposeFunctionalAPIs(t) }
 func TestLiveComposeFunctionalAPIs(t *testing.T) {
 	verifyEnvoyAndComposeGrpcContractParity(t)
-	liveComposeOnce.Do(func() { probeLiveComposeIngress(t); probeLiveComposeGRPCAndTLS(t); liveComposePassed = true })
+	liveComposeOnce.Do(func() { probeLiveComposeIngress(t); liveComposePassed = true })
 	if !liveComposePassed { t.Fatal("live compose functional API suite failed") }
 }
 func extractLiveToken(payload map[string]any) string {
@@ -592,6 +592,7 @@ func probeLiveComposeIngress(t *testing.T) {
 	tok := extractLiveToken(loginMap)
 	if loginResp.StatusCode != http.StatusOK || tok == "" { t.Fatalf("login expected 200 with valid token, got %d (%v)", loginResp.StatusCode, loginMap) }
 	probeLiveCatalogAndCharacters(t, client, tok, charName)
+	probeLiveComposeGRPCAndTLS(t)
 	delResp, delMap := doAuthReqJSON(t, http.MethodDelete, "http://127.0.0.1:8080/api/v1/auth/account", tok, fmt.Sprintf(`{"username":%q,"password":%q}`, user, pass))
 	if delResp.StatusCode != http.StatusOK || delMap["deleted"] != true { t.Fatalf("DELETE /api/v1/auth/account expected 200 deleted=true, got %d (%v)", delResp.StatusCode, delMap) }
 	if loginAfter, _ := postAuthJSON(t, "http://127.0.0.1:8080/api/v1/auth/login", regBody); loginAfter.StatusCode != http.StatusUnauthorized { t.Fatalf("expected 401 Unauthorized after account deletion, got %d", loginAfter.StatusCode) }

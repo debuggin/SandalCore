@@ -237,6 +237,7 @@ CREATE TABLE vendor_def (
     name           TEXT NOT NULL,
     operations     INTEGER NOT NULL
 );
+CREATE INDEX vendor_def_by_name ON vendor_def (name, guid);
 CREATE TABLE vendor_def_inventory (
     vendor_guid    INTEGER NOT NULL,
     ord            INTEGER NOT NULL,

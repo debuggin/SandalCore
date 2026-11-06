@@ -125,12 +125,12 @@ function Ensure-SandalLauncherBinary {
     }
     $dotnetExe = Resolve-SandalDotnetExe
     if ($dotnetExe) {
-        Write-RunStep -Message '[Step 2/6] Building and publishing SandalLauncher desktop client...' -Quiet $Quiet
+        Write-RunStep -Message '[Step 3/6] Building and publishing SandalLauncher desktop client...' -Quiet $Quiet
         $distRelDir = Join-Path $RootDirPath 'dist/Release'
         $null = & $dotnetExe build $launcherCsproj -c Release --nologo 2>&1
         $null = & $dotnetExe publish $launcherCsproj -c Release -o (Join-Path $RootDirPath 'dist/launcher') -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
         $null = & $dotnetExe publish $launcherCsproj -c Release -o $distRelDir -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
-        Write-RunStep -Message '[Step 2/6] SandalLauncher publish complete.' -Quiet $Quiet
+        Write-RunStep -Message '[Step 3/6] SandalLauncher publish complete.' -Quiet $Quiet
     }
 }
 
@@ -192,11 +192,11 @@ function Invoke-RunPipeline {
     $quiet = [bool]$Options.Json
     if ($Options.DryRun) {
         foreach ($msg in @(
-            '[Step 1/6] (dry-run) Would verify extracted game data in dist/content/.',
-            '[Step 2/6] (dry-run) Would verify SandalLauncher binary in dist/launcher/.',
-            '[Step 3/6] (dry-run) Would verify local TLS certificates in dist/certs/.',
-            '[Step 4/6] (dry-run) Would stage runtime and deploy manifests (dist/ & deploy/).',
-            "[Step 5/6] (dry-run) Would start Docker Compose stack (profile=$($Options.Profile)).",
+            '[Step 1/6] (dry-run) Would check extracted game data in dist/content/.',
+            '[Step 2/6] (dry-run) Would stage runtime assets in dist/.',
+            '[Step 3/6] (dry-run) Would verify/build SandalLauncher desktop executable.',
+            '[Step 4/6] (dry-run) Would verify local TLS certificates and Docker Compose manifests (dist/certs/ & deploy/).',
+            "[Step 5/6] (dry-run) Would start SandalCore Docker containers (profile=$($Options.Profile)).",
             "[Step 6/6] (dry-run) Would launch SandalLauncher window (spawn=$($Options.SpawnLauncher))."
         )) { Write-RunStep -Message $msg -Quiet $quiet }
         return $null

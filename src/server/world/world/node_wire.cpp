@@ -50,6 +50,7 @@ std::unique_ptr<NodeWire> NodeWire::load(const std::string& path, const CityNode
         sqlite3* db;
         ~Closer() { sqlite3_close(db); }
     } closer{db};
+    sqlite3_exec(db, "PRAGMA mmap_size = 536870912; PRAGMA cache_size = -16384; PRAGMA temp_store = MEMORY; PRAGMA query_only = ON;", nullptr, nullptr, nullptr);
     auto out = std::unique_ptr<NodeWire>(new NodeWire());
     out->nodes_ = &nodes;
 

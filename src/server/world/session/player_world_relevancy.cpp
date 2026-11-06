@@ -95,6 +95,39 @@ std::optional<int> baked_pit_depth_m(const world::TownPlatforms* platforms, cons
     return static_cast<int>((platform->z - baked) / 100.0);
 }
 
+double nav_pump_budget_ms() {
+    static const double v = []() -> double {
+        const char* s = std::getenv("AOC_WORLD_NAV_PUMP_BUDGET_MS");
+        if (!s || !*s) return 4.0;
+        char* end = nullptr;
+        const double d = std::strtod(s, &end);
+        return (end != s && std::isfinite(d)) ? std::clamp(d, 0.5, 50.0) : 4.0;
+    }();
+    return v;
+}
+
+size_t npc_ground_per_tick() {
+    static const size_t v = []() -> size_t {
+        const char* s = std::getenv("AOC_WORLD_NPC_GROUND_PER_TICK");
+        if (!s || !*s) return 32;
+        char* end = nullptr;
+        const long n = std::strtol(s, &end, 10);
+        return end != s ? static_cast<size_t>(std::clamp<long>(n, 1, 4096)) : 32;
+    }();
+    return v;
+}
+
+double npc_ground_budget_ms() {
+    static const double v = []() -> double {
+        const char* s = std::getenv("AOC_WORLD_NPC_GROUND_BUDGET_MS");
+        if (!s || !*s) return 2.0;
+        char* end = nullptr;
+        const double d = std::strtod(s, &end);
+        return (end != s && std::isfinite(d)) ? std::clamp(d, 0.25, 50.0) : 2.0;
+    }();
+    return v;
+}
+
 }  // namespace
 
 bool PlayerWorld::load_ground(const std::string& nav_path, const std::string& motion_path, std::string& error) {
@@ -198,12 +231,16 @@ void PlayerWorld::drive_window(double now_seconds) {
     const auto a = std::chrono::steady_clock::now();
     nav_->set_interest(npcs_->player_points(now_seconds));
     const auto b = std::chrono::steady_clock::now();
-    const std::vector<nav::ChunkKey> arrived = nav_->pump(kWindowBudgetMs);
+    const std::vector<nav::ChunkKey> arrived = nav_->pump(nav_pump_budget_ms());
     const auto c = std::chrono::steady_clock::now();
     if (!arrived.empty()) {
-        npcs_->chunks_resident(arrived);
+        npcs_->enqueue_chunks_resident(arrived);
         window_cost_.grounded_chunks += arrived.size();
-        window_cost_.max_ground_ms = std::max(window_cost_.max_ground_ms, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c).count());
+    }
+    if (npcs_->has_ready_grounding()) {
+        const auto g0 = std::chrono::steady_clock::now();
+        npcs_->pump_grounding(npc_ground_per_tick(), npc_ground_budget_ms());
+        window_cost_.max_ground_ms = std::max(window_cost_.max_ground_ms, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - g0).count());
     }
     window_cost_.max_interest_ms = std::max(window_cost_.max_interest_ms, std::chrono::duration<double, std::milli>(b - a).count());
     window_cost_.max_pump_ms = std::max(window_cost_.max_pump_ms, std::chrono::duration<double, std::milli>(c - b).count());
@@ -260,7 +297,7 @@ void PlayerWorld::check_town_node(int64_t node, const spawns::NodePopulations::E
 }
 
 void PlayerWorld::check_towns(double now_seconds) {
-    if (!node_pops_ || !npcs_ || !nav_ || now_seconds - last_town_check_ < kTownCheckSeconds) return;
+    if (!node_pops_ || !npcs_ || !nav_ || npcs_->has_ready_grounding() || now_seconds - last_town_check_ < kTownCheckSeconds) return;
     last_town_check_ = now_seconds;
     for (const auto& [node, entry] : node_pops_->entries()) {
         check_town_node(node, entry, now_seconds);

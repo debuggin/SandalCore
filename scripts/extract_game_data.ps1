@@ -76,7 +76,21 @@ $distDir   = Join-Path $repoRoot 'dist'
 $outDir    = Join-Path $distDir 'content'
 $stampDir  = Join-Path $repoRoot 'build' '.extract'
 $toolsDir  = Join-Path $distDir 'tools'
-$usmapSrc  = Join-Path $repoRoot 'src\config\layouts\aoc.usmap'
+function Resolve-DefaultUsmapSrc([string]$root) {
+    $uh = if ($HOME) { $HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { '' }
+    foreach ($cand in @($env:SANDAL_USMAP_PATH, $env:AOC_USMAP, $env:SANDAL_USMAP_OVERRIDE_DIR, $env:AOC_USMAP_OVERRIDE_DIR, $(if ($uh) { Join-Path $uh '.aoc\usmap' } else { '' }))) {
+        if ([string]::IsNullOrWhiteSpace($cand)) { continue }
+        $c = $cand.Trim().Trim('"')
+        if ((Test-Path -LiteralPath $c -PathType Leaf) -and (Get-Item -LiteralPath $c -Force).Length -gt 0) { return $c }
+        if (Test-Path -LiteralPath $c -PathType Container) {
+            $direct = Join-Path $c 'aoc.usmap'; if ((Test-Path -LiteralPath $direct -PathType Leaf) -and (Get-Item -LiteralPath $direct -Force).Length -gt 0) { return $direct }
+            $any = Get-ChildItem -LiteralPath $c -Filter '*.usmap' -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+            if ($null -ne $any) { return $any.FullName }
+        }
+    }
+    return (Join-Path $root 'src\config\layouts\aoc.usmap')
+}
+$usmapSrc  = Resolve-DefaultUsmapSrc $repoRoot
 function Resolve-DotnetToolRelPath([string]$tool) {
     $net10Rel = "build\dotnet\bin\$tool\Release\net10.0\$tool.dll"
     $net8Rel  = "build\dotnet\bin\$tool\Release\net8.0\$tool.dll"
@@ -521,7 +535,10 @@ $steps = @(
     } },
     @{ Name = 'config'; Title = "Export the game's Config files and copy aoc.usmap"; Outputs = @('dist\content\client_config\DefaultCombat.ini', 'dist\content\client_config\DefaultAoCRecordConstants.ini', 'dist\content\aoc.usmap'); Run = {
         Assert-Files @((Resolve-DotnetToolRelPath 'mapc')) 'run the tools step first'
-        Copy-Item -Force -LiteralPath $usmapSrc -Destination (Join-Path $outDir 'aoc.usmap')
+        $dstUsmap = Join-Path $outDir 'aoc.usmap'
+        if (Test-Path -LiteralPath $dstUsmap -PathType Leaf) { Remove-Item -LiteralPath $dstUsmap -Force }
+        Copy-Item -Force -LiteralPath $usmapSrc -Destination $dstUsmap
+        (Get-Item -LiteralPath $dstUsmap -Force).Attributes = [System.IO.FileAttributes]::Normal
         Invoke-Checked $dotnet @($mapcDll, 'export-config', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_config'
     } },
     @{ Name = 'curves'; Title = 'Read the profession curves and the mounts from the game containers (mapc)'; Outputs = @('dist\content\artisan_curves.tsv', 'dist\content\mount_speeds.tsv', 'dist\content\mount_riders.tsv'); Run = {

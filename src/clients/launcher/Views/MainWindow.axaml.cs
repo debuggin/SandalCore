@@ -500,7 +500,11 @@ namespace SandalLauncher.ViewModels
             {
                 IReadOnlyList<LauncherProfile> staleTemps = await ProfileStore.GetTemporaryProfilesAsync(ct).ConfigureAwait(false);
                 foreach (LauncherProfile p in staleTemps)
+                {
+                    if (!string.IsNullOrWhiteSpace(p.AccountUsername))
+                        await ProfileStore.ForgetSavedAccountAsync(CredentialGuard.Vault, p.AccountUsername, ct).ConfigureAwait(false);
                     _ = await ProfileStore.DeleteProfileAsync(p.Id, ct).ConfigureAwait(false);
+                }
             }
             catch (Exception ex) { Trace.WriteLine(ex.Message); }
             await RefreshSavedAccountsAsync(ct, populateInitialSelection: true).ConfigureAwait(false);

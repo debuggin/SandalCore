@@ -292,7 +292,8 @@ func (w *walker) readValue(t *usmap.Type, byteEnum bool) Value {
 		return math.Float32frombits(w.u32())
 	case usmap.KindDouble:
 		return math.Float64frombits(w.u64())
-	case usmap.KindName, usmap.KindStr, usmap.KindUnknown, usmap.KindSoftObject, usmap.KindObject:
+	case usmap.KindName, usmap.KindStr, usmap.KindUtf8Str, usmap.KindAnsiStr,
+		usmap.KindUnknown, usmap.KindSoftObject, usmap.KindObject, usmap.KindClass, usmap.KindSoftClass:
 		return w.pool()
 	case usmap.KindEnum:
 		return w.readEnumValue(t, byteEnum)

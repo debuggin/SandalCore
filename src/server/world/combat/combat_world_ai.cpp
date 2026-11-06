@@ -658,7 +658,14 @@ void CombatWorld::tick(double now) {
     }
     if (now >= next_stats_) {
         next_stats_ = now + cfg_.stats_seconds;
-        size_t budget = 64;
+        static const size_t kMaxStatBuildsPerTick = []() -> size_t {
+            const char* s = std::getenv("AOC_WORLD_NPC_STATS_PER_TICK");
+            if (!s || !*s) return 24;
+            char* end = nullptr;
+            const long n = std::strtol(s, &end, 10);
+            return end != s ? static_cast<size_t>(std::clamp<long>(n, 1, 1024)) : 24;
+        }();
+        size_t budget = kMaxStatBuildsPerTick;
         for (PlayerPort* p : players_) {
             std::vector<std::pair<double, uint64_t>> todo_stats;
             collect_nearby_stats_candidates(registry_, p->fighter().position(), cfg_.stats_radius_cm, stats_filled_, todo_stats);

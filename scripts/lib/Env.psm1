@@ -29,9 +29,7 @@ function Get-SandalEnvMap {
     if (-not (Test-Path -LiteralPath $EnvPath -PathType Leaf)) { return $map }
     foreach ($line in [System.IO.File]::ReadAllLines($EnvPath, [System.Text.Encoding]::UTF8)) {
         $trimmed = $line.Trim()
-        if ($trimmed.Length -gt 0 -and -not $trimmed.StartsWith('#') -and $trimmed -match '^([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$') {
-            $map[$Matches[1]] = $Matches[2].Trim()
-        }
+        if ($trimmed.Length -gt 0 -and -not $trimmed.StartsWith('#') -and $trimmed -match '^([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$') { $map[$Matches[1]] = $Matches[2].Trim() }
     }
     return $map
 }
@@ -52,9 +50,7 @@ function Get-SandalLocalOverlayMap {
     foreach ($p in @($TemplatePath, $EnvPath)) {
         if (-not $p) { continue }
         $parent = Split-Path -Parent $p
-        if ($parent -and (Test-Path -LiteralPath (Join-Path $parent 'sandal.local.env') -PathType Leaf)) {
-            return (Get-SandalEnvMap -EnvPath (Join-Path $parent 'sandal.local.env'))
-        }
+        if ($parent -and (Test-Path -LiteralPath (Join-Path $parent 'sandal.local.env') -PathType Leaf)) { return (Get-SandalEnvMap -EnvPath (Join-Path $parent 'sandal.local.env')) }
     }
     return [ordered]@{}
 }
@@ -62,12 +58,9 @@ function Get-SandalLocalOverlayMap {
 function Use-SandalUserDotnet10 {
     $dn = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($dn -and (@(& $dn.Source --list-sdks 2>$null) | Where-Object { $_ -match '^(\d+)\.' -and [int]$Matches[1] -ge 10 })) { return }
-    $userDotnet = Join-Path $HOME '.dotnet'
-    $userExe = Join-Path $userDotnet $(if ($IsWindows) { 'dotnet.exe' } else { 'dotnet' })
+    $userDotnet = Join-Path $HOME '.dotnet'; $userExe = Join-Path $userDotnet $(if ($IsWindows) { 'dotnet.exe' } else { 'dotnet' })
     if ((Test-Path -LiteralPath $userExe -PathType Leaf) -and (@(& $userExe --list-sdks 2>$null) | Where-Object { $_ -match '^(\d+)\.' -and [int]$Matches[1] -ge 10 })) {
-        $sep = [System.IO.Path]::PathSeparator
-        $env:DOTNET_ROOT = $userDotnet
-        $env:PATH = "${userDotnet}${sep}$($env:PATH)"
+        $env:DOTNET_ROOT = $userDotnet; $env:PATH = "${userDotnet}$([System.IO.Path]::PathSeparator)$($env:PATH)"
     }
 }
 
@@ -75,8 +68,7 @@ function Initialize-SandalEnv {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$EnvPath, [Alias('ExamplePath')][string]$TemplatePath = '', [string[]]$SecretKeys = @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY'), [switch]$Force)
     Use-SandalUserDotnet10
-    $parent = Split-Path -Parent $EnvPath
-    if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
+    $parent = Split-Path -Parent $EnvPath; if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
     $existingMap = if (Test-Path -LiteralPath $EnvPath -PathType Leaf) { Get-SandalEnvMap -EnvPath $EnvPath } else { [ordered]@{} }
     $localMap = if (-not $Force) { Get-SandalLocalOverlayMap -TemplatePath $TemplatePath -EnvPath $EnvPath } else { [ordered]@{} }
     foreach ($lk in $localMap.Keys) { $existingMap[$lk] = $localMap[$lk] }
@@ -86,42 +78,30 @@ function Initialize-SandalEnv {
     $seenSecrets = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $seenKeys = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     $generated = [System.Collections.Generic.List[string]]::new()
-
     foreach ($line in $inLines) {
         if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$') { $outLines.Add($line); continue }
-        $key = $Matches[1]
-        $val = if ($localMap.Contains($key)) { [string]$localMap[$key] } else { $Matches[2].Trim() }
+        $key = $Matches[1]; $val = if ($localMap.Contains($key)) { [string]$localMap[$key] } else { $Matches[2].Trim() }
         if ($key -in @('WORLD_PUBLIC_HOST', 'WORLD_HOST') -and $val -eq 'world') { $val = '127.0.0.1' }
         $null = $seenKeys.Add($key)
         if ($key -notin $SecretKeys) { $outLines.Add("${key}=${val}"); continue }
-        $null = $seenSecrets.Add($key)
-        $existingVal = if ($existingMap.Contains($key)) { [string]$existingMap[$key] } else { '' }
-        if (-not $Force -and $existingVal -and -not $existingVal.StartsWith('CHANGE_ME')) {
-            $val = $existingVal
-        } elseif ($Force -or [string]::IsNullOrWhiteSpace($val) -or $val.StartsWith('CHANGE_ME')) {
-            $val = New-SandalCsprngSecret -ByteLength 32; $generated.Add($key)
-        }
+        $null = $seenSecrets.Add($key); $existingVal = if ($existingMap.Contains($key)) { [string]$existingMap[$key] } else { '' }
+        if (-not $Force -and $existingVal -and -not $existingVal.StartsWith('CHANGE_ME')) { $val = $existingVal }
+        elseif ($Force -or [string]::IsNullOrWhiteSpace($val) -or $val.StartsWith('CHANGE_ME')) { $val = New-SandalCsprngSecret -ByteLength 32; $generated.Add($key) }
         $outLines.Add("${key}=${val}")
     }
     foreach ($extraKey in $existingMap.Keys) {
         if ($seenKeys.Contains($extraKey)) { continue }
         $val = [string]$existingMap[$extraKey]
-        if ($extraKey -in $SecretKeys -and ($Force -or [string]::IsNullOrWhiteSpace($val) -or $val.StartsWith('CHANGE_ME'))) {
-            $val = New-SandalCsprngSecret -ByteLength 32; $generated.Add($extraKey)
-        }
+        if ($extraKey -in $SecretKeys -and ($Force -or [string]::IsNullOrWhiteSpace($val) -or $val.StartsWith('CHANGE_ME'))) { $val = New-SandalCsprngSecret -ByteLength 32; $generated.Add($extraKey) }
         if ($extraKey -in $SecretKeys) { $null = $seenSecrets.Add($extraKey) }
         $outLines.Add("${extraKey}=${val}")
     }
     foreach ($key in $SecretKeys) {
-        if (-not $seenSecrets.Contains($key)) {
-            $outLines.Add("${key}=$(New-SandalCsprngSecret -ByteLength 32)"); $generated.Add($key)
-        }
+        if (-not $seenSecrets.Contains($key)) { $outLines.Add("${key}=$(New-SandalCsprngSecret -ByteLength 32)"); $generated.Add($key) }
     }
-    $tmpPath = "${EnvPath}.tmp.${PID}"
-    [System.IO.File]::WriteAllLines($tmpPath, $outLines, [System.Text.UTF8Encoding]::new($false))
+    $tmpPath = "${EnvPath}.tmp.${PID}"; [System.IO.File]::WriteAllLines($tmpPath, $outLines, [System.Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $tmpPath -Destination $EnvPath -Force
-    $aclInfo = Set-SandalSecretAcl -LiteralPath $EnvPath
-    return [pscustomobject]@{ EnvPath = $EnvPath; GeneratedKeys = $generated.ToArray(); Acl = $aclInfo }
+    return [pscustomobject]@{ EnvPath = $EnvPath; GeneratedKeys = $generated.ToArray(); Acl = (Set-SandalSecretAcl -LiteralPath $EnvPath) }
 }
 
 function Merge-SandalLocalJsonOverlay {
@@ -332,83 +312,55 @@ function Write-SandalDeployScripts {
     param([Parameter(Mandatory)][string]$DeployDir)
     $wakeLines = @(
         '$null = & docker info *> $null',
-        'if ($LASTEXITCODE -ne 0 -and $IsWindows -and $env:DOCKER_HOST -in @(''tcp://[::1]:2375'', ''tcp://127.0.0.1:2375'') -and ([System.IO.File]::Exists(''\\.\pipe\docker_engine'') -or ($null -ne (Get-Process -Name ''Docker Desktop'' -ErrorAction SilentlyContinue)))) {',
-        '    $null = & docker --host npipe:////./pipe/docker_engine info *> $null; if ($LASTEXITCODE -eq 0) { Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue }',
-        '}',
+        'if ($LASTEXITCODE -ne 0 -and $IsWindows -and $env:DOCKER_HOST -in @(''tcp://[::1]:2375'', ''tcp://127.0.0.1:2375'') -and ([System.IO.File]::Exists(''\\.\pipe\docker_engine'') -or ($null -ne (Get-Process -Name ''Docker Desktop'' -ErrorAction SilentlyContinue)))) { $null = & docker --host npipe:////./pipe/docker_engine info *> $null; if ($LASTEXITCODE -eq 0) { Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue } }',
         'if ($LASTEXITCODE -ne 0) { $env:DOCKER_HOST = ''tcp://127.0.0.1:2375''; $null = & docker info *> $null }',
         'if ($LASTEXITCODE -ne 0) { $env:DOCKER_HOST = ''tcp://[::1]:2375''; $null = & docker info *> $null }',
         'if ($LASTEXITCODE -ne 0 -and $IsWindows -and (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {',
         '    $allDistros = @((@(& wsl.exe -l -q 2>$null) -replace "`0", '''') | ForEach-Object { ($_ -replace ''^\*\s*'', '''').Trim() } | Where-Object { $_ -and $_ -notlike ''docker-desktop*'' })',
-        '    $distro = @($allDistros | Where-Object { $_ -like ''Ubuntu*'' -or $_ -like ''Debian*'' } | Select-Object -First 1)[0]',
-        '    if (-not $distro) { $distro = if ($allDistros.Count -gt 0) { $allDistros[0] } else { ''Ubuntu'' } }',
+        '    $distro = @($allDistros | Where-Object { $_ -like ''Ubuntu*'' -or $_ -like ''Debian*'' } | Select-Object -First 1)[0]; if (-not $distro) { $distro = if ($allDistros.Count -gt 0) { $allDistros[0] } else { ''Ubuntu'' } }',
         '    $null = & wsl.exe -d $distro -u root -- sh -c "systemctl start docker.socket docker.service >/dev/null 2>&1 || service docker start >/dev/null 2>&1"',
-        '    for ($w = 0; $w -lt 10; $w++) {',
-        '        $env:DOCKER_HOST = ''tcp://127.0.0.1:2375''; $null = & docker info *> $null; if ($LASTEXITCODE -eq 0) { break }',
-        '        $env:DOCKER_HOST = ''tcp://[::1]:2375''; $null = & docker info *> $null; if ($LASTEXITCODE -eq 0) { break }',
-        '        Start-Sleep -Milliseconds 500',
-        '    }',
+        '    for ($w = 0; $w -lt 10; $w++) { $env:DOCKER_HOST = ''tcp://127.0.0.1:2375''; $null = & docker info *> $null; if ($LASTEXITCODE -eq 0) { break }; $env:DOCKER_HOST = ''tcp://[::1]:2375''; $null = & docker info *> $null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep -Milliseconds 500 }',
         '}',
         'if ($IsWindows -and $env:DOCKER_HOST -in @(''tcp://[::1]:2375'', ''tcp://127.0.0.1:2375'')) {',
-        '    $normDeploy = ([System.IO.Path]::GetFullPath($PSScriptRoot)).Replace(''\'', ''/'').TrimEnd(''/'')',
-        '    $wslDeploy = if ($normDeploy -match ''^([A-Za-z]):/(.*)$'') { "/mnt/$($Matches[1].ToLowerInvariant())/$($Matches[2])" } else { $normDeploy }',
+        '    $normDeploy = ([System.IO.Path]::GetFullPath($PSScriptRoot)).Replace(''\'', ''/'').TrimEnd(''/''); $wslDeploy = if ($normDeploy -match ''^([A-Za-z]):/(.*)$'') { "/mnt/$($Matches[1].ToLowerInvariant())/$($Matches[2])" } else { $normDeploy }',
         '    $env:AOC_DIST_CONTENT_DIR = "$wslDeploy/content"; $env:AOC_DIST_CERTS_DIR = "$wslDeploy/certs"; $env:AOC_DIST_NAV_DIR = "$wslDeploy/nav"; $env:AOC_DIST_CONFIG_DIR = "$wslDeploy/config"',
         '}'
     )
-    $upLines = @(
-        '#Requires -Version 7.2',
-        'param([string]$Profile = ''default'', [switch]$Detach, [switch]$DryRun)',
-        'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''',
-        '$composeFile = Join-Path $PSScriptRoot ''compose.yml''; $envFile = Join-Path $PSScriptRoot ''.env''',
-        '$cmdArgs = [System.Collections.Generic.List[string]]::new()',
-        '$cmdArgs.AddRange([string[]]@(''compose'', ''-f'', $composeFile, ''--env-file'', $envFile))',
-        'if ($Profile -ne ''default'') { $cmdArgs.AddRange([string[]]@(''--profile'', $Profile)) }',
-        '$cmdArgs.Add(''up''); if ($Detach) { $cmdArgs.AddRange([string[]]@(''-d'', ''--wait'')) }',
-        'if ($DryRun) { Write-Output ("docker " + ($cmdArgs -join '' '')); exit 0 }'
-    ) + $wakeLines + @('Push-Location $PSScriptRoot; try { & docker @cmdArgs; exit $LASTEXITCODE } finally { Pop-Location }')
+    $upLines = @('#Requires -Version 7.2', 'param([string]$Profile = ''default'', [switch]$Detach, [switch]$DryRun)', 'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''', '$composeFile = Join-Path $PSScriptRoot ''compose.yml''; $envFile = Join-Path $PSScriptRoot ''.env''', '$cmdArgs = [System.Collections.Generic.List[string]]::new(); $cmdArgs.AddRange([string[]]@(''compose'', ''-f'', $composeFile, ''--env-file'', $envFile))', 'if ($Profile -ne ''default'') { $cmdArgs.AddRange([string[]]@(''--profile'', $Profile)) }', '$cmdArgs.Add(''up''); if ($Detach) { $cmdArgs.AddRange([string[]]@(''-d'', ''--wait'')) }', 'if ($DryRun) { Write-Output ("docker " + ($cmdArgs -join '' '')); exit 0 }') + $wakeLines + @('Push-Location $PSScriptRoot; try { & docker @cmdArgs; exit $LASTEXITCODE } finally { Pop-Location }')
     [System.IO.File]::WriteAllText((Join-Path $DeployDir 'up.ps1'), (($upLines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
-    $downLines = @(
-        '#Requires -Version 7.2',
-        'param([switch]$Volumes, [switch]$DryRun)',
-        'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''',
-        '$composeFile = Join-Path $PSScriptRoot ''compose.yml''; $envFile = Join-Path $PSScriptRoot ''.env''',
-        '$cmdArgs = [System.Collections.Generic.List[string]]::new()',
-        '$cmdArgs.AddRange([string[]]@(''compose'', ''-f'', $composeFile, ''--env-file'', $envFile, ''down'', ''--remove-orphans''))',
-        'if ($Volumes) { $cmdArgs.Add(''-v'') }',
-        'if ($DryRun) { Write-Output ("docker " + ($cmdArgs -join '' '')); exit 0 }'
-    ) + $wakeLines + @('Push-Location $PSScriptRoot; try { & docker @cmdArgs; exit $LASTEXITCODE } finally { Pop-Location }')
+    $downLines = @('#Requires -Version 7.2', 'param([switch]$Volumes, [switch]$DryRun)', 'Set-StrictMode -Version Latest; $ErrorActionPreference = ''Stop''', '$composeFile = Join-Path $PSScriptRoot ''compose.yml''; $envFile = Join-Path $PSScriptRoot ''.env''', '$cmdArgs = [System.Collections.Generic.List[string]]::new(); $cmdArgs.AddRange([string[]]@(''compose'', ''-f'', $composeFile, ''--env-file'', $envFile, ''down'', ''--remove-orphans''))', 'if ($Volumes) { $cmdArgs.Add(''-v'') }', 'if ($DryRun) { Write-Output ("docker " + ($cmdArgs -join '' '')); exit 0 }') + $wakeLines + @('Push-Location $PSScriptRoot; try { & docker @cmdArgs; exit $LASTEXITCODE } finally { Pop-Location }')
     [System.IO.File]::WriteAllText((Join-Path $DeployDir 'down.ps1'), (($downLines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
 }
 
 function Sync-SandalDeployStage {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$RepoRoot)
-    $srcDeploy = Join-Path $RepoRoot 'src\deploy'
-    $destDeploy = Join-Path $RepoRoot 'deploy'
+    $srcDeploy = Join-Path $RepoRoot 'src\deploy'; $destDeploy = Join-Path $RepoRoot 'deploy'
     Write-SandalStep -Step 'DeployStage' -Message "Synchronizing Docker Compose deployment stage into $destDeploy..."
     $null = New-Item -ItemType Directory -Path $destDeploy -Force
     $legacyCompose = Join-Path $destDeploy 'docker-compose.yml'
     if (Test-Path -LiteralPath $legacyCompose -PathType Leaf) { Remove-Item -LiteralPath $legacyCompose -Force }
     if (Test-Path -LiteralPath $srcDeploy -PathType Container) {
-        foreach ($item in @(Get-ChildItem -LiteralPath $srcDeploy -Recurse -File -Force)) {
-            if ($item.Name -ieq 'docker-compose.yml') { continue }
-            $rel = [System.IO.Path]::GetRelativePath($srcDeploy, $item.FullName)
-            $target = Join-Path $destDeploy $rel
-            $parent = Split-Path -Parent $target
+        foreach ($item in @(Get-ChildItem -LiteralPath $srcDeploy -Recurse -File -Force | Where-Object { $_.Name -ine 'docker-compose.yml' })) {
+            $target = Join-Path $destDeploy ([System.IO.Path]::GetRelativePath($srcDeploy, $item.FullName)); $parent = Split-Path -Parent $target
             if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
             Copy-Item -LiteralPath $item.FullName -Destination $target -Force
         }
     }
     $dockerDir = Join-Path $destDeploy 'docker'
     if (Test-Path -LiteralPath $dockerDir -PathType Container) {
-        foreach ($dupIgnore in @(Get-ChildItem -LiteralPath $dockerDir -Filter '*.Dockerfile.dockerignore' -File -Force -ErrorAction SilentlyContinue)) {
-            Remove-Item -LiteralPath $dupIgnore.FullName -Force
-        }
+        Get-ChildItem -LiteralPath $dockerDir -Filter '*.Dockerfile.dockerignore' -File -Force -ErrorAction SilentlyContinue | Remove-Item -Force
     }
     Sync-SandalDeployRuntimeDirs -RepoRoot $RepoRoot -DeployDir $destDeploy
+    $null = Sync-SandalUsmapOverride -RepoRoot $RepoRoot
     Write-SandalDeployScripts -DeployDir $destDeploy
-    $envPath = Join-Path $destDeploy '.env'
-    $examplePath = Join-Path $RepoRoot 'src\config\sandal.env.example'
+    $envPath = Join-Path $destDeploy '.env'; $examplePath = Join-Path $RepoRoot 'src\config\sandal.env.example'
     $envInfo = Initialize-SandalEnv -EnvPath $envPath -ExamplePath $examplePath
+    $envMap = Get-SandalEnvMap -EnvPath $envPath
+    if (-not $envMap.Contains('AOC_WORLD_CACHE_ALL_CONTENT_IN_MEMORY')) {
+        [string[]]$wDefaults = @('AOC_WORLD_CACHE_ALL_CONTENT_IN_MEMORY=true', 'AOC_WORLD_CACHE_CONTENT_DB_IN_MEMORY=true', 'AOC_WORLD_CACHE_AREA_NAV_IN_MEMORY=true', 'AOC_WORLD_CACHE_FILES=content.db,area_nav.bin', 'AOC_WORLD_NAV_PUMP_BUDGET_MS=4.0', 'AOC_WORLD_NPC_GROUND_PER_TICK=32', 'AOC_WORLD_NPC_GROUND_BUDGET_MS=2.0', 'AOC_WORLD_NPC_STATS_PER_TICK=24', 'AOC_WORLD_NPC_PATHFINDS_PER_STEP=24', 'AOC_WORLD_ACTOR_OPEN_PER_TICK=24', 'AOC_WORLD_ACTOR_WAKE_PER_TICK=24', 'AOC_WORLD_ACTOR_UPDATE_PER_TICK=64', 'AOC_WORLD_NODE_SUMMARIES_PER_TICK=4', 'AOC_WORLD_FOLIAGE_CELLS_PER_TICK=2')
+        [System.IO.File]::AppendAllLines($envPath, $wDefaults, [System.Text.UTF8Encoding]::new($false))
+    }
     return [pscustomobject]@{ DeployDir = $destDeploy; EnvPath = $envPath; Env = $envInfo }
 }
 
@@ -565,27 +517,22 @@ function Start-SandalIpv6DockerBridge {
     $rebindCmd = "mkdir -p /etc/systemd/system/docker.service.d && rm -f /etc/systemd/system/docker.service.d/override.conf && if ! grep -q '127.0.0.1:23750' /etc/systemd/system/docker.service.d/sandal-tcp.conf 2>/dev/null; then printf '[Service]\nExecStart=\nExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:23750\n' > /etc/systemd/system/docker.service.d/sandal-tcp.conf && systemctl daemon-reload && systemctl restart docker; else systemctl start docker; fi"
     $null = & wsl.exe -d $resolvedDistro -u root -- sh -c $rebindCmd 2>$null
     $bridgeLines = @(
-        '$ErrorActionPreference = ''SilentlyContinue''',
+        '$ErrorActionPreference = ''SilentlyContinue''; $active = [System.Collections.Generic.List[object]]::new()',
         '$l6 = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::IPv6Loopback, 2375); $l6.Server.DualMode = $false; $l6.Start()',
         '$l4 = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 2375); $l4.Start()',
-        '$active = [System.Collections.Generic.List[object]]::new()',
         '$t6 = $l6.AcceptTcpClientAsync(); $t4 = $l4.AcceptTcpClientAsync()',
         'while ($true) {',
         '    [System.Threading.Tasks.Task[]]$waitTasks = @($t6, $t4) + @($active | ForEach-Object { $_.T1; $_.T2 })',
         '    [void][System.Threading.Tasks.Task]::WaitAny($waitTasks)',
-        '    for ($i = $active.Count - 1; $i -ge 0; $i--) {',
-        '        if ($active[$i].T1.IsCompleted -or $active[$i].T2.IsCompleted) { $active[$i].C.Dispose(); $active[$i].U.Dispose(); $active.RemoveAt($i) }',
-        '    }',
+        '    for ($i = $active.Count - 1; $i -ge 0; $i--) { if ($active[$i].T1.IsCompleted -or $active[$i].T2.IsCompleted) { $active[$i].C.Dispose(); $active[$i].U.Dispose(); $active.RemoveAt($i) } }',
         '    $accepted = [System.Collections.Generic.List[System.Net.Sockets.TcpClient]]::new()',
         '    if ($t6.IsCompleted) { $accepted.Add($t6.GetAwaiter().GetResult()); $t6 = $l6.AcceptTcpClientAsync() }',
         '    if ($t4.IsCompleted) { $accepted.Add($t4.GetAwaiter().GetResult()); $t4 = $l4.AcceptTcpClientAsync() }',
         '    foreach ($c in $accepted) {',
         '        $u = [System.Net.Sockets.TcpClient]::new()',
         '        try { $u.Connect(''127.0.0.1'', 23750) } catch {',
-        '            $u.Dispose()',
-        "            `$null = & wsl.exe -d '$resolvedDistro' -u root -- sh -c 'systemctl start docker.socket docker.service >/dev/null 2>&1 || service docker start >/dev/null 2>&1' 2>`$null",
-        '            $u = [System.Net.Sockets.TcpClient]::new()',
-        '            for ($r = 0; $r -lt 20; $r++) { try { $u.Connect(''127.0.0.1'', 23750); break } catch { Start-Sleep -Milliseconds 250 } }',
+        "            `$u.Dispose(); `$null = & wsl.exe -d '$resolvedDistro' -u root -- sh -c 'systemctl start docker.socket docker.service >/dev/null 2>&1 || service docker start >/dev/null 2>&1' 2>`$null",
+        '            $u = [System.Net.Sockets.TcpClient]::new(); for ($r = 0; $r -lt 20; $r++) { try { $u.Connect(''127.0.0.1'', 23750); break } catch { Start-Sleep -Milliseconds 250 } }',
         '        }',
         '        if ($u.Connected) { $s1 = $c.GetStream(); $s2 = $u.GetStream(); $active.Add([pscustomobject]@{ C = $c; U = $u; T1 = $s1.CopyToAsync($s2); T2 = $s2.CopyToAsync($s1) }) } else { $u.Dispose(); $c.Dispose() }',
         '    }',
@@ -620,8 +567,7 @@ function Install-SandalPowerShellDockerAutoWake {
         'function global:docker {',
         '    if ([string]::IsNullOrWhiteSpace($env:DOCKER_HOST) -or $env:DOCKER_HOST -eq ''tcp://[::1]:2375'') { $env:DOCKER_HOST = ''tcp://127.0.0.1:2375'' }',
         '    if ($env:DOCKER_HOST -eq ''tcp://127.0.0.1:2375'') {',
-        '        $tcpOk = $false; $client = [System.Net.Sockets.TcpClient]::new()',
-        '        try { $iar = $client.BeginConnect(''127.0.0.1'', 2375, $null, $null); if ($iar.AsyncWaitHandle.WaitOne(150) -and $client.Connected) { $tcpOk = $true } } catch { } finally { $client.Dispose() }',
+        '        $tcpOk = $false; $client = [System.Net.Sockets.TcpClient]::new(); try { $iar = $client.BeginConnect(''127.0.0.1'', 2375, $null, $null); if ($iar.AsyncWaitHandle.WaitOne(150) -and $client.Connected) { $tcpOk = $true } } catch { } finally { $client.Dispose() }',
         '        if (-not $tcpOk -and (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {',
         "            `$null = & wsl.exe -d '$resolvedDistro' -u root -- sh -c 'systemctl start docker.socket docker.service >/dev/null 2>&1 || service docker start >/dev/null 2>&1; pgrep -f ""sleep infinity"" >/dev/null 2>&1 || nohup sleep infinity >/dev/null 2>&1 &' 2>`$null",
         "            if (`$null -eq (Get-Process -Name 'wsl' -ErrorAction SilentlyContinue)) { Start-Process -FilePath 'wsl.exe' -ArgumentList @('-d', '$resolvedDistro', '--', 'sleep', 'infinity') -WindowStyle Hidden | Out-Null }",
@@ -693,17 +639,11 @@ function Ensure-SandalDockerDaemon {
     [CmdletBinding()]
     param([string]$Distro = 'Ubuntu-24.04', [switch]$DryRun, [scriptblock]$CommandRunner = $null)
     if ($DryRun) { return [pscustomobject]@{ Ready = $true; DryRun = $true; Distro = $Distro; Started = $false } }
-    if ($null -eq $CommandRunner -and $null -eq (Get-Command docker -ErrorAction SilentlyContinue)) {
-        return [pscustomobject]@{ Ready = $false; DryRun = $false; Distro = $Distro; Started = $false }
-    }
+    if ($null -eq $CommandRunner -and $null -eq (Get-Command docker -ErrorAction SilentlyContinue)) { return [pscustomobject]@{ Ready = $false; DryRun = $false; Distro = $Distro; Started = $false } }
     Write-SandalStep -Step 'Docker' -Message 'Probing Docker daemon readiness...' -Quiet:($null -ne $CommandRunner)
     $initialProbe = Test-SandalDockerDaemonReady -CommandRunner $CommandRunner
     if ($initialProbe['Ready']) {
-        if ($initialProbe['Mode'] -ne 'docker-desktop') {
-            Complete-SandalWslDockerDaemonSetup -Distro $Distro -CommandRunner $CommandRunner
-        } else {
-            Sync-SandalWorldImageAlias -CommandRunner $CommandRunner; Set-SandalWslComposeMountEnv
-        }
+        if ($initialProbe['Mode'] -ne 'docker-desktop') { Complete-SandalWslDockerDaemonSetup -Distro $Distro -CommandRunner $CommandRunner } else { Sync-SandalWorldImageAlias -CommandRunner $CommandRunner; Set-SandalWslComposeMountEnv }
         return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $false }
     }
     if (Wait-SandalWslTcpDockerReady -MaxAttempts 1 -DelayMs 0 -CommandRunner $CommandRunner) {
@@ -714,11 +654,8 @@ function Ensure-SandalDockerDaemon {
         Sync-SandalWorldImageAlias -CommandRunner $CommandRunner; Set-SandalWslComposeMountEnv
         return [pscustomobject]@{ Ready = $true; DryRun = $false; Distro = $Distro; Started = $true }
     }
-    if ($IsWindows -and ($null -ne $CommandRunner -or $null -ne (Get-Command wsl.exe -ErrorAction SilentlyContinue))) {
-        return (Invoke-SandalWslDockerBootstrap -Distro $Distro -CommandRunner $CommandRunner)
-    }
-    $finalExit = Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner
-    Set-SandalWslComposeMountEnv
+    if ($IsWindows -and ($null -ne $CommandRunner -or $null -ne (Get-Command wsl.exe -ErrorAction SilentlyContinue))) { return (Invoke-SandalWslDockerBootstrap -Distro $Distro -CommandRunner $CommandRunner) }
+    $finalExit = Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner; Set-SandalWslComposeMountEnv
     return [pscustomobject]@{ Ready = ($finalExit -eq 0); DryRun = $false; Distro = $Distro; Started = $false }
 }
 
@@ -824,12 +761,41 @@ function Restart-SandalContentDbContainers {
     return $targets
 }
 
+function Ensure-SandalContentDbIndexes {
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    $srcDb = Join-Path $RepoRoot 'dist\content\content.db'
+    if (-not (Test-Path -LiteralPath $srcDb -PathType Leaf)) { return $false }
+    if (-not ('Microsoft.Data.Sqlite.SqliteConnection' -as [type])) {
+        $bin = Get-ChildItem -Path (Join-Path $RepoRoot 'build\dotnet\bin') -Recurse -Filter 'Microsoft.Data.Sqlite.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $bin) { return $false }
+        $rid = if ($IsWindows) { 'win-x64' } elseif ($IsLinux) { 'linux-x64' } else { 'osx-x64' }
+        $nat = Get-ChildItem -Path (Join-Path $bin.DirectoryName "runtimes\$rid\native") -Filter '*e_sqlite3*' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $nat) { [void][System.Runtime.InteropServices.NativeLibrary]::Load($nat.FullName) }
+        foreach ($d in @('SQLitePCLRaw.core.dll', 'SQLitePCLRaw.provider.e_sqlite3.dll', 'SQLitePCLRaw.batteries_v2.dll', 'Microsoft.Data.Sqlite.dll')) { $p = Join-Path $bin.DirectoryName $d; if (Test-Path -LiteralPath $p) { Add-Type -LiteralPath $p } }
+        [SQLitePCL.Batteries_V2]::Init()
+    }
+    $ro = [Microsoft.Data.Sqlite.SqliteConnection]::new("Data Source=$srcDb;Mode=ReadOnly;Pooling=False"); $hasAll = $false
+    try { $ro.Open(); $c = $ro.CreateCommand(); $c.CommandText = "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('record_by_guid','vendor_def_by_name')) + (SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sqlite_stat1');"; $hasAll = ([int]$c.ExecuteScalar() -ge 3) } catch { } finally { $ro.Dispose() }
+    if ($hasAll) { return $false }
+    $tmpDb = "$srcDb.idx.tmp.$PID"; Copy-Item -LiteralPath $srcDb -Destination $tmpDb -Force
+    $rw = [Microsoft.Data.Sqlite.SqliteConnection]::new("Data Source=$tmpDb;Pooling=False")
+    try {
+        $rw.Open(); $cmd = $rw.CreateCommand()
+        $cmd.CommandText = "CREATE INDEX IF NOT EXISTS record_by_guid ON record (guid, schema, name); CREATE INDEX IF NOT EXISTS record_by_schema_guid ON record (schema, guid, name); CREATE INDEX IF NOT EXISTS stat_def_display_pct ON stat_def (guid) WHERE display_pct = 1; CREATE INDEX IF NOT EXISTS stat_curve_by_name_ord ON stat_curve (name, ord, level, value); CREATE INDEX IF NOT EXISTS stat_init_by_name_ord ON stat_init (list_name, ord); CREATE INDEX IF NOT EXISTS class_stat_base_by_name_level ON class_stat_base (class_name, level); CREATE INDEX IF NOT EXISTS item_by_name_nocase ON item (name COLLATE NOCASE, guid); CREATE INDEX IF NOT EXISTS leveling_type_by_exp_guid ON leveling_type (experience_type, guid, name); CREATE INDEX IF NOT EXISTS skill_auto_grant_by_leveling ON skill_auto_grant (leveling_type_guid, level_requirement, node_guid); CREATE INDEX IF NOT EXISTS skill_tree_by_class ON skill_tree (class_guid); CREATE INDEX IF NOT EXISTS skill_tree_by_name ON skill_tree (name); CREATE INDEX IF NOT EXISTS skill_node_auto_granted ON skill_node (tree_guid, skill_guid, level_requirement) WHERE auto_granted = 1; CREATE INDEX IF NOT EXISTS vendor_def_by_name ON vendor_def (name, guid); ANALYZE; PRAGMA optimize;"
+        [void]$cmd.ExecuteNonQuery()
+    } finally { $rw.Dispose() }
+    Move-Item -LiteralPath $tmpDb -Destination $srcDb -Force
+    return $true
+}
+
 function Ensure-SandalContentDbCurrent {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$RepoRoot, [string]$GameRoot = '', [switch]$CheckOnly)
     $probe = Test-SandalContentDbCurrent -RepoRoot $RepoRoot
     if ($probe.Current) {
-        return [pscustomobject]@{ Ready = $true; Rebuilt = $false; SyncedDeploy = (Sync-SandalContentDbToDeploy -RepoRoot $RepoRoot); Version = $probe.ExpectedVersion; ContentDb = $probe.ContentDb }
+        $idxApplied = if (-not $CheckOnly) { Ensure-SandalContentDbIndexes -RepoRoot $RepoRoot } else { $false }
+        $synced = (Sync-SandalContentDbToDeploy -RepoRoot $RepoRoot) -or $idxApplied
+        return [pscustomobject]@{ Ready = $true; Rebuilt = $false; SyncedDeploy = $synced; Version = $probe.ExpectedVersion; ContentDb = $probe.ContentDb }
     }
     Write-SandalStep -Step 'GameData' -Message "content.db requires rebuild (reason=$($probe.Reason), expected_version=$($probe.ExpectedVersion))..."
     $rebuilt = Invoke-SandalFastContentcRebuild -RepoRoot $RepoRoot -GameRoot $GameRoot
@@ -846,6 +812,7 @@ function Ensure-SandalContentDbCurrent {
         }
     }
     $after = Test-SandalContentDbCurrent -RepoRoot $RepoRoot
+    if ($after.Current -and -not $CheckOnly) { $null = Ensure-SandalContentDbIndexes -RepoRoot $RepoRoot }
     $syncedAfter = if ($after.Current) { Sync-SandalContentDbToDeploy -RepoRoot $RepoRoot } else { $false }
     return [pscustomobject]@{ Ready = $after.Current; Rebuilt = $rebuilt; SyncedDeploy = $syncedAfter; Version = $after.ExpectedVersion; ContentDb = $after.ContentDb }
 }
@@ -855,20 +822,49 @@ function Test-SandalRuntimeGameDataComplete {
     param([Parameter(Mandatory)][string]$RepoRoot, [string]$ContentRelPath = 'dist\content')
     $outDir = Join-Path $RepoRoot $ContentRelPath
     if (-not (Test-Path -LiteralPath $outDir -PathType Container)) { return $false }
-    $reqFiles = @(
-        'content.db', 'aoc.usmap', 'artisan_curves.tsv', 'mount_speeds.tsv', 'mount_riders.tsv', 'item_names.tsv',
-        'roads.tsv', 'roads_levels.tsv', 'town_platforms.bin', 'town_layout_items.tsv', 'town_layouts.bin',
-        'npc_abilities.tsv', 'npc_montages.tsv', 'npc_targeting.tsv', 'npc_senses.tsv', 'npc_aggro_curves.tsv',
-        'npc_looks.tsv', 'npc_appearances.tsv', 'npc_names.tsv', 'npc_trees.tsv',
-        'npc_motion.tsv', 'region_foliage.tsv', 'area_geom.bin', 'area_nav.bin', 'client_config\DefaultCombat.ini'
-    )
-    foreach ($rel in $reqFiles) {
-        $p = Join-Path $outDir $rel
-        if (-not (Test-Path -LiteralPath $p -PathType Leaf) -or (Get-Item -LiteralPath $p).Length -le 0) { return $false }
-    }
+    $reqFiles = @('content.db', 'aoc.usmap', 'artisan_curves.tsv', 'mount_speeds.tsv', 'mount_riders.tsv', 'item_names.tsv', 'roads.tsv', 'roads_levels.tsv', 'town_platforms.bin', 'town_layout_items.tsv', 'town_layouts.bin', 'npc_abilities.tsv', 'npc_montages.tsv', 'npc_targeting.tsv', 'npc_senses.tsv', 'npc_aggro_curves.tsv', 'npc_looks.tsv', 'npc_appearances.tsv', 'npc_names.tsv', 'npc_trees.tsv', 'npc_motion.tsv', 'region_foliage.tsv', 'area_geom.bin', 'area_nav.bin', 'client_config\DefaultCombat.ini')
+    foreach ($rel in $reqFiles) { $p = Join-Path $outDir $rel; if (-not (Test-Path -LiteralPath $p -PathType Leaf) -or (Get-Item -LiteralPath $p -Force).Length -le 0) { return $false } }
     $zoiDir = Join-Path $outDir 'zoi_chunks'
-    if (-not (Test-Path -LiteralPath $zoiDir -PathType Container)) { return $false }
-    return ($null -ne (Get-ChildItem -LiteralPath $zoiDir -Recurse -Filter '*.uasset' -File -ErrorAction SilentlyContinue | Select-Object -First 1))
+    return ((Test-Path -LiteralPath $zoiDir -PathType Container) -and ($null -ne (Get-ChildItem -LiteralPath $zoiDir -Recurse -Filter '*.uasset' -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1)))
+}
+
+function Resolve-SandalUsmapPath {
+    param([string]$RepoRoot = '')
+    $root = if ($RepoRoot) { $RepoRoot } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
+    $userHome = if ($HOME) { $HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { '' }
+    $candidates = @($env:SANDAL_USMAP_PATH, $env:AOC_USMAP, $env:SANDAL_USMAP_OVERRIDE_DIR, $env:AOC_USMAP_OVERRIDE_DIR, $(if ($userHome) { Join-Path $userHome '.aoc\usmap' } else { '' }))
+    foreach ($cand in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($cand)) { continue }
+        $c = $cand.Trim().Trim('"')
+        if ((Test-Path -LiteralPath $c -PathType Leaf) -and (Get-Item -LiteralPath $c -Force).Length -gt 0) { return $c }
+        if (Test-Path -LiteralPath $c -PathType Container) {
+            $direct = Join-Path $c 'aoc.usmap'
+            if ((Test-Path -LiteralPath $direct -PathType Leaf) -and (Get-Item -LiteralPath $direct -Force).Length -gt 0) { return $direct }
+            $anyUsmap = Get-ChildItem -LiteralPath $c -Filter '*.usmap' -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+            if ($null -ne $anyUsmap) { return $anyUsmap.FullName }
+        }
+    }
+    return (Join-Path $root 'src\config\layouts\aoc.usmap')
+}
+
+function Sync-SandalUsmapOverride {
+    param([string]$RepoRoot = '')
+    $root = if ($RepoRoot) { $RepoRoot } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
+    $src = Resolve-SandalUsmapPath -RepoRoot $root
+    if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { return $false }
+    $srcItem = Get-Item -LiteralPath $src -Force; $synced = $false
+    foreach ($rel in @('dist\content\aoc.usmap', 'deploy\content\aoc.usmap')) {
+        $dst = Join-Path $root $rel; $parent = Split-Path -Parent $dst
+        if (-not (Test-Path -LiteralPath $parent -PathType Container)) { continue }
+        $dstItem = Get-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
+        if ($null -eq $dstItem -or $dstItem.Length -ne $srcItem.Length -or $dstItem.LastWriteTimeUtc -ne $srcItem.LastWriteTimeUtc) {
+            if ($null -ne $dstItem) { Remove-Item -LiteralPath $dst -Force }
+            Copy-Item -LiteralPath $src -Destination $dst -Force
+            (Get-Item -LiteralPath $dst -Force).Attributes = [System.IO.FileAttributes]::Normal
+            $synced = $true
+        }
+    }
+    return $synced
 }
 
 function Ensure-SandalGameData {
@@ -876,6 +872,7 @@ function Ensure-SandalGameData {
     param([Parameter(Mandatory)][string]$RepoRoot, [string]$GameRoot = '', [switch]$CheckOnly)
     $contentDb = Join-Path $RepoRoot 'dist\content\content.db'
     Write-SandalStep -Step 'GameData' -Message "Checking game data database ($contentDb)..."
+    $null = Sync-SandalUsmapOverride -RepoRoot $RepoRoot
     $res = Ensure-SandalContentDbCurrent -RepoRoot $RepoRoot -GameRoot $GameRoot -CheckOnly:$CheckOnly
     $extracted = [bool]$res.Rebuilt; $synced = [bool]$res.SyncedDeploy
     $distComplete = ($res.Ready -and (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot))
@@ -886,8 +883,7 @@ function Ensure-SandalGameData {
             Write-SandalStep -Step 'GameData' -Message 'Extracting missing runtime game data files into dist/content/...'
             & $extractScript @extractArgs
             if ($LASTEXITCODE -ne 0) { throw "Game data extraction failed (exit code $LASTEXITCODE)." }
-            $extracted = $true
-            $null = Sync-SandalDeployStage -RepoRoot $RepoRoot; $synced = $true
+            $extracted = $true; $null = Sync-SandalDeployStage -RepoRoot $RepoRoot; $synced = $true
             $distComplete = ($res.Ready -and (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot))
         }
     } elseif ($distComplete -and -not $CheckOnly -and -not (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot -ContentRelPath 'deploy\content')) {
@@ -896,4 +892,4 @@ function Ensure-SandalGameData {
     return [pscustomobject]@{ Ready = $distComplete; Extracted = $extracted; SyncedDeploy = $synced; Version = $res.Version; ContentDb = $res.ContentDb }
 }
 
-Export-ModuleMember -Function @('Write-SandalStep', 'New-SandalCsprngSecret', 'Get-SandalEnvMap', 'Set-SandalSecretAcl', 'Initialize-SandalEnv', 'Sync-SandalDistStage', 'Sync-SandalDeployStage', 'Test-SandalDockerDaemonReady', 'Start-SandalDockerDesktopIfInstalled', 'Set-SandalWslComposeMountEnv', 'Start-SandalWslKeepAlive', 'Start-SandalIpv6DockerBridge', 'Install-SandalPowerShellDockerAutoWake', 'Complete-SandalWslDockerDaemonSetup', 'Ensure-SandalDockerDaemon', 'Test-SandalContentDbCurrent', 'Ensure-SandalContentDbCurrent', 'Restart-SandalContentDbContainers', 'Test-SandalRuntimeGameDataComplete', 'Ensure-SandalGameData')
+Export-ModuleMember -Function @('Write-SandalStep', 'New-SandalCsprngSecret', 'Get-SandalEnvMap', 'Set-SandalSecretAcl', 'Initialize-SandalEnv', 'Sync-SandalDistStage', 'Sync-SandalDeployStage', 'Test-SandalDockerDaemonReady', 'Start-SandalDockerDesktopIfInstalled', 'Set-SandalWslComposeMountEnv', 'Start-SandalWslKeepAlive', 'Start-SandalIpv6DockerBridge', 'Install-SandalPowerShellDockerAutoWake', 'Complete-SandalWslDockerDaemonSetup', 'Ensure-SandalDockerDaemon', 'Test-SandalContentDbCurrent', 'Ensure-SandalContentDbIndexes', 'Ensure-SandalContentDbCurrent', 'Restart-SandalContentDbContainers', 'Test-SandalRuntimeGameDataComplete', 'Resolve-SandalUsmapPath', 'Sync-SandalUsmapOverride', 'Ensure-SandalGameData')

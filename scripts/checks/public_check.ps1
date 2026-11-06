@@ -85,6 +85,12 @@ function Test-SandalGitTrackedAssets {
             continue
         }
         $norm = ([string]$entry).Replace('\', '/')
+        if ($norm -match '^(?:dist|deploy|\.aoc)/') {
+            $Violations.Add("Forbidden runtime or extracted path tracked in git: $norm")
+        }
+        if ($norm -match '(?:^|/)(?:content\.db|area_geom\.bin|area_nav\.bin|town_platforms\.bin|town_layouts\.bin|region_foliage\.tsv|npc_motion\.tsv|npc_abilities\.tsv|npc_montages\.tsv|npc_targeting\.tsv|npc_senses\.tsv|npc_aggro_curves\.tsv|npc_looks\.tsv|npc_appearances\.tsv|npc_names\.tsv|npc_trees\.tsv|mount_speeds\.tsv|mount_riders\.tsv|artisan_curves\.tsv|item_names\.tsv|roads\.tsv|roads_raw\.tsv|roads_levels\.tsv|town_layout_items\.tsv|DefaultCombat\.ini|DefaultAoCRecordConstants\.ini)$' -and $norm -notmatch '^src/server/services/cmd/contentc/') {
+            $Violations.Add("Forbidden extracted game data file tracked in git: $norm")
+        }
         if ($norm -match '\.(pak|utoc|ucas|pdb|dmp|pcapng)$') {
             $Violations.Add("Forbidden binary asset tracked in git: $norm")
         }
@@ -100,6 +106,13 @@ function Test-SandalGitTrackedAssets {
             if ($content -match $localLeakRegex) {
                 $Violations.Add("Forbidden local host or secret token tracked in git: $norm")
             }
+        }
+    }
+    $repoUsmap = Join-Path $RootPath 'src\config\layouts\aoc.usmap'
+    if (Test-Path -LiteralPath $repoUsmap -PathType Leaf) {
+        $usmapLen = (Get-Item -LiteralPath $repoUsmap).Length
+        if ($usmapLen -ne 2581027L) {
+            $Violations.Add("Forbidden overridden aoc.usmap in src/config/layouts/aoc.usmap (expected 2581027 bytes, got $usmapLen)")
         }
     }
 }

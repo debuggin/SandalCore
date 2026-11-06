@@ -5,12 +5,8 @@
 //  content/ability_content.cpp  (plan D2)
 // ============================================================================
 #include "content/ability_content.h"
+#include "content/content_db_internal.h"
 
-#include <sqlite3.h>
-#include <nlohmann/json.hpp>
-
-#include <cstdlib>
-#include <filesystem>
 #include <functional>
 #include <system_error>
 #include <utility>
@@ -19,34 +15,9 @@ namespace aoc::worldd::content {
 
 namespace {
 
-/// A prepared statement, finalized on every path out.
-class Stmt {
-public:
-    Stmt(sqlite3* db, const char* sql) { rc_ = sqlite3_prepare_v2(db, sql, -1, &stmt_, nullptr); }
-    ~Stmt() { if (stmt_) sqlite3_finalize(stmt_); }
-    Stmt(const Stmt&) = delete;
-    Stmt& operator=(const Stmt&) = delete;
-    bool ok() const { return rc_ == SQLITE_OK && stmt_ != nullptr; }
-    sqlite3_stmt* get() const { return stmt_; }
-
-private:
-    sqlite3_stmt* stmt_ = nullptr;
-    int           rc_ = SQLITE_OK;
-};
-
-std::string col_text(sqlite3_stmt* s, int col) {
-    const unsigned char* t = sqlite3_column_text(s, col);
-    return t ? std::string(reinterpret_cast<const char*>(t), static_cast<size_t>(sqlite3_column_bytes(s, col))) : std::string();
-}
-int64_t col_i64(sqlite3_stmt* s, int col) { return sqlite3_column_int64(s, col); }
-int col_int(sqlite3_stmt* s, int col) { return static_cast<int>(sqlite3_column_int64(s, col)); }
+std::string col_text(sqlite3_stmt* s, int col) { return column_text(s, col); }
 bool col_bool(sqlite3_stmt* s, int col) { return sqlite3_column_int64(s, col) != 0; }
 double col_f64(sqlite3_stmt* s, int col) { return sqlite3_column_double(s, col); }
-
-std::string db_message(sqlite3* db) {
-    const char* m = sqlite3_errmsg(db);
-    return m ? m : "unknown SQLite error";
-}
 
 /// run executes `sql` with `bind`, calls `row` for each row, and reports a failure in `error`.
 bool run(sqlite3* db, const char* sql, const std::function<void(sqlite3_stmt*)>& bind, const std::function<bool(sqlite3_stmt*)>& row, std::string& error) {
@@ -190,9 +161,10 @@ std::optional<AbilityContent> AbilityContent::open(const std::string& path, std:
     }
     AbilityContent c;
     c.path_ = path;
-    const int rc = sqlite3_open_v2(path.c_str(), &c.db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr);
-    if (rc != SQLITE_OK) {
-        error = "cannot open " + path + ": " + (c.db_ ? db_message(c.db_) : std::string("out of memory"));
+    std::string open_err;
+    c.db_ = open_content_sqlite_db(path, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, true, nullptr, &open_err);
+    if (!c.db_) {
+        error = "cannot open " + path + ": " + open_err;
         return std::nullopt;
     }
     std::map<std::string, std::string> meta;

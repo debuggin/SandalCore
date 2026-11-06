@@ -115,10 +115,23 @@ public sealed class ProfileStoreService
     public async Task<IReadOnlyList<LauncherProfile>> LoadProfilesAsync(CancellationToken cancellationToken = default) =>
         (await LoadCatalogAsync(cancellationToken).ConfigureAwait(false)).Profiles;
 
+    public static bool IsTemporaryUsername(string? username)
+    {
+        if (string.IsNullOrWhiteSpace(username)) return false;
+        string u = username.Trim();
+        return u.StartsWith("tmp_", StringComparison.OrdinalIgnoreCase)
+            || u.StartsWith("temp_", StringComparison.OrdinalIgnoreCase)
+            || u.StartsWith("e2e_", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(u, "ephem_hero", StringComparison.OrdinalIgnoreCase);
+    }
+
     public async Task<IReadOnlyList<LauncherProfile>> GetTemporaryProfilesAsync(CancellationToken ct = default)
     {
         IReadOnlyList<LauncherProfile> profiles = await LoadProfilesAsync(ct).ConfigureAwait(false);
-        return profiles.Where(p => p.IsTemporaryAccount)
+        return profiles.Where(p =>
+                p.IsTemporaryAccount ||
+                p.Id.StartsWith("temp-", StringComparison.OrdinalIgnoreCase) ||
+                IsTemporaryUsername(p.AccountUsername))
             .Concat(_ephemeralTempProfiles.Values)
             .GroupBy(p => p.Id, StringComparer.OrdinalIgnoreCase)
             .Select(g => g.Last())
@@ -176,7 +189,7 @@ public sealed class ProfileStoreService
         ArgumentNullException.ThrowIfNull(config);
         if (string.IsNullOrWhiteSpace(username)) return;
         string cleanUser = username.Trim();
-        if (isTemporary)
+        if (isTemporary || IsTemporaryUsername(cleanUser))
         {
             TrackEphemeralSessionProfile(cleanUser, config);
             return;
@@ -202,7 +215,9 @@ public sealed class ProfileStoreService
         var list = new List<SavedAccountRecord>();
         foreach (LauncherProfile p in profiles)
         {
-            if (p.IsTemporaryAccount || p.Id.StartsWith("temp-", StringComparison.OrdinalIgnoreCase))
+            if (p.IsTemporaryAccount ||
+                p.Id.StartsWith("temp-", StringComparison.OrdinalIgnoreCase) ||
+                IsTemporaryUsername(p.AccountUsername))
                 continue;
             if (string.IsNullOrWhiteSpace(p.AccountUsername))
                 continue;
@@ -420,6 +435,6 @@ public sealed class ProfileStoreService
 
     private static void TryDeleteTempFile(string path)
     {
-        try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { }
+        try { if (File.Exists(path)) File.Delete(path); } catch (IOException ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
     }
 }

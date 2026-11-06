@@ -45,11 +45,22 @@ std::unique_ptr<stats::CharacterStats> NpcStatBook::make(const npc::MotionStats&
         err = "the stat program has no NPC profile";
         return nullptr;
     }
-    auto cs = std::make_unique<stats::CharacterStats>(*bundle_, *gear_, profile, lv);
     stats::NpcShape shape = shape_for(bp, lv);
     if (low_guard) shape.dist.fill(1.0 / 8.0);
+    const CacheKey key{profile, lv, shape};
+    if (cache_mu_) {
+        std::lock_guard<std::mutex> lk(*cache_mu_);
+        if (const auto it = cache_.find(key); it != cache_.end()) {
+            return std::make_unique<stats::CharacterStats>(it->second);
+        }
+    }
+    auto cs = std::make_unique<stats::CharacterStats>(*bundle_, *gear_, profile, lv);
     cs->set_npc(shape);
     if (!cs->start({}, err)) return nullptr;
+    if (cache_mu_) {
+        std::lock_guard<std::mutex> lk(*cache_mu_);
+        cache_.try_emplace(key, *cs);
+    }
     return cs;
 }
 

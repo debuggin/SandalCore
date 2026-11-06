@@ -16,8 +16,64 @@ namespace Mapc;
 public sealed class Game
 {
     public static readonly string DefaultPaks = Path.Combine(Environment.GetEnvironmentVariable("GAME_ROOT") ?? @"C:\Ashes of Creation\Game", "AOC", "Content", "Paks");   // $GAME_ROOT\AOC\Content\Paks
-    public static readonly string DefaultUsmap = Path.Combine("dist", "content", "aoc.usmap");   // relative to the repository root, where mapc is run from
+    public static readonly string DefaultUsmap = ResolveDefaultUsmap();   // $HOME/.aoc/usmap/* if present, else dist/content/aoc.usmap
     public const string MasterPath = "AOC/Content/Levels/Verra_World_Master/Verra_World_Master";
+
+    private static string ResolveDefaultUsmap()
+    {
+        try
+        {
+            string? homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string? aocHomeOverride = !string.IsNullOrWhiteSpace(homeDir) ? Path.Combine(homeDir, ".aoc", "usmap") : null;
+            foreach (string? candidate in new[]
+            {
+                Environment.GetEnvironmentVariable("SANDAL_USMAP_PATH"),
+                Environment.GetEnvironmentVariable("AOC_USMAP"),
+                Environment.GetEnvironmentVariable("SANDAL_USMAP_OVERRIDE_DIR"),
+                Environment.GetEnvironmentVariable("AOC_USMAP_OVERRIDE_DIR"),
+                aocHomeOverride
+            })
+            {
+                if (TryResolveUsmapCandidate(candidate, out string resolved))
+                    return resolved;
+            }
+            string distUsmap = Path.Combine("dist", "content", "aoc.usmap");
+            if (File.Exists(distUsmap) && new FileInfo(distUsmap).Length > 0)
+                return distUsmap;
+            string repoUsmap = Path.Combine("src", "config", "layouts", "aoc.usmap");
+            if (File.Exists(repoUsmap) && new FileInfo(repoUsmap).Length > 0)
+                return repoUsmap;
+        }
+        catch (Exception ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
+        return Path.Combine("dist", "content", "aoc.usmap");
+    }
+
+    private static bool TryResolveUsmapCandidate(string? candidate, out string resolved)
+    {
+        resolved = string.Empty;
+        if (string.IsNullOrWhiteSpace(candidate)) return false;
+        string trimmed = candidate.Trim();
+        if (File.Exists(trimmed) && new FileInfo(trimmed).Length > 0)
+        {
+            resolved = trimmed;
+            return true;
+        }
+        if (!Directory.Exists(trimmed)) return false;
+        string canonical = Path.Combine(trimmed, "aoc.usmap");
+        if (File.Exists(canonical) && new FileInfo(canonical).Length > 0)
+        {
+            resolved = canonical;
+            return true;
+        }
+        FileInfo? newest = new DirectoryInfo(trimmed)
+            .GetFiles("*.usmap")
+            .Where(f => f.Length > 0)
+            .OrderByDescending(f => f.LastWriteTimeUtc)
+            .FirstOrDefault();
+        if (newest is null) return false;
+        resolved = newest.FullName;
+        return true;
+    }
 
     public readonly DefaultFileProvider Provider;
     readonly Dictionary<string, IPackage?> _cache = new();

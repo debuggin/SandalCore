@@ -77,6 +77,7 @@ std::unique_ptr<CityNodes> CityNodes::load(const std::string& path, std::string&
         sqlite3* db;
         ~Closer() { sqlite3_close(db); }
     } closer{db};
+    sqlite3_exec(db, "PRAGMA mmap_size = 536870912; PRAGMA cache_size = -16384; PRAGMA temp_store = MEMORY; PRAGMA query_only = ON;", nullptr, nullptr, nullptr);
     std::vector<CityNodeInfo> nodes;
     std::vector<CityZoneInfo> zones;
     {

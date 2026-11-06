@@ -548,6 +548,9 @@ func Build(ctx context.Context, opt Options) (*Summary, error) {
 	if err := addStatProgram(ctx, sdb, tmp, &opt); err != nil {
 		return nil, err
 	}
+	if _, err := sdb.ExecContext(ctx, `ANALYZE; PRAGMA optimize;`); err != nil {
+		return nil, fmt.Errorf("analyze: %w", err)
+	}
 	if err := sdb.Close(); err != nil {
 		return nil, err
 	}

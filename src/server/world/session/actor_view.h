@@ -84,10 +84,25 @@
 
 namespace aoc::worldd {
 
+inline size_t env_actor_budget_per_tick(const char* name, long def, long lo, long hi) {
+    const char* s = std::getenv(name);
+    if (!s || !*s) return static_cast<size_t>(def);
+    char* end = nullptr;
+    const long n = std::strtol(s, &end, 10);
+    return end != s ? static_cast<size_t>(n < lo ? lo : (n > hi ? hi : n)) : static_cast<size_t>(def);
+}
+
+struct ActorBudget {
+    size_t open_per_tick = [] { static const size_t v = env_actor_budget_per_tick("AOC_WORLD_ACTOR_OPEN_PER_TICK", 24, 1, 512); return v; }();
+    size_t wake_per_tick = [] { static const size_t v = env_actor_budget_per_tick("AOC_WORLD_ACTOR_WAKE_PER_TICK", 24, 1, 512); return v; }();
+    size_t update_per_tick = [] { static const size_t v = env_actor_budget_per_tick("AOC_WORLD_ACTOR_UPDATE_PER_TICK", 64, 1, 1024); return v; }();
+};
+
 class ActorView {
 public:
     struct Config {
         world::RelevancyConfig relevancy;
+        ActorBudget budget;
         /// The highest channel index the view may use (UE's default is far above; retail peaked at 324 and reached index 459).
         uint32_t max_channel = 4000;
         /// The player this connection belongs to: an actor whose `owner` is another player's is never sent (a player's lingering zones), except another player's

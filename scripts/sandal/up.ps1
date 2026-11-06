@@ -138,6 +138,13 @@ function Write-UpStep {
     }
 }
 
+function Remove-SandalStaleTestAccounts {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
+    $sql = "DELETE FROM accounts WHERE lower(username) LIKE 'tmp\_%' ESCAPE '\' OR lower(username) LIKE 'temp\_%' ESCAPE '\' OR lower(username) LIKE 'e2e\_%' ESCAPE '\' OR lower(username) = 'ephem_hero';"
+    try { $null | & docker exec -i aoc-postgres psql -U aoc -d aoc -tAc $sql *> $null } catch { }
+    $global:LASTEXITCODE = 0
+}
+
 $opts = Resolve-UpOptions -BaseProfile $Profile -BaseDetach ([bool]$Detach) -BaseBuild ([bool]$Build) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
 $quiet = [bool]$opts.Json
 $fromRun = ($env:SANDAL_FROM_RUN -eq '1')
@@ -177,6 +184,7 @@ if (-not $opts.DryRun) {
         if ($LASTEXITCODE -ne 0) {
             throw "docker compose up failed with exit code $LASTEXITCODE."
         }
+        Remove-SandalStaleTestAccounts
     } finally {
         Pop-Location
     }

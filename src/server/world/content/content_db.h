@@ -93,6 +93,9 @@ private:
     std::string       path_;
     ContentMeta       meta_;
     std::set<int64_t> percent_stats_;
+    mutable std::unique_ptr<std::mutex> item_cache_mu_ = std::make_unique<std::mutex>();
+    mutable std::unordered_map<int64_t, std::optional<ItemRecord>> item_cache_;
+    mutable std::unordered_map<int64_t, std::optional<stats::ItemGear>> item_gear_cache_;
 };
 
 class ContentGearCatalog final : public stats::GearCatalog {

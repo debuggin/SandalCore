@@ -52,6 +52,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <optional>
@@ -82,6 +83,17 @@ struct NpcMotionSetup {
     double  awake_radius = 0;           // 0: the config's
 };
 
+inline size_t default_max_pathfinds_per_step() {
+    static const size_t v = []() -> size_t {
+        const char* s = std::getenv("AOC_WORLD_NPC_PATHFINDS_PER_STEP");
+        if (!s || !*s) return 24;
+        char* end = nullptr;
+        const long n = std::strtol(s, &end, 10);
+        return end != s ? static_cast<size_t>(n < 1 ? 1 : (n > 512 ? 512 : n)) : 24;
+    }();
+    return v;
+}
+
 struct NpcWorldConfig {
     double step_seconds = 1.0 / 15.0;    // retail's server tick
     int    max_catch_up_steps = 4;       // a clock that jumped ahead is not made up for beyond this
@@ -94,7 +106,7 @@ struct NpcWorldConfig {
     double idle_spread = 5.0;
     double min_idle = 1.5;
     double max_idle = 12.0;
-    size_t max_pathfinds_per_step = 24;  // the paths asked for in one step (the rest decide on the next)
+    size_t max_pathfinds_per_step = default_max_pathfinds_per_step();  // the paths asked for in one step (the rest decide on the next)
     int    max_search_iterations_per_step = 60000;   // the A* node expansions of one step's searches together (review A I5: 24 searches at the old cap of 2,500; about 43 ms at 0.7 us a node): the rest decide on the next step
     double max_wander_path_factor = 3.0; // a wander path longer than this times the walk's straight distance is dropped
     /// The reach of the ground of a city node's person (`ground_by_data`): its data height is within 1 to 168 cm of the town's floor, so a surface 3 m under it or 1.5 m over it is its ground, and a
@@ -158,6 +170,9 @@ public:
     std::vector<std::pair<double, double>> player_points(double now) const;
     /// The ground's window made these chunks resident: the NPCs waiting for them are put on the ground (and the ones the chunk's tiles gave a floor to are lifted onto it).
     void chunks_resident(const std::vector<nav::ChunkKey>& chunks);
+    void enqueue_chunks_resident(const std::vector<nav::ChunkKey>& chunks);
+    size_t pump_grounding(size_t max_npcs = 32, double budget_ms = 2.0);
+    bool has_ready_grounding() const { return !ready_ground_queue_.empty(); }
     /// NPCs that wait for their chunk.
     size_t pending_ground() const { return pending_count_; }
     /// Grounding that moves a waiting NPC by more than this (cm) is a reliable change of the actor (a Snapshot or Dormant view of it is sent again).
@@ -366,6 +381,7 @@ private:
     std::vector<uint64_t>         rooted_;        // the NPCs a montage is carrying
     std::vector<uint64_t>         settling_;      // the NPCs a montage let go of lately: their place goes out again at each step (NpcWorldConfig::settle_seconds)
     std::map<nav::ChunkKey, std::vector<uint64_t>> pending_by_chunk_;   // NPCs waiting for a chunk of the ground's window
+    std::deque<uint64_t>          ready_ground_queue_;
     size_t                        pending_count_ = 0;
     uint32_t                      remove_listener_ = 0;
     double                        now_ = 0;

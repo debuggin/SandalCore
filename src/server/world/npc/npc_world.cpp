@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 
 namespace aoc::worldd::npc {
 
@@ -259,26 +260,54 @@ NpcWorld::StandReport NpcWorld::stand_report(const std::vector<uint64_t>& ids) c
     return r;
 }
 
-void NpcWorld::chunks_resident(const std::vector<nav::ChunkKey>& chunks) {
+void NpcWorld::enqueue_chunks_resident(const std::vector<nav::ChunkKey>& chunks) {
     for (const nav::ChunkKey& key : chunks) {
         const auto it = pending_by_chunk_.find(key);
         if (it == pending_by_chunk_.end()) continue;
-        for (const uint64_t id : it->second) {
-            const auto n = npcs_.find(id);
-            if (n == npcs_.end() || !n->second.pending_ground) continue;
-            world::WorldActor* a = registry_.find(id);
-            if (!a) continue;
-            n->second.pending_ground = false;
-            n->second.pending_ground_done = true;
-            if (pending_count_ > 0) --pending_count_;
-            const double z_before = a->z;
-            ground_npc(n->second, *a);
-            if (!n->second.relocated) n->second.spawn_home = n->second.home;
-            // Snapshot/Dormant views only resend when a reliable state change occurs, so touch State when grounding shifts height significantly.
-            if (std::fabs(a->z - z_before) > kRegroundReliableCm) registry_.touch(*a, world::Change::State);
-        }
+        for (const uint64_t id : it->second) ready_ground_queue_.push_back(id);
         pending_by_chunk_.erase(it);
     }
+}
+
+size_t NpcWorld::pump_grounding(size_t max_npcs, double budget_ms) {
+    if (ready_ground_queue_.empty() || max_npcs == 0) return 0;
+    const auto start = std::chrono::steady_clock::now();
+    size_t grounded = 0;
+    while (!ready_ground_queue_.empty() && grounded < max_npcs) {
+        if (grounded > 0 && budget_ms > 0.0) {
+            const double elapsed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            if (elapsed_ms >= budget_ms) break;
+        }
+        const uint64_t id = ready_ground_queue_.front();
+        ready_ground_queue_.pop_front();
+        const auto n = npcs_.find(id);
+        if (n == npcs_.end() || !n->second.pending_ground) continue;
+        world::WorldActor* a = registry_.find(id);
+        if (!a) {
+            n->second.pending_ground = false;
+            if (pending_count_ > 0) --pending_count_;
+            continue;
+        }
+        if (max_npcs != std::numeric_limits<size_t>::max() && !nav_->ready_at(a->x, a->y)) {
+            pending_by_chunk_[nav_->chunk_at(a->x, a->y)].push_back(id);
+            continue;
+        }
+        n->second.pending_ground = false;
+        n->second.pending_ground_done = true;
+        if (pending_count_ > 0) --pending_count_;
+        const double z_before = a->z;
+        ground_npc(n->second, *a);
+        if (!n->second.relocated) n->second.spawn_home = n->second.home;
+        // Snapshot/Dormant views only resend when a reliable state change occurs, so touch State when grounding shifts height significantly.
+        if (std::fabs(a->z - z_before) > kRegroundReliableCm) registry_.touch(*a, world::Change::State);
+        ++grounded;
+    }
+    return grounded;
+}
+
+void NpcWorld::chunks_resident(const std::vector<nav::ChunkKey>& chunks) {
+    enqueue_chunks_resident(chunks);
+    pump_grounding(std::numeric_limits<size_t>::max(), 1e9);
 }
 
 std::vector<std::pair<double, double>> NpcWorld::player_points(double now) const {

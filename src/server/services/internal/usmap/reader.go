@@ -70,6 +70,14 @@ const (
 	KindEnum
 	KindFieldPath
 	KindOptional
+	KindUtf8Str
+	KindAnsiStr
+	KindClass
+	KindMulticastInlineDelegate
+	KindSoftClass
+	KindVerseString
+	KindVerseDynamic
+	KindVerseFunction
 	kindCount
 
 	// KindUnknown is the type of a property the exporter could not describe
@@ -82,7 +90,9 @@ var kindNames = [kindCount]string{
 	"Array", "Struct", "Str", "Text", "Interface", "MulticastDelegate",
 	"WeakObject", "LazyObject", "AssetObject", "SoftObject", "UInt64",
 	"UInt32", "UInt16", "Int64", "Int16", "Int8", "Map", "Set", "Enum",
-	"FieldPath", "Optional",
+	"FieldPath", "Optional", "Utf8Str", "AnsiStr", "Class",
+	"MulticastInlineDelegate", "SoftClass", "VerseString", "VerseDynamic",
+	"VerseFunction",
 }
 
 func (k Kind) String() string {

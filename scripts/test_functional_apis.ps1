@@ -163,6 +163,9 @@ function Invoke-GoFunctionalApiSuite {
         }
     } finally {
         Pop-Location
+        $sql = "DELETE FROM accounts WHERE lower(username) LIKE 'tmp\_%' ESCAPE '\' OR lower(username) LIKE 'temp\_%' ESCAPE '\' OR lower(username) LIKE 'e2e\_%' ESCAPE '\' OR lower(username) = 'ephem_hero';"
+        try { $null | & docker exec -i aoc-postgres psql -U aoc -d aoc -tAc $sql *> $null } catch { }
+        $global:LASTEXITCODE = 0
     }
     $sw.Stop()
     return [int]$sw.ElapsedMilliseconds

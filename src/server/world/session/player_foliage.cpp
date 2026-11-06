@@ -20,6 +20,17 @@ constexpr int32_t kInterruptCalloutType = 4;
 constexpr int32_t kCalloutPointSize = 32;
 constexpr uint64_t kInterruptChatCategory = 4;
 constexpr std::chrono::seconds kCalloutLife{3};
+size_t foliage_cells_per_tick() {
+    static const size_t v = []() -> size_t {
+        const char *s = std::getenv("AOC_WORLD_FOLIAGE_CELLS_PER_TICK");
+        if (!s || !*s)
+            return 2;
+        char *end = nullptr;
+        const long n = std::strtol(s, &end, 10);
+        return end != s ? static_cast<size_t>(std::clamp<long>(n, 1, 64)) : 2;
+    }();
+    return v;
+}
 struct FoliageRpcParams {
     bool decoded = false;
     uint32_t index = 0;
@@ -385,6 +396,8 @@ void PlayerSession::on_foliage_interact(Connection &conn, const repl::ClientRpc 
     spdlog::log(level_for(foliage_logged_, 20), "[foliage] {}: {}", name(), format_foliage_start_log(*f, p, attempt.pre, professions_, attempt.seconds));
 }
 void PlayerSession::run_foliage(Connection &conn, Clock::time_point now) {
+    const size_t kFoliageCellsPerTick = foliage_cells_per_tick();
+    (void)kFoliageCellsPerTick;
     foliage::Foliage *f = npc_world_ ? npc_world_->foliage() : nullptr;
     if (f)
         f->tick(now);

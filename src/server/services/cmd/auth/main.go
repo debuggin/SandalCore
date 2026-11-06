@@ -57,6 +57,7 @@ func run() error {
 		return startupErr(ctx, err)
 	}
 	store := account.NewStore(pool, cfg.TokenTTL)
+	purgeTempAccounts(ctx, store)
 
 	// Bind both ports before saying "listening", so a taken port fails here.
 	httpLis, err := net.Listen("tcp", cfg.AuthHTTPAddr)
@@ -115,6 +116,16 @@ func startupErr(ctx context.Context, err error) error {
 }
 
 const shutdownGrace = 10 * time.Second
+
+func purgeTempAccounts(ctx context.Context, store *account.Store) {
+	n, err := store.PurgeStaleTemporaryAccounts(ctx)
+	switch {
+	case err != nil && ctx.Err() == nil:
+		slog.Warn("temporary account purge failed", "err", err)
+	case n > 0:
+		slog.Info("purged stale temporary accounts", "count", n)
+	}
+}
 
 // purgeTokens deletes expired login tokens now and then hourly until ctx ends.
 func purgeTokens(ctx context.Context, store *account.Store) {

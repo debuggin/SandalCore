@@ -27,7 +27,8 @@ func Open(path string) (*DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("content: %w", err)
 	}
-	db, err := sql.Open("sqlite", path+"?_pragma=query_only(1)")
+	dsn := path + "?_pragma=query_only(1)&_pragma=mmap_size(536870912)&_pragma=cache_size(-8192)&_pragma=temp_store(MEMORY)&_pragma=busy_timeout(5000)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}

@@ -302,7 +302,15 @@ void PlayerSession::run_nodes(Connection& conn) {
         node_unknown_logged_ = true;
         spdlog::warn("[nodes] {}: the client asked {} for node {}, which world does not know: not answered (further ones are not logged)", name(), what, node);
     };
-    while (!siege_wait_.empty() && has_room()) {
+    static const size_t kMaxNodeSummariesPerTick = []() -> size_t {
+        const char* s = std::getenv("AOC_WORLD_NODE_SUMMARIES_PER_TICK");
+        if (!s || !*s) return 4;
+        char* end = nullptr;
+        const long n = std::strtol(s, &end, 10);
+        return end != s ? static_cast<size_t>(std::clamp<long>(n, 1, 128)) : 4;
+    }();
+    size_t sent_this_tick = 0;
+    while (!siege_wait_.empty() && sent_this_tick < kMaxNodeSummariesPerTick && has_room()) {
         const int64_t node = siege_wait_.front();
         siege_wait_.pop_front();
         siege_queued_.erase(node);
@@ -313,9 +321,10 @@ void PlayerSession::run_nodes(Connection& conn) {
             continue;
         }
         ++siege_summaries_sent_;
+        ++sent_this_tick;
         queue("ClientReceiveSiegeSummary", [s](bootstrap::PlayerBootstrap& pb) { return pb.siege_summary(*s); }, conn, /*must_build=*/true);
     }
-    while (siege_wait_.empty() && !node_summary_wait_.empty() && has_room()) {
+    while (siege_wait_.empty() && !node_summary_wait_.empty() && sent_this_tick < kMaxNodeSummariesPerTick && has_room()) {
         const int64_t node = node_summary_wait_.front();
         node_summary_wait_.pop_front();
         node_summary_queued_.erase(node);
@@ -326,6 +335,7 @@ void PlayerSession::run_nodes(Connection& conn) {
             continue;
         }
         ++node_summaries_sent_;
+        ++sent_this_tick;
         if (node_summaries_sent_ == 1 || node_summaries_sent_ == 49) {
             spdlog::info("[nodes] {}: node summary #{}: {} at level {} with {} plots", name(), node_summaries_sent_,
                          nodes->by_guid(node) ? nodes->by_guid(node)->display_name : std::to_string(node), s->level, s->plots.size());

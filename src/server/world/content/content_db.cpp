@@ -512,30 +512,6 @@ bool validate_stat_program_columns(sqlite3_stmt* s, std::string& error) {
 
 }  // namespace
 
-std::string column_text(sqlite3_stmt* s, int col) {
-    const unsigned char* t = sqlite3_column_text(s, col);
-    return t ? std::string(reinterpret_cast<const char*>(t), static_cast<size_t>(sqlite3_column_bytes(s, col))) : std::string();
-}
-std::string db_message(sqlite3* db) {
-    const char* m = sqlite3_errmsg(db);
-    return m ? m : "unknown SQLite error";
-}
-bool fail_msg(const std::string& msg, std::string& error) {
-    error = "content.db " + msg;
-    return false;
-}
-bool fail_db(sqlite3* db, const std::string& what, std::string& error) { return fail_msg(what + ": " + db_message(db), error); }
-bool check_done(sqlite3* db, int step, const std::string& what, std::string& error) {
-    return step == SQLITE_DONE ? true : fail_db(db, what, error);
-}
-bool check_cols(sqlite3_stmt* s, const std::string& table, const char* kinds, std::string& error) {
-    for (int c = 0; kinds[c] != '\0'; ++c) {
-        const char k = kinds[c];
-        if ((k == 'i' && !column_is_int(s, c)) || (k == 'r' && !column_is_real(s, c)) || (k == 't' && !column_is_text(s, c)))
-            return fail_msg(table + " has a column of the wrong storage class", error);
-    }
-    return true;
-}
 void read_rarity_bounds(sqlite3* db, int64_t guid, items::ItemRarityFacts& out) {
     Stmt q(db, kRarityBoundsSql, guid);
     if (q.step() == SQLITE_ROW && column_is_int(q.get(), 0) && column_is_int(q.get(), 1)) {
@@ -576,22 +552,15 @@ void read_item_rarity(sqlite3* db, int64_t guid, ItemRecord& rec) {
     }
     rec.durability_stat = row;
 }
-bool guid_list(sqlite3* db, GuidQuery query, int64_t parent, std::vector<int64_t>& out, std::string& error) {
-    Stmt q(db, query.sql, parent);
-    int step = SQLITE_ERROR;
-    while ((step = q.step()) == SQLITE_ROW) out.push_back(sqlite3_column_int64(q.get(), 0));
-    return check_done(db, step, std::string(query.what) + " query failed", error);
-}
-int64_t json_int(const nlohmann::json& o, std::string_view key) { return glaze::extract_int(o, key); }
-double json_num(const nlohmann::json& o, std::string_view key) { return glaze::extract_num(o, key); }
-bool json_flag(const nlohmann::json& o, std::string_view key) { return glaze::extract_flag(o, key); }
-std::string json_str(const nlohmann::json& o, std::string_view key) { return glaze::extract_str(o, key); }
 
 ContentDb::ContentDb(ContentDb&& other) noexcept
     : db_(std::exchange(other.db_, nullptr)),
       path_(std::move(other.path_)),
       meta_(std::move(other.meta_)),
-      percent_stats_(std::move(other.percent_stats_)) {}
+      percent_stats_(std::move(other.percent_stats_)),
+      item_cache_mu_(std::move(other.item_cache_mu_)),
+      item_cache_(std::move(other.item_cache_)),
+      item_gear_cache_(std::move(other.item_gear_cache_)) {}
 
 ContentDb& ContentDb::operator=(ContentDb&& other) noexcept {
     if (this != &other) {
@@ -600,13 +569,14 @@ ContentDb& ContentDb::operator=(ContentDb&& other) noexcept {
         path_ = std::move(other.path_);
         meta_ = std::move(other.meta_);
         percent_stats_ = std::move(other.percent_stats_);
+        item_cache_mu_ = std::move(other.item_cache_mu_);
+        item_cache_ = std::move(other.item_cache_);
+        item_gear_cache_ = std::move(other.item_gear_cache_);
     }
     return *this;
 }
 
-ContentDb::~ContentDb() {
-    if (db_) sqlite3_close(db_);
-}
+ContentDb::~ContentDb() { if (db_) sqlite3_close(db_); }
 
 std::optional<ContentDb> ContentDb::open(const std::string& path, std::string& error) {
     std::error_code ec;
@@ -617,11 +587,14 @@ std::optional<ContentDb> ContentDb::open(const std::string& path, std::string& e
     }
     ContentDb c;
     c.path_ = path;
-    const int rc = sqlite3_open_v2(path.c_str(), &c.db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr);
-    if (rc != SQLITE_OK) {
-        error = "cannot open " + path + ": " + (c.db_ ? db_message(c.db_) : std::string("out of memory"));
+    bool in_mem = false;
+    std::string open_err;
+    c.db_ = open_content_sqlite_db(path, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, true, &in_mem, &open_err);
+    if (!c.db_) {
+        error = "cannot open " + path + ": " + open_err;
         return std::nullopt;
     }
+    if (in_mem) spdlog::info("[content] {}: preloaded into in-memory SQLite database", path);
     std::map<std::string, std::string> meta;
     if (!read_meta_rows(c.db_, path, meta, error) || !validate_meta_version(path, meta, c.meta_, error) ||
         !validate_required_tables(c.db_, path, error))
@@ -700,14 +673,21 @@ std::optional<AbilityRules> ContentDb::ability_rules(std::string& error) const {
 
 std::optional<ItemRecord> ContentDb::item(int64_t guid, std::string& error) const {
     error.clear();
-    ItemRecord rec;
-    if (read_item_row(db_, guid, rec, error) <= 0) return std::nullopt;
-    {
-        Stmt q(db_, kItemNameSql, guid);
-        if (q.step() == SQLITE_ROW) rec.display_name = column_text(q.get(), 0);
+    if (item_cache_mu_) {
+        std::lock_guard<std::mutex> lk(*item_cache_mu_);
+        if (const auto it = item_cache_.find(guid); it != item_cache_.end()) return it->second;
     }
+    ItemRecord rec;
+    if (read_item_row(db_, guid, rec, error) <= 0) {
+        if (error.empty() && item_cache_mu_) { std::lock_guard<std::mutex> lk(*item_cache_mu_); item_cache_.try_emplace(guid, std::nullopt); }
+        return std::nullopt;
+    }
+    { Stmt q(db_, kItemNameSql, guid); if (q.step() == SQLITE_ROW) rec.display_name = column_text(q.get(), 0); }
     read_item_rarity(db_, guid, rec);
-    return read_item_equip_slots(db_, guid, rec, error) ? std::optional<ItemRecord>(std::move(rec)) : std::nullopt;
+    if (!read_item_equip_slots(db_, guid, rec, error)) return std::nullopt;
+    std::optional<ItemRecord> out(std::move(rec));
+    if (item_cache_mu_) { std::lock_guard<std::mutex> lk(*item_cache_mu_); item_cache_.try_emplace(guid, out); }
+    return out;
 }
 
 std::optional<ResourceBagRecord> ContentDb::resource_bag(int64_t item_guid, std::string& error) const {
@@ -754,22 +734,23 @@ std::optional<StatProgramRow> ContentDb::stat_program(std::string& error) const 
 
 std::optional<stats::ItemGear> ContentDb::item_gear(int64_t guid, std::string& error) const {
     error.clear();
+    if (item_cache_mu_) {
+        std::lock_guard<std::mutex> lk(*item_cache_mu_);
+        if (const auto it = item_gear_cache_.find(guid); it != item_gear_cache_.end()) return it->second;
+    }
     stats::ItemGear g;
     g.record = guid;
     int64_t block = 0, curve = 0;
     {
         Stmt q(db_, kItemGearSql);
-        if (!q.ok()) {
-            error = "content.db item gear query failed: " + db_message(db_);
-            return std::nullopt;
-        }
+        if (!q.ok()) { error = "content.db item gear query failed: " + db_message(db_); return std::nullopt; }
         sqlite3_bind_int64(q.get(), 1, guid);
         const int step = sqlite3_step(q.get());
-        if (step == SQLITE_DONE) return std::nullopt;
-        if (step != SQLITE_ROW) {
-            error = "content.db item gear query failed: " + db_message(db_);
+        if (step == SQLITE_DONE) {
+            if (item_cache_mu_) { std::lock_guard<std::mutex> lk(*item_cache_mu_); item_gear_cache_.try_emplace(guid, std::nullopt); }
             return std::nullopt;
         }
+        if (step != SQLITE_ROW) { error = "content.db item gear query failed: " + db_message(db_); return std::nullopt; }
         block = sqlite3_column_int64(q.get(), 0);
         curve = sqlite3_column_int64(q.get(), 1);
     }
@@ -777,6 +758,7 @@ std::optional<stats::ItemGear> ContentDb::item_gear(int64_t guid, std::string& e
     if (!read_item_gear_curve(db_, curve, g, error) || !read_item_gear_stats(db_, block, percent_stats_, g, error) ||
         !read_item_gear_sets_and_tags(db_, g, error))
         return std::nullopt;
+    if (item_cache_mu_) { std::lock_guard<std::mutex> lk(*item_cache_mu_); item_gear_cache_.try_emplace(guid, g); }
     return g;
 }
 

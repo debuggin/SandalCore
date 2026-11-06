@@ -413,11 +413,15 @@ func TestRealUsmap(t *testing.T) {
 	for _, p := range m.Schema("AbilityHitRecordBase").Props {
 		generated = generated || p.Name == "bMayCorrupt"
 	}
+	fullOverride := len(m.Schemas) > 20000
 	names, enums, schemas := 78393, 3124, 16362
-	if generated {
+	switch {
+	case fullOverride:
+		names, enums, schemas = 115095, 3216, 23326
+	case generated:
 		names, enums, schemas = 72456, 3122, 15419
 	}
-	t.Logf("%s: %d names, %d enums, %d schemas (generated from the client: %v)", path, len(m.Names), len(m.Enums), len(m.Schemas), generated)
+	t.Logf("%s: %d names, %d enums, %d schemas (generated from the client: %v, fullOverride: %v)", path, len(m.Names), len(m.Enums), len(m.Schemas), generated, fullOverride)
 	if len(m.Names) != names || len(m.Enums) != enums || len(m.Schemas) != schemas {
 		t.Errorf("%d names, %d enums, %d schemas; want %d, %d, %d", len(m.Names), len(m.Enums), len(m.Schemas), names, enums, schemas)
 	}
@@ -431,7 +435,10 @@ func TestRealUsmap(t *testing.T) {
 			blueprints++
 		}
 	}
-	if generated && blueprints != 0 || !generated && blueprints != 908 {
+	switch {
+	case fullOverride && blueprints != 7594:
+		t.Errorf("%d Blueprint classes, want 7594 for fullOverride", blueprints)
+	case !fullOverride && (generated && blueprints != 0 || !generated && blueprints != 908):
 		t.Errorf("%d Blueprint classes, generated %v", blueprints, generated)
 	}
 	// Every super is a schema of the file.

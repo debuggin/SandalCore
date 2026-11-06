@@ -280,6 +280,19 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
             }
         }
 
+        It 'emits [Step 1/6] through [Step 6/6] in strict ascending order (1..6) for run.ps1 -DryRun and never emits [Step 2/6] after [Step 3/6]' {
+            $runScript = Join-Path $script:RepoRoot 'scripts\sandal\run.ps1'
+            $dryOut = (@(& pwsh -NoProfile -File $runScript -DryRun) -join "`n")
+            $LASTEXITCODE | Should -Be 0
+            $stepMatches = [regex]::Matches($dryOut, '\[Step\s+(\d+)/6\]')
+            $stepNums = @($stepMatches | ForEach-Object { [int]$_.Groups[1].Value })
+            ($stepNums -join ',') | Should -Be '1,2,3,4,5,6'
+            $idxStep2 = $dryOut.IndexOf('[Step 2/6]', [System.StringComparison]::Ordinal)
+            $idxStep3 = $dryOut.IndexOf('[Step 3/6]', [System.StringComparison]::Ordinal)
+            $lastIdxStep2 = $dryOut.LastIndexOf('[Step 2/6]', [System.StringComparison]::Ordinal)
+            ($idxStep2 -ge 0 -and $idxStep3 -gt $idxStep2 -and $lastIdxStep2 -lt $idxStep3) | Should -BeTrue
+        }
+
         It 'runs sandal.ps1 test -Filter go -Json without -DryRun, exits 0, and emits valid JSON' {
             $raw = (@(& pwsh -NoProfile -File $script:SandalCli test -Filter go -Json) -join "`n")
             $LASTEXITCODE | Should -Be 0

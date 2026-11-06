@@ -59,6 +59,7 @@ std::unique_ptr<NodePopulationData> NodePopulationData::load(const std::string& 
         sqlite3* db;
         ~Closer() { sqlite3_close(db); }
     } closer{db};
+    sqlite3_exec(db, "PRAGMA mmap_size = 536870912; PRAGMA cache_size = -16384; PRAGMA temp_store = MEMORY; PRAGMA query_only = ON;", nullptr, nullptr, nullptr);
     auto out = std::unique_ptr<NodePopulationData>(new NodePopulationData());
     const auto prepare = [&](Stmt& st, const char* sql, const char* what) {
         if (sqlite3_prepare_v2(db, sql, -1, &st.s, nullptr) == SQLITE_OK) return true;

@@ -242,6 +242,7 @@ func (d *Decoder) minSize(t *usmap.Type) int {
 	case usmap.KindInt16, usmap.KindUInt16:
 		return 2
 	case usmap.KindInt, usmap.KindFloat, usmap.KindUInt32, usmap.KindName, usmap.KindStr,
+		usmap.KindUtf8Str, usmap.KindAnsiStr, usmap.KindClass, usmap.KindSoftClass,
 		usmap.KindEnum, usmap.KindArray, usmap.KindUnknown, usmap.KindObject, usmap.KindSoftObject, usmap.KindOptional:
 		return 4
 	case usmap.KindMap, usmap.KindSet, usmap.KindInt64, usmap.KindUInt64, usmap.KindDouble:

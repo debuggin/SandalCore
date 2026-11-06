@@ -8,16 +8,61 @@
 #include <DetourNavMeshQuery.h>
 
 #include <algorithm>
-#include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
-#include <functional>
 
 namespace aoc::worldd::nav {
 
 namespace {
+
+int parse_nav_env_bool(const char* val) {
+    if (!val || !*val) return -1;
+    std::string s;
+    for (const unsigned char c : std::string_view(val)) if (!std::isspace(c)) s.push_back(static_cast<char>(std::tolower(c)));
+    return (s == "1" || s == "true" || s == "yes" || s == "on") ? 1 : ((s == "0" || s == "false" || s == "no" || s == "off") ? 0 : -1);
+}
+
+bool should_cache_area_nav_in_memory() {
+    if (const int flag = parse_nav_env_bool(std::getenv("AOC_WORLD_CACHE_AREA_NAV_IN_MEMORY")); flag >= 0) return flag == 1;
+    if (parse_nav_env_bool(std::getenv("AOC_WORLD_CACHE_ALL_CONTENT_IN_MEMORY")) == 1) return true;
+    if (const char* files = std::getenv("AOC_WORLD_CACHE_FILES"); files && *files) {
+        std::string low;
+        for (const unsigned char c : std::string_view(files)) low.push_back(static_cast<char>(std::tolower(c)));
+        return low.find("all") != std::string::npos || low.find("area_nav.bin") != std::string::npos;
+    }
+    return false;
+}
+
+void preload_area_nav_in_memory(const std::string& path, std::vector<uint8_t>& out) {
+    std::error_code ec;
+    const auto fsize = std::filesystem::file_size(path, ec);
+    if (ec || fsize <= (16u << 20)) return;
+    std::ifstream in(path, std::ios::binary);
+    std::vector<uint8_t> buf(static_cast<size_t>(fsize));
+    if (in && in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()))) out = std::move(buf);
+}
+
+struct MemStreamBuf : std::streambuf {
+    MemStreamBuf(const uint8_t* data, size_t size) {
+        char* p = const_cast<char*>(reinterpret_cast<const char*>(data));
+        setg(p, p, p + size);
+    }
+    pos_type seekoff(off_type off, std::ios_base::seekdir way, std::ios_base::openmode which) override {
+        if (!(which & std::ios_base::in)) return pos_type(off_type(-1));
+        const ptrdiff_t len = egptr() - eback();
+        const ptrdiff_t base = (way == std::ios_base::cur) ? (gptr() - eback()) : ((way == std::ios_base::end) ? len : 0);
+        if (way != std::ios_base::beg && way != std::ios_base::cur && way != std::ios_base::end) return pos_type(off_type(-1));
+        const off_type next = static_cast<off_type>(base) + off;
+        if (next < 0 || next > static_cast<off_type>(len)) return pos_type(off_type(-1));
+        setg(eback(), eback() + next, egptr());
+        return pos_type(next);
+    }
+    pos_type seekpos(pos_type sp, std::ios_base::openmode which) override { return seekoff(off_type(sp), std::ios_base::beg, which); }
+};
 
 static_assert(sizeof(dtPolyRef) == 8, "DT_POLYREF64 must be enabled");
 static_assert(sizeof(dtTileRef) == 8, "DT_POLYREF64 must be enabled");
@@ -75,19 +120,12 @@ bool tile_is_sound(const NavTileBlob& t, int max_polys, std::string* why) {
 
 AreaNav::~AreaNav() {
     if (worker_.joinable()) {
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            stop_ = true;
-        }
+        { std::lock_guard<std::mutex> lk(mu_); stop_ = true; }
         cv_.notify_all();
         worker_.join();
     }
-    // tiles read and never added
-    for (auto& lc : done_)
-        for (auto& t : lc.tiles) if (t.data) dtFree(t.data);
-    for (auto& s : slots_)
-        if (s.state == State::Arrived)
-            for (size_t i = s.cursor; i < s.tiles.size(); ++i) if (s.tiles[i].data) dtFree(s.tiles[i].data);
+    for (auto& lc : done_) for (auto& t : lc.tiles) if (t.data) dtFree(t.data);
+    for (auto& s : slots_) if (s.state == State::Arrived) for (size_t i = s.cursor; i < s.tiles.size(); ++i) if (s.tiles[i].data) dtFree(s.tiles[i].data);
     if (query_) dtFreeNavMeshQuery(query_);
     if (mesh_) dtFreeNavMesh(mesh_);
     delete filter_;
@@ -125,6 +163,7 @@ std::unique_ptr<AreaNav> AreaNav::load(const std::string& path, std::string* err
             n->slots_[i].entry = n->file_.chunks[i];
             n->slot_by_key_[pack({n->file_.chunks[i].cx, n->file_.chunks[i].cy})] = static_cast<uint32_t>(i);
         }
+        if (should_cache_area_nav_in_memory()) preload_area_nav_in_memory(path, n->memory_file_);
         n->worker_ = std::thread([raw = n.get()] { raw->worker_main(); });
         return n;
     }
@@ -446,36 +485,32 @@ std::vector<std::string> AreaNav::take_load_errors() {
 
 void AreaNav::plan_window(const std::vector<ChunkKey>& centers, int load_radius, int keep_radius) {
     if (centers.empty()) return;
-    ++stats_.plans;
-    last_centers_ = centers;
-    replan_ = false;
+    ++stats_.plans; last_centers_ = centers; replan_ = false;
     const auto now = Clock::now();
     for (Slot& s : slots_) { s.want = false; s.keep = false; }
-    for (const ChunkKey& c : centers) {
+    for (const ChunkKey& c : centers)
         for (int dy = -keep_radius; dy <= keep_radius; ++dy)
-            for (int dx = -keep_radius; dx <= keep_radius; ++dx) {
-                const auto it = slot_by_key_.find(pack({c.x + dx, c.y + dy}));
-                if (it == slot_by_key_.end()) continue;
-                Slot& s = slots_[it->second];
-                s.keep = true;
-                if (std::abs(dx) <= load_radius && std::abs(dy) <= load_radius) s.want = true;
-            }
+            for (int dx = -keep_radius; dx <= keep_radius; ++dx)
+                if (const auto it = slot_by_key_.find(pack({c.x + dx, c.y + dy})); it != slot_by_key_.end()) {
+                    Slot& s = slots_[it->second];
+                    s.keep = true;
+                    if (std::abs(dx) <= load_radius && std::abs(dy) <= load_radius) s.want = true;
+                }
+    for (uint32_t i = 0; i < slots_.size(); ++i)
+        if (slots_[i].state == State::Resident && !slots_[i].keep && !slots_[i].unload_queued) { slots_[i].unload_queued = true; unload_queue_.push_back(i); }
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (auto it = requests_.begin(); it != requests_.end();) {
+            Slot& r = slots_[*it];
+            if (!r.keep) { r.state = State::Absent; committed_tiles_ -= std::min<size_t>(committed_tiles_, r.entry.tiles); it = requests_.erase(it); }
+            else ++it;
+        }
     }
-    // what leaves: a resident chunk that no player is within keep_radius of
-    for (uint32_t i = 0; i < slots_.size(); ++i) {
-        Slot& s = slots_[i];
-        if (s.state == State::Resident && !s.keep && !s.unload_queued) { s.unload_queued = true; unload_queue_.push_back(i); }
-    }
-    // how far a chunk is from the nearest player (squared, in chunks)
     const auto nearest = [&](const Slot& s) {
         double best = 1e300;
-        for (const ChunkKey& c : centers) {
-            const double dx = s.entry.cx - c.x, dy = s.entry.cy - c.y;
-            best = std::min(best, dx * dx + dy * dy);
-        }
+        for (const ChunkKey& c : centers) { const double dx = s.entry.cx - c.x, dy = s.entry.cy - c.y; best = std::min(best, dx * dx + dy * dy); }
         return best;
     };
-    // what comes: wanted chunks that are not here, nearest to a player first.  A chunk whose read failed is asked for again after retry_delay_ (up to kMaxLoadAttempts reads).
     struct Cand { double d; uint32_t slot; };
     std::vector<Cand> cands;
     for (uint32_t i = 0; i < slots_.size(); ++i) {
@@ -483,28 +518,19 @@ void AreaNav::plan_window(const std::vector<ChunkKey>& centers, int load_radius,
         if (!s.want || s.state != State::Absent) continue;
         if (s.failed) {
             if (s.attempts >= kMaxLoadAttempts) continue;
-            if (now < s.retry_at) { replan_ = true; continue; }   // (polled until its time comes)
-            s.failed = false;
-            ++stats_.retries;
+            if (now < s.retry_at) { replan_ = true; continue; }
+            s.failed = false; ++stats_.retries;
         }
         cands.push_back({nearest(s), i});
     }
     if (cands.empty()) return;
     std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.d != b.d ? a.d < b.d : a.slot < b.slot; });
     const size_t cap = static_cast<size_t>(file_.settings.max_tiles);
-    // What gives way when a nearer chunk has no room (review A I1): any resident chunk, the farthest from its nearest player first, wanted or only kept alike.  A chunk is dropped for
-    // another only when it is STRICTLY farther from its player than the newcomer is from its own, so two players at the same distance do not take each other's chunks in turn, and
-    // every player keeps its own chunk (distance 0) unless the whole mesh is made of such chunks.
     std::vector<Cand> victims;
-    for (uint32_t i = 0; i < slots_.size(); ++i) {
-        const Slot& s = slots_[i];
-        if (s.state != State::Resident || s.unload_queued) continue;
-        victims.push_back({nearest(s), i});
-    }
+    for (uint32_t i = 0; i < slots_.size(); ++i)
+        if (slots_[i].state == State::Resident && !slots_[i].unload_queued) victims.push_back({nearest(slots_[i]), i});
     std::sort(victims.begin(), victims.end(), [](const Cand& a, const Cand& b) { return a.d != b.d ? a.d > b.d : a.slot < b.slot; });
-    size_t next_victim = 0;
-    // (the tiles of chunks already on their way out count as free: they will be)
-    size_t leaving = 0;
+    size_t next_victim = 0, leaving = 0;
     for (const Slot& s : slots_)
         if (s.unload_queued || s.state == State::Unloading) leaving += s.state == State::Unloading ? (s.tiles.size() - s.cursor) : s.entry.tiles;
     bool any = false;
@@ -514,18 +540,13 @@ void AreaNav::plan_window(const std::vector<ChunkKey>& centers, int load_radius,
             Slot& s = slots_[c.slot];
             while (committed_tiles_ - std::min(committed_tiles_, leaving) + s.entry.tiles > cap && next_victim < victims.size() && victims[next_victim].d > c.d) {
                 Slot& v = slots_[victims[next_victim++].slot];
-                v.evict = true;
-                v.unload_queued = true;
+                v.evict = true; v.unload_queued = true;
                 unload_queue_.push_back(static_cast<uint32_t>(&v - slots_.data()));
-                leaving += v.entry.tiles;
-                ++stats_.evicted_for_room;
+                leaving += v.entry.tiles; ++stats_.evicted_for_room;
             }
             if (committed_tiles_ - std::min(committed_tiles_, leaving) + s.entry.tiles > cap) { ++stats_.deferred_by_cap; replan_ = true; break; }
-            if (committed_tiles_ + s.entry.tiles > cap) { ++stats_.deferred_by_cap; replan_ = true; break; }   // (room only once the leaving chunks have left: the next call asks again)
-            s.state = State::Requested;
-            committed_tiles_ += s.entry.tiles;
-            requests_.push_back(c.slot);
-            any = true;
+            if (committed_tiles_ + s.entry.tiles > cap) { ++stats_.deferred_by_cap; replan_ = true; break; }
+            s.state = State::Requested; committed_tiles_ += s.entry.tiles; requests_.push_back(c.slot); any = true;
         }
     }
     stats_.peak_committed_tiles = std::max(stats_.peak_committed_tiles, committed_tiles_);
@@ -650,12 +671,10 @@ std::vector<ChunkKey> AreaNav::pump(double budget_ms) {
         if (s.cursor >= s.tiles.size()) {
             stats_.max_chunk_add_ms = std::max(stats_.max_chunk_add_ms, s.work_ms);
             stats_.total_add_ms += s.work_ms;
-            s.state = State::Resident;
-            s.attempts = 0;
-            ++resident_chunks_;
-            ++stats_.chunk_loads;
+            s.state = State::Resident; s.attempts = 0; ++resident_chunks_; ++stats_.chunk_loads;
             newly.push_back({s.entry.cx, s.entry.cy});
             arrived_.pop_front();
+            if (!s.keep && !s.unload_queued) { s.unload_queued = true; unload_queue_.push_back(idx); }
         }
         if (ms_since(t0) >= budget_ms) break;
     }
@@ -690,7 +709,8 @@ bool AreaNav::load_around(const std::vector<std::pair<double, double>>& points, 
 }
 
 void AreaNav::worker_main() {
-    std::ifstream in(path_, std::ios::binary);
+    std::ifstream in;
+    if (memory_file_.empty()) in.open(path_, std::ios::binary);
     const int max_polys = file_.settings.max_polys;
     const uint32_t chunk_tiles = file_.chunk_tiles;
     for (;;) {
@@ -708,15 +728,20 @@ void AreaNav::worker_main() {
         lc.slot = idx;
         std::vector<NavTileBlob> blobs;
         std::string err;
-        // (review A I3) a failed read leaves the stream's fail bit set: clear it (and reopen a file that would not open) before every chunk, or one I/O error would fail every chunk after it
-        if (!in.is_open()) in.open(path_, std::ios::binary);
-        in.clear();
-        if (!in.is_open()) {
-            lc.error = "chunk (" + std::to_string(entry.cx) + ", " + std::to_string(entry.cy) + ") cannot be read: " + path_ + " does not open";
-        } else if (!read_nav_chunk(in, entry, &blobs, &err, chunk_tiles)) {
-            lc.error = err.empty() ? "cannot read the chunk" : err;
-            in.clear();
+        bool read_ok = false;
+        if (!memory_file_.empty()) {
+            MemStreamBuf buf(memory_file_.data(), memory_file_.size());
+            std::ifstream mem_in;
+            static_cast<std::ios&>(mem_in).rdbuf(&buf);
+            read_ok = read_nav_chunk(mem_in, entry, &blobs, &err, chunk_tiles);
+            if (!read_ok) lc.error = err.empty() ? "cannot read the chunk" : err;
         } else {
+            if (!in.is_open()) in.open(path_, std::ios::binary);
+            in.clear();
+            if (!in.is_open()) lc.error = "chunk (" + std::to_string(entry.cx) + ", " + std::to_string(entry.cy) + ") cannot be read: " + path_ + " does not open";
+            else if (!(read_ok = read_nav_chunk(in, entry, &blobs, &err, chunk_tiles))) { lc.error = err.empty() ? "cannot read the chunk" : err; in.clear(); }
+        }
+        if (read_ok) {
             lc.tiles.reserve(blobs.size());
             for (const NavTileBlob& b : blobs) {
                 std::string why;
@@ -725,14 +750,9 @@ void AreaNav::worker_main() {
                 if (!data) { lc.error = "out of memory"; break; }
                 std::memcpy(data, b.data.data(), b.data.size());
                 lc.repair += repair_detail_boundaries(data, b.data.size());
-                LoadedTile t;
-                t.tx = b.tx; t.ty = b.ty; t.data = data; t.size = static_cast<int>(b.data.size());
-                lc.tiles.push_back(t);
+                lc.tiles.push_back(LoadedTile{b.tx, b.ty, data, static_cast<int>(b.data.size())});
             }
-            if (!lc.error.empty()) {
-                for (auto& t : lc.tiles) dtFree(t.data);
-                lc.tiles.clear();
-            }
+            if (!lc.error.empty()) { for (auto& t : lc.tiles) dtFree(t.data); lc.tiles.clear(); }
         }
         lc.read_ms = ms_since(t0);
         std::lock_guard<std::mutex> lk(mu_);

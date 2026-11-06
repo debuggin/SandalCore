@@ -139,28 +139,28 @@ function Invoke-DotNetPkiGeneration {
     }
 }
 
-function Restore-LetsEncryptCertPair {
+function Copy-CertPairIfMissing {
+    param([string]$SrcCert, [string]$SrcKey, [string]$DstCert, [string]$DstKey)
+    if (-not ((Test-Path -LiteralPath $SrcCert -PathType Leaf) -and (Test-Path -LiteralPath $SrcKey -PathType Leaf))) { return $false }
+    if (-not (Test-Path -LiteralPath $DstCert -PathType Leaf)) { Copy-Item -LiteralPath $SrcCert -Destination $DstCert -Force; (Get-Item -LiteralPath $DstCert -Force).Attributes = [System.IO.FileAttributes]::Normal }
+    if (-not (Test-Path -LiteralPath $DstKey -PathType Leaf)) { Copy-Item -LiteralPath $SrcKey -Destination $DstKey -Force; (Get-Item -LiteralPath $DstKey -Force).Attributes = [System.IO.FileAttributes]::Normal }
+    return $true
+}
+
+function Restore-UserCertPair {
     param([string]$TargetDir)
+    $serverPem = Join-Path $TargetDir 'server.pem'; $serverKey = Join-Path $TargetDir 'server.key'
+    if ($env:SANDAL_TLS_CERT_PATH -and $env:SANDAL_TLS_KEY_PATH -and (Copy-CertPairIfMissing -SrcCert $env:SANDAL_TLS_CERT_PATH -SrcKey $env:SANDAL_TLS_KEY_PATH -DstCert $serverPem -DstKey $serverKey)) { return }
     $userHome = if ($HOME) { $HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { '' }
-    if (-not $userHome) { return }
-    $leRoot = Join-Path $userHome '.letsencrypt'
-    if (-not (Test-Path -LiteralPath $leRoot -PathType Container)) { return }
-    $serverPem = Join-Path $TargetDir 'server.pem'
-    $serverKey = Join-Path $TargetDir 'server.key'
-    $directPem = Join-Path $leRoot 'server.pem'
-    $directKey = Join-Path $leRoot 'server.key'
-    if ((Test-Path -LiteralPath $directPem -PathType Leaf) -and (Test-Path -LiteralPath $directKey -PathType Leaf)) {
-        if (-not (Test-Path -LiteralPath $serverPem -PathType Leaf)) { Copy-Item -LiteralPath $directPem -Destination $serverPem -Force }
-        if (-not (Test-Path -LiteralPath $serverKey -PathType Leaf)) { Copy-Item -LiteralPath $directKey -Destination $serverKey -Force }
-        return
-    }
-    foreach ($sub in @(Get-ChildItem -LiteralPath $leRoot -Directory -Recurse -ErrorAction SilentlyContinue)) {
-        $fc = Join-Path $sub.FullName 'fullchain.pem'
-        $pk = Join-Path $sub.FullName 'privkey.pem'
-        if ((Test-Path -LiteralPath $fc -PathType Leaf) -and (Test-Path -LiteralPath $pk -PathType Leaf)) {
-            if (-not (Test-Path -LiteralPath $serverPem -PathType Leaf)) { Copy-Item -LiteralPath $fc -Destination $serverPem -Force }
-            if (-not (Test-Path -LiteralPath $serverKey -PathType Leaf)) { Copy-Item -LiteralPath $pk -Destination $serverKey -Force }
-            return
+    foreach ($dirCand in @($env:SANDAL_CERTS_OVERRIDE_DIR, $env:AOC_CERTS_OVERRIDE_DIR, $(if ($userHome) { Join-Path $userHome '.aoc\certs' } else { '' }))) {
+        if ([string]::IsNullOrWhiteSpace($dirCand)) { continue }
+        $certRoot = $dirCand.Trim().Trim('"')
+        if (-not (Test-Path -LiteralPath $certRoot -PathType Container)) { continue }
+        foreach ($pair in @(@('server.pem', 'server.key'), @('server.crt', 'server.key'), @('fullchain.pem', 'privkey.pem'))) {
+            if (Copy-CertPairIfMissing -SrcCert (Join-Path $certRoot $pair[0]) -SrcKey (Join-Path $certRoot $pair[1]) -DstCert $serverPem -DstKey $serverKey) { return }
+        }
+        foreach ($sub in @(Get-ChildItem -LiteralPath $certRoot -Directory -Recurse -Force -ErrorAction SilentlyContinue)) {
+            if (Copy-CertPairIfMissing -SrcCert (Join-Path $sub.FullName 'fullchain.pem') -SrcKey (Join-Path $sub.FullName 'privkey.pem') -DstCert $serverPem -DstKey $serverKey) { return }
         }
     }
 }
@@ -176,6 +176,9 @@ function Ensure-ServerCertPairFiles {
     if (-not (Test-Path -LiteralPath $serverPem -PathType Leaf) -and (Test-Path -LiteralPath $serverCrt -PathType Leaf)) {
         Copy-Item -LiteralPath $serverCrt -Destination $serverPem -Force
     }
+    if (-not ((Test-Path -LiteralPath $serverPem -PathType Leaf) -and (Test-Path -LiteralPath $serverKey -PathType Leaf))) {
+        Restore-UserCertPair -TargetDir $TargetDir
+    }
     if (-not (Test-Path -LiteralPath $serverPem -PathType Leaf) -and $FallbackCertsDir -and (Test-Path -LiteralPath $FallbackCertsDir -PathType Container)) {
         foreach ($name in @('server.pem', 'server.crt', 'server.key', 'ca.crt', 'ca.pem')) {
             $src = Join-Path $FallbackCertsDir $name
@@ -184,9 +187,6 @@ function Ensure-ServerCertPairFiles {
                 Copy-Item -LiteralPath $src -Destination $dst -Force
             }
         }
-    }
-    if (-not ((Test-Path -LiteralPath $serverPem -PathType Leaf) -and (Test-Path -LiteralPath $serverKey -PathType Leaf))) {
-        Restore-LetsEncryptCertPair -TargetDir $TargetDir
     }
     $hasPair = (Test-Path -LiteralPath $serverPem -PathType Leaf) -and (Test-Path -LiteralPath $serverKey -PathType Leaf)
     if (-not $hasPair) {
