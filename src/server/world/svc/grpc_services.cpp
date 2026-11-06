@@ -32,7 +32,176 @@ std::shared_ptr<grpc::Channel> channel(const std::string& address) {
     args.SetInt(GRPC_ARG_INITIAL_RECONNECT_BACKOFF_MS, 200);
     args.SetInt(GRPC_ARG_MIN_RECONNECT_BACKOFF_MS, 200);
     args.SetInt(GRPC_ARG_MAX_RECONNECT_BACKOFF_MS, 5000);
+    args.SetInt(GRPC_ARG_DNS_MIN_TIME_BETWEEN_RESOLUTIONS_MS, 1000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 15000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 5000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
+    args.SetInt(GRPC_ARG_HTTP2_MAX_PINGS_WITHOUT_DATA, 0);
+    args.SetServiceConfigJSON(R"({"methodConfig":[{"name":[{}],"waitForReady":true,"retryPolicy":{"maxAttempts":4,"initialBackoff":"0.05s","maxBackoff":"0.5s","backoffMultiplier":2.0,"retryableStatusCodes":["UNAVAILABLE"]}}]})");
     return grpc::CreateCustomChannel(address, grpc::InsecureChannelCredentials(), args);
+}
+
+bool unpack_character_items(const characterv1::Character& c, Character& out) {
+    for (const auto& item : c.items()) {
+        InventoryItem it;
+        switch (item.container()) {
+        case characterv1::ITEM_CONTAINER_BACKPACK: it.container = ItemContainer::Backpack; break;
+        case characterv1::ITEM_CONTAINER_EQUIPMENT: it.container = ItemContainer::Equipment; break;
+        case characterv1::ITEM_CONTAINER_QUEST: it.container = ItemContainer::Quest; break;
+        case characterv1::ITEM_CONTAINER_RESOURCE0: it.container = ItemContainer::Resource0; break;
+        case characterv1::ITEM_CONTAINER_RESOURCE1: it.container = ItemContainer::Resource1; break;
+        case characterv1::ITEM_CONTAINER_RESOURCE2: it.container = ItemContainer::Resource2; break;
+        default:
+            out.items.clear();
+            return false;
+        }
+        it.slot = item.slot();
+        it.item_record_id = item.item_record_id();
+        it.instance_guid = item.instance_guid();
+        it.quantity = item.quantity();
+        it.quality = item.quality();
+        it.durability = item.durability();
+        it.created_at_ms = item.created_at_ms();
+        if (item.has_persisted_health()) it.persisted_health = item.persisted_health();
+        if (item.has_persisted_mana()) it.persisted_mana = item.persisted_mana();
+        it.lock_expiration = item.lock_expiration();
+        out.items.push_back(std::move(it));
+    }
+    return true;
+}
+
+void unpack_character_jobs_and_warehouse(const characterv1::Character& c, Character& out) {
+    for (const auto& w : c.wallet()) out.wallet.push_back({w.currency_guid(), w.amount()});
+    for (const auto& j : c.processing_jobs()) {
+        ProcessingJob job;
+        job.job_guid = j.job_guid();
+        job.station_key = j.station_key();
+        job.recipe_guid = j.recipe_guid();
+        job.sub_recipe_guid = j.sub_recipe_guid();
+        job.quantity = j.quantity();
+        job.queued_at_ms = j.queued_at_ms();
+        job.started_at_ms = j.started_at_ms();
+        job.duration_ms = j.duration_ms();
+        job.client_txn = j.client_txn();
+        job.rating_xp = j.rating_xp();
+        job.rating_quantity = j.rating_quantity();
+        job.rating_rarity = j.rating_rarity();
+        for (const auto& res : j.resources()) {
+            JobResource jr;
+            jr.record_id = res.record_id();
+            for (const auto& ra : res.rarities()) jr.rarities.push_back({ra.rarity(), ra.count(), ra.from_warehouse()});
+            job.resources.push_back(std::move(jr));
+        }
+        out.processing_jobs.push_back(std::move(job));
+    }
+    for (const int64_t recipe : c.known_recipes()) out.known_recipes.push_back(recipe);
+    for (const int64_t id : c.completed_ftues()) out.completed_ftues.push_back(id);
+    for (const auto& w : c.warehouse_items()) {
+        WarehouseItem wi;
+        wi.area = w.area();
+        wi.node_guid = w.node_guid();
+        wi.container_guid = w.container_guid();
+        wi.item.slot = w.slot();
+        wi.item.item_record_id = w.item_record_id();
+        wi.item.instance_guid = w.instance_guid();
+        wi.item.quantity = w.quantity();
+        wi.item.quality = w.quality();
+        wi.item.durability = w.durability();
+        wi.item.created_at_ms = w.created_at_ms();
+        if (w.has_persisted_health()) wi.item.persisted_health = w.persisted_health();
+        if (w.has_persisted_mana()) wi.item.persisted_mana = w.persisted_mana();
+        wi.item.lock_expiration = w.lock_expiration();
+        out.warehouse_items.push_back(std::move(wi));
+    }
+}
+
+void unpack_character_progression(const characterv1::Character& c, Character& out) {
+    for (const int32_t n : c.attunements()) out.attunements.push_back(n);
+    out.home_attunement = c.home_attunement();
+    out.home_last_used_ms = c.home_last_used_ms();
+    for (const auto& e : c.experience()) {
+        out.experience.push_back({e.leveling_type_guid(), e.xp(), e.debt()});
+    }
+    for (const auto& t : c.skill_ranks()) {
+        TreeRanks tr;
+        tr.tree_guid = t.tree_guid();
+        tr.rank_guids.assign(t.rank_guids().begin(), t.rank_guids().end());
+        out.skill_ranks.push_back(std::move(tr));
+    }
+    for (const auto& p : c.professions()) {
+        out.professions.push_back({p.profession_guid(), p.certification_tier(), p.level(), p.xp()});
+    }
+    for (const auto& a : c.action_bar()) {
+        ActionbarSlot s;
+        s.bank = a.bank();
+        s.slot = a.slot();
+        s.use_type = a.use_type();
+        s.instigator = a.instigator();
+        s.ability_id = a.ability_id();
+        s.skill_rank_id = a.skill_rank_id();
+        s.pet_command_id = a.pet_command_id();
+        s.item_record_id = a.item_record_id();
+        s.item_guid = a.item_guid();
+        s.item_rarity = a.item_rarity();
+        s.item_quality = a.item_quality();
+        s.combo_button = a.combo_button();
+        out.action_bar.push_back(std::move(s));
+    }
+}
+
+void pack_warehouse_and_jobs(const std::vector<ProcessingJob>* jobs, const std::vector<int64_t>* known_recipes,
+                             const std::vector<WarehouseItem>* warehouse, characterv1::SaveInventoryRequest& req) {
+    if (warehouse) {
+        req.set_replace_warehouse(true);
+        for (const WarehouseItem& w : *warehouse) {
+            auto* p = req.add_warehouse_items();
+            p->set_area(w.area);
+            p->set_node_guid(w.node_guid);
+            p->set_container_guid(w.container_guid);
+            p->set_slot(w.item.slot);
+            p->set_item_record_id(w.item.item_record_id);
+            p->set_instance_guid(w.item.instance_guid);
+            p->set_quantity(w.item.quantity);
+            p->set_quality(w.item.quality);
+            p->set_durability(w.item.durability);
+            p->set_created_at_ms(w.item.created_at_ms);
+            if (w.item.persisted_health) p->set_persisted_health(*w.item.persisted_health);
+            if (w.item.persisted_mana) p->set_persisted_mana(*w.item.persisted_mana);
+            p->set_lock_expiration(w.item.lock_expiration);
+        }
+    }
+    if (known_recipes) {
+        req.set_replace_known_recipes(true);
+        for (const int64_t recipe : *known_recipes) req.add_known_recipes(recipe);
+    }
+    if (jobs) {
+        req.set_replace_processing_jobs(true);
+        for (const ProcessingJob& job : *jobs) {
+            auto* j = req.add_processing_jobs();
+            j->set_job_guid(job.job_guid);
+            j->set_station_key(job.station_key);
+            j->set_recipe_guid(job.recipe_guid);
+            j->set_sub_recipe_guid(job.sub_recipe_guid);
+            j->set_quantity(job.quantity);
+            j->set_queued_at_ms(job.queued_at_ms);
+            j->set_started_at_ms(job.started_at_ms);
+            j->set_duration_ms(job.duration_ms);
+            j->set_client_txn(job.client_txn);
+            j->set_rating_xp(job.rating_xp);
+            j->set_rating_quantity(job.rating_quantity);
+            j->set_rating_rarity(job.rating_rarity);
+            for (const JobResource& res : job.resources) {
+                auto* r = j->add_resources();
+                r->set_record_id(res.record_id);
+                for (const JobRarity& ra : res.rarities) {
+                    auto* rr = r->add_rarities();
+                    rr->set_rarity(ra.rarity);
+                    rr->set_count(ra.count);
+                    rr->set_from_warehouse(ra.from_warehouse);
+                }
+            }
+        }
+    }
 }
 
 }  // namespace
@@ -62,6 +231,7 @@ GrpcServices::GrpcServices(const Addresses& addresses, std::string token,
 GrpcServices::~GrpcServices() = default;
 
 void GrpcServices::prepare(grpc::ClientContext& ctx, std::chrono::milliseconds timeout) const {
+    ctx.set_wait_for_ready(true);
     ctx.set_deadline(std::chrono::system_clock::now() + timeout);
     ctx.AddMetadata(kAuthorizationMetadata, "Bearer " + token_);
 }
@@ -83,14 +253,13 @@ RedeemResult GrpcServices::redeem_ticket(const std::string& ticket, const std::s
     }
     return r;
 }
-// (C.O.A) (Cyb)
 
 CharacterResult GrpcServices::get_character(const std::string& id) {
     grpc::ClientContext ctx;
     prepare(ctx);
     characterv1::GetCharacterRequest req;
     req.set_id(id);
-    req.set_include_items(true);   // plan B2: world plays the character, so it needs its items
+    req.set_include_items(true);
     characterv1::GetCharacterResponse resp;
     CharacterResult r;
     r.status = map_grpc_status(stubs_->character->GetCharacter(&ctx, req, &resp));
@@ -111,116 +280,12 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
         r.character.position = {c.position().x(), c.position().y(), c.position().z(), c.position().yaw()};
     }
     r.character.last_region = c.last_region();
-    for (const auto& item : c.items()) {
-        InventoryItem it;
-        switch (item.container()) {
-        case characterv1::ITEM_CONTAINER_BACKPACK: it.container = ItemContainer::Backpack; break;
-        case characterv1::ITEM_CONTAINER_EQUIPMENT: it.container = ItemContainer::Equipment; break;
-        case characterv1::ITEM_CONTAINER_QUEST: it.container = ItemContainer::Quest; break;
-        case characterv1::ITEM_CONTAINER_RESOURCE0: it.container = ItemContainer::Resource0; break;
-        case characterv1::ITEM_CONTAINER_RESOURCE1: it.container = ItemContainer::Resource1; break;
-        case characterv1::ITEM_CONTAINER_RESOURCE2: it.container = ItemContainer::Resource2; break;
-        default:
-            // an item in a storage this world has never heard of: the whole record is not one it can play
-            r.status = CallStatus::Failed;
-            r.character.items.clear();
-            return r;
-        }
-        it.slot = item.slot();
-        it.item_record_id = item.item_record_id();
-        it.instance_guid = item.instance_guid();
-        it.quantity = item.quantity();
-        it.quality = item.quality();
-        it.durability = item.durability();
-        it.created_at_ms = item.created_at_ms();
-        if (item.has_persisted_health()) it.persisted_health = item.persisted_health();
-        if (item.has_persisted_mana()) it.persisted_mana = item.persisted_mana();
-        it.lock_expiration = item.lock_expiration();
-        r.character.items.push_back(std::move(it));
+    if (!unpack_character_items(c, r.character)) {
+        r.status = CallStatus::Failed;
+        return r;
     }
-    for (const auto& w : c.wallet()) r.character.wallet.push_back({w.currency_guid(), w.amount()});
-    for (const auto& j : c.processing_jobs()) {
-        ProcessingJob job;
-        job.job_guid = j.job_guid();
-        job.station_key = j.station_key();
-        job.recipe_guid = j.recipe_guid();
-        job.sub_recipe_guid = j.sub_recipe_guid();
-        job.quantity = j.quantity();
-        job.queued_at_ms = j.queued_at_ms();
-        job.started_at_ms = j.started_at_ms();
-        job.duration_ms = j.duration_ms();
-        job.client_txn = j.client_txn();
-        job.rating_xp = j.rating_xp();
-        job.rating_quantity = j.rating_quantity();
-        job.rating_rarity = j.rating_rarity();
-        for (const auto& res : j.resources()) {
-            JobResource jr;
-            jr.record_id = res.record_id();
-            for (const auto& ra : res.rarities()) jr.rarities.push_back({ra.rarity(), ra.count(), ra.from_warehouse()});
-            job.resources.push_back(std::move(jr));
-        }
-        r.character.processing_jobs.push_back(std::move(job));
-    }
-    for (const int64_t recipe : c.known_recipes()) r.character.known_recipes.push_back(recipe);
-    for (const int64_t id : c.completed_ftues()) r.character.completed_ftues.push_back(id);
-    for (const auto& w : c.warehouse_items()) {
-        WarehouseItem wi;
-        wi.area = w.area();
-        wi.node_guid = w.node_guid();
-        wi.container_guid = w.container_guid();
-        wi.item.slot = w.slot();
-        wi.item.item_record_id = w.item_record_id();
-        wi.item.instance_guid = w.instance_guid();
-        wi.item.quantity = w.quantity();
-        wi.item.quality = w.quality();
-        wi.item.durability = w.durability();
-        wi.item.created_at_ms = w.created_at_ms();
-        if (w.has_persisted_health()) wi.item.persisted_health = w.persisted_health();
-        if (w.has_persisted_mana()) wi.item.persisted_mana = w.persisted_mana();
-        wi.item.lock_expiration = w.lock_expiration();
-        r.character.warehouse_items.push_back(std::move(wi));
-    }
-    for (const int32_t n : c.attunements()) r.character.attunements.push_back(n);
-    r.character.home_attunement = c.home_attunement();
-    r.character.home_last_used_ms = c.home_last_used_ms();
-    for (const auto& e : c.experience()) {
-        Experience x;
-        x.leveling_type_guid = e.leveling_type_guid();
-        x.xp = e.xp();
-        x.debt = e.debt();
-        r.character.experience.push_back(x);
-    }
-    for (const auto& t : c.skill_ranks()) {
-        TreeRanks tr;
-        tr.tree_guid = t.tree_guid();
-        tr.rank_guids.assign(t.rank_guids().begin(), t.rank_guids().end());
-        r.character.skill_ranks.push_back(std::move(tr));
-    }
-    for (const auto& p : c.professions()) {
-        ProfessionState x;
-        x.profession_guid = p.profession_guid();
-        x.certification_tier = p.certification_tier();
-        x.level = p.level();
-        x.xp = p.xp();
-        r.character.professions.push_back(x);
-    }
-    for (const auto& a : c.action_bar()) {
-        ActionbarSlot s;
-        s.bank = a.bank();
-        s.slot = a.slot();
-        s.use_type = a.use_type();
-        s.instigator = a.instigator();
-        s.ability_id = a.ability_id();
-        s.skill_rank_id = a.skill_rank_id();
-        s.pet_command_id = a.pet_command_id();
-        s.item_record_id = a.item_record_id();
-        s.item_guid = a.item_guid();
-        s.item_rarity = a.item_rarity();
-        s.item_quality = a.item_quality();
-        s.combo_button = a.combo_button();
-        r.character.action_bar.push_back(std::move(s));
-    }
-    // Nodes 1, stage 2: the account's other characters, for the node window's relationships (a failure leaves the list empty: the join lists this character alone)
+    unpack_character_jobs_and_warehouse(c, r.character);
+    unpack_character_progression(c, r.character);
     if (r.character.account_id != 0) {
         grpc::ClientContext list_ctx;
         prepare(list_ctx);
@@ -233,7 +298,6 @@ CharacterResult GrpcServices::get_character(const std::string& id) {
     }
     return r;
 }
-// CoA and C:Y:B
 
 CallStatus GrpcServices::save_progress(const std::string& id, const Progress& progress) {
     grpc::ClientContext ctx;
@@ -327,57 +391,7 @@ CallStatus GrpcServices::save_inventory(const std::string& id, const std::vector
     prepare(ctx, save_timeout_);
     characterv1::SaveInventoryRequest req;
     req.set_id(id);
-    if (warehouse) {
-        req.set_replace_warehouse(true);
-        for (const WarehouseItem& w : *warehouse) {
-            auto* p = req.add_warehouse_items();
-            p->set_area(w.area);
-            p->set_node_guid(w.node_guid);
-            p->set_container_guid(w.container_guid);
-            p->set_slot(w.item.slot);
-            p->set_item_record_id(w.item.item_record_id);
-            p->set_instance_guid(w.item.instance_guid);
-            p->set_quantity(w.item.quantity);
-            p->set_quality(w.item.quality);
-            p->set_durability(w.item.durability);
-            p->set_created_at_ms(w.item.created_at_ms);
-            if (w.item.persisted_health) p->set_persisted_health(*w.item.persisted_health);
-            if (w.item.persisted_mana) p->set_persisted_mana(*w.item.persisted_mana);
-            p->set_lock_expiration(w.item.lock_expiration);
-        }
-    }
-    if (known_recipes) {
-        req.set_replace_known_recipes(true);
-        for (const int64_t recipe : *known_recipes) req.add_known_recipes(recipe);
-    }
-    if (jobs) {
-        req.set_replace_processing_jobs(true);
-        for (const ProcessingJob& job : *jobs) {
-            auto* j = req.add_processing_jobs();
-            j->set_job_guid(job.job_guid);
-            j->set_station_key(job.station_key);
-            j->set_recipe_guid(job.recipe_guid);
-            j->set_sub_recipe_guid(job.sub_recipe_guid);
-            j->set_quantity(job.quantity);
-            j->set_queued_at_ms(job.queued_at_ms);
-            j->set_started_at_ms(job.started_at_ms);
-            j->set_duration_ms(job.duration_ms);
-            j->set_client_txn(job.client_txn);
-            j->set_rating_xp(job.rating_xp);
-            j->set_rating_quantity(job.rating_quantity);
-            j->set_rating_rarity(job.rating_rarity);
-            for (const JobResource& res : job.resources) {
-                auto* r = j->add_resources();
-                r->set_record_id(res.record_id);
-                for (const JobRarity& ra : res.rarities) {
-                    auto* rr = r->add_rarities();
-                    rr->set_rarity(ra.rarity);
-                    rr->set_count(ra.count);
-                    rr->set_from_warehouse(ra.from_warehouse);
-                }
-            }
-        }
-    }
+    pack_warehouse_and_jobs(jobs, known_recipes, warehouse, req);
     if (with_wallet) {
         req.set_replace_wallet(true);
         for (const WalletEntry& w : wallet) {
@@ -410,7 +424,6 @@ CallStatus GrpcServices::save_inventory(const std::string& id, const std::vector
     characterv1::SaveInventoryResponse resp;
     return map_grpc_status(stubs_->character->SaveInventory(&ctx, req, &resp));
 }
-// ~ Cyb - C O A ~
 
 RegisterResult GrpcServices::register_server(const std::string& address,
                                              const std::vector<std::string>& regions) {

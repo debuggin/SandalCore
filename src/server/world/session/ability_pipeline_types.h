@@ -144,6 +144,15 @@ struct BounceRule {
         : child_hit(ch), radius(r), max_bounces(mb), random(rnd), limit(mb) {}
 };
 
+struct BallCast {
+    const char* ability;
+    double      bar;
+    double      fire;
+    double      period;
+    double      ahead;
+    double      up;
+};
+
 namespace ability_types {
 
 struct StatCost {
@@ -195,6 +204,7 @@ struct HitSource {
     bool     autonomous = true;
     bool     source_is_target = false;
     uint64_t source_actor = 0;
+    bool     reach_free = false;
 };
 
 struct HitEvent {
@@ -227,6 +237,7 @@ struct HitSlot {
     bool                     server_self_use = false;
     bool                     fired = false;
     int                      requests = 0;
+    int                      max_requests = -1;
     double                   last_request = -1e9;
     std::vector<Pending>     due;
     bool                     applied = false;
@@ -248,6 +259,23 @@ struct CastRecord {
     std::map<int64_t, std::pair<int, double>> asked;
     const ShotAnchor*                         anchor = nullptr;
     std::shared_ptr<const ItemCast>           item_cast;
+};
+
+struct BallFlight {
+    struct Touch {
+        double next = 0;
+        int    hits = 0;
+    };
+    int64_t                   projectile = 0;
+    double                    speed = 0;
+    double                    radius = 0;
+    double                    lasts = 0;
+    double                    rate = 1.0;
+    double                    launch_at = -1;
+    double                    x = 0, y = 0, z = 0;
+    double                    dx = 1, dy = 0;
+    std::map<uint64_t, Touch> touched;
+    int                       hits = 0;
 };
 
 struct Cast {
@@ -274,7 +302,7 @@ struct Cast {
         double   due = 0;
         int64_t  projectile = 0;
         uint64_t target = 0;
-        enum class Kind : uint8_t { Land, Launch, Strike, Fly };
+        enum class Kind : uint8_t { Land, Launch, Strike, Fly, Ball };
         Kind     kind = Kind::Land;
         int      index = 0;
         int      depth = 0;
@@ -309,6 +337,8 @@ struct Cast {
     double                                   launch_at = -1;
     bool                                     anchored = false;
     double                                   flight = 0;
+    const BallCast*                          ball = nullptr;
+    BallFlight                               ball_flight;
     std::shared_ptr<const ItemCast>          item_cast;
 };
 

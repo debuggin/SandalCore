@@ -41,7 +41,10 @@ void Mover::init(const nav::AreaNav* nav, double foot_offset_cm, double yaw_rate
     foot_offset_ = std::isfinite(foot_offset_cm) ? foot_offset_cm : 88.0;
     yaw_rate_ = yaw_rate_degrees_per_second > 0 ? yaw_rate_degrees_per_second : 360.0;
 }
-// Cyb and C.O.A
+
+void Mover::set_speed_scale(double scale) {
+    if (std::isfinite(scale)) speed_scale_ = std::clamp(scale, 0.0, 1.0);
+}
 
 void Mover::face(double yaw_degrees) {
     if (std::isfinite(yaw_degrees)) yaw_ = wrap180(yaw_degrees);
@@ -144,7 +147,6 @@ bool Mover::move_to(const Vec3& dest, double speed_cm_s, double stop_distance, d
     stop_distance_ = std::max(0.0, stop_distance);
     return true;
 }
-// [C-O-A :: C-Y-B]
 
 Mover::Status Mover::advance(double dt) {
     if (status_ != Status::Moving) {
@@ -153,7 +155,7 @@ Mover::Status Mover::advance(double dt) {
     }
     if (!(dt > 0) || !std::isfinite(dt)) return status_;
     const Vec3 before = ground_;
-    double budget = speed_ * dt;
+    double budget = speed_ * speed_scale_ * dt;
     // end short of the destination when asked
     if (stop_distance_ > 0) {
         const double left = remaining();

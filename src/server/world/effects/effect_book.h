@@ -187,6 +187,21 @@ public:
         return out;
     }
 
+    struct Crowd {
+        int64_t flags = 0;
+        double  snare = 0;
+        bool operator==(const Crowd&) const = default;
+    };
+    Crowd cc() const {
+        Crowd out;
+        for (const Instance& e : items_) {
+            if (!e.def || !e.def->cc) continue;
+            out.flags |= e.def->cc->applied_status;
+            if (e.def->cc->applied_status & content::kCcSnare) out.snare = std::max(out.snare, e.def->cc->snare_strength);
+        }
+        return out;
+    }
+
 private:
     static void refresh_instance(Instance& e, const Applied& a, uint64_t instigator, double t) {
         const content::EffectRow& row = a.def->row;

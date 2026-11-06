@@ -45,7 +45,7 @@ flowchart LR
         sandal_cli["sandal.ps1"]
         doctor_cmd["doctor / status / install-wsl-docker"]
         certs_cmd["certs (scripts/sandal/certs.ps1)"]
-        extract_cmd["extract (Ensure-SandalContentDbCurrent v40)"]
+        extract_cmd["extract (Ensure-SandalContentDbCurrent v41)"]
         build_cmd["build (C++23 / Go / .NET 10)"]
         deploy_cmd["deploy (Sync dist/ & deploy/)"]
         run_cmd["run / up / down"]
@@ -79,13 +79,13 @@ flowchart LR
 
 | `sandal.ps1` Subcommand | Script (`scripts/sandal/`) | Supported Options | Purpose |
 |---|---|---|---|
-| `run` (`start.bat`, alias `start`) | `run.ps1` | `-Profile <default\|dev\|admin\|full>`, `-SpawnLauncher`, `-NoLauncher`, `-AutomationPort <port>`, `-DryRun`, `-Json`, `-NoColor` | Verifies `content.db` v40, provisions TLS certs, stages `dist/` & `deploy/`, starts the 11-container stack, and opens `SandalLauncher.exe` |
+| `run` (`start.bat`, alias `start`) | `run.ps1` | `-Profile <default\|dev\|admin\|full>`, `-SpawnLauncher`, `-NoLauncher`, `-AutomationPort <port>`, `-DryRun`, `-Json`, `-NoColor` | Verifies `content.db` v41, provisions TLS certs, stages `dist/` & `deploy/`, starts the 11-container stack, and opens `SandalLauncher.exe` |
 | `build` (`build.bat`) | `build.ps1` | `-Config <Debug\|Release>`, `-DryRun`, `-Json`, `-NoColor` | Compiles C++23 `world`, Go services, `.NET 10` tools, and publishes `SandalLauncher` into `dist/` |
 | `down` (`stop.bat`, alias `stop`) | `down.ps1` | `-Volumes`, `-DryRun`, `-Json`, `-NoColor` | Stops `SandalLauncher` / `AOCClient-Win64-Shipping` host processes and brings down the Docker Compose stack |
 | `up` | `up.ps1` | `-Profile <default\|dev\|admin\|full>`, `-Detach`, `-DryRun`, `-Json`, `-NoColor` | Starts the 11-container Docker Compose stack and waits for healthchecks |
-| `extract` | `extract.ps1` | `-PakDir <path>`, `-OutputDir <path>`, `-DataFree`, `-Force`, `-DryRun`, `-Json`, `-NoColor` | Acquires the extraction lock, runs `scripts/extract_game_data.ps1`, and verifies `content.db` v40 via `Ensure-SandalContentDbCurrent` |
+| `extract` | `extract.ps1` | `-PakDir <path>`, `-OutputDir <path>`, `-DataFree`, `-Force`, `-DryRun`, `-Json`, `-NoColor` | Acquires the extraction lock, runs `scripts/extract_game_data.ps1`, and verifies `content.db` v41 via `Ensure-SandalContentDbCurrent` |
 | `certs` | `certs.ps1` | `-OutputDir <path>`, `-Force`, `-DryRun`, `-Json`, `-NoColor` | Reuses existing `dist/certs/server.pem` + `server.key` or generates a local Root CA + SAN leaf cert and trusts `ca.crt` in `Cert:\CurrentUser\Root` |
-| `deploy` | `deploy.ps1` | `-Config <Debug\|Release>`, `-DryRun`, `-Json`, `-NoColor` | Merges local config overrides, verifies `content.db` v40, and stages self-contained `dist/` and `deploy/` bundles |
+| `deploy` | `deploy.ps1` | `-Config <Debug\|Release>`, `-DryRun`, `-Json`, `-NoColor` | Merges local config overrides, verifies `content.db` v41, and stages self-contained `dist/` and `deploy/` bundles |
 | `test` | `test.ps1` | `-Config <Debug\|Release>`, `-Filter <pattern>`, `-DryRun`, `-Json`, `-NoColor` | Runs C++, Go, .NET, and PowerShell test suites with optional filter matching |
 | `doctor` / `status` | `doctor.ps1` / `sandal.ps1` | `-DryRun`, `-Json`, `-NoColor` | Audits host toolchain prerequisites (`pwsh`, `dotnet`, `docker`, `go`, `cmake`), local ports, and stage SHA-256 stamps |
 | `install-wsl-docker` | `Install-WslDocker.ps1` | `-DryRun`, `-Json`, `-NoColor` | Provisions native WSL2 Docker Engine and non-destructively sets `.wslconfig` `instanceIdleTimeout=-1` / `vmIdleTimeout=-1` |
@@ -173,7 +173,7 @@ flowchart TD
     subgraph host_env["Host Configuration & Database"]
         local_env["src/config/profiles/local-dev.env.example"]
         pg_host["PostgreSQL 17 (:5432 / :5433)"]
-        content_db["dist/content/content.db (v40)"]
+        content_db["dist/content/content.db (v41)"]
     end
 
     subgraph host_scripts["Native Host Orchestration Scripts"]
@@ -304,13 +304,13 @@ Disk: allow about 10 GB free for the extracted game data (`1.5 GB`) and containe
 ### 2. The commands, in this order
 
 1. `pwsh -File scripts\install_dependencies.ps1` (or `-CheckOnly` to audit host prerequisites; `pwsh -File sandal.ps1 install-wsl-docker` provisions WSL2 + Docker Engine if not yet configured).
-2. `start.bat` (or `pwsh -File sandal.ps1 run` / `pwsh -File sandal.ps1 up -Detach`): checks `dist\content\content.db` against the current `contentc` v40 schema and automatically runs fast `contentc` rebuild or full game-data extraction from your installed client when needed (about 10 minutes on the first run; seconds on subsequent runs), reuses user-supplied TLS certificates in `dist\certs\` (`server.pem` + `server.key`) or generates local certificates and imports `ca.crt` into `Cert:\CurrentUser\Root`, builds and starts the 11-container Linux server stack in WSL2 (`deploy/compose.yml` / `deploy/up.ps1`), and opens **`SandalLauncher`** (`dist\launcher\SandalLauncher.exe`). Create an account (**`Create Account`** with a valid email, or **`Temp Account`** for an ephemeral session) or enter your credentials (tick **`Remember login`** to save to `LauncherProfiles.json` / Windows Credential Manager) and press **`PLAY`**, which authenticates first and launches `AOC\Binaries\Win64\AOCClient-Win64-Shipping.exe` with `-LauncherTetherPort=19021 -GatewayAddr=127.0.0.1:8080 -IcsAddr=127.0.0.1:50061 -UseEOS=false -NoEAC` (or wildcard SAN hostname when configured). Use `build.bat` (or `pwsh -File sandal.ps1 build`) to build the stack and Windows launcher without starting, and `stop.bat` (or `pwsh -File sandal.ps1 stop` / `pwsh -File sandal.ps1 down`) to stop the stack. (`start.bat`, `stop.bat`, and `build.bat` delegate through `scripts\ensure_pwsh.bat`, which checks for PowerShell 7 (`pwsh`) and prompts to install the latest PowerShell 7 via `winget` if not present.)
+2. `start.bat` (or `pwsh -File sandal.ps1 run` / `pwsh -File sandal.ps1 up -Detach`): checks `dist\content\content.db` against the current `contentc` v41 schema and automatically runs fast `contentc` rebuild or full game-data extraction from your installed client when needed (about 10 minutes on the first run; seconds on subsequent runs), reuses user-supplied TLS certificates in `dist\certs\` (`server.pem` + `server.key`) or generates local certificates and imports `ca.crt` into `Cert:\CurrentUser\Root`, builds and starts the 11-container Linux server stack in WSL2 (`deploy/compose.yml` / `deploy/up.ps1`), and opens **`SandalLauncher`** (`dist\launcher\SandalLauncher.exe`). Create an account (**`Create Account`** with a valid email, or **`Temp Account`** for an ephemeral session) or enter your credentials (tick **`Remember login`** to save to `LauncherProfiles.json` / Windows Credential Manager) and press **`PLAY`**, which authenticates first and launches `AOC\Binaries\Win64\AOCClient-Win64-Shipping.exe` with `-LauncherTetherPort=19021 -GatewayAddr=127.0.0.1:8080 -IcsAddr=127.0.0.1:50061 -UseEOS=false -NoEAC` (or wildcard SAN hostname when configured). Use `build.bat` (or `pwsh -File sandal.ps1 build`) to build the stack and Windows launcher without starting, and `stop.bat` (or `pwsh -File sandal.ps1 stop` / `pwsh -File sandal.ps1 down`) to stop the stack. (`start.bat`, `stop.bat`, and `build.bat` delegate through `scripts\ensure_pwsh.bat`, which checks for PowerShell 7 (`pwsh`) and prompts to install the latest PowerShell 7 via `winget` if not present.)
 
 To extract or verify game data standalone without starting the stack, run `pwsh -File sandal.ps1 extract`.
 
 ### 3. Game Data Extraction (`pwsh -File sandal.ps1 extract`)
 
-`pwsh -File sandal.ps1 extract` (`scripts\sandal\extract.ps1`, delegating to `scripts\extract_game_data.ps1`) extracts and compiles the runtime data and navigation mesh from your installed Ashes of Creation client. During normal startup, `start.bat` (`pwsh -File sandal.ps1 run`) invokes `Ensure-SandalContentDbCurrent` (`scripts\lib\Env.psm1`), which verifies `dist\content\content.db` against `contentc` schema version `40` (`contentc.version40` and `cast_ability_guid` markers plus `src\server\services\cmd\contentc\*.go` timestamps), runs a fast `contentc` rebuild or the full extraction pipeline automatically when out of date, syncs `deploy\content\content.db`, and restarts `content.db` consumer containers (`aoc-world`, `aoc-character`, `aoc-citynode`).
+`pwsh -File sandal.ps1 extract` (`scripts\sandal\extract.ps1`, delegating to `scripts\extract_game_data.ps1`) extracts and compiles the runtime data and navigation mesh from your installed Ashes of Creation client. During normal startup, `start.bat` (`pwsh -File sandal.ps1 run`) invokes `Ensure-SandalContentDbCurrent` (`scripts\lib\Env.psm1`), which verifies `dist\content\content.db` against `contentc` schema version `41` (`contentc.version41` and `cast_ability_guid` markers plus `src\server\services\cmd\contentc\*.go` timestamps), runs a fast `contentc` rebuild or the full extraction pipeline automatically when out of date, syncs `deploy\content\content.db`, and restarts `content.db` consumer containers (`aoc-world`, `aoc-character`, `aoc-citynode`).
 
 **Client discovery order**:
 1. Explicit CLI flag (`pwsh -File sandal.ps1 extract -PakDir "D:\...\Ashes of Creation\Game"` or `pwsh -File scripts\extract_game_data.ps1 -GameRoot "D:\...\Ashes of Creation\Game"`).
@@ -321,7 +321,7 @@ To extract or verify game data standalone without starting the stack, run `pwsh 
 In `SandalLauncher`, if a single client installation is discovered it is selected automatically; if multiple installations (for example Retail + Playtest) exist or none are found automatically, the **`Client Path...`** modal opens so you can select or browse to the desired installation (persisted to `dist\config\paths.json`). The game root is the folder containing `AOCClient.exe` (`AOC\Binaries\Win64\AOCClient-Win64-Shipping.exe`) and the `AOC` directory (for Steam installs, `...\steamapps\common\Ashes of Creation\Game`).
 
 **Generated artifacts** (all git-ignored via [`.gitignore`](.gitignore)):
-- `dist\content\content.db` (`~323 MB`) and `dist\content\content.db.version` (`40`): compiled design database built by `contentc` from the client's `CacheDB.dbc`.
+- `dist\content\content.db` (`~323 MB`) and `dist\content\content.db.version` (`41`): compiled design database built by `contentc` from the client's `CacheDB.dbc`.
 - `dist\content\*.tsv`: mount speeds and rider animation blueprints, profession curves, NPC motion tables, gatherable foliage, and road polylines (`src\tools\mapc` and `contentc roads`).
 - `dist\content\item_names.tsv`: item and Glint localized display names (`src\tools\itemnames`).
 - `dist\content\npc_abilities.tsv`, `npc_montages.tsv`, `npc_targeting.tsv`, `npc_senses.tsv`, and `npc_aggro_curves.tsv`: creature ability definitions, root-motion montage timelines, targeting profiles, sensory radii, and aggro curves (`src\tools\npcabilities`).
@@ -335,7 +335,7 @@ In `SandalLauncher`, if a single client installation is discovered it is selecte
 **City node seed levels and navigation mesh**: The navigation mesh bakes each of the five towns using the starting node level configured in `src\config\seeds\citynode_seed.json` (Joeva `4` Town, Halcyon `3` Village, Winstead/New Aela/Miraleth `0` Wilderness). If a GM changes a node's level at runtime via `nodectl set-level`, the visual town layout updates dynamically, while the static navigation mesh retains the collision geometry of the seeded level until rebuilt by updating `src\config\seeds\citynode_seed.json` and running `pwsh -File sandal.ps1 extract`.
 
 **Execution time and stage controls**: Full initial extraction takes approximately 10 minutes on a 24-thread desktop (`~8 minutes` for map geometry and navmesh generation). Unchanged stages are skipped via SHA-256 input stamps in `dist\.stamps\` and `build\.extract\`, so subsequent checks complete in seconds.
-- `pwsh -File sandal.ps1 extract [-PakDir <path>] [-OutputDir <path>] [-Force] [-DryRun] [-Json]`: Runs the locked extraction pipeline and verifies `content.db` v40 currency.
+- `pwsh -File sandal.ps1 extract [-PakDir <path>] [-OutputDir <path>] [-Force] [-DryRun] [-Json]`: Runs the locked extraction pipeline and verifies `content.db` v41 currency.
 - `pwsh -File scripts\extract_game_data.ps1 [-CheckOnly] [-Only <step>] [-Skip <step>] [-Force] [-GameRoot <path>]`: Runs individual stages (`tools`, `config`, `curves`, `names`, `database`, `region`, `headers`, `fixtures`, `navbuild`, `roads`, `townfloors`, `townlayouts`, `npcabilities`, `navmesh`) and writes full execution logs to `build\.extract\last_run.log`.
 
 **Network usage**: The initial build restores NuGet packages for the `.NET 10` tools (`aoc-extractor`, `SandalLauncher`, `mapc`) and pulls container base layers / Go modules inside the Docker build. Zero external network requests occur at runtime after the initial build.
@@ -418,7 +418,7 @@ Root entrypoints:
 ```bat
 start.bat
 ```
-(Or run `pwsh -File sandal.ps1 run` / `pwsh -File sandal.ps1 up -Detach`, or launch `dist\launcher\SandalLauncher.exe` via `dist\launch_launcher.bat`.) Verifies `dist\content\content.db` v40 and extracts game data from your Ashes of Creation install if needed, reuses user-supplied TLS certificates or generates local certificates and imports `ca.crt` into `Cert:\CurrentUser\Root`, starts the 11-container Linux stack in WSL2 (`deploy/compose.yml` / `deploy/up.ps1`), and opens **`SandalLauncher`** (`dist\launcher\SandalLauncher.exe`).
+(Or run `pwsh -File sandal.ps1 run` / `pwsh -File sandal.ps1 up -Detach`, or launch `dist\launcher\SandalLauncher.exe` via `dist\launch_launcher.bat`.) Verifies `dist\content\content.db` v41 and extracts game data from your Ashes of Creation install if needed, reuses user-supplied TLS certificates or generates local certificates and imports `ca.crt` into `Cert:\CurrentUser\Root`, starts the 11-container Linux stack in WSL2 (`deploy/compose.yml` / `deploy/up.ps1`), and opens **`SandalLauncher`** (`dist\launcher\SandalLauncher.exe`).
 
 Inside **`SandalLauncher`** (single semi-transparent card with `SERVER` selector, `SAVED LOGIN` selector + `Delete`, `USERNAME`, `EMAIL`, `PASSWORD`, `Remember login`, **`PLAY`**, **`Create Account`**, **`Temp Account`**, and **`Client Path...`** over 3 randomized backgrounds `launcher_background_0..2.jpg`):
 - **Client Discovery**: Scans Steam libraries across all drives (`Registry`, fixed drives, and `steamapps\libraryfolders.vdf`). Automatically selects the client if 1 installation is found, or opens the **`Client Path...`** modal if multiple installations (for example Retail + Playtest) exist or if no installation is found automatically.

@@ -69,7 +69,6 @@ bool make(const char* cls, const cx::Payload& payload, repl::ExportChain chain, 
 }
 
 repl::Value guid_word(uint32_t w) { return repl::Value::i64(static_cast<int32_t>(w)); }
-// built by C | Y | B with C O A
 
 repl::Value guid_list(const std::vector<repl::GuidValue>& guids) {
     repl::ArrayValue list;
@@ -157,7 +156,8 @@ std::optional<CorpseLoot> add_loot(ActorRegistry& registry, uint64_t npc, const 
     if (!build_components(false, mint, owner, may_loot, top_rarity, c, error)) return std::nullopt;
     const FIntrepidNetworkGUID loot_guid = c.loot_guid, container_guid = c.container_guid, inter_guid = c.inter_guid;
     repl::Subobject loot = std::move(c.loot), container = std::move(c.container), inter = std::move(c.inter);
-    bool ok = registry.modify(npc, Change::State, [&](WorldActor& a) {
+    bool ok = false;
+    ok = registry.modify(npc, Change::State, [&](WorldActor& a) {
         repl::Subobject* sec = find_sub(a.actor, "UNPCSecondaryInfo");
         if (!sec) {
             ok = false;
@@ -185,7 +185,6 @@ std::optional<CorpseLoot> add_loot(ActorRegistry& registry, uint64_t npc, const 
     }
     return out;
 }
-// [C.O.A + C_Y_B]
 
 std::optional<Pile> add_pile(ActorRegistry& registry, const Minter& mint, double x, double y, double z, const repl::GuidValue& player, const std::string& name,
                              const std::vector<repl::GuidValue>& may_loot, int top_rarity, std::string& error) {
@@ -207,19 +206,7 @@ std::optional<Pile> add_pile(ActorRegistry& registry, const Minter& mint, double
     repl::Actor& a = w.actor;
     a.guid = mint();
     a.obj = std::move(*state);
-    repl::ExportChain archetype;
-    for (const cx::Link& l : cx::kPileArchetype) {
-        repl::ExportLink link;
-        link.guid.ObjectId = l.id;
-        link.guid.ServerId = l.server_id;
-        link.guid.Randomizer = l.randomizer;
-        link.name = l.name ? l.name : "";
-        link.no_load = (l.flags & 2) != 0;
-        link.has_checksum = (l.flags & 4) != 0;
-        link.checksum = l.checksum;
-        archetype.push_back(std::move(link));
-    }
-    a.open.archetype = std::move(archetype);
+    a.open.archetype = chain_of(cx::kPileArchetype);
     a.open.level = bootstrap::persistent_level_export();
     a.open.spawn.location = repl::quantize_vector(10, x, y, z);
     w.id = a.guid.ObjectId;

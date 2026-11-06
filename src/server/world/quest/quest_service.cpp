@@ -28,6 +28,12 @@ GrpcQuestApi::GrpcQuestApi(const std::string& address, std::string token, std::c
     args.SetInt(GRPC_ARG_INITIAL_RECONNECT_BACKOFF_MS, 200);
     args.SetInt(GRPC_ARG_MIN_RECONNECT_BACKOFF_MS, 200);
     args.SetInt(GRPC_ARG_MAX_RECONNECT_BACKOFF_MS, 5000);
+    args.SetInt(GRPC_ARG_DNS_MIN_TIME_BETWEEN_RESOLUTIONS_MS, 1000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 15000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 5000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
+    args.SetInt(GRPC_ARG_HTTP2_MAX_PINGS_WITHOUT_DATA, 0);
+    args.SetServiceConfigJSON(R"({"methodConfig":[{"name":[{}],"waitForReady":true,"retryPolicy":{"maxAttempts":4,"initialBackoff":"0.05s","maxBackoff":"0.5s","backoffMultiplier":2.0,"retryableStatusCodes":["UNAVAILABLE"]}}]})");
     stubs_->quest = questv1::QuestService::NewStub(grpc::CreateCustomChannel(address, grpc::InsecureChannelCredentials(), args));
 }
 
@@ -35,6 +41,7 @@ GrpcQuestApi::~GrpcQuestApi() = default;
 
 svc::QuestLogResult GrpcQuestApi::load_log(const std::string& character_id) {
     grpc::ClientContext ctx;
+    ctx.set_wait_for_ready(true);
     ctx.set_deadline(std::chrono::system_clock::now() + timeout_);
     ctx.AddMetadata(svc::kAuthorizationMetadata, "Bearer " + token_);
     questv1::LoadLogRequest req;
@@ -73,6 +80,7 @@ svc::QuestLogResult GrpcQuestApi::load_log(const std::string& character_id) {
 
 svc::CallStatus GrpcQuestApi::save_log(const std::string& character_id, const svc::SavedQuestLog& log) {
     grpc::ClientContext ctx;
+    ctx.set_wait_for_ready(true);
     ctx.set_deadline(std::chrono::system_clock::now() + timeout_);
     ctx.AddMetadata(svc::kAuthorizationMetadata, "Bearer " + token_);
     questv1::SaveLogRequest req;
@@ -115,6 +123,7 @@ svc::CallStatus GrpcQuestApi::save_log(const std::string& character_id, const sv
 
 svc::CallStatus GrpcQuestApi::take_commands(const std::string& character_id, std::vector<svc::QuestCommand>& out) {
     grpc::ClientContext ctx;
+    ctx.set_wait_for_ready(true);
     ctx.set_deadline(std::chrono::system_clock::now() + timeout_);
     ctx.AddMetadata(svc::kAuthorizationMetadata, "Bearer " + token_);
     questv1::TakeCommandsRequest req;

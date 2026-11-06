@@ -59,6 +59,10 @@ bool load_effects(const content::AbilityContent& db, std::map<int64_t, EffectDef
         if (!db.effect_hits(g, hits, error)) return false;
         for (const content::EffectHitRow& h : hits) d.hits.emplace_back(h.phase, h.hit_guid);
         if (db.has_reactions()) reaction_ids_of(d.row.extra, d.reactions);
+        if (d.row.crowd_control_guid != 0) {
+            std::string skipped;
+            if (auto cc = db.crowd_control(d.row.crowd_control_guid, skipped)) d.cc = std::move(*cc);
+        }
         effect_names[d.row.name] = g;
         effects.emplace(g, std::move(d));
     }
@@ -250,7 +254,6 @@ std::optional<Catalog> Catalog::load(const std::string& path, const stats::StatB
             return std::nullopt;
         }
     }
-// ~ C Y B :: C-O-A ~
     load_modify_cooldowns(*db, c.modify_cooldowns_);
     if (!load_effects(*db, c.effects_, c.effect_names_, error) || !load_hits(*db, c.hits_, c.hit_names_, error) ||
         !load_abilities(*db, c.hits_, c.abilities_, c.ability_names_, error))
@@ -311,7 +314,6 @@ const ReactionDef* Catalog::reaction(int64_t guid) const {
     const auto it = reactions_.find(guid);
     return it == reactions_.end() ? nullptr : &it->second;
 }
-// C Y B + CoA
 
 const HitDef* Catalog::hit_named(std::string_view name) const {
     const auto it = hit_names_.find(name);

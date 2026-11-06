@@ -7,83 +7,123 @@
 
 namespace aoc::worldd {
 
-const ShotCast kShotCasts[37] = {
-    {"Ranger_ScatterShot", -1, 0.300000, false,
-     "Hit_Ranger_ScatterShot_Projectile", 0.088},
-    {"Ranger_SniperShot", -1, 0.300000, false,
-     "Hit_Ranger_SniperShot_Projectile", 0.082},
-    {"Ranger_Powershot", -1, 0.300000, false, "Hit_Ranger_Powershot_Projectile",
-     0.089},
-    {"Ranger_SleepDart", -1, 0.166667, false, "Hit_Ranger_SleepDart_Projectile",
-     0.128},
-    {"Ranger_LightningReload", -1, 0.258709, false, "", 0},
-    {"Mage_Fireball", -1, 0.200000, true, "Hit_Mage_Firebolt_Projectile",
-     0.072},
-    {"Mage_LightningStrike", -1, 0.200000, true,
-     "Hit_Mage_LightningStrike_Projectile", 0.089},
-    {"Bard_Mock", -1, 0.166667, true, "", 0},
-    {"Bard_AnthemOfAlacrity_Melody_Pump", -1, 0.166667, true, "", 0},
-    {"Bard_Shielding_Melody_Pump", -1, 0.166667, true, "", 0},
-    {"Bard_Refreshing_Melody_Pump", -1, 0.166667, true, "", 0},
-    {"Mage_Firebolt", 0, 0.200000, true, "", 0, 1},
-    {"Mage_Firebolt", 1, 0.200000, true, "", 0, 2},
-    {"Cleric_ResplendentBeam", -1, 0.562417, true, "", 0},
-    {"Cleric_Mend", -1, 0.194506, true, "", 0},
-    {"Rogue_Throw", -1, 0.100000, false, "", 0},
-    {"WeaponCombo_Ranged_Book", 0, 0.160420, true, "", 0},
-    {"WeaponCombo_Ranged_Book", 1, 0.199732, true, "", 0},
-    {"WeaponCombo_Ranged_Book", 2, 0.201655, true, "", 0},
-    {"WeaponCombo_Ranged_Book", 3, 0.198160, true, "", 0},
-    {"WeaponCombo_Ranged_Book", 4, 0.332450, true, "", 0},
-    {"WeaponCombo_Ranged_Book", 5, 0.333890, true, "", 0},
-    {"WeaponCombo_Ranged_Book", 6, 0.335834, true, "", 0},
-    {"WeaponCombo_Ranged_Longbow", 0, 0.506704, false, "", 0},
-    {"WeaponCombo_Ranged_Longbow", 1, 0.500856, false, "", 0},
-    {"WeaponCombo_Ranged_Longbow", 2, 0.436667, false, "", 0},
-    {"WeaponCombo_Ranged_Longbow", 3, 0.566667, false, "", 0},
-    {"WeaponCombo_Ranged_Longbow", 4, 0.625838, false, "", 0},
-    {"WeaponCombo_Ranged_Shortbow", 0, 0.371158, false, "", 0},
-    {"WeaponCombo_Ranged_Shortbow", 1, 0.369473, false, "", 0},
-    {"WeaponCombo_Ranged_Shortbow", 2, 0.408469, false, "", 0},
-    {"WeaponCombo_Ranged_Shortbow", 5, 0.500559, false, "", 0},
-    {"WeaponCombo_Ranged_Wand", 0, 0.192013, true, "", 0},
-    {"WeaponCombo_Ranged_Wand", 1, 0.199687, true, "", 0},
-    {"WeaponCombo_Ranged_Wand", 2, 0.194391, true, "", 0},
-    {"WeaponCombo_Ranged_Wand", 3, 0.351515, true, "", 0},
-    {"WeaponCombo_Ranged_Wand", 4, 0.303399, true, "", 0},
+const ShotCast kShotCasts[42] = {
+    {"Ranger_Snipe", -1, 2.9934108, false, "Ranger_Snipe_Hasting", 0.0292},
+    {"Ranger_PowerShot", -1, 1.3300842, false, "", 0},
+    {"Ranger_Headshot", -1, 0.99284714, false, "Ranger_Headshot_Check_Target", 0.0048},
+    {"Ranger_ThunderingShot", -1, 1.0793436, false, "", 0},
+    {"Mage_Firebolt", 0, 0.22428152, true, "", 0, 1},
+    {"Mage_Firebolt", 1, 0.31828308, true, "", 0, 2},
+    {"Mage_Firebolt", 2, 0.3165209, true, "", 0, 1},
+    {"Summoner_DimensionalBolt", -1, 0.2294855, true, "Summoner_DimensionalBolt_Lockout", 0.0033},
+    {"Tank_Tomahawk", 0, 0.30069223, false, "", 0},
+    {"Tank_Tomahawk", 1, 0.29991198, false, "", 0},
+    {"Tank_Grapple", -1, 0.4352452, false, "", 0},
+    {"Bard_Misc_QuickWit_Mock", -1, 0.455, true, "", 0},
+    {"Bard_Misc_QuickWit_Jest", -1, 0.35280734, true, "", 0},
+    {"Bard_Misc_QuickWit", 0, 0.455, true, "", 0},
+    {"Bard_Misc_QuickWit", 1, 0.35280734, true, "", 0},
+    {"Rogue_SleepDart", -1, 0.20893234, false, "", 0},
+    {"Rogue_Throw", -1, 0.1653507, false, "", 0},
+    {"Cleric_Mend", 0, 0.10627984, true, "", 0},
+    {"Cleric_Mend", 1, 0.1084725, true, "", 0},
+    {"Cleric_Mend", 2, 0.1084725, true, "", 0},
+    {"Cleric_Mend", 3, 0.11285792, true, "", 0},
+    {"Cleric_Mend", 4, 0.11285792, true, "", 0},
+    {"Cleric_Mend", 5, 0.11176154, true, "", 0},
+    {"WeaponCombo_Ranged_Wand", 0, 0.31317788, false, "", 0, 1},
+    {"WeaponCombo_Ranged_Wand", 1, 0.43346334, false, "", 0, 2},
+    {"WeaponCombo_Ranged_Wand", 2, 0.47597307, false, "", 0, 3},
+    {"WeaponCombo_Ranged_Wand", 3, 0.25808287, false, "", 0, 4},
+    {"WeaponCombo_Ranged_Wand", 5, 0.46646222, false, "", 0, 5},
+    {"WeaponCombo_Ranged_Wand", 8, 0.680874, false, "", 0, 6},
+    {"WeaponCombo_Ranged_Longbow", 0, 0.6305833, false, "", 0, 1},
+    {"WeaponCombo_Ranged_Longbow", 1, 0.43484995, false, "", 0, 3},
+    {"WeaponCombo_Ranged_Longbow", 2, 0.90435505, false, "", 0, 7},
+    {"WeaponCombo_Ranged_Longbow", 3, 0.7959088, false, "", 0, 5},
+    {"WeaponCombo_Ranged_Longbow", 4, 1.1019317, false, "", 0, 8},
+    {"WeaponCombo_Ranged_Longbow", 5, 0.8646791, false, "", 0, 6},
+    {"WeaponCombo_Ranged_Book", 0, 0.43202478, false, "", 0, 1},
+    {"WeaponCombo_Ranged_Book", 1, 0.36580384, false, "", 0, 2},
+    {"WeaponCombo_Ranged_Book", 2, 0.6975795, false, "", 0, 5},
+    {"WeaponCombo_Ranged_Book", 3, 0.8328364, false, "", 0, 3},
+    {"WeaponCombo_Ranged_Book", 4, 0.7322242, false, "", 0, 10},
+    {"WeaponCombo_Ranged_Shortbow", 0, 0.035021976, false, "", 0, 1},
+    {"WeaponCombo_Ranged_Shortbow", 2, 0.063697286, false, "", 0, 3},
 };
 
-const NoteCast kNoteCasts[23] = {
-    {"Bard_Discordance", -1, 1, 0.100000, true},
-    {"Bard_Discordance", -1, 2, 0.266667, true},
-    {"Bard_Discordance", -1, 3, 0.433333, true},
-    {"Bard_ResonantWeapon", -1, 1, 0.100000, true},
-    {"Bard_ResonantWeapon", -1, 2, 0.266667, true},
-    {"Bard_ResonantWeapon", -1, 3, 0.433333, true},
-    {"WeaponCombo_Ranged_Shortbow", 3, 1, 0.391378, false},
-    {"WeaponCombo_Ranged_Shortbow", 3, 2, 0.483226, false},
-    {"WeaponCombo_Ranged_Shortbow", 3, 3, 0.573155, false},
-    {"WeaponCombo_Ranged_Shortbow", 4, 1, 0.415800, false},
-    {"WeaponCombo_Ranged_Shortbow", 4, 2, 0.525695, false},
-    {"WeaponCombo_Ranged_Shortbow", 4, 3, 0.631772, false},
-    {"WeaponCombo_Ranged_Shortbow", 6, 1, 0.168077, false},
-    {"WeaponCombo_Ranged_Shortbow", 6, 2, 0.369325, false},
-    {"WeaponCombo_Ranged_Shortbow", 6, 3, 0.576444, false},
-    {"WeaponCombo_Ranged_Shortbow", 6, 4, 0.777815, false},
-    {"WeaponCombo_Ranged_Shortbow", 6, 5, 1.073580, false},
-    {"WeaponCombo_Ranged_Wand", 6, 1, 0.200000, true},
-    {"WeaponCombo_Ranged_Wand", 6, 2, 0.333333, true},
-    {"WeaponCombo_Ranged_Wand", 6, 3, 0.466667, true},
-    {"WeaponCombo_Ranged_Wand", 7, 1, 0.233333, true},
-    {"WeaponCombo_Ranged_Wand", 7, 2, 0.366667, true},
-    {"WeaponCombo_Ranged_Wand", 7, 3, 0.500000, true},
+const NoteCast kNoteCasts[26] = {
+    {"Bard_Misc_Discordance", 1, 0.23529412, true},
+    {"Bard_Misc_Discordance", 4, 0.5882353, true},
+    {"Bard_Misc_Discordance", 5, 0.94117653, true},
+    {"WeaponCombo_Ranged_Shortbow", 2, 0.033928502, false, 1},
+    {"WeaponCombo_Ranged_Shortbow", 2, 0.23223808, false, 1},
+    {"WeaponCombo_Ranged_Shortbow", 4, 0.21236703, false, 3},
+    {"WeaponCombo_Ranged_Shortbow", 4, 0.3703986, false, 3},
+    {"WeaponCombo_Ranged_Shortbow", 4, 0.48750272, false, 3},
+    {"WeaponCombo_Ranged_Shortbow", 7, 0.23384213, false, 4},
+    {"WeaponCombo_Ranged_Shortbow", 7, 0.4327155, false, 4},
+    {"WeaponCombo_Ranged_Shortbow", 13, 0.6000009, false, 4},
+    {"WeaponCombo_Ranged_Shortbow", 5, 0.23384213, false, 5},
+    {"WeaponCombo_Ranged_Shortbow", 5, 0.4327155, false, 5},
+    {"WeaponCombo_Ranged_Shortbow", 10, 0.6000009, false, 5},
+    {"WeaponCombo_Ranged_Shortbow", 9, 0.26499888, false, 6},
+    {"WeaponCombo_Ranged_Shortbow", 9, 0.36853763, false, 6},
+    {"WeaponCombo_Ranged_Shortbow", 9, 0.46484548, false, 6},
+    {"WeaponCombo_Ranged_Shortbow", 9, 0.5635761, false, 6},
+    {"WeaponCombo_Ranged_Shortbow", 12, 0.66533536, false, 6},
+    {"WeaponCombo_Ranged_Shortbow", 8, 0.26499888, false, 7},
+    {"WeaponCombo_Ranged_Shortbow", 8, 0.36853763, false, 7},
+    {"WeaponCombo_Ranged_Shortbow", 8, 0.46484548, false, 7},
+    {"WeaponCombo_Ranged_Shortbow", 8, 0.5635761, false, 7},
+    {"WeaponCombo_Ranged_Shortbow", 11, 0.66533536, false, 7},
+    {"WeaponCombo_Ranged_Book", 8, 0.7986078, false, 5},
+    {"WeaponCombo_Ranged_Book", 9, 0.79917175, false, 5},
 };
 
 const BounceRule kBounces[3] = {
-    {"Hit_Bard_Discordance_Initial_Trigger", 2000.0, 2, true},
-    {"Hit_Bard_ResonantWeapon_Bounce", 2000.0, 2, true},
-    {"Hit_Rogue_Throw_Bounce", 1000.0, 2, false},
+    {"Bard_Misc_Discordance_Bounce1", 1000.0, 2, true},
+    {"Bard_Misc_Discordance_Bounce2", 1000.0, 2, true},
+    {"Rogue_Throw_Bounce", 1000.0, 2, false},
 };
+
+namespace {
+
+constexpr double kPiRadians = 3.14159265358979323846;
+
+constexpr BallCast kBalls[] = {
+    {"Mage_BallLightning", 1.000823, 0.046711, 0.5, 150.0, 150.0},
+};
+constexpr double kBallStep = 0.05;
+constexpr double kBallMaxSeconds = 60.0;
+
+const BallCast *ball_of(const abilities::AbilityDef &def) {
+  for (const BallCast &b : kBalls) {
+    if (def.row.name == b.ability) return &b;
+  }
+  return nullptr;
+}
+
+int64_t ball_projectile_of(const abilities::AbilityDef &def) {
+  for (const content::AbilityHitRow &h : def.hits) {
+    if (h.source == "projectile") return h.owner_guid;
+  }
+  return 0;
+}
+
+double ball_heading_degrees(const combat::Fighter &caster) {
+  return caster.facing_degrees();
+}
+
+} // namespace
+
+bool carried_by_ball(const abilities::AbilityDef &def, int64_t hit_guid) {
+  if (!ball_of(def)) return false;
+  for (const content::AbilityHitRow &h : def.hits) {
+    if (h.source == "projectile" && h.hit_guid == hit_guid) return true;
+  }
+  return false;
+}
 
 bool swing_flies(std::string_view ability, int animation) {
   for (const ShotCast &s : kShotCasts) {
@@ -388,14 +428,21 @@ void AbilityPipeline::plan_shot(Cast &cast, const ShotCast &shot, double t) {
 }
 
 void AbilityPipeline::land_shot(Cast &cast, double t) {
-  if (!cast.cost_due)
-    return;
-  cast.projectile_due =
-      std::max({cast.launch_at + cast.flight, *cast.cost_due, t});
+  double land = std::max(t, cast.launch_at + cast.flight);
+  if (cast.cost_due)
+    land = std::max(land, *cast.cost_due);
+  cast.projectile_due = land;
 }
 
 void AbilityPipeline::launch_shot(Cast &cast, double t) {
   cast.flight_pending = false;
+  if (is_weapon_combo(cast.def->row) && cast.instance >= 0 &&
+      (!item_instance_ || *item_instance_ != cast.instance)) {
+    spdlog::info("[abilities] {}: another item took the pawn's place before "
+                 "the projectile left: it never leaves",
+                 cast.def->row.name);
+    return;
+  }
   const combat::TargetInfo info =
       (cast.target_actors.empty() || !combat_)
           ? combat::TargetInfo{}
@@ -504,7 +551,8 @@ void AbilityPipeline::launch_note(Cast &cast, const Cast::Missile &fly,
   land.target = fly.target;
   land.index = fly.index;
   land.depth = fly.depth;
-  land.due = t + distance / p->speed;
+  const double flight = distance / p->speed;
+  land.due = t + (fly.depth == 0 ? std::min(flight, kMaxShotFlight) : flight);
   if (cast.cost_due && !cast.looped)
     land.due = std::max(land.due, *cast.cost_due);
   cast.missiles.push_back(land);
@@ -602,6 +650,106 @@ void AbilityPipeline::fire_from_hit(const CastRecord &rec, const HitDef &hit,
     Host::Projectiles::proj_append_fired_straight(*this, hit, guid, t, wave);
   if (!wave.missiles.empty())
     casts_.push_back(std::move(wave));
+}
+
+void AbilityPipeline::set_dead(bool dead) {
+  dead_ = dead;
+  if (!dead) return;
+  for (size_t i = casts_.size(); i-- > 0;) {
+    Cast &c = casts_[i];
+    const bool flying = c.ball != nullptr && c.ball_flight.launch_at >= 0;
+    if (flying) {
+      for (std::optional<double> *due :
+           {&c.item_due, &c.cost_due, &c.hit_due, &c.projectile_due,
+            &c.loop_due, &c.own_due, &c.branch_due, &c.end_due})
+        due->reset();
+      c.missiles.erase(
+          std::remove_if(c.missiles.begin(), c.missiles.end(),
+                         [](const Cast::Missile &m) {
+                           return m.kind != Cast::Missile::Kind::Ball &&
+                                  m.kind != Cast::Missile::Kind::Land;
+                         }),
+          c.missiles.end());
+    }
+    if (!flying || c.missiles.empty())
+      casts_.erase(casts_.begin() + static_cast<std::ptrdiff_t>(i));
+  }
+  records_.erase(
+      std::remove_if(records_.begin(), records_.end(),
+                     [](const CastRecord &r) { return r.item_cast && r.cost_at < 0; }),
+      records_.end());
+}
+
+void AbilityPipeline::launch_ball(Cast &cast, double t) {
+  if (!combat_ || !cast.branched || cast.heard_at < 0 || cast.ball) return;
+  const BallCast *plan = ball_of(*cast.def);
+  if (!plan) return;
+  const int64_t projectile = ball_projectile_of(*cast.def);
+  const content::ProjectileRow *p = catalog_->projectile(projectile);
+  if (!p || !(p->speed > 0)) return;
+  const double rate = plan->bar / std::clamp(cast.heard_at - cast.trigger_at, 0.3, 8.0);
+  double at = std::max(cast.heard_at + plan->fire / rate, t);
+  if (cast.cost_due) at = std::max(at, *cast.cost_due);
+  cast.ball = plan;
+  BallFlight &b = cast.ball_flight;
+  b.projectile = projectile;
+  b.speed = p->speed;
+  b.radius = p->sphere_radius;
+  b.lasts = std::min({p->life_time > 0 ? p->life_time : kBallMaxSeconds,
+                      p->range > 0 ? p->range / p->speed : kBallMaxSeconds,
+                      kBallMaxSeconds});
+  b.rate = rate;
+  Cast::Missile first;
+  first.kind = Cast::Missile::Kind::Ball;
+  first.due = at;
+  first.projectile = projectile;
+  cast.missiles.push_back(first);
+}
+
+void AbilityPipeline::ball_step(Cast &cast, const Cast::Missile &step, double t) {
+  if (!combat_ || !cast.ball) return;
+  BallFlight &b = cast.ball_flight;
+  if (step.index == 0) {
+    if (cast.instance >= 0 && (!item_instance_ || *item_instance_ != cast.instance)) return;
+    const combat::Fighter &me = combat_->self();
+    const combat::Vec3 from = me.position();
+    const double heading = ball_heading_degrees(me);
+    b.dx = std::cos(heading * kPiRadians / 180.0);
+    b.dy = std::sin(heading * kPiRadians / 180.0);
+    b.x = from.x + b.dx * cast.ball->ahead;
+    b.y = from.y + b.dy * cast.ball->ahead;
+    b.z = from.z + cast.ball->up;
+    b.launch_at = t;
+    spdlog::info("[abilities] {}: the ball leaves {:.3f} s after the trigger (the client plays at {:.2f}) from ({:.0f}, {:.0f}, {:.0f}) heading {:.1f} degrees",
+                 cast.def->row.name, t - cast.trigger_at, b.rate, b.x, b.y, b.z, heading);
+  }
+  const double along = b.speed * kBallStep * step.index;
+  const combat::Vec3 centre{b.x + b.dx * along, b.y + b.dy * along, b.z};
+  for (const combat::GatheredTarget &e : combat_->enemies_touching(centre, b.radius, kMaxGathered)) {
+    BallFlight::Touch &touch = b.touched[e.actor];
+    if (touch.next > t + 1e-9) continue;
+    touch.next = t + cast.ball->period;
+    ++touch.hits;
+    ++b.hits;
+    Cast::Missile land;
+    land.due = t;
+    land.projectile = b.projectile;
+    land.target = e.actor;
+    cast.missiles.push_back(land);
+    spdlog::info("[abilities] {}: the ball hits actor {} (hit {} on it, {:.2f} s after the launch, {:.1f} m from the caster)",
+                 cast.def->row.name, e.actor, touch.hits, t - b.launch_at, combat_->inspect(e.actor).surface_distance_cm / 100.0);
+  }
+  if ((step.index + 1) * kBallStep <= b.lasts + 1e-9) {
+    Cast::Missile next = step;
+    next.index = step.index + 1;
+    next.due = b.launch_at + kBallStep * next.index;
+    cast.missiles.push_back(next);
+    return;
+  }
+  const content::ProjectileRow *p = catalog_->projectile(b.projectile);
+  const bool by_range = p && p->range > 0 && p->speed > 0 && (p->life_time <= 0 || p->range / p->speed <= p->life_time);
+  spdlog::info("[abilities] {}: the ball ends after {:.2f} s ({}): {} hits on {} enem{}",
+               cast.def->row.name, b.lasts, by_range ? "its range" : "its life", b.hits, b.touched.size(), b.touched.size() == 1 ? "y" : "ies");
 }
 
 } // namespace aoc::worldd

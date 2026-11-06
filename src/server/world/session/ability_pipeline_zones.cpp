@@ -137,23 +137,13 @@ struct AbilityPipeline::Host::Zones {
 
   static StepToken resolve_combo_step_token(const AbilityPipeline &self,
                                             const Cast &cast) {
-    StepToken step;
     const AbilityDef &def = *cast.def;
     const content::MontageRow *montage = nullptr;
     for (const content::MontageRow &m : def.montages) {
       if (m.anim_index == cast.animation_index) montage = &m;
     }
     if (!montage && !def.montages.empty()) montage = &def.montages.front();
-    if (!montage) return step;
-    step = step_token(leaf_of_path(montage->soft_path));
-    int named_step = 0;
-    bool named_proc = false;
-    const content::ExprRow *e = self.catalog_->expr(montage->select_expr);
-    if (e && step_of_expression(e->text, named_step, named_proc)) {
-      step.step = named_step;
-      step.proc = named_proc;
-    }
-    return step;
+    return montage ? step_of_montage(*self.catalog_, *montage) : StepToken{};
   }
 
   static bool is_paired_combo_variant(const AbilityPipeline &self,
@@ -202,6 +192,7 @@ struct AbilityPipeline::Host::Zones {
     if (ctx.combo_step && !accept_combo_projectile_step(self, ctx, hit, h.owner_guid))
       return false;
     src = make_proj_source(h.owner_guid, true, true, false);
+    src.reach_free = ctx.cast.ball != nullptr && h.owner_guid == ctx.cast.ball_flight.projectile;
     return true;
   }
 

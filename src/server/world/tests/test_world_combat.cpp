@@ -697,6 +697,7 @@ int main() {
     run_combat_generic_tests(h, *f.db);
     run_combat_burn_tests(h, *f.db);
     run_combat_dots_tests(h, *f.db);
+    run_combat_cc_tests(h, *f.db);
     std::printf("\n%d passed, %d failed\n", h.pass, h.fail);
     return h.fail == 0 ? 0 : 1;
 }

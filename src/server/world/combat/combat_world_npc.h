@@ -82,6 +82,8 @@ public:
     std::vector<Shield>                    shields;
     effects::Book                          book;
     EffectItemIds                          item_ids;
+    effects::Book::Crowd                   cc;
+    effects::Book::Crowd                   cc_logged;
 
     double absorb(double loss, double now) {
         shields.erase(std::remove_if(shields.begin(), shields.end(), [&](const Shield& s) { return s.amount <= 0 || (s.until > 0 && s.until <= now); }), shields.end());

@@ -3,6 +3,7 @@
 // and CoA (Creation of Ashes). GNU AGPL v3 with additional terms under section
 // 7: see LICENSE and NOTICE.
 #include "session/ability_pipeline_internal.h"
+#include "session/summoner_pets.h"
 
 #include <cstdlib>
 
@@ -208,6 +209,46 @@ void parse_step_piece(std::string_view tok, size_t idx, int &last_digits,
   if (j < tok.size() && tok[j] == '+')
     t.proc = true;
   last_digits = static_cast<int>(idx);
+}
+
+const content::MontageRow *find_combo_step_montage(const abilities::Catalog &cat, const abilities::AbilityDef &def, int step) {
+  const content::MontageRow *take = nullptr;
+  bool take_proc = true;
+  for (const content::MontageRow &m : def.montages) {
+    const StepToken s = step_of_montage(cat, m);
+    if (!s.ok || s.step != step || (take && !(take_proc && !s.proc))) continue;
+    take = &m;
+    take_proc = s.proc;
+  }
+  return take;
+}
+
+struct SwingSlotFilter {
+  bool ranged = false, beam = false;
+  StepToken token{};
+  std::set<int64_t> arrow_hits{};
+};
+
+SwingSlotFilter build_swing_slot_filter(const abilities::Catalog &cat, const abilities::AbilityDef &def, int32_t anim_index, double &min_gap) {
+  SwingSlotFilter f{def.row.name.rfind("WeaponCombo_Ranged", 0) == 0};
+  if (!is_weapon_combo(def.row)) return f;
+  for (const content::MontageRow &m : def.montages) {
+    if (m.anim_index != anim_index) continue;
+    f.token = step_of_montage(cat, m);
+    if (f.token.beam) { f.beam = true; min_gap = AbilityPipeline::kBeamRequestGap; }
+  }
+  for (const content::AbilityHitRow &h : def.hits) {
+    if (h.source == "projectile") f.arrow_hits.insert(h.hit_guid);
+  }
+  return f;
+}
+
+bool allow_swing_slot_hit(const SwingSlotFilter &f, int64_t hit_guid, std::string_view hit_name, int &max_requests) {
+  max_requests = -1;
+  if (!f.ranged) return true;
+  if (!f.beam || (f.arrow_hits.count(hit_guid) && !same_step(f.token, step_token(hit_name)))) return false;
+  max_requests = beam_hit_requests(hit_name);
+  return max_requests > 0;
 }
 
 } // namespace
@@ -687,6 +728,70 @@ bool AbilityPipeline::Host::resolve_flight_due(
     return true;
   }
   return false;
+}
+
+void AbilityPipeline::stop_swing(int64_t instance) {
+  for (size_t i = casts_.size(); i-- > 0;) {
+    Cast &cast = casts_[i];
+    if (cast.instance != instance || !is_weapon_combo(cast.def->row)) continue;
+    if (cast.flight_pending) {
+      cast.flight_pending = false;
+      cast.projectile_due.reset();
+    }
+    const auto is_fly = [](const Cast::Missile &m) { return m.kind == Cast::Missile::Kind::Fly && m.depth == 0; };
+    cast.missiles.erase(std::remove_if(cast.missiles.begin(), cast.missiles.end(), is_fly), cast.missiles.end());
+    finish_cast_if_done(i);
+  }
+}
+
+int AbilityPipeline::swing_montage(const abilities::AbilityDef &def, int requested, int &step) const {
+  step = 0;
+  if (!catalog_ || def.montages.empty() || def.row.name.rfind("WeaponCombo_Ranged", 0) != 0) return requested;
+  const content::MontageRow *asked = nullptr;
+  for (const content::MontageRow &m : def.montages) {
+    if (m.anim_index == requested) asked = &m;
+  }
+  const auto last = swing_steps_.find(def.row.guid);
+  if (asked) {
+    const StepToken named = step_of_montage(*catalog_, *asked);
+    if (!named.ok) return requested;
+    if (last == swing_steps_.end() || named.step == 1 || named.step == last->second + 1) {
+      step = named.step;
+      return requested;
+    }
+  }
+  int next = last == swing_steps_.end() ? 1 : last->second + 1;
+  const content::MontageRow *take = find_combo_step_montage(*catalog_, def, next);
+  if (!take) {
+    next = 1;
+    take = find_combo_step_montage(*catalog_, def, next);
+  }
+  if (!take) return requested;
+  spdlog::info("[abilities] {}: the client named montage {}, but the combo is at step {}: the swing plays montage {}",
+               def.row.name, requested, next, take->anim_index);
+  step = next;
+  return take->anim_index;
+}
+
+void AbilityPipeline::Host::register_cast_hit_slots(AbilityPipeline &self, const abilities::AbilityDef &def, const Cast &cast, CastRecord &rec) {
+  const SwingSlotFilter filter = build_swing_slot_filter(*self.catalog_, def, cast.animation_index, rec.min_gap);
+  std::set<int64_t> seen;
+  for (const content::AbilityHitRow &h : def.hits) {
+    if (h.source != "hit" || !seen.insert(h.hit_guid).second) continue;
+    const abilities::HitDef *hit = self.catalog_->hit(h.hit_guid);
+    if (!hit || hit->row.net_type.find("ServerVerify") == std::string::npos) continue;
+    int max_requests = -1;
+    if (!allow_swing_slot_hit(filter, h.hit_guid, hit->row.name, max_requests) || carried_by_ball(def, h.hit_guid)) continue;
+    HitSlot slot;
+    slot.hit = hit;
+    slot.targeting = self.targeting_of(def, static_cast<int>(h.key));
+    slot.max_requests = max_requests;
+    slot.reaches = self.hits_caster(hit->row);
+    slot.aims_others = self.combat_ != nullptr && (hit->row.applicable_targets & (2 | 4 | 8 | 16)) != 0;
+    slot.server_self_use = pets::for_ability(def.row.guid) && hit->row.applicable_targets == 1 &&
+                           hit->row.fallback_target.find("SelfOnly") != std::string::npos;
+    rec.slots.push_back(std::move(slot));
+  }
 }
 
 } // namespace aoc::worldd

@@ -18,6 +18,7 @@ struct AbilityPipeline::Host::Casts {
   struct TriggerPlan {
     int64_t ability = 0, loop_effect = 0;
     int32_t client_id = 0;
+    int swing_step = 0;
     double t = 0.0, item_delay = kItemDelay, cost_delay = kCostDelay,
            hit_delay = -1.0;
     double zone_delay = -1.0, zone_end = -1.0, table_hit = -1.0,
@@ -196,13 +197,14 @@ struct AbilityPipeline::Host::Casts {
   }
 
   static void init_cast_from_plan(const AbilityPipeline &self,
-                                  const TriggerInfo &info,
-                                  const TriggerPlan &plan, Cast &cast) {
+                                  const TriggerInfo &info, TriggerPlan &plan,
+                                  Cast &cast) {
     const content::AbilityRow &row = plan.def->row;
     cast.client_id = plan.client_id;
     cast.def = plan.def;
     cast.trigger_at = plan.t;
-    cast.animation_index = info.animation_index;
+    cast.animation_index =
+        self.swing_montage(*plan.def, info.animation_index, plan.swing_step);
     cast.item_cast = info.item_cast;
     cast.target = info.target_count > 0 && plan.target_actors.empty();
     cast.self_reachable = (row.applicable_targets & kFriendlyMask) != 0;
@@ -557,29 +559,6 @@ struct AbilityPipeline::Host::Casts {
       schedule_cast_projectiles(self, plan, cast, !cast.target_actors.empty());
   }
 
-  static void append_verified_hit_slot(AbilityPipeline &self,
-                                       const AbilityDef &def,
-                                       const content::AbilityHitRow &h,
-                                       std::set<int64_t> &seen,
-                                       CastRecord &rec) {
-    if (h.source != "hit" || !seen.insert(h.hit_guid).second)
-      return;
-    const HitDef *hit = self.catalog_->hit(h.hit_guid);
-    if (!hit || hit->row.net_type.find("ServerVerify") == std::string::npos)
-      return;
-    HitSlot slot;
-    slot.hit = hit;
-    slot.targeting = self.targeting_of(def, static_cast<int>(h.key));
-    slot.reaches = self.hits_caster(hit->row);
-    slot.aims_others = self.combat_ != nullptr &&
-                       (hit->row.applicable_targets & (2 | 4 | 8 | 16)) != 0;
-    if (pets::for_ability(def.row.guid) && hit->row.applicable_targets == 1 &&
-        hit->row.fallback_target.find("SelfOnly") != std::string::npos) {
-      slot.server_self_use = true;
-    }
-    rec.slots.push_back(std::move(slot));
-  }
-
   static void record_cast_slots(AbilityPipeline &self, const TriggerPlan &plan,
                                 const Cast &cast) {
     const content::AbilityRow &row = plan.def->row;
@@ -593,17 +572,7 @@ struct AbilityPipeline::Host::Casts {
     rec.item_cast = plan.item_cast;
     rec.hit_delay = effective_hit_delay(plan);
     rec.reach = self.reach_of(*plan.def);
-    for (const content::MontageRow &m : plan.def->montages) {
-      if (is_weapon_combo(row) && m.anim_index == cast.animation_index &&
-          step_token(leaf_of_path(m.soft_path)).beam) {
-        rec.max_requests = kBeamRequestsPerHit;
-        rec.min_gap = kBeamRequestGap;
-      }
-    }
-    std::set<int64_t> seen;
-    for (const content::AbilityHitRow &h : plan.def->hits) {
-      append_verified_hit_slot(self, *plan.def, h, seen, rec);
-    }
+    Host::register_cast_hit_slots(self, *plan.def, cast, rec);
     self.records_.push_back(std::move(rec));
     while (self.records_.size() > kMaxRecords)
       self.records_.pop_front();
@@ -646,6 +615,8 @@ struct AbilityPipeline::Host::Casts {
                      plan.zone_end >= 0 ? plan.t + plan.zone_end : -1.0);
     if (!is_weapon_combo(plan.def->row))
       self.cancel_swings(plan.t, plan.name);
+    if (plan.swing_step > 0)
+      self.swing_steps_[plan.def->row.guid] = plan.swing_step;
     self.casts_.push_back(std::move(cast));
   }
 };
@@ -753,14 +724,11 @@ void AbilityPipeline::cancel_swings(double t, const std::string &by) {
 }
 
 void AbilityPipeline::step_branch(Cast &cast, double t) {
-  if (cast.gathered && (!cast.cost_due || can_pay(cast)))
-    launch_gathered(cast, t);
+  if (cast.gathered && (!cast.cost_due || can_pay(cast))) launch_gathered(cast, t);
   land_by_flight(cast, t);
-  if (!cast.montage_branch || !item_instance_ ||
-      *item_instance_ != cast.instance)
-    return;
-  if (cast.charged && cast.gathered &&
-      cast.gathered->charged_montage[0] != '\0') {
+  launch_ball(cast, t);
+  if (!cast.montage_branch || !item_instance_ || *item_instance_ != cast.instance) return;
+  if (cast.charged && cast.gathered && cast.gathered->charged_montage[0] != '\0') {
     cast.item.montage_path = cast.gathered->charged_montage;
     cast.item.montage_guid = cast.gathered->charged_montage_guid;
   }

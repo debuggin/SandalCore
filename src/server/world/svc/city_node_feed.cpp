@@ -30,6 +30,12 @@ std::shared_ptr<grpc::Channel> make_channel(const std::string& address) {
     args.SetInt(GRPC_ARG_INITIAL_RECONNECT_BACKOFF_MS, 200);
     args.SetInt(GRPC_ARG_MIN_RECONNECT_BACKOFF_MS, 200);
     args.SetInt(GRPC_ARG_MAX_RECONNECT_BACKOFF_MS, 5000);
+    args.SetInt(GRPC_ARG_DNS_MIN_TIME_BETWEEN_RESOLUTIONS_MS, 1000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 15000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 5000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
+    args.SetInt(GRPC_ARG_HTTP2_MAX_PINGS_WITHOUT_DATA, 0);
+    args.SetServiceConfigJSON(R"({"methodConfig":[{"name":[{}],"waitForReady":true,"retryPolicy":{"maxAttempts":4,"initialBackoff":"0.05s","maxBackoff":"0.5s","backoffMultiplier":2.0,"retryableStatusCodes":["UNAVAILABLE"]}}]})");
     return grpc::CreateCustomChannel(address, grpc::InsecureChannelCredentials(), args);
 }
 
@@ -47,7 +53,6 @@ world::LiveNode live_of(const nodev1::Node& n) {
 CityNodeFeed::CityNodeFeed(world::CityNodes& nodes, Options options) : nodes_(nodes), options_(std::move(options)), impl_(std::make_unique<Impl>()) {
     impl_->stub = nodev1::CityNodeService::NewStub(make_channel(options_.address));
 }
-// Cyb and C O A
 
 CityNodeFeed::~CityNodeFeed() { stop(); }
 
@@ -75,9 +80,10 @@ bool CityNodeFeed::sleep_unless_stopped(std::chrono::milliseconds d) {
 
 void CityNodeFeed::run() {
     auto backoff = options_.initial_backoff;
-    bool warned = false;   // one warning per outage
+    bool warned = false;
     while (true) {
         grpc::ClientContext ctx;
+        ctx.set_wait_for_ready(true);
         ctx.AddMetadata(kAuthorizationMetadata, "Bearer " + options_.token);
         {
             std::lock_guard<std::mutex> lock(mu_);
@@ -91,49 +97,33 @@ void CityNodeFeed::run() {
         bool got_snapshot = false, desync = false;
         uint64_t last = 0;
         while (reader->Read(&msg)) {
-            switch (msg.event_case()) {
-                case nodev1::WatchNodesResponse::kSnapshot: {
-                    std::vector<world::LiveNode> all;
-                    all.reserve(static_cast<size_t>(msg.snapshot().nodes_size()));
-                    for (const nodev1::Node& n : msg.snapshot().nodes()) all.push_back(live_of(n));
-                    nodes_.apply_snapshot(all, world::LevelSource::Service);
+            if (msg.event_case() == nodev1::WatchNodesResponse::kSnapshot) {
+                std::vector<world::LiveNode> all;
+                all.reserve(static_cast<size_t>(msg.snapshot().nodes_size()));
+                for (const nodev1::Node& n : msg.snapshot().nodes()) all.push_back(live_of(n));
+                nodes_.apply_snapshot(all, world::LevelSource::Service);
+                last = msg.seq();
+                seq_.store(last);
+                ++snapshots_;
+                got_snapshot = true;
+                connected_.store(true);
+                backoff = options_.initial_backoff;
+                spdlog::info("[nodes] citynode at {}: the whole state ({} nodes, seq {}): {}", options_.address, all.size(), last, nodes_.describe_levels());
+                warned = false;
+            } else if (msg.event_case() == nodev1::WatchNodesResponse::kNodeChanged || msg.event_case() == nodev1::WatchNodesResponse::kClockChanged) {
+                if (!got_snapshot || msg.seq() != last + 1) { desync = true; }
+                else {
                     last = msg.seq();
                     seq_.store(last);
-                    ++snapshots_;
-                    got_snapshot = true;
-                    connected_.store(true);
-                    backoff = options_.initial_backoff;
-                    spdlog::info("[nodes] citynode at {}: the whole state ({} nodes, seq {}): {}", options_.address, all.size(), last, nodes_.describe_levels());
-                    warned = false;
-                    break;
-                }
-                case nodev1::WatchNodesResponse::kNodeChanged: {
-                    if (!got_snapshot || msg.seq() != last + 1) {
-                        desync = true;
-                        break;
-                    }
-                    last = msg.seq();
-                    seq_.store(last);
-                    const nodev1::NodeChange& c = msg.node_changed();
-                    if (nodes_.apply_change(live_of(c.node()))) {
+                    if (msg.event_case() == nodev1::WatchNodesResponse::kNodeChanged && nodes_.apply_change(live_of(msg.node_changed().node()))) {
                         ++changes_;
-                        spdlog::info("[nodes] {} is now level {} (was {}, seq {})", c.node().display_name(), c.node().level(), c.previous_level(), last);
+                        spdlog::info("[nodes] {} is now level {} (was {}, seq {})", msg.node_changed().node().display_name(), msg.node_changed().node().level(), msg.node_changed().previous_level(), last);
                     }
-                    break;
                 }
-                case nodev1::WatchNodesResponse::kClockChanged:
-                    if (!got_snapshot || msg.seq() != last + 1) {
-                        desync = true;
-                        break;
-                    }
-                    last = msg.seq();
-                    seq_.store(last);
-                    break;
-                case nodev1::WatchNodesResponse::EVENT_NOT_SET: break;
             }
             if (desync) {
                 ++warnings_;
-                warned = true;   // this is the outage's warning
+                warned = true;
                 spdlog::warn("[nodes] citynode sent seq {} after {}: calling WatchNodes again for the whole state", msg.seq(), last);
                 ctx.TryCancel();
                 break;
@@ -149,13 +139,8 @@ void CityNodeFeed::run() {
         if (!warned) {
             ++warnings_;
             warned = true;
-            if (got_snapshot) {
-                spdlog::warn("[nodes] the citynode stream at {} ended ({}): world keeps the levels it has and calls again", options_.address, status.error_message());
-            } else {
-                spdlog::warn("[nodes] citynode at {} is not reachable ({}): world runs with the levels of the {} ({}) and keeps retrying",
-                             options_.address, status.error_message().empty() ? "the stream did not start" : status.error_message(),
-                             world::level_source_name(nodes_.source()), nodes_.describe_levels());
-            }
+            if (got_snapshot) spdlog::warn("[nodes] the citynode stream at {} ended ({}): world keeps the levels it has and calls again", options_.address, status.error_message());
+            else spdlog::warn("[nodes] citynode at {} is not reachable ({}): world runs with the levels of the {} ({}) and keeps retrying", options_.address, status.error_message().empty() ? "the stream did not start" : status.error_message(), world::level_source_name(nodes_.source()), nodes_.describe_levels());
         }
         if (!sleep_unless_stopped(backoff)) return;
         backoff = std::min(backoff * 2, options_.max_backoff);

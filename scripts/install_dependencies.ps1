@@ -3,7 +3,8 @@
   Checks for the Windows host tools Sandal Core needs to build and run, and installs what is missing.
 
 .DESCRIPTION
-  Checks: winget, Git, .NET 10 SDK (SandalLauncher, aoc-extractor, mapc), WSL2, and Docker (Docker Desktop or standalone Windows Docker CLI + Compose + Buildx connected to WSL2 Docker Engine).
+  Checks: winget, Git, Go, .NET 10 SDK (SandalLauncher, aoc-extractor, mapc), WSL2, and Docker (Docker Desktop or standalone Windows Docker CLI + Compose + Buildx connected to WSL2 Docker Engine).
+  A Go older than src\server\services\go.mod asks for is upgraded with winget the same way; without winget the script points to the Windows installer at https://go.dev/dl/.
   All C++ (world) and Go microservices compile inside Linux Docker containers.
 
 .PARAMETER CheckOnly
@@ -63,6 +64,33 @@ function Find-DotnetSdk10 {
     return $null
 }
 
+function Get-GoRequired {
+    $goMod = Join-Path $repoRoot 'src\server\services\go.mod'
+    if (Test-Path -LiteralPath $goMod -PathType Leaf) {
+        foreach ($line in (Get-Content -LiteralPath $goMod)) {
+            if ($line -match '^go\s+(\d+\.\d+)') { return $Matches[1] }
+        }
+    }
+    return '1.24'
+}
+
+function Get-GoVersion {
+    $go = Get-Command go -ErrorAction SilentlyContinue
+    if (-not $go) { return $null }
+    # GOTOOLCHAIN=local: report the Go that is installed, never one that go would fetch for the go line of a go.mod in the current folder
+    $oldToolchain = $env:GOTOOLCHAIN
+    $env:GOTOOLCHAIN = 'local'
+    try { $v = & go env GOVERSION 2>$null } finally { $env:GOTOOLCHAIN = $oldToolchain }
+    if ($v) { return $v.Trim() }
+    return 'unknown'
+}
+
+function Test-VersionAtLeast([string]$have, [string]$need) {
+    $h = ($have -replace '^go', '') -replace '[^0-9.].*$', ''
+    $n = ($need -replace '^go', '') -replace '[^0-9.].*$', ''
+    try { return ([version]$h -ge [version]$n) } catch { return $false }
+}
+
 function Test-Wsl2HostReady {
     if (-not $IsWindows -or $null -eq (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
         return (-not $IsWindows)
@@ -118,17 +146,26 @@ function Confirm-Install([string]$what) {
     return ($a -eq '' -or $a -match '^[Yy]')
 }
 
-function Install-Winget([string]$id, [string]$name, [string[]]$extra = @()) {
-    Write-Host "Installing $name (winget id $id) ..." -ForegroundColor Cyan
-    $wingetArgs = @('install', '--id', $id, '-e', '--source', 'winget',
+function Install-Winget([string]$id, [string]$name, [string[]]$extra = @(), [switch]$Upgrade) {
+    # -Upgrade: the package is installed but too old; "winget install" does not replace an installed version, "winget upgrade" does
+    $verb = if ($Upgrade) { 'upgrade' } else { 'install' }
+    Write-Host ("{0} {1} (winget id {2}) ..." -f $(if ($Upgrade) { 'Upgrading' } else { 'Installing' }), $name, $id) -ForegroundColor Cyan
+    $wingetArgs = @($verb, '--id', $id, '-e', '--source', 'winget',
               '--accept-package-agreements', '--accept-source-agreements') + $extra
     & $script:winget @wingetArgs
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "winget could not install $name (exit $LASTEXITCODE). Install it by hand, then run this script again."
+        Write-Warning "winget could not $verb $name (exit $LASTEXITCODE). Do it by hand, then run this script again."
         return $false
     }
     Update-SessionPath
     return $true
+}
+
+# Go comes from go.dev: its Windows installer (.msi) replaces an older Go in place, so this works with or without winget
+function Show-GoByHand {
+    $have = if ($goHave) { " (this PC has $goHave)" } else { '' }
+    Write-Warning ("Go $goNeed or newer is needed$have. Download the Windows installer from https://go.dev/dl/ and run it (it replaces an older Go), " +
+                   'then open a new window and run this script again.')
 }
 
 function Install-MissingDockerComponents {
@@ -166,10 +203,15 @@ function Install-MissingDockerComponents {
 }
 
 $script:winget = Find-Winget
+$goNeed = Get-GoRequired
+$goHave = Get-GoVersion
+$goOk = [bool]($goHave -and (-not $goNeed -or (Test-VersionAtLeast $goHave $goNeed)))
+$goOld = [bool]($goHave -and -not $goOk)
 $dockerCliState = if ($SkipDocker) { [pscustomobject]@{ AllCliReady = [bool](Get-Command docker -ErrorAction SilentlyContinue) } } else { Get-DockerCliState }
 $items = [ordered]@{
     'winget'      = [bool]$script:winget
     'Git'         = [bool](Get-Command git -ErrorAction SilentlyContinue)
+    'Go'          = $goOk
     '.NET 10 SDK' = [bool](Find-DotnetSdk10)
     'WSL2'        = [bool](Test-Wsl2HostReady)
     'Docker'      = [bool]$dockerCliState.AllCliReady
@@ -197,12 +239,21 @@ if (-not $missing.Count) {
 }
 
 if (-not $script:winget) {
+    if (-not $items['Go']) { Show-GoByHand }
+    if ($missing.Count -eq 1 -and $missing[0] -eq 'Go') { exit 1 }
     Write-Warning 'winget is missing. Install "App Installer" from the Microsoft Store, then run this script again.'
     exit 1
 }
 
 if (-not $items['Git'] -and (Confirm-Install 'Git')) {
     [void](Install-Winget 'Git.Git' 'Git')
+}
+if (-not $items['Go'] -and (Confirm-Install $(if ($goOld) { "Go $goNeed or newer (it replaces the Go $goHave that is installed)" } else { "Go $goNeed or newer" }))) {
+    [void](Install-Winget 'GoLang.Go' 'Go' @() -Upgrade:$goOld)
+    if ($goOld) {
+        $goNow = Get-GoVersion
+        if (-not ($goNow -and (Test-VersionAtLeast $goNow $goNeed))) { Show-GoByHand }
+    }
 }
 if (-not $items['.NET 10 SDK'] -and (Confirm-Install '.NET 10 SDK (builds SandalLauncher, aoc-extractor, and mapc)')) {
     [void](Install-Winget 'Microsoft.DotNet.SDK.10' '.NET 10 SDK')

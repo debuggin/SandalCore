@@ -1,5 +1,9 @@
 #include "combat_test_fixture.h"
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+
 namespace sandal::worldd::tests {
 namespace {
 
@@ -432,6 +436,92 @@ void test_turn_to_a_player_behind(TestHarness& h) {
     CHECKF(error_at_start <= 46.0 && error_later <= 6.0, "the bite begins within the tree's 45 deg and goes on turning to the player (%.1f deg off at its start, %.1f half a second on)", error_at_start, error_later);
 }
 
+struct TimedSwingEnv {
+    std::filesystem::path tmp;
+    std::string           dir;
+    std::string           wolf_path;
+    int64_t               bite_guid = 0;
+};
+
+struct TimedSwingRun {
+    bool   ran = false;
+    double first_cast = -1, first_hit = -1;
+    size_t casts = 0, hits_before_5s = 0, hits = 0;
+};
+
+TimedSwingRun play_timed_swing_fight(TestHarness& h, const TimedSwingEnv& env, const char* conds) {
+    TimedSwingRun r;
+    const std::string table = (env.tmp / "abilities.tsv").string();
+    {
+        std::ofstream out(table, std::ios::binary);
+        out << "archetype\tability\ttask\tcooldown\tstop_movement\torder\tmin_distance\tmax_distance\tmax_angle\tgates\tunknown\tfight\tconds\twhy\tstarts\trotate\tarrival\n"
+            << env.wolf_path << "\t" << env.bite_guid << "\t\t0\t1\t37\t-1\t270\t45\tGlobal Cooldown\t0\t1\t" << conds << "\t\tGlobal Cooldown=0.5\t360:0\t-1\n";
+    }
+    combat::NpcAbilityData tables;
+    std::string err;
+    const bool loaded = tables.load(table, env.dir + "npc_montages.tsv", env.dir + "npc_targeting.tsv", err);
+    CHECKF(loaded, "the Wolf's tree with its Bite under '%s' loads (%s)", conds, err.c_str());
+    if (!loaded) return r;
+    std::vector<LungeSample> samples;
+    std::vector<combat::IncomingHit> got;
+    LungeFightSpec spec;
+    spec.path = env.wolf_path;
+    spec.seconds = 16.0;
+    spec.player_y = 800.0;
+    spec.hits = &got;
+    spec.leash_cm = 40000.0;
+    r.ran = run_lunge_fight(h.f, tables, spec, samples);
+    if (!r.ran) return r;
+    for (const LungeSample& s : samples) {
+        if (!s.cast_began) continue;
+        ++r.casts;
+        if (r.first_cast < 0) r.first_cast = s.t;
+    }
+    for (const combat::IncomingHit& hit : got) {
+        ++r.hits;
+        if (r.first_hit < 0) r.first_hit = hit.at;
+        if (hit.at < 5.0) ++r.hits_before_5s;
+    }
+    return r;
+}
+
+void test_creature_swings_until_its_timed_attack_opens(TestHarness& h) {
+    Fixture& f = h.f;
+    if (!f.ok()) return;
+    std::printf("a creature whose only animated attack waits on the fight clock (or on its health) swings its single swing until the attack may start, and plays the attack once the clock opens; one whose attack waits on nothing plays it at once\n");
+    namespace fs = std::filesystem;
+    combat::NpcAbilityData real;
+    if (!load_creature_tables(real)) return;
+    const std::string wolf_path = creature_path(f, "/Beast/Canine/Wolf.Default__Wolf_C");
+    const abilities::AbilityDef* bite = f.catalog->ability_named("Wolf_Bite");
+    CHECK(!wolf_path.empty() && f.motion.find(wolf_path) && real.abilities_of(wolf_path) && bite,
+          "the Blueprint table has the Wolf, the creature tables list its abilities and the ability data has the Bite");
+    if (wolf_path.empty() || !f.motion.find(wolf_path) || !real.abilities_of(wolf_path) || !bite) return;
+    std::string dir = NPC_MOTION_PATH;
+    dir.erase(dir.find_last_of("/\\") + 1);
+    std::error_code ec;
+    const fs::path tmp = fs::temp_directory_path() / ("aoc_creature_timed_swing_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(tmp, ec);
+    const TimedSwingEnv env{tmp, dir, wolf_path, bite->row.guid};
+
+    const TimedSwingRun timed = play_timed_swing_fight(h, env, "c0:fc(ge,6)");
+    const TimedSwingRun health = play_timed_swing_fight(h, env, "c0:hp(0.5)");
+    const TimedSwingRun plain = play_timed_swing_fight(h, env, "");
+    fs::remove_all(tmp, ec);
+    CHECK(timed.ran && health.ran && plain.ran, "the three fights run (the Wolf is made from its open and knows the Bite)");
+    if (!timed.ran || !health.ran || !plain.ran) return;
+    std::printf("  Bite under fc(ge,6): first bite played at %.2f s, first hit at %.2f s, %zu hits in the first 5 s, %zu bites in 16 s;  under hp(0.5): %zu bites, %zu hits;  under nothing: first bite at %.2f s, first hit "
+                "at %.2f s, %zu hits in the first 5 s\n",
+                timed.first_cast, timed.first_hit, timed.hits_before_5s, timed.casts, health.casts, health.hits, plain.first_cast, plain.first_hit, plain.hits_before_5s);
+    CHECKF(timed.hits_before_5s >= 2 && timed.first_hit >= 0 && timed.first_hit < 5.0,
+           "the Wolf whose Bite waits for the fight's sixth second swings in the meantime (%zu hits in the first 5 s, the first at %.2f s)", timed.hits_before_5s, timed.first_hit);
+    CHECKF(timed.first_cast >= 6.0 && timed.first_cast < 12.0 && timed.casts >= 1,
+           "... and plays the Bite once the clock allows it, never before (first bite at %.2f s, %zu bites in 16 s)", timed.first_cast, timed.casts);
+    CHECKF(health.casts == 0 && health.hits >= 4, "the Wolf whose Bite waits for its health to fall under half swings all the fight (%zu bites, %zu hits in 16 s)", health.casts, health.hits);
+    CHECKF(plain.first_cast > 0 && plain.first_cast < 4.0 && plain.first_hit >= plain.first_cast && plain.hits_before_5s >= 1,
+           "the Wolf whose Bite waits for nothing plays it from the start, with no swing before it (first bite at %.2f s, first hit at %.2f s)", plain.first_cast, plain.first_hit);
+}
+
 }  // namespace
 
 void run_combat_lunge_chase_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db) {
@@ -442,6 +532,7 @@ void run_combat_lunge_chase_tests(TestHarness& h, const sandal::worldd::content:
     test_chase_of_a_player_who_walks_away(h);
     test_swing_faces_its_target(h);
     test_turn_to_a_player_behind(h);
+    test_creature_swings_until_its_timed_attack_opens(h);
 }
 
 }  // namespace sandal::worldd::tests

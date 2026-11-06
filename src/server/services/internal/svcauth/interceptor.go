@@ -24,6 +24,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
@@ -54,12 +55,14 @@ func Load(path string) (Token, error) {
 	return Token(t), nil
 }
 
-// C.O.A : Cyb
-
 // ServerOptions make a gRPC server refuse, with Unauthenticated, every call
-// that does not carry the token.
+// that does not carry the token, and permit 15s idle HTTP/2 keepalive pings from world.
 func (t Token) ServerOptions() []grpc.ServerOption {
 	return []grpc.ServerOption{
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
 		grpc.ChainUnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, h grpc.UnaryHandler) (any, error) {
 			if err := t.check(ctx, info.FullMethod); err != nil {
 				return nil, err
@@ -78,6 +81,23 @@ func (t Token) ServerOptions() []grpc.ServerOption {
 // DialOption makes a client send the token with every call.
 func (t Token) DialOption() grpc.DialOption {
 	return grpc.WithPerRPCCredentials(credentials{t})
+}
+
+const defaultClientServiceConfig = `{"methodConfig":[{"name":[{}],"retryPolicy":{"maxAttempts":4,"initialBackoff":"0.05s","maxBackoff":"0.5s","backoffMultiplier":2,"retryableStatusCodes":["UNAVAILABLE"]}}]}`
+
+// DialOptions returns the client gRPC options for long-lived internal service
+// channels: bearer token authentication, 15s HTTP/2 keepalive pings, and
+// automatic UNAVAILABLE retry across container restarts.
+func (t Token) DialOptions() []grpc.DialOption {
+	return []grpc.DialOption{
+		t.DialOption(),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                15 * time.Second,
+			Timeout:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
+		grpc.WithDefaultServiceConfig(defaultClientServiceConfig),
+	}
 }
 
 func (t Token) check(ctx context.Context, method string) error {

@@ -273,6 +273,24 @@ std::vector<GatheredTarget> CombatWorld::enemies_around(const Fighter& from, con
     return out;
 }
 
+std::vector<GatheredTarget> CombatWorld::enemies_touching(const Fighter& from, const Vec3& centre, double radius_cm, size_t max) {
+    std::vector<GatheredTarget> out;
+    if (max == 0 || radius_cm <= 0) return out;
+    constexpr double kBodyMargin = 600.0;
+    std::vector<uint64_t> ids;
+    registry_.query(centre.x, centre.y, radius_cm + kBodyMargin, ids);
+    for (const uint64_t id : ids) {
+        const TargetInfo ti = inspect(id, from);
+        if (!ti.exists || !ti.alive || ti.relation != Relation::Hostile) continue;
+        const double d = distance_xy_cm(centre, ti.position);
+        if (d - ti.radius_cm > radius_cm) continue;
+        if (std::fabs(ti.position.z - centre.z) - ti.radius_cm > radius_cm + 200.0) continue;
+        out.push_back({id, d});
+    }
+    sort_and_cap_targets(out, max);
+    return out;
+}
+
 bool CombatWorld::ground_height(double x, double y, double z_hint, double* z) const {
     return nav_ != nullptr && nav_->ground_height(x, y, z_hint, z, 1500.0, 1500.0);
 }

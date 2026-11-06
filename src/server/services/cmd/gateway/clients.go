@@ -116,9 +116,8 @@ type serviceConns struct{ auth, character, mesh *grpc.ClientConn }
 
 func dialServices(cfg config.Config, token svcauth.Token) (*serviceConns, error) {
 	dial := func(addr string) (*grpc.ClientConn, error) {
-		return grpc.NewClient(addr,
+		opts := append([]grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			token.DialOption(),
 			// Come back within seconds after a service restarts: gRPC's
 			// default backoff grows to 120 s, failing Play all that time.
 			// MinConnectTimeout is set as well: left at 0, each attempt gets
@@ -130,7 +129,9 @@ func dialServices(cfg config.Config, token svcauth.Token) (*serviceConns, error)
 				Backoff: backoff.Config{
 					BaseDelay: 200 * time.Millisecond, Multiplier: 1.6, Jitter: 0.2, MaxDelay: 5 * time.Second,
 				},
-			}))
+			}),
+		}, token.DialOptions()...)
+		return grpc.NewClient(addr, opts...)
 	}
 	c := &serviceConns{}
 	var err error

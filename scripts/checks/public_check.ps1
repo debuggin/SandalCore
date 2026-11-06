@@ -88,6 +88,9 @@ function Test-SandalGitTrackedAssets {
         if ($norm -match '\.(pak|utoc|ucas|pdb|dmp|pcapng)$') {
             $Violations.Add("Forbidden binary asset tracked in git: $norm")
         }
+        if ($norm -like '*.tsv' -and $norm -notmatch '^src/server/services/cmd/contentc/(ability_names|montage_assets|montage_ids)\.tsv$') {
+            $Violations.Add("Forbidden generated TSV file tracked in git: $norm")
+        }
         if ($norm -like '*.env' -or $norm -like '*.local.json' -or $norm -like '*.local.env' -or $norm -match '\.(key|crt|pfx|p12)$') {
             $Violations.Add("Forbidden secret or environment file tracked in git: $norm")
         }
@@ -311,7 +314,7 @@ function Test-SandalDocumentationRealityHygiene {
     if (Test-Path -LiteralPath $srcDir -PathType Container) {
         foreach ($f in @(Get-ChildItem -LiteralPath $srcDir -Filter 'README.md' -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '[\\/]control-app[\\/]' })) { $docFiles.Add($f.FullName) }
     }
-    $staleRegex = '(?:\bworldd\b|\bWORLDD\b|\bmeshgw\b|\bMESHGW\b|\bvcpkg\b|Visual Studio|Build Tools|\.NET 8\b|\bnet8\.0\b|an uncommitted draft|12-container)'
+    $staleRegex = '(?:\bworldd\b|\bWORLDD\b|\bmeshgw\b|\bMESHGW\b|\bvcpkg\b|Visual Studio|Build Tools|\.NET 8\b|\bnet8\.0\b|an uncommitted draft|12-container|rpc_registered\.inc|session_sources\.cmake|hotspot_limits\.txt|check_hotspots\.ps1|looks\.py)'
     foreach ($docPath in $docFiles) {
         $content = [System.IO.File]::ReadAllText($docPath)
         $m = [regex]::Match($content, $staleRegex)

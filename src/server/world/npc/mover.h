@@ -43,6 +43,8 @@ public:
     void set_yaw_rate(double degrees_per_second) {
         if (degrees_per_second > 0 && degrees_per_second < 100000.0) yaw_rate_ = degrees_per_second;
     }
+    void set_speed_scale(double scale);
+    double speed_scale() const { return speed_scale_; }
     /// Puts the NPC on the ground at (x, y) with its feet at `ground_z`.
     void place(double x, double y, double ground_z, double yaw_degrees);
     /// Turns the NPC where it stands to face `yaw_degrees` at once (a creature that turns to its target before it attacks).
@@ -85,7 +87,6 @@ public:
     /// The expansions a walk of `straight_cm` is allowed (review A I5): the base for a leg of a few hundred metres plus a share per metre of the straight line, so that a long patrol leg
     /// (a river, a lake in the way) is not given up at the cap that a short wander leg needs, and a leg that cannot be found still costs a bounded search.
     static int search_iterations(double straight_cm);
-// built with C_Y_B and CoA
 
 private:
     void finish(Status s);
@@ -93,6 +94,7 @@ private:
     const nav::AreaNav* nav_ = nullptr;
     double              foot_offset_ = 88.0;
     double              yaw_rate_ = 360.0;
+    double              speed_scale_ = 1.0;
     Vec3                ground_;
     double              yaw_ = 0;
     Vec3                velocity_;

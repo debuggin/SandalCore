@@ -157,59 +157,83 @@ struct LungeWire {
     int    active = -1;
     int    obstructed = -1;
     double position = -1;
-    bool   has_mv_yaw = false, has_rrm_yaw = false;
-    double mv_yaw = 0, rrm_yaw = 0;
+    bool   has_mv_yaw = false, has_rrm_yaw = false, has_mv_speed = false;
+    double mv_yaw = 0, rrm_yaw = 0, mv_speed = 0;
     bool   has_rrm_vz = false, has_rrm_z = false;
     double rrm_vz = 0, rrm_z = 0;
+    bool   stats_block = false, has_cc_snare = false;
+    int    cc_flags = -1;
+    double cc_snare = 0;
+    size_t effect_items = 0, cc_fields = 0;
 };
 
 inline LungeWire decode_lunge_wire_state(const aoc::protocol::schema::ClassSchema& sc, const repl::ObjectState& st, double now) {
     LungeWire w;
     w.t = now;
-    if (const auto* v = st.state.get(sc, "RepRootMotion.bIsActive")) {
-        if (v->get_if<bool>()) w.active = *v->get_if<bool>() ? 1 : 0;
-    }
-    if (const auto* v = st.state.get(sc, "bRootMotionObstructed")) {
-        if (v->get_if<bool>()) w.obstructed = *v->get_if<bool>() ? 1 : 0;
-    }
-    if (const auto* v = st.state.get(sc, "RepRootMotion.Position")) {
-        if (v->get_if<float>()) w.position = *v->get_if<float>();
-    }
+    if (const auto* v = st.state.get(sc, "RepRootMotion.bIsActive"); v && v->get_if<bool>()) w.active = *v->get_if<bool>() ? 1 : 0;
+    if (const auto* v = st.state.get(sc, "bRootMotionObstructed"); v && v->get_if<bool>()) w.obstructed = *v->get_if<bool>() ? 1 : 0;
+    if (const auto* v = st.state.get(sc, "RepRootMotion.Position"); v && v->get_if<float>()) w.position = *v->get_if<float>();
     if (const auto* v = st.state.get(sc, "ReplicatedMovement")) {
         if (const auto* m = v->get_if<repl::RepMovement>()) {
             w.has_mv_yaw = true;
             w.mv_yaw = m->rotation.yaw * 360.0 / (st.opts.rep_movement_short_rotation ? 65536.0 : 256.0);
+            const repl::Vec3d velocity = repl::dequantize_velocity(st.opts, m->linear_velocity);
+            w.has_mv_speed = true;
+            w.mv_speed = std::hypot(velocity.x, velocity.y);
         }
     }
-    if (const auto* v = st.state.get(sc, "RepRootMotion.Rotation")) {
-        if (const auto* r = v->get_if<repl::Rot>()) {
-            w.has_rrm_yaw = true;
-            w.rrm_yaw = r->yaw * 360.0 / 65536.0;
-        }
+    if (const auto* v = st.state.get(sc, "RepRootMotion.Rotation"); v && v->get_if<repl::Rot>()) {
+        w.has_rrm_yaw = true;
+        w.rrm_yaw = v->get_if<repl::Rot>()->yaw * 360.0 / 65536.0;
     }
-    if (const auto* v = st.state.get(sc, "RepRootMotion.LinearVelocity")) {
-        if (const auto* q = v->get_if<repl::QuantVec>()) {
-            w.has_rrm_vz = true;
-            w.rrm_vz = repl::dequantize_vector(*q, 10).z;
-        }
+    if (const auto* v = st.state.get(sc, "RepRootMotion.LinearVelocity"); v && v->get_if<repl::QuantVec>()) {
+        w.has_rrm_vz = true;
+        w.rrm_vz = repl::dequantize_vector(*v->get_if<repl::QuantVec>(), 10).z;
     }
-    if (const auto* v = st.state.get(sc, "RepRootMotion.Location")) {
-        if (const auto* q = v->get_if<repl::QuantVec>()) {
-            w.has_rrm_z = true;
-            w.rrm_z = repl::dequantize_vector(*q, 100).z;
-        }
+    if (const auto* v = st.state.get(sc, "RepRootMotion.Location"); v && v->get_if<repl::QuantVec>()) {
+        w.has_rrm_z = true;
+        w.rrm_z = repl::dequantize_vector(*v->get_if<repl::QuantVec>(), 100).z;
     }
     return w;
+}
+
+inline bool decode_lunge_stats_block(const repl::ContentBlock& b, double now, LungeWire& w) {
+    if (!b.sub || !b.has_rep_layout || !b.sub->obj.schema || std::string(b.sub->obj.schema->name) != "UAoCStatsComponent") return false;
+    const aoc::protocol::schema::ClassSchema& ss = *b.sub->obj.schema;
+    const auto sub_state = repl::load_object_state(ss, b.payload.data(), b.payload.bit_pos(), true);
+    if (!sub_state) return false;
+    w.t = now;
+    w.stats_block = true;
+    if (const auto* v = sub_state->state.get(ss, "CrowdControlState.StatusFlags"); v && v->get_if<uint64_t>()) {
+        w.cc_flags = static_cast<int>(*v->get_if<uint64_t>());
+    }
+    if (const auto* v = sub_state->state.get(ss, "CrowdControlState.SnareValue"); v && v->get_if<float>()) {
+        w.has_cc_snare = true;
+        w.cc_snare = *v->get_if<float>();
+    }
+    if (const repl::FastArrayState* items = const_cast<repl::FastArrays&>(sub_state->arrays).get(ss, "CurrentEffects")) {
+        w.effect_items = items->items().size();
+    }
+    for (const auto& [handle, value] : sub_state->state.values()) {
+        const aoc::protocol::schema::RepCommand* cmd = ss.command(handle);
+        if (cmd && std::string_view(cmd->path).rfind("CrowdControlState.", 0) == 0) ++w.cc_fields;
+    }
+    return true;
 }
 
 inline void read_lunge_wire(world::WorldActor& actor, repl::ActorShadow& shadow, double now, std::vector<LungeWire>& out) {
     std::vector<repl::ContentBlock> blocks;
     if (!repl::collect_update_blocks(actor.actor, shadow, blocks)) return;
     for (const repl::ContentBlock& b : blocks) {
-        if (b.sub || !b.has_rep_layout) continue;
-        const auto st = repl::load_object_state(*actor.actor.obj.schema, b.payload.data(), b.payload.bit_pos(), true);
-        if (!st) continue;
-        out.push_back(decode_lunge_wire_state(*actor.actor.obj.schema, *st, now));
+        if (b.sub) {
+            LungeWire w;
+            if (decode_lunge_stats_block(b, now, w)) out.push_back(w);
+            continue;
+        }
+        if (!b.has_rep_layout) continue;
+        if (const auto st = repl::load_object_state(*actor.actor.obj.schema, b.payload.data(), b.payload.bit_pos(), true)) {
+            out.push_back(decode_lunge_wire_state(*actor.actor.obj.schema, *st, now));
+        }
     }
 }
 
@@ -226,9 +250,26 @@ struct LungeSample {
     bool                                      has_rrm_vz = false;
     double                                    rrm_vz = 0;
     aoc::protocol::emit::FIntrepidNetworkGUID item_target, item_instigator, active_target, creature_guid;
+    double                                    wire_speed = -1;
+    int                                       cc_flags = -1;
+    bool                                      has_cc_snare = false;
+    double                                    cc_snare = 0;
+    size_t                                    cc_items = 0, held_effects = 0, cc_fields = 0;
 };
 
 using LungeSteer = std::function<bool(double now, const LungeSample* prev, double& px, double& py, const world::WorldActor& creature)>;
+
+struct LungeStepContext {
+    double                  now = 0;
+    bool                    after = false;
+    const LungeSample*      sample = nullptr;
+    combat::CombatWorld&    world;
+    combat_rig::World&      w;
+    combat_rig::FakePlayer& player;
+    uint64_t                creature = 0;
+};
+
+using LungeStep = std::function<void(LungeStepContext&)>;
 
 struct LungeFightSpec {
     std::string                      path;
@@ -244,6 +285,7 @@ struct LungeFightSpec {
     const spawns::OpenTemplate*      made = nullptr;
     double                           creature_x = 0;
     double                           creature_y = 0;
+    LungeStep                        on_step = nullptr;
 };
 
 struct LungeLoopState {
@@ -257,29 +299,36 @@ struct LungeLoopState {
     double       now = 0, next_hit = -1;
 };
 
-inline LungeSample record_lunge_sample(combat_rig::World& w, uint64_t creature, repl::ActorShadow& shadow, LungeLoopState& st) {
-    world::WorldActor* actor = w.registry.find(creature);
-    std::vector<LungeWire> wire;
-    read_lunge_wire(*actor, shadow, st.now, wire);
-    double position = -1, tick_vz = 0;
-    bool tick_has_vz = false;
+inline void apply_lunge_wire_updates(const std::vector<LungeWire>& wire, LungeLoopState& st, LungeSample& s) {
     for (const LungeWire& u : wire) {
         if (u.active >= 0) st.active = u.active;
         if (u.obstructed >= 0) st.obstructed = u.obstructed;
-        if (u.position >= 0) position = u.position;
+        if (u.position >= 0) s.position = u.position;
         if (u.has_mv_yaw) st.mv_yaw = u.mv_yaw, st.has_mv_yaw = true;
         if (u.has_rrm_yaw) st.rrm_yaw = u.rrm_yaw, st.has_rrm_yaw = true;
-        if (u.has_rrm_vz) tick_vz = u.rrm_vz, tick_has_vz = true;
+        if (u.has_rrm_vz) s.rrm_vz = u.rrm_vz, s.has_rrm_vz = true;
+        if (u.has_mv_speed) s.wire_speed = u.mv_speed;
+        if (!u.stats_block) continue;
+        if (u.cc_flags >= 0) s.cc_flags = u.cc_flags;
+        if (u.has_cc_snare) s.cc_snare = u.cc_snare, s.has_cc_snare = true;
+        s.cc_items += u.effect_items;
+        s.cc_fields += u.cc_fields;
     }
+}
+
+inline LungeSample record_lunge_sample(combat_rig::World& w, combat::CombatWorld& world, uint64_t creature, repl::ActorShadow& shadow, LungeLoopState& st) {
+    world::WorldActor* actor = w.registry.find(creature);
+    std::vector<LungeWire> wire;
+    read_lunge_wire(*actor, shadow, st.now, wire);
+    LungeSample s;
+    apply_lunge_wire_updates(wire, st, s);
     const GremCastView view = grem_cast_view(w.registry, creature);
     const world::WorldActor* g = w.registry.find(creature);
-    LungeSample s;
     s.t = st.now;
     s.wx = g->x;
     s.wy = g->y;
     s.px = st.px;
     s.py = st.py;
-    s.position = position;
     s.active = st.active;
     s.obstructed = st.obstructed;
     s.ability = view.ability;
@@ -291,8 +340,7 @@ inline LungeSample record_lunge_sample(combat_rig::World& w, uint64_t creature, 
     s.has_mv_yaw = st.has_mv_yaw;
     s.has_rrm_yaw = st.has_rrm_yaw;
     s.wz = g->z;
-    s.has_rrm_vz = tick_has_vz;
-    s.rrm_vz = tick_vz;
+    s.held_effects = world.effect_count(creature);
     s.item_target = view.target;
     s.item_instigator = view.instigator;
     s.active_target = combat_rig::active_target_guid(*g);
@@ -340,11 +388,19 @@ inline bool run_lunge_fight(Fixture& f, const combat::NpcAbilityData& tables, co
             st.next_hit = st.now + 1.0;
             world.add_threat(creature, 77, 100.0, st.now);
         }
+        if (spec.on_step) {
+            LungeStepContext step{st.now, false, nullptr, world, w, player, creature};
+            spec.on_step(step);
+        }
         if (const stats::StatValue* max_hp = rig.cs->find(content::kGuidMaxHealth)) rig.cs->set_current(content::kGuidHealth, max_hp->value);
         w.npcs->note_player(77, st.px, st.py, st.now);
         w.npcs->tick(st.now);
         world.tick(st.now);
-        out.push_back(record_lunge_sample(w, creature, shadow, st));
+        out.push_back(record_lunge_sample(w, world, creature, shadow, st));
+        if (spec.on_step) {
+            LungeStepContext step{st.now, true, &out.back(), world, w, player, creature};
+            spec.on_step(step);
+        }
     }
     if (spec.hits) *spec.hits = player.hits;
     if (spec.stats) *spec.stats = world.stats();
@@ -444,10 +500,38 @@ inline bool make_bandit_open(Fixture& f, const combat::NpcAbilityData& tables, c
     return out.open != nullptr;
 }
 
+struct Forge {
+    Rig                    rig;
+    combat_rig::World      w;
+    combat::NpcStatBook    book;
+    combat::CombatWorld    world;
+    combat_rig::FakePlayer player;
+    combat::WorldHitPort   port;
+    std::string            wolf_path;
+    Forge(Fixture& f, int class_enum, const std::vector<std::string>& skills, uint64_t seed = 7)
+        : rig(class_enum, 25, skills, true, seed), book(*f.ctx->bundle, *f.ctx->gear),
+          world(w.registry, w.npcs.get(), &navfix::shared_nav(), *f.data, *f.catalog, book, f.motion),
+          player(rig, 77, {0, 0, 1098}), port(world, w.registry, player.fighter()),
+          wolf_path(creature_path(f, "/Beast/Canine/Wolf.Default__Wolf_C")) {
+        if (!rig.ok()) return;
+        world.add_player(&player);
+        rig.pipe->set_combat(&port);
+    }
+    bool ok() const { return rig.ok() && w.problem.empty(); }
+    uint64_t wolf(double x, double y) { return w.spawn(wolf_path, x, y, 25, 100); }
+    double lost(const std::vector<uint64_t>& wolves) const {
+        double sum = 0;
+        for (const uint64_t id : wolves) sum += world.max_health_of(id) - world.health_of(id);
+        return sum;
+    }
+};
+
 void run_combat_cast_grem_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db);
 void run_combat_gates_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db);
 void run_combat_lunge_chase_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db);
 void run_combat_projectile_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db);
 void run_combat_generic_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db);
+void run_combat_cc_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db);
+void run_combat_forged_swing_tests(TestHarness& h);
 
 }  // namespace sandal::worldd::tests

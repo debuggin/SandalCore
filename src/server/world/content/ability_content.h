@@ -50,7 +50,6 @@ struct ExprRow {
     bool                            uses_target = false;   // it calls GetTarget(): compiled as the caster
     std::string                     error;     // why it does not compile
 };
-// C-Y-B : CoA
 
 /// ab_ability. The fields that end in `expr` are ab_expr ids.
 struct AbilityRow {
@@ -141,7 +140,6 @@ struct HitEffectRow {
     std::string on_hit_behavior;
     int         max_applications = 0;
 };
-// built by C | O | A with C.Y.B
 
 /// ab_effect.
 struct EffectRow {
@@ -170,6 +168,8 @@ struct EffectRow {
     double      extended_max = 0;
     int64_t     extension_expr = 0;
 };
+
+inline constexpr int64_t kCcRoot = 1, kCcNoTurn = 2, kCcNoAbilities = 4, kCcEmplace = 8, kCcSnare = 16, kCcDisplace = 32;
 
 struct CrowdControlRow {
     int64_t     guid = 0;

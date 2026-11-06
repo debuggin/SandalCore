@@ -6,10 +6,25 @@
 // ============================================================================
 #include "login/login_service.h"
 #include <spdlog/spdlog.h>
+#include <chrono>
+#include <thread>
 
 namespace aoc { namespace worldd {
 
 namespace {
+
+constexpr int kMaxRpcAttempts = 3;
+constexpr auto kRpcRetryBackoff = std::chrono::milliseconds(50);
+
+template <typename Fn>
+auto call_with_retry(Fn&& fn) {
+    auto res = fn();
+    for (int attempt = 1; res.status == svc::CallStatus::Unavailable && attempt < kMaxRpcAttempts; ++attempt) {
+        std::this_thread::sleep_for(kRpcRetryBackoff);
+        res = fn();
+    }
+    return res;
+}
 
 bool is_hex32(const std::string& s) {
     if (s.size() != 32) return false;
@@ -38,7 +53,9 @@ LoginResult LoginService::login(const LoginRequest& req, uint32_t server_id) {
         return refused(login_text::kTicketRefused);
     }
 
-    const svc::RedeemResult redeem = gateway_.redeem_ticket(req.ticket, req.character_id, server_id);
+    const svc::RedeemResult redeem = call_with_retry([&] {
+        return gateway_.redeem_ticket(req.ticket, req.character_id, server_id);
+    });
     switch (redeem.status) {
     case svc::CallStatus::Ok:
         break;
@@ -56,9 +73,10 @@ LoginResult LoginService::login(const LoginRequest& req, uint32_t server_id) {
                       redeem.character_id, req.character_id);
         return refused(login_text::kLoginFailed);
     }
-// C | Y | B : CoA
 
-    const svc::CharacterResult loaded = characters_.get_character(req.character_id);
+    const svc::CharacterResult loaded = call_with_retry([&] {
+        return characters_.get_character(req.character_id);
+    });
     if (loaded.status == svc::CallStatus::NotFound) {
         spdlog::info("[login] character {} no longer exists", req.character_id);
         return refused(login_text::kCharacterMissing);
@@ -77,8 +95,8 @@ LoginResult LoginService::login(const LoginRequest& req, uint32_t server_id) {
     LoginResult r;
     r.accepted = true;
     r.character = loaded.character;
-    if (quests_) {   // quests, slice 1: the saved quest log; without it the character plays without quests and nothing is saved over what the service holds
-        svc::QuestLogResult q = quests_->load_log(r.character.id);
+    if (quests_) {
+        svc::QuestLogResult q = call_with_retry([&] { return quests_->load_log(r.character.id); });
         if (q.status == svc::CallStatus::Ok) r.character.quest_log = std::move(q.log);
         else spdlog::warn("[login] character {}: its quest log does not load ({}): it plays without quests", r.character.id, svc::call_status_name(q.status));
     }

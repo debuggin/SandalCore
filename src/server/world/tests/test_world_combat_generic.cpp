@@ -647,9 +647,9 @@ struct TableErrorEnv {
         return (dir / name).string();
     }
     std::string error_of(Table which, const std::string& row) const {
-        const std::string a = which == Table::Abilities ? write("abilities.tsv", abilities_header, row) : no_abilities;
-        const std::string m = which == Table::Montages ? write("montages.tsv", montages_header, row) : no_montages;
-        const std::string t = which == Table::Targeting ? write("targeting.tsv", targeting_header, row) : no_targeting;
+        const std::string a = which == Table::Abilities ? write("bad_abilities.tsv", abilities_header, row) : no_abilities;
+        const std::string m = which == Table::Montages ? write("bad_montages.tsv", montages_header, row) : no_montages;
+        const std::string t = which == Table::Targeting ? write("bad_targeting.tsv", targeting_header, row) : no_targeting;
         combat::NpcAbilityData tables;
         std::string err;
         return tables.load(a, m, t, err) ? std::string() : err;

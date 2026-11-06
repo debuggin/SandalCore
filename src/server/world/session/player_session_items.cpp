@@ -520,7 +520,9 @@ void PlayerSession::finish_level_up(const leveling::XpResult& xp, bool class_cha
   }
   if (leveled || class_changed) apply_gear_stats(leveled && class_changed ? "the new level and class" : leveled ? "the new level" : "the new class");
   if (leveled && !pb_.mark_temp_health()) spdlog::debug("[session] {}: no TempHealth item to mark", name());
-  if (leveled && !dead_ && stats_) {
+  const stats::StatValue* health = stats_ ? stats_->find(content::kGuidHealth) : nullptr;
+  const bool down = dead_ || (health && !(health->value > 0.0f));
+  if (leveled && !down && stats_) {
     if (const stats::StatValue* hp = stats_->find(content::kGuidMaxHealth)) set_current_value(content::kGuidHealth, hp->value);
     if (const stats::StatValue* mp = stats_->find(content::kGuidMaxMana)) set_current_value(content::kGuidMana, mp->value);
     if (abilities_) {
@@ -529,9 +531,7 @@ void PlayerSession::finish_level_up(const leveling::XpResult& xp, bool class_cha
       stats_->set_current(content::kGuidStamina, static_cast<float>(abilities_->stamina()));
       if (pb_.apply_ability_change(refill)) abilities_dirty_ = true;
       else spdlog::warn("[session] {}: the pawn does not take the Stamina of the new level", name());
-    } else if (const stats::StatValue* sp = stats_->find(content::kGuidMaxStamina)) {
-      set_current_value(content::kGuidStamina, sp->value);
-    }
+    } else if (const stats::StatValue* sp = stats_->find(content::kGuidMaxStamina)) set_current_value(content::kGuidStamina, sp->value);
   }
   if (apply_or_rollback_rank_effects(pb_, rank_effects, rank_effects_, markers_, name())) abilities_dirty_ = true;
 }
@@ -549,9 +549,7 @@ void PlayerSession::on_item_activated(Connection& conn, const repl::ItemUse& use
   UseInvStep inv_step = make_use_inv_step(plan.consume, plan.items, [this] { return fresh_guid(); });
   if (const std::string why = check_use_inventory(inventory_, item_catalog(), use.slot, item.instance_guid, inv_step); !why.empty()) return refuse(why);
   const std::vector<int64_t> worn_lines = plan.weapon_xp > 0 ? equipped_weapon_lines() : std::vector<int64_t>();
-  if (!room_for(13 + (plan.items.size() + 1) / bootstrap::kMaxEventsPerChain + world_->auto_grants().size() + plan.profession_changes.size() +
-                worn_lines.size()))
-    return;
+  if (!room_for(13 + (plan.items.size() + 1) / bootstrap::kMaxEventsPerChain + world_->auto_grants().size() + plan.profession_changes.size() + worn_lines.size())) return;
   const items::Outcome all = apply_use_inventory(inventory_, item_catalog(), use.slot, item.instance_guid, {name(), inv_step});
   if (!all.ok) return refuse(all.refusal);
   if (!all.events.empty()) inventory_dirty_ = inventory_changed_ = true;

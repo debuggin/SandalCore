@@ -30,6 +30,7 @@ static const std::string kTicket = "0123456789abcdef0123456789abcdef";
 
 struct FakeGateway : svc::GatewayApi {
     svc::RedeemResult result{svc::CallStatus::Ok, 3, kCharacter};
+    int transient_unavailable = 0;
     int calls = 0;
     std::string ticket, character;
     uint32_t server = 0;
@@ -38,6 +39,7 @@ struct FakeGateway : svc::GatewayApi {
         ticket = t;
         character = c;
         server = s;
+        if (calls <= transient_unavailable) return {svc::CallStatus::Unavailable, 0, ""};
         return result;
     }
 };
@@ -45,6 +47,7 @@ struct FakeGateway : svc::GatewayApi {
 
 struct FakeCharacters : svc::CharacterApi {
     svc::CharacterResult result;
+    int transient_unavailable = 0;
     int calls = 0;
     FakeCharacters() {
         result.status = svc::CallStatus::Ok;
@@ -54,19 +57,30 @@ struct FakeCharacters : svc::CharacterApi {
     }
     svc::CharacterResult get_character(const std::string&) override {
         ++calls;
+        if (calls <= transient_unavailable) return {svc::CallStatus::Unavailable, {}};
         return result;
     }
     svc::CallStatus save_position(const std::string&, const svc::Position&) override { return svc::CallStatus::Ok; }
 };
 
+struct FakeQuests : svc::QuestApi {
+    svc::QuestLogResult result{svc::CallStatus::Ok, {}};
+    int transient_unavailable = 0;
+    int calls = 0;
+    svc::QuestLogResult load_log(const std::string&) override {
+        ++calls;
+        if (calls <= transient_unavailable) return {svc::CallStatus::Unavailable, {}};
+        return result;
+    }
+    svc::CallStatus save_log(const std::string&, const svc::SavedQuestLog&) override { return svc::CallStatus::Ok; }
+    svc::CallStatus take_commands(const std::string&, std::vector<svc::QuestCommand>&) override {
+        return svc::CallStatus::Ok;
+    }
+};
+
 static LoginRequest request() { return {kCharacter, kTicket}; }
 
-int main() {
-    std::ostringstream log;
-    auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(log));
-    logger->set_level(spdlog::level::trace);
-    spdlog::set_default_logger(logger);
-
+static void test_accepted_and_transient_retry() {
     std::printf("accepted\n");
     {
         FakeGateway gw;
@@ -77,7 +91,26 @@ int main() {
         CHECK(gw.ticket == kTicket && gw.character == kCharacter && gw.server == 7,
               "the gateway gets the ticket, the character and this server's id");
     }
+    {
+        FakeGateway gw;
+        FakeCharacters ch;
+        FakeQuests qu;
+        gw.transient_unavailable = 1;
+        ch.transient_unavailable = 1;
+        qu.transient_unavailable = 1;
+        qu.result.log.completed.push_back({101, 1});
+        LoginService svc(gw, ch, &qu);
+        const LoginResult r = svc.login(request(), 7);
+        CHECK(r.accepted && r.character.name == "cyb" && r.error.empty(),
+              "transient Unavailable on first gRPC subchannel call retries and succeeds on first login");
+        CHECK(gw.calls == 2 && ch.calls == 2 && qu.calls == 2,
+              "gateway, character, and quest calls each retry after one transient Unavailable");
+        CHECK(r.character.quest_log.has_value() && r.character.quest_log->completed.size() == 1,
+              "retried quest log is attached to the logged-in character");
+    }
+}
 
+static void test_refused() {
     std::printf("refused\n");
     auto refused_with = [](svc::CallStatus redeem, svc::CallStatus load, const char* want, const char* msg) {
         FakeGateway gw;
@@ -125,27 +158,38 @@ int main() {
         CHECK(!svc.login({"ABC", kTicket}, 7).accepted && gw.calls == 0,
               "a malformed character id too");
     }
+}
 
+static void test_worker() {
     std::printf("worker\n");
+    FakeGateway gw;
+    FakeCharacters ch;
+    LoginService svc(gw, ch);
+    std::atomic<int> done{0};
+    uint64_t got_id = 0;
+    bool got_ok = false;
     {
-        FakeGateway gw;
-        FakeCharacters ch;
-        LoginService svc(gw, ch);
-        std::atomic<int> done{0};
-        uint64_t got_id = 0;
-        bool got_ok = false;
-        {
-            LoginWorker w(svc, 9, [&](uint64_t id, LoginResult r) {
-                got_id = id;
-                got_ok = r.accepted;
-                ++done;
-            });
-            w.submit(42, request());
-            for (int i = 0; i < 200 && done == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        CHECK(done == 1 && got_id == 42 && got_ok && gw.server == 9,
-              "the worker runs the login and reports it with its session id");
+        LoginWorker w(svc, 9, [&](uint64_t id, LoginResult r) {
+            got_id = id;
+            got_ok = r.accepted;
+            ++done;
+        });
+        w.submit(42, request());
+        for (int i = 0; i < 200 && done == 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
+    CHECK(done == 1 && got_id == 42 && got_ok && gw.server == 9,
+          "the worker runs the login and reports it with its session id");
+}
+
+int main() {
+    std::ostringstream log;
+    auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(log));
+    logger->set_level(spdlog::level::trace);
+    spdlog::set_default_logger(logger);
+
+    test_accepted_and_transient_retry();
+    test_refused();
+    test_worker();
 
     logger->flush();
     CHECK(log.str().find(kTicket) == std::string::npos, "the ticket never appears in the log");

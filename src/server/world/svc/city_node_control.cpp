@@ -59,17 +59,24 @@ std::string refusal(const grpc::Status& st) {
 }
 
 void prepare(grpc::ClientContext& ctx, int deadline_ms, const std::string& token) {
+    ctx.set_wait_for_ready(true);
     ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(deadline_ms));
     ctx.AddMetadata(kAuthorizationMetadata, "Bearer " + token);
 }
 
 }  // namespace
-// -- C.Y.B . CoA --
 
 GrpcNodeControl::GrpcNodeControl(Options options, Report report) : options_(std::move(options)), report_(std::move(report)), impl_(std::make_unique<Impl>()) {
     grpc::ChannelArguments args;
     args.SetInt(GRPC_ARG_INITIAL_RECONNECT_BACKOFF_MS, 200);
+    args.SetInt(GRPC_ARG_MIN_RECONNECT_BACKOFF_MS, 200);
     args.SetInt(GRPC_ARG_MAX_RECONNECT_BACKOFF_MS, 5000);
+    args.SetInt(GRPC_ARG_DNS_MIN_TIME_BETWEEN_RESOLUTIONS_MS, 1000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 15000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 5000);
+    args.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
+    args.SetInt(GRPC_ARG_HTTP2_MAX_PINGS_WITHOUT_DATA, 0);
+    args.SetServiceConfigJSON(R"({"methodConfig":[{"name":[{}],"waitForReady":true,"retryPolicy":{"maxAttempts":4,"initialBackoff":"0.05s","maxBackoff":"0.5s","backoffMultiplier":2.0,"retryableStatusCodes":["UNAVAILABLE"]}}]})");
     impl_->stub = nodev1::CityNodeService::NewStub(grpc::CreateCustomChannel(options_.address, grpc::InsecureChannelCredentials(), args));
     thread_ = std::thread([this] { run(); });
 }
@@ -169,7 +176,6 @@ void GrpcNodeControl::add_experience(const std::string& node, int64_t amount, co
         say("ServerAddNodeExperience by " + by + ": " + with_commas(amount) + " XP added: " + describe(resp.node()));
     });
 }
-// -- C Y B x C-O-A --
 
 void GrpcNodeControl::node_data(const std::string& node, const std::string& by) {
     post([=, this] {

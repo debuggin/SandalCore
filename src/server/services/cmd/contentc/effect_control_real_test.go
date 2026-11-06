@@ -54,19 +54,19 @@ func assertRealEffectControlCountsAndMeta(t *testing.T, db *content.DB) {
 		query string
 		want  int64
 	}{
-		{"effects", `SELECT count(*) FROM ab_effect`, 1361},
-		{"control rows", `SELECT count(*) FROM ab_effect_control`, 1361},
+		{"effects", `SELECT count(*) FROM ab_effect`, 1521},
+		{"control rows", `SELECT count(*) FROM ab_effect_control`, 1521},
 		{"effects without a control row", `SELECT count(*) FROM ab_effect e WHERE NOT EXISTS (SELECT 1 FROM ab_effect_control c WHERE c.effect_guid = e.guid)`, 0},
-		{"effects that compare sources", `SELECT count(*) FROM ab_effect_control WHERE compare_source = 1`, 1059},
-		{"effects that recalculate their tick hits", `SELECT count(*) FROM ab_effect_control WHERE recalc_on_tick = 1`, 12},
-		{"effects that lose stacks as their time runs out", `SELECT count(*) FROM ab_effect_control WHERE stacks_lost_on_elapse = 1`, 19},
-		{"effects with a stack-loss amount", `SELECT count(*) FROM ab_effect_control WHERE stacks_lost_expr <> 0`, 32},
-		{"effects with an extension amount", `SELECT count(*) FROM ab_effect_control WHERE extension_expr <> 0`, 22},
-		{"effects with a longest extension that is not the default", `SELECT count(*) FROM ab_effect_control WHERE extended_max NOT IN (0, 50)`, 47},
-		{"crowd-control records", `SELECT count(*) FROM ab_crowd_control`, 26},
+		{"effects that compare sources", `SELECT count(*) FROM ab_effect_control WHERE compare_source = 1`, 1147},
+		{"effects that recalculate their tick hits", `SELECT count(*) FROM ab_effect_control WHERE recalc_on_tick = 1`, 13},
+		{"effects that lose stacks as their time runs out", `SELECT count(*) FROM ab_effect_control WHERE stacks_lost_on_elapse = 1`, 21},
+		{"effects with a stack-loss amount", `SELECT count(*) FROM ab_effect_control WHERE stacks_lost_expr <> 0`, 46},
+		{"effects with an extension amount", `SELECT count(*) FROM ab_effect_control WHERE extension_expr <> 0`, 30},
+		{"effects with a longest extension that is not the default", `SELECT count(*) FROM ab_effect_control WHERE extended_max NOT IN (0, 50)`, 55},
+		{"crowd-control records", `SELECT count(*) FROM ab_crowd_control`, 27},
 		{"ability-disable records", `SELECT count(*) FROM ab_ability_disable`, 5},
-		{"fragility records", `SELECT count(*) FROM ab_fragility`, 26},
-		{"effect fragility links", `SELECT count(*) FROM ab_effect_fragility`, 38},
+		{"fragility records", `SELECT count(*) FROM ab_fragility`, 30},
+		{"effect fragility links", `SELECT count(*) FROM ab_effect_fragility`, 42},
 		{"effects naming a crowd-control record that is no row", `SELECT count(*) FROM ab_effect e WHERE e.crowd_control_guid <> 0 AND NOT EXISTS (SELECT 1 FROM ab_crowd_control c WHERE c.guid = e.crowd_control_guid)`, 0},
 		{"crowd-control records naming a disable record that is no row", `SELECT count(*) FROM ab_crowd_control c WHERE c.disable_guid <> 0 AND NOT EXISTS (SELECT 1 FROM ab_ability_disable d WHERE d.guid = c.disable_guid)`, 0},
 		{"fragility links to a record that is no row", `SELECT count(*) FROM ab_effect_fragility l WHERE NOT EXISTS (SELECT 1 FROM ab_fragility f WHERE f.guid = l.fragility_guid)`, 0},
@@ -82,7 +82,7 @@ func assertRealEffectControlCountsAndMeta(t *testing.T, db *content.DB) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for k, v := range map[string]string{"ab.crowd_controls": "26", "ab.ability_disables": "5", "ab.fragilities": "26"} {
+	for k, v := range map[string]string{"ab.crowd_controls": "27", "ab.ability_disables": "5", "ab.fragilities": "30"} {
 		if meta[k] != v {
 			t.Errorf("meta %s = %q, want %q", k, meta[k], v)
 		}

@@ -610,7 +610,7 @@ function Start-SandalIpv6DockerBridge {
 }
 
 function Install-SandalPowerShellDockerAutoWake {
-    param([string]$Distro = 'Ubuntu-24.04', [string]$ProfilePath = $PROFILE.CurrentUserAllHosts, [scriptblock]$CommandRunner = $null)
+    param([string]$Distro = 'Ubuntu-24.04', [string]$ProfilePath = $(if ($global:PROFILE -and $global:PROFILE.PSObject.Properties['CurrentUserAllHosts']) { [string]$global:PROFILE.CurrentUserAllHosts } else { '' }), [scriptblock]$CommandRunner = $null)
     if ($null -ne $CommandRunner -or -not $IsWindows -or [string]::IsNullOrWhiteSpace($ProfilePath)) { return }
     $wslHelper = Join-Path $PSScriptRoot 'wsl-docker.ps1'
     if (-not (Get-Command Resolve-WslDockerDistro -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $wslHelper -PathType Leaf)) { . $wslHelper }
@@ -726,7 +726,7 @@ function Get-SandalExpectedContentDbVersion {
     param([Parameter(Mandatory)][string]$RepoRoot)
     $buildGo = Join-Path $RepoRoot 'src\server\services\cmd\contentc\build.go'
     if ((Test-Path -LiteralPath $buildGo -PathType Leaf) -and ([System.IO.File]::ReadAllText($buildGo, [System.Text.Encoding]::UTF8) -match '(?m)^\s*const\s+Version\s*=\s*"(\d+)"')) { return $Matches[1] }
-    return '40'
+    return '41'
 }
 
 function Test-SandalContentDbBinaryMarkers {

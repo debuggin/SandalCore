@@ -5,12 +5,10 @@
 //  spawns/npc_looks.cpp
 //
 //  See npc_looks.h.
-//
-//  Compiled as part of generic_npc.cpp (which includes it at its end): world's source list, server/world/CMakeLists.txt, is an input of the walking map's stamp in the
-//  extractor, so a new source file would make every PC rebuild the map.  The helpers are named look_* so that they cannot meet generic_npc.cpp's.
 // ============================================================================
 #include "spawns/npc_looks.h"
 
+#include "bootstrap/character_setup.h"
 #include "spawns/population.h"
 
 #include <algorithm>
@@ -135,6 +133,44 @@ repl::Subobject* look_find_sub(repl::Actor& a, const char* cls) {
     return nullptr;
 }
 
+/// A preset's face morph names that start with a small letter ("nose_UpDown"): the client's customization JSON spells every member with a small first letter and its reader
+/// capitalizes it back, so they come out capitalized ("Nose_UpDown"); `lowered` lists them as the data spells them, joined by ',', and this puts them right.
+void look_lower_morphs(repl::CharacterCustomization& cc, const std::string& lowered) {
+    if (lowered.empty() || !cc.face_morph_weights) return;
+    for (const std::string& want : look_split(lowered, ',')) {
+        if (want.empty() || !std::islower(static_cast<unsigned char>(want[0]))) continue;
+        std::string capital = want;
+        capital[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(capital[0])));
+        for (repl::CustomizationMorph& m : *cc.face_morph_weights) {
+            if (m.name.hardcoded || m.name.text.empty()) continue;
+            const std::string shown = m.name.number == 0 ? m.name.text : m.name.text + "_" + std::to_string(static_cast<int64_t>(m.name.number) - 1);
+            if (shown == capital) m.name.text[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(m.name.text[0])));
+        }
+    }
+}
+
+bool look_set_clothes(repl::ObjectState& obj, const schema::ClassSchema& cs, int64_t guid, int64_t shared_info, const std::vector<repl::AppearanceId>& items, std::string& error) {
+    repl::ArrayValue ids;
+    for (const repl::AppearanceId& id : items) {
+        repl::ElementState e;
+        e.values[1] = repl::Value(id);
+        ids.elements.push_back(std::move(e));
+    }
+    if (!obj.state.set(cs, "AppearanceIDs", repl::Value(std::move(ids)))) {
+        error = "AppearanceIDs refused";
+        return false;
+    }
+    if (!obj.state.set(cs, "SharedAppearanceInfoId.Guid", repl::Value::i64(shared_info))) {
+        error = "SharedAppearanceInfoId refused";
+        return false;
+    }
+    if (cs.command("NPCAppearanceId.Guid") && !obj.state.set(cs, "NPCAppearanceId.Guid", repl::Value::i64(guid))) {
+        error = "NPCAppearanceId refused";
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 // ---- the curves ---------------------------------------------------------------------------------------------------
@@ -211,7 +247,7 @@ std::unique_ptr<NpcLooks> NpcLooks::load(const std::string& dir, const npc::Moti
     const std::string base = dir.empty() || dir.back() == '/' || dir.back() == '\\' ? dir : dir + "/";
     std::vector<std::string> lines;
     if (!look_read_lines(base + "npc_looks.tsv", lines, error)) return nullptr;
-    for (size_t i = 1; i < lines.size(); ++i) {   // (the first line is the header)
+    for (size_t i = 1; i < lines.size(); ++i) {
         const std::vector<std::string> f = look_split(lines[i], '\t');
         if (f.size() < 5) continue;
         BlueprintLook b;
@@ -222,47 +258,7 @@ std::unique_ptr<NpcLooks> NpcLooks::load(const std::string& dir, const npc::Moti
         if (f.size() > 5) b.info_name = f[5];
         out->blueprint_[f[0]] = b;
     }
-    lines.clear();
-    if (!look_read_lines(base + "npc_appearances.tsv", lines, error)) return nullptr;
-    for (const std::string& line : lines) {
-        if (line.empty() || line[0] == '#') continue;
-        const std::vector<std::string> f = look_split(line, '\t');
-        int64_t guid = 0;
-        if (f.size() < 2 || !look_to_i64(f[1], guid)) continue;
-        if (f[0] == "A" && f.size() >= 10) {
-            Appearance a;
-            a.name = f[2];
-            look_to_i64(f[3], a.shared_info);
-            a.randomize_custom = f[4] == "1";
-            a.randomize_race_gender = f[5] == "1";
-            a.hair_natural = f[6] == "1";
-            look_to_i64(f[7], a.seed);
-            a.curve = LookCurve::parse(f[8]);
-            a.outfits = look_int_list(f[9]);
-            out->appearance_[guid] = std::move(a);
-        } else if (f[0] == "O" && f.size() >= 5) {
-            Outfit o;
-            o.name = f[2];
-            o.single_curve = f[3] == "1";
-            o.curve = LookCurve::parse(f[4]);
-            out->outfit_[guid] = std::move(o);
-        } else if (f[0] == "S" && f.size() >= 4) {
-            int64_t slot = 0;
-            if (look_to_i64(f[2], slot)) out->outfit_[guid].slot_curves[static_cast<int>(slot)] = LookCurve::parse(f[3]);
-        } else if (f[0] == "I" && f.size() >= 4) {
-            int64_t slot = 0;
-            if (look_to_i64(f[2], slot)) out->outfit_[guid].items[static_cast<int>(slot)] = look_int_list(f[3]);
-        } else if (f[0] == "R" && f.size() >= 4) {
-            std::vector<std::pair<int, int>> pairs;
-            if (!f[3].empty()) {
-                for (const std::string& p : look_split(f[3], ',')) {
-                    const std::vector<std::string> rg = look_split(p, ':');
-                    if (rg.size() == 2) pairs.emplace_back(std::atoi(rg[0].c_str()), std::atoi(rg[1].c_str()));
-                }
-            }
-            out->races_[guid] = std::move(pairs);
-        }
-    }
+    if (!out->load_appearances(base, error)) return nullptr;
     lines.clear();
     if (!look_read_lines(base + "npc_names.tsv", lines, error)) return nullptr;
     for (size_t i = 1; i < lines.size(); ++i) {
@@ -273,7 +269,57 @@ std::unique_ptr<NpcLooks> NpcLooks::load(const std::string& dir, const npc::Moti
         else if (f[0] == "asset") out->asset_names_[source].push_back(f[3]);
         else if (f[0] == "set") out->set_names_[{source, member}].push_back(f[3]);
     }
-    // the alignments that make a creature the players' enemy: a relationship with the player's alignment whose permission is Hostile, either way round
+    out->load_combat_and_pool(combat, captured);
+    return out;
+}
+
+bool NpcLooks::load_appearances(const std::string& base, std::string& error) {
+    std::vector<std::string> lines;
+    if (!look_read_lines(base + "npc_appearances.tsv", lines, error)) return false;
+    for (const std::string& line : lines) {
+        if (line.empty() || line[0] == '#') continue;
+        const std::vector<std::string> f = look_split(line, '\t');
+        int64_t guid = 0;
+        if (f.size() < 2 || !look_to_i64(f[1], guid)) continue;
+        if (f[0] == "A" && f.size() >= 10) {
+            Appearance a{f[2], 0, f[4] == "1", f[5] == "1", f[6] == "1", 0, LookCurve::parse(f[8]), look_int_list(f[9])};
+            look_to_i64(f[3], a.shared_info);
+            look_to_i64(f[7], a.seed);
+            if (f.size() > 10) look_to_i64(f[10], a.preset);
+            if (f.size() > 11) look_to_i64(f[11], a.body_shared);
+            appearance_[guid] = std::move(a);
+        } else if (f[0] == "O" && f.size() >= 5) {
+            outfit_[guid] = Outfit{f[2], f[3] == "1", LookCurve::parse(f[4]), {}, {}};
+        } else if (f[0] == "S" && f.size() >= 4) {
+            int64_t slot = 0;
+            if (look_to_i64(f[2], slot)) outfit_[guid].slot_curves[static_cast<int>(slot)] = LookCurve::parse(f[3]);
+        } else if (f[0] == "I" && f.size() >= 4) {
+            int64_t slot = 0;
+            if (look_to_i64(f[2], slot)) outfit_[guid].items[static_cast<int>(slot)] = look_int_list(f[3]);
+        } else if (f[0] == "R" && f.size() >= 4) {
+            std::vector<std::pair<int, int>> pairs;
+            for (const std::string& p : look_split(f[3], ',')) {
+                const std::vector<std::string> rg = look_split(p, ':');
+                if (rg.size() == 2) pairs.emplace_back(std::atoi(rg[0].c_str()), std::atoi(rg[1].c_str()));
+            }
+            races_[guid] = std::move(pairs);
+        } else if (f[0] == "P" && f.size() >= 4) {
+            const auto parsed = bootstrap::customization_from_json(f[3], bootstrap::ClientRace::Kaelar, bootstrap::ClientGender::Male);
+            if (!parsed.value) { ++preset_errors_; continue; }
+            Preset p{f[2], *parsed.value, -1, -1};
+            if (f.size() > 4) look_lower_morphs(p.customization, f[4]);
+            int64_t race = -1, gender = -1;
+            if (f.size() > 6 && look_to_i64(f[5], race) && look_to_i64(f[6], gender) && race >= 0 && race <= 8 && (gender == 0 || gender == 1)) {
+                p.race = static_cast<int>(race);
+                p.gender = static_cast<int>(gender);
+            }
+            presets_[guid] = std::move(p);
+        }
+    }
+    return true;
+}
+
+void NpcLooks::load_combat_and_pool(const content::CombatRows* combat, const CapturedData* captured) {
     if (combat) {
         const int64_t player = content::kAlignmentPlayer;
         const auto hostile_between = [&](int64_t x, int64_t y) {
@@ -290,10 +336,9 @@ std::unique_ptr<NpcLooks> NpcLooks::load(const std::string& dir, const npc::Moti
             for (const auto& [o, r] : others) all.insert(o);
         }
         for (const int64_t a : all) {
-            if (hostile_between(a, player) || hostile_between(player, a)) out->hostile_alignments_.insert(a);
+            if (hostile_between(a, player) || hostile_between(player, a)) hostile_alignments_.insert(a);
         }
     }
-    // the customization pool: what the retail captures hold for each shared info, race and gender
     if (captured) {
         for (const OpenTemplate& t : captured->opens()) {
             if (t.category != "npc") continue;
@@ -305,10 +350,9 @@ std::unique_ptr<NpcLooks> NpcLooks::load(const std::string& dir, const npc::Moti
             const auto* cc = cv ? cv->get_if<repl::CharacterCustomization>() : nullptr;
             const int64_t shared = look_as_i64(b.state.state.get(*b.schema, "SharedAppearanceInfoId.Guid"));
             if (!cc || !cc->race_gender || shared == 0) continue;
-            out->pool_[{shared, cc->race_gender->race, cc->race_gender->gender}].push_back(*cc);
+            pool_[{shared, cc->race_gender->race, cc->race_gender->gender}].push_back(*cc);
         }
     }
-    return out;
 }
 
 // ---- the look -----------------------------------------------------------------------------------------------------
@@ -316,6 +360,11 @@ std::unique_ptr<NpcLooks> NpcLooks::load(const std::string& dir, const npc::Moti
 const NpcLooks::Appearance* NpcLooks::appearance(int64_t guid) const {
     const auto it = appearance_.find(guid);
     return it == appearance_.end() ? nullptr : &it->second;
+}
+
+const NpcLooks::Preset* NpcLooks::preset(int64_t guid) const {
+    const auto it = presets_.find(guid);
+    return it == presets_.end() ? nullptr : &it->second;
 }
 
 const NpcLooks::Outfit* NpcLooks::outfit(int64_t guid) const {
@@ -444,26 +493,11 @@ bool NpcLooks::dress(world::WorldActor& w, const DataSpawn& s, std::string& erro
     }
     LookRng rng(seed);
     const schema::ClassSchema& cs = *look->obj.schema;
-    // the clothes
-    const std::vector<repl::AppearanceId> items = items_of(guid, seed);
-    repl::ArrayValue ids;
-    for (const repl::AppearanceId& id : items) {
-        repl::ElementState e;
-        e.values[1] = repl::Value(id);
-        ids.elements.push_back(std::move(e));
-    }
-    if (!look->obj.state.set(cs, "AppearanceIDs", repl::Value(std::move(ids)))) {
-        error = "AppearanceIDs refused";
-        return false;
-    }
-    if (!look->obj.state.set(cs, "SharedAppearanceInfoId.Guid", repl::Value::i64(app->shared_info))) {
-        error = "SharedAppearanceInfoId refused";
-        return false;
-    }
-    if (cs.command("NPCAppearanceId.Guid") && !look->obj.state.set(cs, "NPCAppearanceId.Guid", repl::Value::i64(guid))) {
-        error = "NPCAppearanceId refused";
-        return false;
-    }
+    // a record that does not randomize its customization and pins a preset: the NPC wears the preset's saved values and its race and gender, so that the face and the body match; the
+    // shared info is the one that has a body for them (the record's own, or one equal to it but for that); a record that randomizes ignores the preset it pins
+    const Preset* pin = !app->randomize_custom && app->preset != 0 ? preset(app->preset) : nullptr;
+    const bool pin_body = pin && pin->race >= 0 && pin->gender >= 0 && app->body_shared != 0;
+    if (!look_set_clothes(look->obj, cs, guid, pin_body ? app->body_shared : app->shared_info, items_of(guid, seed), error)) return false;
     // the person: race and gender, then a recorded customization of the same kind
     int race = bp ? bp->race : 0, gender = bp ? bp->gender : 0;
     if (app->randomize_race_gender) {
@@ -474,7 +508,15 @@ bool NpcLooks::dress(world::WorldActor& w, const DataSpawn& s, std::string& erro
         }
     }
     repl::CharacterCustomization cc;
-    if (const auto p = pool_.find({app->shared_info, race, gender}); p != pool_.end() && !p->second.empty()) {
+    if (pin) {
+        cc = pin->customization;
+        ++counts_.from_preset;
+        if (pin_body) {
+            if (pin->race != race || pin->gender != gender) ++counts_.preset_body;
+            race = pin->race;
+            gender = pin->gender;
+        }
+    } else if (const auto p = pool_.find({app->shared_info, race, gender}); p != pool_.end() && !p->second.empty()) {
         cc = p->second[rng.index(p->second.size())];
         ++counts_.from_pool;
     } else {
@@ -482,7 +524,7 @@ bool NpcLooks::dress(world::WorldActor& w, const DataSpawn& s, std::string& erro
     }
     cc.preset_guid.reset();
     cc.race_gender = repl::CharacterCustomization::RaceGender{static_cast<uint8_t>(race), static_cast<uint8_t>(gender)};
-    cc.random_seed = static_cast<uint32_t>((rng.next() >> 33) | 1u);
+    if (!pin) cc.random_seed = static_cast<uint32_t>((rng.next() >> 33) | 1u);
     if (!look->obj.state.set(cs, "CharacterCustomization", repl::Value(std::move(cc)))) {
         error = "CharacterCustomization refused";
         return false;
@@ -557,7 +599,8 @@ std::string NpcLooks::describe() const {
     for (const auto& [k, v] : pool_) pooled += v.size();
     o << blueprint_.size() << " Blueprints with a look, " << appearance_.size() << " appearance records, " << outfit_.size() << " outfits, names of " << instance_names_.size() << " instances, "
       << set_names_.size() << " asset set entries and " << asset_names_.size() << " assets, " << hostile_alignments_.size() << " alignments hostile to players, " << pooled
-      << " recorded customizations in " << pool_.size() << " kinds";
+      << " recorded customizations in " << pool_.size() << " kinds, " << presets_.size() << " customization presets";
+    if (preset_errors_ != 0) o << " (" << preset_errors_ << " the wire cannot carry)";
     return o.str();
 }
 

@@ -442,3 +442,34 @@ func TestCredentials(t *testing.T) {
 		t.Error("RequireTransportSecurity = true, want false (loopback)")
 	}
 }
+
+type flakyHealthServer struct {
+	healthpb.UnimplementedHealthServer
+	calls atomic.Int32
+}
+
+func (f *flakyHealthServer) Check(context.Context, *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+	if f.calls.Add(1) < 3 {
+		return nil, status.Error(codes.Unavailable, "transient restart")
+	}
+	return &healthpb.HealthCheckResponse{Status: healthpb.HealthCheckResponse_SERVING}, nil
+}
+
+func TestDialOptionsRetriesTransientUnavailable(t *testing.T) {
+	lis := bufconn.Listen(1 << 20)
+	flaky := &flakyHealthServer{}
+	srv := grpc.NewServer(good.ServerOptions()...)
+	healthpb.RegisterHealthServer(srv, flaky)
+	go srv.Serve(lis)
+	t.Cleanup(srv.Stop)
+
+	hc := client(t, lis, good.DialOptions()...)
+	resp, err := hc.Check(context.Background(), &healthpb.HealthCheckRequest{})
+	if err != nil || resp.GetStatus() != healthpb.HealthCheckResponse_SERVING {
+		t.Fatalf("Check with DialOptions = %v, %v; want SERVING after retry", resp, err)
+	}
+	if got := flaky.calls.Load(); got != 3 {
+		t.Fatalf("flaky calls = %d, want 3", got)
+	}
+}
+

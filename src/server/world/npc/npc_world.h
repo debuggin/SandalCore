@@ -81,7 +81,6 @@ struct NpcMotionSetup {
     bool    start_closest = false;
     double  awake_radius = 0;           // 0: the config's
 };
-// built with C | Y | B and CoA
 
 struct NpcWorldConfig {
     double step_seconds = 1.0 / 15.0;    // retail's server tick
@@ -172,6 +171,7 @@ public:
     bool order_move(uint64_t actor_id, const nav::Vec3& dest, double speed_cm_s, double stop_distance = 0);
     /// Changes the rate at which the NPC turns, in degrees a second (a creature that turns faster than its Blueprint says).  False for an NPC the world does not hold.
     bool set_yaw_rate(uint64_t actor_id, double degrees_per_second);
+    bool set_speed_scale(uint64_t actor_id, double scale);
     bool warp(uint64_t actor_id, double x, double y, double ground_z);
     /// Gives the feet back to the NPC's own behaviour.
     bool release(uint64_t actor_id);
@@ -260,7 +260,6 @@ public:
     bool         spawn_point(uint64_t actor_id, nav::Vec3* ground_home, nav::Vec3* ai_home) const;
     /// Puts the NPC's home back at the place it was made at; returns it (false for an unknown NPC).  The NPC is not moved.
     bool         restore_home(uint64_t actor_id, nav::Vec3* ground_home);
-// C O A with Cyb
 
     Stats stats() const;
     const NpcWorldConfig& config() const { return cfg_; }

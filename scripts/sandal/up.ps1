@@ -4,6 +4,7 @@ param(
     [ValidateSet('default', 'dev', 'admin', 'full')]
     [string]$Profile = 'default',
     [switch]$Detach,
+    [switch]$Build,
     [switch]$DryRun,
     [switch]$Json,
     [switch]$NoColor,
@@ -19,12 +20,14 @@ function Resolve-UpOptions {
     param(
         [string]$BaseProfile,
         [bool]$BaseDetach,
+        [bool]$BaseBuild,
         [bool]$BaseDryRun,
         [bool]$BaseJson,
         [string[]]$RawArgs
     )
     $prof = $BaseProfile
     $det = $BaseDetach
+    $bld = $BaseBuild
     $dry = $BaseDryRun
     $jsn = $BaseJson
     for ($i = 0; $i -lt $RawArgs.Count; $i++) {
@@ -34,6 +37,7 @@ function Resolve-UpOptions {
                 if (($i + 1) -lt $RawArgs.Count) { $i++; $prof = $RawArgs[$i] }
             }
             '^(-Detach|--detach|-d)$' { $det = $true }
+            '^(-Build|--build)$'      { $bld = $true }
             '^(-DryRun|--dry-run)$'   { $dry = $true }
             '^(-Json|--json)$'        { $jsn = $true }
         }
@@ -41,7 +45,50 @@ function Resolve-UpOptions {
     if ($prof -notin @('default', 'dev', 'admin', 'full')) {
         throw [System.ArgumentException]::new("Unsupported profile '$prof'. Valid profiles: default, dev, admin, full.")
     }
-    return [pscustomobject]@{ Profile = $prof; Detach = $det; DryRun = $dry; Json = $jsn }
+    return [pscustomobject]@{ Profile = $prof; Detach = $det; Build = $bld; DryRun = $dry; Json = $jsn }
+}
+
+function Get-NewestSourceWriteUtc {
+    param([string]$RootPath, [string[]]$RelPaths)
+    $newest = [datetime]::MinValue
+    foreach ($rel in $RelPaths) {
+        $full = Join-Path $RootPath $rel
+        if (-not (Test-Path -LiteralPath $full)) { continue }
+        $item = Get-Item -LiteralPath $full -Force
+        if (-not $item.PSIsContainer) {
+            if ($item.LastWriteTimeUtc -gt $newest) { $newest = $item.LastWriteTimeUtc }
+            continue
+        }
+        foreach ($f in (Get-ChildItem -LiteralPath $full -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+            if ($f.LastWriteTimeUtc -gt $newest) { $newest = $f.LastWriteTimeUtc }
+        }
+    }
+    return $newest
+}
+
+function Get-DockerCreatedUtc {
+    param([string]$Target)
+    $raw = (& docker inspect --format '{{.Created}}' $Target 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) { return [datetime]::MinValue }
+    try { return ([datetime]::Parse($raw.Trim(), [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)).ToUniversalTime() } catch { return [datetime]::MinValue }
+}
+
+function Get-SandalStaleComposeServices {
+    param([string]$RootPath, [bool]$ForceBuild = $false)
+    $goServices = @('auth', 'character', 'citynode', 'quest', 'mesh', 'gateway', 'mesh-gateway', 'web-admin')
+    if ($ForceBuild) { return @('world') + $goServices }
+    $stale = [System.Collections.Generic.List[string]]::new()
+    $cppNewest = Get-NewestSourceWriteUtc -RootPath $RootPath -RelPaths @('src\server\world', 'src\libs', 'src\server\proto', 'src\deploy\docker\cpp.Dockerfile')
+    $worldCreated = Get-DockerCreatedUtc -Target 'aoc-world'
+    $imgCreated = Get-DockerCreatedUtc -Target 'sandal-cpp:local'
+    if ($imgCreated -gt $worldCreated) { $worldCreated = $imgCreated }
+    if ($worldCreated -eq [datetime]::MinValue -or $cppNewest -gt $worldCreated) { $stale.Add('world') }
+    $goNewest = Get-NewestSourceWriteUtc -RootPath $RootPath -RelPaths @('src\server\services', 'src\server\proto', 'src\deploy\docker\go.Dockerfile')
+    foreach ($svc in $goServices) {
+        $cTime = Get-DockerCreatedUtc -Target "aoc-$svc"
+        if ($cTime -eq [datetime]::MinValue -or $goNewest -gt $cTime) { $stale.Add($svc) }
+    }
+    return $stale.ToArray()
 }
 
 function Get-UpStageReadiness {
@@ -91,7 +138,7 @@ function Write-UpStep {
     }
 }
 
-$opts = Resolve-UpOptions -BaseProfile $Profile -BaseDetach ([bool]$Detach) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
+$opts = Resolve-UpOptions -BaseProfile $Profile -BaseDetach ([bool]$Detach) -BaseBuild ([bool]$Build) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
 $quiet = [bool]$opts.Json
 $fromRun = ($env:SANDAL_FROM_RUN -eq '1')
 if ($quiet) { $env:SANDAL_QUIET = '1' }
@@ -117,6 +164,15 @@ if (-not $opts.DryRun) {
     }
     Push-Location $rootPath
     try {
+        $staleServices = @(Get-SandalStaleComposeServices -RootPath $rootPath -ForceBuild $opts.Build)
+        if ($staleServices.Count -gt 0) {
+            Write-UpStep -Message "Rebuilding updated container images ($($staleServices -join ', '))..." -Quiet $quiet
+            $buildArgs = @('compose', '-f', $composeFile, '--env-file', $envFile, 'build') + $staleServices
+            & docker @buildArgs
+            if ($LASTEXITCODE -ne 0) {
+                throw "docker compose build failed with exit code $LASTEXITCODE."
+            }
+        }
         & docker @composeArgs
         if ($LASTEXITCODE -ne 0) {
             throw "docker compose up failed with exit code $LASTEXITCODE."

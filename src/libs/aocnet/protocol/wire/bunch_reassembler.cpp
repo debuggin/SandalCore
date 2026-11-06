@@ -16,12 +16,12 @@ namespace {
 
 /// A single fragment record — same semantics as Python's entry dict.
 struct Fragment {
-    size_t pkt_index;
-    size_t bunch_index;
-    const ParsedBunch* bunch;
-    const uint8_t* raw_buf;
-    size_t raw_len;
-    Direction direction;
+    size_t pkt_index{};
+    size_t bunch_index{};
+    const ParsedBunch* bunch{};
+    const uint8_t* raw_buf{};
+    size_t raw_len{};
+    Direction direction{};
 };
 
 /// Concatenate the payload bits of a chain of fragments into a single
@@ -37,7 +37,6 @@ ReassembledBunch finalize_chain(const std::vector<Fragment>& chain) {
     out.header = *chain.front().bunch;
     out.header.partial_initial = true;
     out.header.partial_final = true;  // synthetic: treat as single complete bunch
-// [C-O-A :: Cyb]
 
     size_t total_bits = 0;
     for (const auto& f : chain) total_bits += f.bunch->bunch_data_bits;
@@ -83,7 +82,7 @@ ReassemblyResult reassemble_partial_bunches(const std::vector<ReassemblyInput>& 
             if (b.is_partial) {
                 partial_by_channel[b.channel].push_back({
                     pkt_idx, b_idx, &b, in.raw_buf, in.raw_len,
-                    Direction::ServerToClient  // TODO: track direction per-packet
+                    Direction::ServerToClient
                 });
             }
         }

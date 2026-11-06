@@ -277,11 +277,11 @@ void populate_animated_pending(PendingT& p, const PlanT& plan, const NpcAbilityD
 
 }  // namespace
 
-CombatWorld::Attack CombatWorld::choose_attack(Npc& n) {
+CombatWorld::Attack CombatWorld::choose_attack(Npc& n, bool single_swing) {
     Attack a;
     a.windup_ms = static_cast<int>(cfg_.default_windup * 1000);
     a.range_cm = static_cast<int>(cfg_.default_attack_range_cm);
-    if (n.anim) {
+    if (n.anim && !single_swing) {
         const Attack b = choose_animated(n, nullptr);
         if (b.ability) return b;
     } else if (n.kit) {
@@ -320,12 +320,17 @@ CombatWorld::Attack CombatWorld::choose_animated(Npc& n, const Fighter* target, 
     ctx.cooldown_over = [&n, this](const std::string& g) { return task_gates_ready(CreatureAbility{.gates = {g}}, n.cooldown_until, now_); };
     ctx.roll = [this]() { return rng_.rand_double(); };
     ctx.fight_roll = [&n, this](const CondAtom& atom) { return eval_fight_roll(atom, rng_, n.fight_rolls); };
+    CondContext timers = ctx;
+    timers.timers_only = true;
+    size_t playable = 0, shut_by_timers = 0;
     bool dummy_far = false, dummy_angle = false;
     double dummy_reach = -1.0;
     for (const CreatureAbility& t : *n.anim) {
         if (t.unknown || t.off || !t.fight) continue;
         const abilities::AbilityDef* d = catalog_.ability(t.ability);
         if (!d || !is_attack(*d, catalog_, data_.ids().health) || !animates(n, *d)) continue;
+        ++playable;
+        if (!task_groups_hold(t, timers)) ++shut_by_timers;
         if (!task_gates_ready(t, n.cooldown_until, now_)) continue;
         if (!task_geometry_allows(t, ctx, why ? why->too_far : dummy_far, why ? why->off_angle : dummy_angle, why ? why->reach_cm : dummy_reach)) continue;
         if (!task_groups_hold(t, ctx)) continue;
@@ -334,6 +339,7 @@ CombatWorld::Attack CombatWorld::choose_animated(Npc& n, const Fighter* target, 
         if (t.max_distance >= 0) a.range_cm = static_cast<int>(t.max_distance);
         return a;
     }
+    if (why) why->waits_on_timers = playable > 0 && shut_by_timers == playable;
     return a;
 }
 
@@ -531,7 +537,7 @@ void CombatWorld::start_attack(Npc& n, uint64_t target, double now, const Attack
     }
     CastPlan plan;
     bool animated = false;
-    if (a.ability && n.anim && port && plan_cast(n, *a.ability, plan)) {
+    if (a.ability && n.anim && port && a.task && plan_cast(n, *a.ability, plan)) {
         if (a.task && npcs_world_) npcs_world_->halt(n.actor_id);
         animated = start_montage_cast(registry_, n.actor_id, *plan.montage, make_npc_cast(a.ability->row.guid, target, *port, plan.montage->guid), n.cast);
         if (animated && !plan.montage->root_motion.empty()) {

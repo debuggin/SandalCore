@@ -23,7 +23,6 @@ public:
     static constexpr double kItemCastDelay = 0.065;
     static constexpr int    kMaxRequestsPerHit = 8;
     static constexpr double kMinRequestGap = 0.100;
-    static constexpr int    kBeamRequestsPerHit = 24;
     static constexpr double kBeamRequestGap = 0.050;
     static constexpr size_t kMaxRecords = 16;
     static constexpr size_t kMaxCasts = 16;
@@ -163,6 +162,7 @@ private:
     using Pending = ability_types::Pending;
     using HitSlot = ability_types::HitSlot;
     using CastRecord = ability_types::CastRecord;
+    using BallFlight = ability_types::BallFlight;
     using Cast = ability_types::Cast;
     using EffectInst = ability_types::EffectInst;
     using Zone = ability_types::Zone;
@@ -210,6 +210,8 @@ private:
     bool   can_pay(const Cast& cast) const;
     void   bring_sooner(Cast& cast, double earlier);
     void   land_by_flight(Cast& cast, double t);
+    void   launch_ball(Cast& cast, double t);
+    void   ball_step(Cast& cast, const Cast::Missile& step, double t);
     double client_rate(bool magical) const;
     bool   plays_at_magical(const abilities::AbilityDef& def, bool row_magical) const;
     double item_rate(const abilities::AbilityDef& def) const;
@@ -347,6 +349,9 @@ private:
     std::vector<Held>         held_;
     std::deque<Instance>      instances_;
     void   end_instance(size_t index, double t);
+    std::map<int64_t, int>    swing_steps_;
+    int    swing_montage(const abilities::AbilityDef& def, int requested, int& step) const;
+    void   stop_swing(int64_t instance);
     stats::SplitMix           guid_rng_;
     std::vector<bootstrap::ShieldElement> shields_sent_;
     size_t                    refused_ = 0, casts_started_ = 0, regen_ticks_ = 0;

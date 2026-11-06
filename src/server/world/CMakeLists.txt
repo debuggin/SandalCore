@@ -633,7 +633,9 @@ world_add_test(test_world_combat)
 target_sources(test_world_combat PRIVATE
     tests/test_world_combat_burn.cpp
     tests/test_world_combat_cast_grem.cpp
+    tests/test_world_combat_cc.cpp
     tests/test_world_combat_dots.cpp
+    tests/test_world_combat_forged_swings.cpp
     tests/test_world_combat_gates.cpp
     tests/test_world_combat_lunge_chase.cpp
     tests/test_world_combat_projectiles.cpp

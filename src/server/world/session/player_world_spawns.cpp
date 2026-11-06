@@ -213,8 +213,8 @@ void PlayerWorld::load_area_economy_and_looks() {
 void PlayerWorld::log_area_loaded() const {
     if (looks_) {
         const auto& lc = looks_->counts();
-        spdlog::info("[looks] the area's people: {} dressed ({} customizations from the recorded pool, {} plain), {} named by the data, {} by their Blueprint, {} with no name, {} left as recorded",
-                     lc.dressed, lc.from_pool, lc.plain_customization, lc.named, lc.blueprint_named, lc.unnamed, lc.no_record);
+        spdlog::info("[looks] the area's people: {} dressed ({} customizations from the recorded pool, {} from a record's own preset, {} of them given a different race or gender than they would have had, {} plain), {} named by the data, {} by their Blueprint, {} with no name, {} left as recorded",
+                     lc.dressed, lc.from_pool, lc.from_preset, lc.preset_body, lc.plain_customization, lc.named, lc.blueprint_named, lc.unnamed, lc.no_record);
     }
     for (const std::string& n : area_report_->notes) spdlog::warn("[area] {}", n);
     log_spawn_filter();

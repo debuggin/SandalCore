@@ -68,6 +68,7 @@ using CondGroup = std::vector<CondToken>;
 /// What the conditions are asked about: the creature, its fight and its target as they are when the tree is tried.
 struct CondContext {
     bool   preview = false;             // the creature only stands ready (no target, no roll): everything that changes during a fight counts as holding
+    bool   timers_only = false;         // only the cooldowns and the fight's clock are asked: every other condition (a roll, a distance, health, sight) counts as holding
     bool   has_target = false;
     double surface_distance = 0;        // from the creature's surface to the target's
     double centre_distance = 0;         // between the two centres, in 3D
@@ -94,9 +95,15 @@ inline bool compare_values(int op, double x, double y) {
     return false;
 }
 
+inline bool is_timer_atom(CondAtom::Kind kind) {
+    using K = CondAtom::Kind;
+    return kind == K::HealthUnder || kind == K::HealthNotUnder || kind == K::FightTime || kind == K::FightRoll;
+}
+
 /// Whether one condition holds.
 inline bool eval_atom(const CondAtom& a, const CondContext& c) {
     using K = CondAtom::Kind;
+    if (c.timers_only && !is_timer_atom(a.kind)) return true;
     switch (a.kind) {
         case K::True: return true;
         case K::False: return false;

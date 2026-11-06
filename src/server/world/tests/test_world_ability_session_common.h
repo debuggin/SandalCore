@@ -645,3 +645,32 @@ struct Run {
 };
 #undef near
 inline bool near(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
+
+inline bool pawn_marked_dead(const PlayerSession &s) {
+    const repl::Subobject *combat = s.bootstrap().pawn().find(s.bootstrap().setup().guids.combat_info);
+    const repl::Value *v = combat && combat->obj.schema ? combat->obj.state.get(*combat->obj.schema, "bIsDead") : nullptr;
+    const bool *b = v ? v->get_if<bool>() : nullptr;
+    return b && *b;
+}
+
+inline size_t calls_named(const std::vector<std::string> &calls, const char *name) {
+    return static_cast<size_t>(std::count(calls.begin(), calls.end(), std::string(name)));
+}
+
+inline BunchWriter branch_verify_bunch(const bs::PlayerSetup &setup, int64_t branch_guid, int32_t client_id) {
+    const schema::RpcSchema *rpc = class_named("UAoCAbilityComponent").rpc("ServerRequestBranchVerification");
+    repl::RpcParams bp;
+    bool ok = rpc && repl::set_rpc_param(*rpc, bp, "Request.Branch.BranchGuid", repl::Value::i64(branch_guid));
+    ok = ok && repl::set_rpc_param(*rpc, bp, "Request.Branch.MontageIndex", repl::Value::i64(0));
+    ok = ok && repl::set_rpc_param(*rpc, bp, "Request.Branch.MeshYaw", repl::Value::u64(0));
+    ok = ok && repl::set_rpc_param(*rpc, bp, "Request.Branch.Instigator", repl::Value(setup.guids.pawn));
+    ok = ok && repl::set_rpc_param(*rpc, bp, "ClientInstanceId", repl::Value::i64(client_id));
+    return ok ? ability_rpc(setup.guids.ability, "ServerRequestBranchVerification", bp) : BunchWriter();
+}
+
+struct BallLightningOutcome {
+    bool ok = false, died = false;
+    int hits = 0, after_death = 0;
+    double health_lost = 0;
+};
+

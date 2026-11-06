@@ -296,6 +296,7 @@ public:
     std::vector<GatheredTarget> enemies_in_cone(const Fighter& from, double angle_degrees, double length_cm, double behind_cm, size_t max);
     std::vector<GatheredTarget> enemies_in_line(const Fighter& from, double length_cm, double radius_cm, size_t max);
     std::vector<GatheredTarget> enemies_around(const Fighter& from, const Vec3& centre, double radius_cm, size_t max);
+    std::vector<GatheredTarget> enemies_touching(const Fighter& from, const Vec3& centre, double radius_cm, size_t max);
     bool ground_height(double x, double y, double z_hint, double* z) const;
     uint64_t hit_component_of(uint64_t actor_id) const;
 
@@ -422,7 +423,7 @@ private:
         std::set<uint64_t>   struck;
     };
     struct TreeWhy {
-        bool   too_far = false, off_angle = false;
+        bool   too_far = false, off_angle = false, waits_on_timers = false;
         double reach_cm = -1;
     };
     struct PlannedHit {
@@ -438,7 +439,7 @@ private:
     };
     Npc*  combatant(uint64_t actor_id);
     Npc*  make_combatant(const world::WorldActor& a);
-    Attack choose_attack(Npc& n);
+    Attack choose_attack(Npc& n, bool single_swing = false);
     Attack choose_animated(Npc& n, const Fighter* target, TreeWhy* why = nullptr);
     bool  hit_reaches(const Npc& n, const Fighter& body, const BiteArea& area, bool is_target) const;
     uint64_t aimed_at(const Npc& n, const BiteArea& area, uint64_t cast_target);
@@ -509,6 +510,8 @@ private:
     void  run_effect_hits(Npc& n, const effects::Instance& e, const char* const* phases, size_t count, double at);
     void  advance_effects(double now);
     void  send_effects(Npc& n, const effects::Book::Changes& changes);
+    void  apply_crowd_control(Npc& n);
+    void  log_crowd_control();
     void  clear_effects(Npc& n);
     void  drop_effects_of(uint64_t instigator);
     void  begin_reset(Npc& n, double now);
@@ -546,6 +549,9 @@ private:
     std::set<uint64_t>     stats_filled_;
     std::set<uint64_t>     effect_holders_;
     std::set<int64_t>      refused_effects_;
+    std::set<uint64_t>     cc_unlogged_;
+    size_t                 cc_logged_ = 0;
+    static constexpr size_t kLoggedCc = 200;
     int                    effect_depth_ = 0;
     size_t                 effect_hits_logged_ = 0;
     static constexpr size_t kLoggedEffectHits = 120;

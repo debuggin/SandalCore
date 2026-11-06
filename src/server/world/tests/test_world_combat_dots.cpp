@@ -36,7 +36,6 @@ struct Landing {
         return nullptr;
     }
 };
-
 struct Tick {
     double   at = 0, value = 0;
     uint8_t  flags = 0;
@@ -46,7 +45,6 @@ struct Tick {
     bool plain() const { return (flags & (stats::kHitCrit | stats::kHitMiss)) == 0; }
     bool missed() const { return (flags & stats::kHitMiss) != 0; }
 };
-
 struct Bed {
     Fixture&               f;
     Rig                    rig;
@@ -55,14 +53,10 @@ struct Bed {
     combat::CombatWorld    world;
     combat_rig::FakePlayer player, other;
     std::string            wolf_path;
-
     explicit Bed(Fixture& fixture)
-        : f(fixture),
-          rig(8, 25, {}),
-          book(*f.ctx->bundle, *f.ctx->gear),
+        : f(fixture), rig(8, 25, {}), book(*f.ctx->bundle, *f.ctx->gear),
           world(w.registry, w.npcs.get(), &navfix::shared_nav(), *f.data, *f.catalog, book, f.motion),
-          player(rig, 77, {0, 0, 1098}),
-          other(rig, 78, {0, 100, 1098}) {
+          player(rig, 77, {0, 0, 1098}), other(rig, 78, {0, 100, 1098}) {
         if (!rig.ok() || !w.problem.empty()) return;
         world.add_player(&player);
         world.add_player(&other);
@@ -70,9 +64,7 @@ struct Bed {
     }
     bool ok() const { return rig.ok() && w.problem.empty(); }
     std::string problem() const { return !rig.ok() ? rig.problem : w.problem; }
-
     uint64_t wolf(double y) { return w.spawn(wolf_path, 3000, y, 45, 100); }
-
     Landing land(uint64_t wolf, const char* name, double t, combat_rig::FakePlayer& by, bool damage = false) {
         Landing out;
         const abilities::HitDef* hit = f.catalog->hit_named(name);
@@ -94,11 +86,9 @@ struct Bed {
         world.apply_effects(wolf, by.actor_id(), gate.effects, t);
         return out;
     }
-
     void run(double from, double to) {
         for (double t = from; t <= to + 1e-9; t += 0.05) world.tick(t);
     }
-
     std::vector<Tick> ticks(uint64_t wolf, const char* hit_name) {
         std::vector<Tick> out;
         const abilities::HitDef* hit = f.catalog->hit_named(hit_name);
@@ -112,7 +102,6 @@ struct Bed {
         std::sort(out.begin(), out.end(), [](const Tick& a, const Tick& b) { return a.at < b.at; });
         return out;
     }
-
     std::vector<std::pair<std::string, combat::EffectItemWrite>> items(uint64_t wolf) const {
         std::vector<std::pair<std::string, combat::EffectItemWrite>> out;
         if (const world::WorldActor* a = w.registry.find(wolf)) {
@@ -123,25 +112,21 @@ struct Bed {
         }
         return out;
     }
-
     size_t items_named(uint64_t wolf, const char* name) const {
         size_t n = 0;
         for (const auto& [nm, it] : items(wolf)) n += nm == name ? 1 : 0;
         return n;
     }
-
     int64_t effect_guid(const char* name) const {
         const abilities::EffectDef* d = f.catalog->effect_named(name);
         return d ? d->row.guid : 0;
     }
-
     double stat_of(uint64_t wolf, int64_t stat) {
         combat::Fighter* g = world.fighter_of(wolf);
         std::string err;
         auto ev = g ? g->stats().evaluation(g->worn(), err, true) : nullptr;
         return ev ? ev->stat(stat) : -1.0e18;
     }
-
     double plain_damage(combat::Fighter& from, combat::Fighter& to, const char* hit_name) {
         const abilities::HitDef* hit = f.catalog->hit_named(hit_name);
         if (!hit) return 0;
@@ -158,7 +143,6 @@ struct Bed {
         return 0;
     }
 };
-
 }  // namespace dots
 
 void check_single_bleed(TestHarness& h, dots::Bed& bed, int64_t bleed, double t0) {
@@ -361,12 +345,11 @@ void check_poison_stacking_and_chill(TestHarness& h, dots::Bed& bed, int64_t pg,
 
     const uint64_t wolf5 = bed.wolf(1200);
     bed.land(wolf5, "Rogue_Poison_Chilling", t0, bed.player);
-    CHECKF(bed.items_named(wolf5, "Status_Poisoned") == 1 && bed.items_named(wolf5, "Status_Chilled") == 0 &&
-               bed.world.effect_stacks(wolf5, bed.effect_guid("Status_Chilled")) == 0,
-           "the Chilling poison puts its poison on the Wolf and leaves its Chilled off (%zu poisons, %zu chills)",
+    CHECKF(bed.items_named(wolf5, "Status_Poisoned") == 1 && bed.items_named(wolf5, "Status_Chilled") == 1 &&
+               bed.world.effect_stacks(wolf5, bed.effect_guid("Status_Chilled")) == 1,
+           "the Chilling poison puts both its poison and its Chilled on the Wolf (%zu poisons, %zu chills)",
            bed.items_named(wolf5, "Status_Poisoned"), bed.items_named(wolf5, "Status_Chilled"));
 }
-
 void test_creature_poison(TestHarness& h) {
     Fixture& f = h.f;
     std::printf("a creature is poisoned: a tick every 2 s for 20 s, stacks in place up to ten that grow the tick, another caster's poison apart\n");
@@ -374,13 +357,11 @@ void test_creature_poison(TestHarness& h) {
     CHECKF(bed.ok(), "the bed: %s", bed.problem().c_str());
     if (!bed.ok()) return;
     const abilities::EffectDef* poison = f.catalog->effect_named("Status_Poisoned");
-    CHECK(poison && f.catalog->hit_named("Status_Poisoned_Tick") && f.catalog->hit_named("Scorpion_TailSting_Hit"),
-          "the poison, its tick and a hit that applies it are in the data");
+    CHECK(poison && f.catalog->hit_named("Status_Poisoned_Tick") && f.catalog->hit_named("Scorpion_TailSting_Hit"), "the poison, its tick and a hit that applies it are in the data");
     if (!poison) return;
     const double v1 = check_single_poison_stack(h, bed, poison->row.guid, 100.0);
     if (v1 != 0.0) check_poison_stacking_and_chill(h, bed, poison->row.guid, 100.0, v1);
 }
-
 void check_debuff_damage_and_accuracy(TestHarness& h, dots::Bed& bed, const abilities::EffectDef& demoralized, const abilities::EffectDef& blinded, double t0) {
     const uint64_t wolf = bed.wolf(0);
     CHECK(wolf != 0, "a Wolf 30 m away");
@@ -395,7 +376,6 @@ void check_debuff_damage_and_accuracy(TestHarness& h, dots::Bed& bed, const abil
     CHECKF(physical_before < 0 && magical_before < 0 && dealt_before < 0,
            "(a Snipe takes %.1f from the Wolf, a Ball Lightning %.1f, and the Wolf deals %.1f with the Snipe's formula)",
            physical_before, magical_before, dealt_before);
-
     const dots::Landing s = bed.land(wolf, "Beetle_Subsonics_Hit", t0, bed.player);
     CHECK(s.has("Status_Shaken") && s.has("Status_Blinded"), "a hit puts Shaken and Blinded on the Wolf");
     const double physical_shaken = bed.plain_damage(mage, *wolf_fighter, "Ranger_Snipe_V2");
@@ -413,13 +393,6 @@ void check_debuff_damage_and_accuracy(TestHarness& h, dots::Bed& bed, const abil
     CHECKF(dealt_demoralized > dealt_before - 1e-9 && dealt_demoralized < 0 && !near(bed.stat_of(wolf, damage_mult), mult_before, 1e-12),
            "Demoralized: the Wolf deals less damage (%.1f, it was %.1f; its damage multiplier %.3f, it was %.3f)",
            dealt_demoralized, dealt_before, bed.stat_of(wolf, damage_mult), mult_before);
-
-    std::printf("    (Shaken: a physical hit x%.3f, Volatile: a magical hit x%.3f, Demoralized: the Wolf's hits x%.3f, its damage multiplier %.3f -> %.3f, Blinded: accuracy %.3f -> %.3f)\n",
-                physical_before != 0 ? physical_shaken / physical_before : 0.0,
-                magical_before != 0 ? magical_volatile / magical_before : 0.0,
-                dealt_before != 0 ? dealt_demoralized / dealt_before : 0.0,
-                mult_before, bed.stat_of(wolf, damage_mult), accuracy_before, bed.stat_of(wolf, accuracy));
-
     bed.run(t0 + 0.25, t0 + 40.0);
     CHECK(bed.world.effect_count(wolf) == 0, "after their time nothing is left on the Wolf");
     const double physical_after = bed.plain_damage(mage, *wolf_fighter, "Ranger_Snipe_V2");
@@ -428,7 +401,6 @@ void check_debuff_damage_and_accuracy(TestHarness& h, dots::Bed& bed, const abil
                near(dealt_after, dealt_before, std::fabs(dealt_before) * 1e-6) && near(bed.stat_of(wolf, accuracy), accuracy_before, 1e-9),
            "...and the damage it takes, the damage it deals and its accuracy are what they were (%.1f, %.1f)", physical_after, dealt_after);
 }
-
 void check_shaken_extension_and_bard_melodies(TestHarness& h, dots::Bed& bed, int64_t sg, double t0) {
     const uint64_t wolf2 = bed.wolf(300);
     bed.land(wolf2, "Beetle_Subsonics_Hit", t0, bed.player);
@@ -449,7 +421,6 @@ void check_shaken_extension_and_bard_melodies(TestHarness& h, dots::Bed& bed, in
     const double most = bed.world.effect_remaining(wolf3, sg, t0 + 1.2);
     CHECKF(most <= 15.0 + 1e-6 && most >= 14.0, "...and however often it is applied, never more than 15 s are left (%.2f)", most);
     CHECKF(bed.world.effect_stacks(wolf3, sg) == 1, "...and Shaken stays one stack (%d)", bed.world.effect_stacks(wolf3, sg));
-
     const uint64_t wolf4 = bed.wolf(900);
     const dots::Landing menacing = bed.land(wolf4, "Bard_ResonantWeapon_End_Menacing", t0, bed.player);
     const dots::Landing cathartic = bed.land(wolf4, "Bard_ResonantWeapon_End_Cathartic", t0, bed.player);
@@ -457,7 +428,6 @@ void check_shaken_extension_and_bard_melodies(TestHarness& h, dots::Bed& bed, in
               bed.items_named(wolf4, "Status_Wounded") == 1,
           "the Bard's Menacing melody puts Shocked on the Wolf and the Cathartic one Wounded");
 }
-
 void test_creature_stat_debuffs(TestHarness& h) {
     Fixture& f = h.f;
     std::printf("the stat debuffs: Shaken and Volatile raise the damage a creature takes, Demoralized lowers what it deals, Blinded its accuracy; the extension of Shaken\n");
@@ -475,7 +445,6 @@ void test_creature_stat_debuffs(TestHarness& h) {
     check_debuff_damage_and_accuracy(h, bed, *demoralized, *blinded, 100.0);
     check_shaken_extension_and_bard_melodies(h, bed, shaken->row.guid, 100.0);
 }
-
 void test_effect_host_functions(TestHarness& h) {
     std::printf("EffectHasTag, GetEffect() and CalcEffectDuration are answered for the effect whose numbers are worked out\n");
     const std::vector<std::string> tags = {"Element.Physical.Bleed", "Debuff.Bleeding"};
@@ -504,35 +473,6 @@ void test_effect_host_functions(TestHarness& h) {
               ask(stats::kHostEffectDuration, "333") == 0.0,
           "CalcEffectDuration reads the length worked out for the effect named (0 for one that was not)");
 }
-
-struct Forge {
-    Rig                    rig;
-    combat_rig::World      w;
-    combat::NpcStatBook    book;
-    combat::CombatWorld    world;
-    combat_rig::FakePlayer player;
-    combat::WorldHitPort   port;
-    std::string            wolf_path;
-
-    Forge(Fixture& f, int class_enum, const std::vector<std::string>& skills, uint64_t seed = 7)
-        : rig(class_enum, 25, skills, true, seed),
-          book(*f.ctx->bundle, *f.ctx->gear),
-          world(w.registry, w.npcs.get(), &navfix::shared_nav(), *f.data, *f.catalog, book, f.motion),
-          player(rig, 77, {0, 0, 1098}),
-          port(world, w.registry, player.fighter()),
-          wolf_path(creature_path(f, "/Beast/Canine/Wolf.Default__Wolf_C")) {
-        if (!rig.ok()) return;
-        world.add_player(&player);
-        rig.pipe->set_combat(&port);
-    }
-    bool ok() const { return rig.ok() && w.problem.empty(); }
-    uint64_t wolf(double x, double y) { return w.spawn(wolf_path, x, y, 25, 100); }
-    double lost(const std::vector<uint64_t>& wolves) const {
-        double sum = 0;
-        for (const uint64_t id : wolves) sum += world.max_health_of(id) - world.health_of(id);
-        return sum;
-    }
-};
 
 size_t forged_zone_ops(const Rig& rig, bootstrap::ZoneOp::Kind kind) {
     size_t n = 0;
@@ -823,6 +763,7 @@ void run_combat_dots_tests(TestHarness& h) {
     test_forged_held_fill(h);
     test_forged_launch_request(h);
     test_forged_slicing_requests(h);
+    run_combat_forged_swing_tests(h);
 }
 
 void run_combat_dots_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db) {

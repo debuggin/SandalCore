@@ -102,9 +102,34 @@ void CombatWorld::send_effects(Npc& n, const effects::Book::Changes& changes) {
     for (const effects::Instance& e : changes.added) added.push_back(write_of(e));
     for (const effects::Instance& e : changes.changed) changed.push_back(write_of(e));
     write_effect_items(registry_, n.actor_id, n.item_ids, changes.removed, added, changed);
+    apply_crowd_control(n);
     if (n.book.empty()) effect_holders_.erase(n.actor_id);
     else effect_holders_.insert(n.actor_id);
     if (is_pet(n.actor_id)) pet_effects_changed(n);
+}
+
+void CombatWorld::apply_crowd_control(Npc& n) {
+    const effects::Book::Crowd cc = n.book.cc();
+    if (cc == n.cc) return;
+    n.cc = cc;
+    write_cc_state(registry_, n.actor_id, cc.flags, cc.snare);
+    const double kept = std::clamp(1.0 - cc.snare, 0.0, 1.0);
+    if (npcs_world_) npcs_world_->set_speed_scale(n.actor_id, kept);
+    cc_unlogged_.insert(n.actor_id);
+}
+
+void CombatWorld::log_crowd_control() {
+    if (cc_unlogged_.empty()) return;
+    for (const uint64_t id : cc_unlogged_) {
+        const auto it = npcs_.find(id);
+        if (it == npcs_.end()) continue;
+        Npc& n = *it->second;
+        if (n.cc == n.cc_logged) continue;
+        n.cc_logged = n.cc;
+        const double kept = std::clamp(1.0 - n.cc.snare, 0.0, 1.0);
+        spdlog::log(cc_logged_++ < kLoggedCc ? spdlog::level::info : spdlog::level::debug, "[cc] {} ({}) snare {:.2f} speed {:.0f}", n.leaf, n.actor_id, n.cc.snare, n.ai.params().chase_speed_cm_s * kept);
+    }
+    cc_unlogged_.clear();
 }
 
 void CombatWorld::clear_effects(Npc& n) {
@@ -136,9 +161,10 @@ void CombatWorld::drop_effects_of(uint64_t instigator) {
 
 void CombatWorld::land_effect(Npc& n, const effects::Applied& a, uint64_t instigator, double now) {
     if (n.dead || !a.def) return;
-    if (a.def->row.crowd_control_guid != 0) {
+    const bool slow = a.def->cc && a.def->cc->applied_status == content::kCcSnare;
+    if (a.def->row.crowd_control_guid != 0 && !slow) {
         if (refused_effects_.insert(a.def->row.guid).second) {
-            spdlog::info("[effects] {} is a slow, snare or CC: mobs do not slow down or stop for one yet, so it is not put on {}", a.def->row.name, n.leaf);
+            spdlog::info("[effects] {} is a root, stun or other crowd control: mobs do not stop for one yet, so it is not put on {}", a.def->row.name, n.leaf);
         }
         return;
     }

@@ -13,6 +13,48 @@ using abilities::EffectDef;
 using abilities::HitDef;
 using bootstrap::AbilityChange;
 
+namespace {
+
+struct BeamHit {
+  const char *hit;
+  int requests;
+};
+
+constexpr BeamHit kBeamHits[] = {
+    {"Weapon_Wand_Hit_5+", 4},
+    {"Weapon_Wand_Hit_6+", 14},
+    {"Weapon_Wand_Beam_ComboEnd_Hit", 2},
+    {"Weapon_Wand_Beam_ComboEnd2_Hit", 2},
+    {"Weapon_Wand_BeamFX_Hit_Arcane_AUDIOONLY", 2},
+    {"Weapon_Wand_BeamFX_Hit_Lightning_AUDIOONLY", 2},
+    {"Weapon_Wand_BeamFX_Hit_Fire_AUDIOONLY", 2},
+    {"Weapon_Wand_BeamFX_Hit_Ice_AUDIOONLY", 2},
+    {"Weapon_Wand_BeamFX_Hit_BeamAmp_AUDIOONLY", 2},
+};
+
+} // namespace
+
+int beam_hit_requests(std::string_view hit) {
+  for (const BeamHit &b : kBeamHits) {
+    if (hit == b.hit) return b.requests;
+  }
+  return 0;
+}
+
+StepToken step_of_montage(const abilities::Catalog &catalog,
+                          const content::MontageRow &montage) {
+  StepToken step = step_token(leaf_of_path(montage.soft_path));
+  int named_step = 0;
+  bool named_proc = false;
+  if (const content::ExprRow *e = catalog.expr(montage.select_expr)) {
+    if (step_of_expression(e->text, named_step, named_proc)) {
+      step.step = named_step;
+      step.proc = named_proc;
+    }
+  }
+  return step;
+}
+
 struct AbilityPipeline::Host::Hits {
   static bool step_due_missile(AbilityPipeline &self, Cast &cast, size_t cast_index, double t) {
     if (cast.missiles.empty()) return false;
@@ -26,6 +68,8 @@ struct AbilityPipeline::Host::Hits {
       cast.missiles.erase(cast.missiles.begin() + static_cast<std::ptrdiff_t>(first));
       if (step.kind == Cast::Missile::Kind::Fly)
         self.launch_note(cast, step, t);
+      else if (step.kind == Cast::Missile::Kind::Ball)
+        self.ball_step(cast, step, t);
       else
         self.step_timed(cast, step, t);
       self.finish_cast_if_done(cast_index);
@@ -471,7 +515,9 @@ AbilityPipeline::HitVerdict AbilityPipeline::hit_request(
   HitSlot *slot = Host::Hits::find_record_slot(*rec, hit_guid);
   if (!slot) return Host::Hits::unslotted_hit_verdict(*rec, targeting_guid, hit_guid, now);
   if (slot->server_self_use) return HitVerdict::Quiet;
-  if (slot->requests >= rec->max_requests || now - slot->last_request < rec->min_gap)
+  const int max_requests =
+      slot->max_requests >= 0 ? slot->max_requests : rec->max_requests;
+  if (slot->requests >= max_requests || now - slot->last_request < rec->min_gap)
     return HitVerdict::TooMany;
   ++slot->requests;
   slot->last_request = now;
@@ -630,6 +676,7 @@ bool AbilityPipeline::end_request(int32_t server_instance_id, double now) {
   for (Instance &i : instances_) {
     if (i.server_id == server_instance_id && !i.end_due) {
       release_held(i.client_id, now_);
+      stop_swing(i.server_id);
       i.end_due = now_ + kEndDelay;
       return true;
     }

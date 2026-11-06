@@ -94,11 +94,13 @@ function Assert-WorldStartupSubsystemsLoaded {
         }
     }
     $requiredPatterns = @(
-        'Blueprint table .*: \d+ pawn Blueprints',
-        'mob attack animations: \d+ Blueprints',
-        'ground .*area_nav\.bin: \d+ terrain grids',
-        '\d+ NPCs on the ground',
-        'foliage.*on: \d+ instances'
+        'contentc version 41',
+        'Blueprint table .*: [1-9]\d* pawn Blueprints',
+        'mob attack animations: [1-9]\d* Blueprints, [1-9]\d* montages',
+        '\[looks\] [1-9]\d* Blueprints with a look.* [1-9]\d* recorded customizations in [1-9]\d* kinds, [1-9]\d* customization presets',
+        'ground .*area_nav\.bin: [1-9]\d* terrain grids',
+        '[1-9]\d* NPCs on the ground',
+        'foliage.*on: [1-9]\d* instances'
     )
     foreach ($req in $requiredPatterns) {
         if ($bootLogs -notmatch $req) {

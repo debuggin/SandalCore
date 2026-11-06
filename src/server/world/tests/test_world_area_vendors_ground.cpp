@@ -5,9 +5,11 @@
 
 #include "combat/combat_world.h"
 #include "items/inventory.h"
-#include "npc/motion_table.h"
 #include "npc/retail_motion.h"
+#include "spawns/npc_looks.h"
 #include "world/interaction_state.h"
+
+#include <filesystem>
 
 using namespace aoc::worldd;
 namespace repl = aoc::protocol::repl;
@@ -731,8 +733,49 @@ static void test_interaction_state(const content::ContentDb &db, const spawns::C
   CHECK(as_prop && (!as_pawn || as_pawn != as_prop), "the same Blueprint asked for as a pawn does not get the prop's open (the prop is kept under its own key)");
 }
 
+static void check_npc_looks_preset_records(const spawns::NpcLooks &looks, const content::PopulationData &pop) {
+  static constexpr int64_t kPinnedAppGuids[] = {
+      6064629223097106433LL, 6064629897467592707LL, 6064631510038872065LL, 6064631510058532867LL, 6064631510081077253LL, 6064631726043627751LL, 6064632377851772930LL, 6064632377857671171LL,
+      6064632949036551649LL, 6064633136821698676LL, 6064634398738088371LL, 6064634405268160866LL, 6064634405273207139LL, 6064634540597641223LL, 6064634546407145472LL, 6064634557103605101LL,
+      6064634567558430730LL, 6064634567566360589LL, 6064634567571406864LL, 6064634567577567251LL, 6064634648053481472LL, 6064634672721494054LL, 6064634699355914269LL, 6064634721160004345LL,
+      6064634721161708282LL, 6064634726006390787LL};
+  std::set<int64_t> app_guids(std::begin(kPinnedAppGuids), std::end(kPinnedAppGuids));
+  for (const auto &[guid, asset] : pop.assets) {
+    if (const int64_t ag = looks.appearance_of(asset); ag != 0) app_guids.insert(ag);
+  }
+  size_t appearances_with_face = 0, preset_kept = 0;
+  for (int64_t ag : app_guids) {
+    const spawns::NpcLooks::Appearance *app = looks.appearance(ag);
+    if (!app || app->preset == 0) continue;
+    ++appearances_with_face;
+    if (!app->randomize_custom && looks.preset(app->preset) != nullptr) ++preset_kept;
+  }
+  CHECK(looks.presets() >= 18 && appearances_with_face >= 25 && preset_kept >= 25, "npc_appearances.tsv loads the saved face presets and keeps >= 25 non-randomized preset appearances");
+  const spawns::NpcLooks::Appearance *beyam = looks.appearance(6064634726006390787LL);
+  const spawns::NpcLooks::Preset *beyam_face = beyam ? looks.preset(beyam->preset) : nullptr;
+  CHECK(beyam && beyam_face && beyam_face->race == 1 && beyam_face->gender == 1 && beyam->body_shared == 6064629971694714880LL, "Cleric Beyam resolves its pinned female Vaelune preset and matching body shared appearance info");
+}
+
+static void test_npc_looks_resolved_from_content(const content::ContentDb &db, const spawns::CapturedData &captured) {
+  std::printf("Step 1b. NPC face presets resolved from dist/content/npc_appearances.tsv\n");
+  std::string error;
+  const std::string content_dir = std::filesystem::path(AREA_CONTENT_DB_PATH).parent_path().string();
+  npc::MotionTable motion;
+  if (!motion.load((std::filesystem::path(content_dir) / "npc_motion.tsv").string(), error)) {
+    std::printf("  [skip] no npc_motion.tsv (%s)\n", error.c_str());
+    return;
+  }
+  const auto pop = db.population_data(error);
+  const auto combat = db.combat_rows(error);
+  const auto looks = pop && combat ? spawns::NpcLooks::load(content_dir, &motion, &*combat, &captured, error) : nullptr;
+  CHECK(looks != nullptr, "NpcLooks loads npc_looks.tsv, npc_appearances.tsv, and npc_names.tsv with presets");
+  if (!looks || !pop) return;
+  check_npc_looks_preset_records(*looks, *pop);
+}
+
 void run_area_vendors_ground(const content::ContentDb &db, const spawns::CapturedData &captured) {
   test_interaction_state(db, captured);
+  test_npc_looks_resolved_from_content(db, captured);
   test_gm_vendors(db);
   test_player_world(db);
   test_ground(db);

@@ -38,11 +38,11 @@ struct AbilityPipeline::Host::Damage {
   };
 
   static bool target_reached(const AbilityPipeline &self, const combat::TargetInfo &ti,
-                             int mask, bool melee) {
+                             int mask, bool melee, bool reach_free = false) {
     if (!ti.exists || !ti.alive) return false;
     const bool hostile = ti.relation == combat::Relation::Hostile;
     if (hostile ? (mask & 2) == 0 : (mask & (1 | 4 | 8 | 16)) == 0) return false;
-    return ti.surface_distance_cm <=
+    return reach_free || ti.surface_distance_cm <=
            self.combat_->reach_cm(melee) + self.combat_->data().activation_leeway_cm();
   }
 
@@ -52,7 +52,7 @@ struct AbilityPipeline::Host::Damage {
     double closest_cm = 0.0;
     for (const uint64_t id : targets) {
       const combat::TargetInfo ti = self.combat_->inspect(id);
-      if (!target_reached(self, ti, batch.mask, batch.melee)) continue;
+      if (!target_reached(self, ti, batch.mask, batch.melee, batch.src.reach_free)) continue;
       if (id == batch.active) batch.active_in_hit = true;
       if (batch.closest == 0 || ti.surface_distance_cm < closest_cm) {
         batch.closest = id;
@@ -172,7 +172,7 @@ struct AbilityPipeline::Host::Damage {
                                     uint64_t id, std::vector<bootstrap::HitTargetOut> &outs,
                                     HitEvent &event) {
     const combat::TargetInfo ti = self.combat_->inspect(id);
-    if (!target_reached(self, ti, batch.mask, batch.melee)) return;
+    if (!target_reached(self, ti, batch.mask, batch.melee, batch.src.reach_free)) return;
     combat::Fighter *tf = self.combat_->fighter(id);
     if (!tf) return;
     std::string err, why;
@@ -734,16 +734,6 @@ double AbilityPipeline::movement_allowance(double now) const {
     if (now <= until) speed = std::max(speed, s);
   }
   return speed;
-}
-
-void AbilityPipeline::set_dead(bool dead) {
-  dead_ = dead;
-  if (!dead) return;
-  casts_.clear();
-  records_.erase(
-      std::remove_if(records_.begin(), records_.end(),
-                     [](const CastRecord &r) { return r.item_cast && r.cost_at < 0; }),
-      records_.end());
 }
 
 void AbilityPipeline::regenerate(double t) {

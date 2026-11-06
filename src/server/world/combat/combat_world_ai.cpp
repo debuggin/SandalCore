@@ -576,20 +576,9 @@ void CombatWorld::think(Npc& n, double now) {
     if (nav_) s.line_of_sight = [this](const Vec3& from, const Vec3& to) { return line_clear(from, to); };
     const npc::ai::State before = n.ai.state();
     const npc::ai::Orders o = n.ai.think(s);
-    if (o.began_fight) {
-        ++stats_.aggros;
-        n.fight_began = now;
-        n.fight_rolls.clear();
-        log_fight_began(*a, n.ai.params(), o.target, player(o.target));
-    }
-    if (o.began_reset) {
-        log_fight_leashed(*a, n.ai, o.reset_reason);
-        begin_reset(n, now);
-    }
-    if (o.reset_done) {
-        n.returning = false;
-        if (npcs_world_) npcs_world_->release(n.actor_id);
-    }
+    if (o.began_fight) { ++stats_.aggros; n.fight_began = now; n.fight_rolls.clear(); log_fight_began(*a, n.ai.params(), o.target, player(o.target)); }
+    if (o.began_reset) { log_fight_leashed(*a, n.ai, o.reset_reason); begin_reset(n, now); }
+    if (o.reset_done) { n.returning = false; if (npcs_world_) npcs_world_->release(n.actor_id); }
     if (o.in_combat) set_flags(n, true, o.target);
     else if (n.ai.state() == npc::ai::State::Idle || n.ai.state() == npc::ai::State::Reset) set_flags(n, false, 0);
     const bool carried = npcs_world_ && npcs_world_->root_motion_active(n.actor_id);
@@ -606,7 +595,15 @@ void CombatWorld::think(Npc& n, double now) {
         picked = choose_animated(n, &port->fighter(), &why);
         have_pick = picked.ability != nullptr;
     }
-    if (port && !have_pick) {
+    if (port && !have_pick && why.waits_on_timers) {
+        picked = choose_attack(n, true);
+        const double gap = distance_xy_cm(Vec3{a->x, a->y, a->z}, port->fighter().position()) - n.radius_cm() - port->fighter().radius_cm();
+        if (!picked.ability) allowed = false;
+        else if (gap > picked.range_cm) {
+            allowed = false;
+            pursue(n, o.target, n.ai.params().chase_speed_cm_s, std::max(0.0, picked.range_cm * n.ai.params().chase_stop_fraction) + n.radius_cm() + port->fighter().radius_cm());
+        } else have_pick = true;
+    } else if (port && !have_pick) {
         allowed = false;
         const Vec3 at = port->fighter().position();
         const double pad = n.radius_cm() + port->fighter().radius_cm();
@@ -624,6 +621,7 @@ void CombatWorld::think(Npc& n, double now) {
 void CombatWorld::tick(double now) {
     now_ = now;
     if (!cfg_.enabled) return;
+    log_crowd_control();
     resolve_pending(now);
     advance_flights(now);
     advance_effects(now);

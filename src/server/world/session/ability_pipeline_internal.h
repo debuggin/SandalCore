@@ -39,8 +39,8 @@ extern const GatheredCast kGatheredCasts[1];
 extern const TimedCast kTimedCasts[3];
 extern const MissileLanding kMissileLandings[7];
 extern const Flight kFlights[12];
-extern const ShotCast kShotCasts[37];
-extern const NoteCast kNoteCasts[23];
+extern const ShotCast kShotCasts[42];
+extern const NoteCast kNoteCasts[26];
 extern const BounceRule kBounces[3];
 extern const LoopedCast kLoopedCasts[1];
 extern const Dash kDashes[6];
@@ -65,6 +65,9 @@ int64_t projectile_of(const abilities::AbilityDef &def, int key);
 int64_t first_projectile_guid(const abilities::AbilityDef &def);
 int64_t projectile_hit_key(const abilities::AbilityDef &def, int64_t projectile);
 const char *gathered_log_suffix(size_t count);
+bool carried_by_ball(const abilities::AbilityDef &def, int64_t hit_guid);
+int beam_hit_requests(std::string_view hit);
+StepToken step_of_montage(const abilities::Catalog &catalog, const content::MontageRow &montage);
 
 class AbilityPipeline::Host final : public combat::ContextHost {
 public:
@@ -92,6 +95,7 @@ public:
   static void remove_guid_by_hit(AbilityPipeline &self, bootstrap::AbilityChange &c, int64_t guid, int &left);
   static bool has_pending_slot_requests(const CastRecord &rec);
   static bool has_pending_slot_requests(const CastRecord *rec);
+  static void register_cast_hit_slots(AbilityPipeline &self, const abilities::AbilityDef &def, const Cast &cast, CastRecord &rec);
   static void enqueue_effect_hits(const abilities::Catalog *cat, int64_t guid, std::set<int64_t> &seen, std::vector<int64_t> &todo);
   static void enqueue_hit_effects(const abilities::Catalog *cat, int64_t g, std::set<int64_t> *out_effects, std::set<int64_t> &seen, std::vector<int64_t> &todo);
   static std::set<int64_t> collect_ability_hit_graph(const abilities::Catalog *cat, const abilities::AbilityDef &def, std::set<int64_t> *out_effects);

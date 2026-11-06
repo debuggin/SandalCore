@@ -61,7 +61,6 @@ bool set_item(world::WorldActor& a, int64_t record, float value, bool add = fals
     values.values[1] = repl::Value(fresh);
     return arr->add(std::move(values)).has_value();
 }
-// ~ C.O.A & C_Y_B ~
 
 }  // namespace
 
@@ -141,6 +140,19 @@ bool write_elite_rank(world::ActorRegistry& registry, uint64_t actor_id, int ran
         repl::Subobject* ci = find_sub(a, "UNPCCombatInfo");
         if (!ci || !ci->obj.schema || !ci->obj.schema->command("EliteRank")) return;
         ok = ci->obj.state.set(*ci->obj.schema, "EliteRank", repl::Value::i64(rank));
+    });
+    return ok;
+}
+
+bool write_cc_state(world::ActorRegistry& registry, uint64_t actor_id, int64_t flags, double snare) {
+    bool ok = false;
+    registry.modify(actor_id, world::Change::State, [&](world::WorldActor& a) {
+        repl::Subobject* st = find_sub(a, "UAoCStatsComponent");
+        if (!st || !st->obj.schema || !st->obj.schema->command("CrowdControlState.StatusFlags") || !st->obj.schema->command("CrowdControlState.SnareValue")) return;
+        repl::ObjectState& o = st->obj;
+        const bool flags_ok = o.state.set(*o.schema, "CrowdControlState.StatusFlags", repl::Value::u64(static_cast<uint64_t>(flags) & 0xffu));
+        const bool snare_ok = o.state.set(*o.schema, "CrowdControlState.SnareValue", repl::Value::f32(static_cast<float>(snare)));
+        ok = flags_ok && snare_ok;
     });
     return ok;
 }
