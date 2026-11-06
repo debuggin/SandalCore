@@ -52,7 +52,7 @@ function New-SandalPassphrase {
 
 function Test-SandalDefaultSecretValue {
     param([string]$Value)
-    return ([string]::IsNullOrWhiteSpace($Value) -or $Value.StartsWith('CHANGE_ME') -or $Value -eq 'aoc' -or $Value.StartsWith('dev-local-service-token'))
+    return ([string]::IsNullOrWhiteSpace($Value) -or $Value.StartsWith('CHANGE_ME') -or $Value -in @('aoc', 'postgres') -or $Value.StartsWith('dev-local-service-token') -or $Value.StartsWith('dev-only-jwt-secret') -or $Value -match '^[0-9a-f]{64}$')
 }
 
 function Get-SandalEnvMap {
@@ -99,7 +99,7 @@ function Use-SandalUserDotnet10 {
 
 function Initialize-SandalEnv {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$EnvPath, [Alias('ExamplePath')][string]$TemplatePath = '', [string[]]$SecretKeys = @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY', 'NATS_PASSWORD', 'AOC_NATS_TOKEN'), [switch]$Force)
+    param([Parameter(Mandatory)][string]$EnvPath, [Alias('ExamplePath')][string]$TemplatePath = '', [string[]]$SecretKeys = @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY', 'AOC_JWT_SECRET', 'NATS_PASSWORD', 'AOC_NATS_TOKEN'), [switch]$Force)
     Use-SandalUserDotnet10
     $parent = Split-Path -Parent $EnvPath; if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
     $existingMap = if (Test-Path -LiteralPath $EnvPath -PathType Leaf) { Get-SandalEnvMap -EnvPath $EnvPath } else { [ordered]@{} }

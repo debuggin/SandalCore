@@ -255,10 +255,14 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                     throw 'Expected 0 .env file in repo root'
                 }
                 $envMap = Get-SandalEnvMap -EnvPath $deployStage.EnvPath
-                foreach ($key in @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY', 'NATS_PASSWORD', 'AOC_NATS_TOKEN')) {
-                    if ($envMap[$key] -notmatch '^[a-zA-Z0-9_-]{12,128}$' -or $envMap[$key] -match '^(?:CHANGE_ME|aoc|dev-local-service-token)') {
+                foreach ($key in @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY', 'AOC_JWT_SECRET', 'NATS_PASSWORD', 'AOC_NATS_TOKEN')) {
+                    if ($envMap[$key] -notmatch '^[a-zA-Z0-9_-]{12,128}$' -or $envMap[$key] -match '^(?:CHANGE_ME|aoc|postgres|dev-local-service-token|dev-only-jwt-secret)') {
                         throw "Expected valid non-default secret matching ^[a-zA-Z0-9_-]{12,128}$ for $key in deploy/.env, got '$($envMap[$key])'"
                     }
+                }
+                $composeContent = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'src\deploy\compose.yml'))
+                if ($composeContent -match 'CHANGE_ME|dev-local-service-token|dev-only-jwt-secret|PASSWORD:-') {
+                    throw 'Expected src/deploy/compose.yml to contain 0 embedded fallback passwords or tokens'
                 }
                 if ($envMap['AOC_DATABASE_URL'] -ne "postgres://aoc:$($envMap['POSTGRES_PASSWORD'])@postgres:5432/aoc?sslmode=disable") {
                     throw "Expected AOC_DATABASE_URL to embed generated POSTGRES_PASSWORD, got '$($envMap['AOC_DATABASE_URL'])'"

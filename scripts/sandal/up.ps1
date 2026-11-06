@@ -138,6 +138,16 @@ function Write-UpStep {
     }
 }
 
+function Sync-SandalPostgresPassword {
+    param([string]$ComposeFile, [string]$EnvFile)
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
+    & docker compose -f $ComposeFile --env-file $EnvFile up -d --wait postgres *> $null
+    if ($LASTEXITCODE -ne 0) { return }
+    $cmd = 'psql -U "${POSTGRES_USER:-aoc}" -d "${POSTGRES_DB:-aoc}" -tAc "ALTER ROLE \"${POSTGRES_USER:-aoc}\" WITH PASSWORD ''$POSTGRES_PASSWORD'';"'
+    try { $null | & docker exec -i aoc-postgres sh -c $cmd *> $null } catch { }
+    $global:LASTEXITCODE = 0
+}
+
 function Remove-SandalStaleTestAccounts {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
     $sql = "DELETE FROM accounts WHERE lower(username) LIKE 'tmp\_%' ESCAPE '\' OR lower(username) LIKE 'temp\_%' ESCAPE '\' OR lower(username) LIKE 'e2e\_%' ESCAPE '\' OR lower(username) = 'ephem_hero';"
@@ -180,6 +190,7 @@ if (-not $opts.DryRun) {
                 throw "docker compose build failed with exit code $LASTEXITCODE."
             }
         }
+        Sync-SandalPostgresPassword -ComposeFile $composeFile -EnvFile $envFile
         & docker @composeArgs
         if ($LASTEXITCODE -ne 0) {
             throw "docker compose up failed with exit code $LASTEXITCODE."
