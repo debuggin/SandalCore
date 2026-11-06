@@ -9,12 +9,17 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 )
 
 const (
 	MeshForwardHeaderSize       = 12
 	DefaultBoundaryHysteresisCm = 20000.0
+	DefaultHandoverCooldown     = 2 * time.Second
+	DefaultHandoverDwellSamples = 3
 )
 
 var (
@@ -110,10 +115,19 @@ func (b ZoneBounds) SignedBorderDistanceCm(x, y float64) float64 {
 	return math.Max(dx, dy)
 }
 
+type entityHandoverTracker struct {
+	authoritativeZone string
+	candidateZone     string
+	dwellSamples      int
+	lastHandoverAt    time.Time
+	handoverCount     int
+}
+
 type ZoneRouter struct {
-	mu           sync.RWMutex
-	hysteresisCm float64
-	zones        map[uint32]ZoneBounds
+	mu              sync.RWMutex
+	hysteresisCm    float64
+	zones           map[uint32]ZoneBounds
+	entityHandovers map[string]*entityHandoverTracker
 }
 
 func NewZoneRouter(hysteresisCm float64) *ZoneRouter {
@@ -121,8 +135,9 @@ func NewZoneRouter(hysteresisCm float64) *ZoneRouter {
 		hysteresisCm = DefaultBoundaryHysteresisCm
 	}
 	return &ZoneRouter{
-		hysteresisCm: hysteresisCm,
-		zones:        make(map[uint32]ZoneBounds),
+		hysteresisCm:    hysteresisCm,
+		zones:           make(map[uint32]ZoneBounds),
+		entityHandovers: make(map[string]*entityHandoverTracker),
 	}
 }
 
@@ -313,3 +328,162 @@ func (r *ZoneRouter) containingOrNearestLocked(excludeZoneID uint32, x, y float6
 	}
 	return r.nearestNeighborLocked(excludeZoneID, x, y)
 }
+
+// ResolveAuthorityZoneWithCooldown enforces spatial hysteresis, 3-sample dwell, and a 2s cooldown.
+func (r *ZoneRouter) ResolveAuthorityZoneWithCooldown(
+	entityID string, currentZoneID string, x float64, y float64, now time.Time,
+) (zoneID string, handedOver bool, suppressedByHysteresis bool) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	tracker := r.ensureEntityTrackerLocked(entityID, currentZoneID)
+	activeZone := tracker.authoritativeZone
+	if activeZone == "" {
+		activeZone = strings.TrimSpace(currentZoneID)
+		tracker.authoritativeZone = activeZone
+	}
+	targetZone, distPastBorderCm := r.evaluateCandidateZoneLocked(activeZone, x, y)
+	if activeZone == "" && targetZone != "" {
+		tracker.authoritativeZone = targetZone
+		return targetZone, false, false
+	}
+	if targetZone == "" || targetZone == activeZone {
+		tracker.candidateZone = ""
+		tracker.dwellSamples = 0
+		return activeZone, false, false
+	}
+	if distPastBorderCm <= r.hysteresisCm {
+		tracker.candidateZone = targetZone
+		tracker.dwellSamples = 0
+		return activeZone, false, true
+	}
+	if !tracker.lastHandoverAt.IsZero() && now.Sub(tracker.lastHandoverAt) < DefaultHandoverCooldown {
+		return activeZone, false, true
+	}
+	if tracker.candidateZone == targetZone {
+		tracker.dwellSamples++
+	} else {
+		tracker.candidateZone = targetZone
+		tracker.dwellSamples = 1
+	}
+	if tracker.dwellSamples < DefaultHandoverDwellSamples {
+		return activeZone, false, true
+	}
+	tracker.authoritativeZone = targetZone
+	tracker.candidateZone = ""
+	tracker.dwellSamples = 0
+	tracker.lastHandoverAt = now
+	tracker.handoverCount++
+	return targetZone, true, false
+}
+
+func (r *ZoneRouter) ensureEntityTrackerLocked(entityID string, currentZoneID string) *entityHandoverTracker {
+	key := strings.TrimSpace(entityID)
+	if key == "" {
+		key = "_default"
+	}
+	tracker, ok := r.entityHandovers[key]
+	if !ok {
+		tracker = &entityHandoverTracker{authoritativeZone: strings.TrimSpace(currentZoneID)}
+		r.entityHandovers[key] = tracker
+	} else if tracker.authoritativeZone == "" && currentZoneID != "" {
+		tracker.authoritativeZone = strings.TrimSpace(currentZoneID)
+	}
+	return tracker
+}
+
+func (r *ZoneRouter) evaluateCandidateZoneLocked(activeZone string, x, y float64) (string, float64) {
+	currID, isSlug := parseZoneOrRegionID(activeZone)
+	if currID != 0 && len(r.zones) > 0 {
+		if curr, ok := r.zones[currID]; ok {
+			dist := curr.SignedBorderDistanceCm(x, y)
+			if dist <= 0 {
+				return activeZone, 0
+			}
+			targetID := r.containingOrNearestLocked(currID, x, y)
+			if targetID == 0 || targetID == currID {
+				return activeZone, 0
+			}
+			return formatZoneOrRegionID(targetID, isSlug), dist
+		}
+	}
+	return evaluateDefaultVerraRegion(activeZone, x, y)
+}
+
+func parseZoneOrRegionID(raw string) (uint32, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	switch trimmed {
+	case "riverlands", "world-riverlands":
+		return 1, true
+	case "sandsquall", "world-sandsquall":
+		return 2, true
+	case "jundark", "world-jundark":
+		return 3, true
+	case "anvils", "world-anvils":
+		return 4, true
+	case "turquoise_sea", "turquoise-sea", "world-turquoise-sea":
+		return 5, true
+	}
+	n, err := strconv.ParseUint(trimmed, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(n), false
+}
+
+func formatZoneOrRegionID(id uint32, asSlug bool) string {
+	if asSlug {
+		switch id {
+		case 1:
+			return "riverlands"
+		case 2:
+			return "sandsquall"
+		case 3:
+			return "jundark"
+		case 4:
+			return "anvils"
+		case 5:
+			return "turquoise_sea"
+		}
+	}
+	return strconv.FormatUint(uint64(id), 10)
+}
+
+func evaluateDefaultVerraRegion(activeZone string, x, y float64) (string, float64) {
+	type regionBox struct {
+		name                   string
+		minX, maxX, minY, maxY float64
+	}
+	boxes := [5]regionBox{
+		{name: "riverlands", minX: -1200000, maxX: 0, minY: -1200000, maxY: 0},
+		{name: "sandsquall", minX: -1200000, maxX: 0, minY: 0, maxY: 1200000},
+		{name: "jundark", minX: 0, maxX: 1200000, minY: -1200000, maxY: 0},
+		{name: "anvils", minX: -300000, maxX: 600000, minY: -300000, maxY: 300000},
+		{name: "turquoise_sea", minX: 0, maxX: 1200000, minY: 0, maxY: 1200000},
+	}
+	var currBox *regionBox
+	for i := range boxes {
+		if boxes[i].name == activeZone {
+			currBox = &boxes[i]
+			break
+		}
+	}
+	target := "riverlands"
+	for i := range boxes {
+		b := boxes[i]
+		if x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY {
+			target = b.name
+			break
+		}
+	}
+	if currBox == nil || target == activeZone {
+		return target, 0
+	}
+	dx := math.Max(currBox.minX-x, x-currBox.maxX)
+	dy := math.Max(currBox.minY-y, y-currBox.maxY)
+	return target, math.Max(dx, dy)
+}
+

@@ -524,6 +524,28 @@ double PlayerWorld::place_height(const world::Place& place) const {
 
 void PlayerWorld::note_player(uint64_t player_id, double x, double y) {
     if (npcs_) npcs_->note_player(player_id, x, y, world_clock_);
+    if (std::isfinite(x) && std::isfinite(y)) {
+        static thread_local std::unordered_map<uint64_t, world::RegionalHandoverState> s_handovers;
+        auto [it, inserted] = s_handovers.try_emplace(player_id);
+        if (inserted) {
+            const uint8_t mask = area_.region_mask;
+            it->second.authoritative_region =
+                (mask != 0 && mask != static_cast<uint8_t>(spawns::RegionBit::All))
+                    ? static_cast<spawns::RegionBit>(mask)
+                    : spawns::resolve_point_region_bit(x, y);
+            it->second.candidate_region = it->second.authoritative_region;
+        }
+        const int64_t now_ms = static_cast<int64_t>(world_clock_ * 1000.0);
+        const auto decision = world::evaluate_regional_handover(it->second, x, y, now_ms);
+        if (decision == world::BorderDecision::HandoverPending) {
+            authority_states_[player_id] = world::AuthorityState::HandoverPending;
+            (void)try_advance_lease_epoch(player_id, it->second.lease_epoch);
+        } else if (it->second.last_suppressed_by_hysteresis) {
+            authority_states_[player_id] = world::AuthorityState::Local;
+        } else {
+            (void)update_border_authority(player_id, x, y);
+        }
+    }
     if (!nav_ || !nav_->has_region() || !std::isfinite(x) || !std::isfinite(y)) return;
     const bool outside = !nav_->in_region(x, y);
     bool& was = outside_[player_id];
@@ -548,6 +570,7 @@ void PlayerWorld::forget_player(uint64_t player_id) {
     outside_.erase(player_id);
     outside_logged_at_.erase(player_id);
     exit_loud_.erase(player_id);
+    forget_border_authority(player_id);
 }
 
 int PlayerWorld::item_quality(int64_t item) const {

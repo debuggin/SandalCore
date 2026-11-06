@@ -32,7 +32,13 @@ namespace aoc::worldd::world::mapstream {
 
 // The numbers below are the proto's (proto/internal/aoc/worldadmin/v1/worldadmin.proto).
 enum Kind : uint8_t { kPlayer = 1, kNpc = 2, kResourceNode = 3, kMount = 4, kLootPile = 5 };
-enum State : uint8_t { kInCombat = 1, kDead = 2, kMounted = 4 };
+enum State : uint8_t { kInCombat = 1, kDead = 2, kMounted = 4, kHostile = 4 };
+namespace StateFlags {
+inline constexpr uint32_t kInCombat = 1u << 0;
+inline constexpr uint32_t kDead = 1u << 1;
+inline constexpr uint32_t kMounted = 1u << 2;
+inline constexpr uint32_t kHostile = 1u << 2;  // bit 4: hostile monster / combat AI
+}  // namespace StateFlags
 enum Layer : uint32_t { kLayerPlayers = 1, kLayerNpcs = 2, kLayerResourceNodes = 4, kLayerMounts = 8, kLayerLootPiles = 16, kLayerAll = 31 };
 
 /// The health of an entity whose health is not tracked (a player, a resource node, a mount, a pile).
@@ -40,6 +46,7 @@ inline constexpr uint8_t kHealthUnknown = 255;
 /// The largest side of an area a subscriber may ask for, and the most cells a density grid may have.
 inline constexpr int64_t kMaxSideCm = 10'000'000;   // 100 km
 inline constexpr int64_t kMaxCells = 65'536;
+inline constexpr size_t kMaxEntities = 100'000;
 
 inline constexpr uint32_t layer_of(uint8_t kind) {
     switch (kind) {
@@ -120,12 +127,13 @@ struct Counts {
 
 /// The world as the network thread saw it at one publish.
 struct Snapshot {
-    uint64_t                tick = 0;         // the publish's number, 1 for the first
-    double                  world_time = 0;   // seconds
-    std::vector<Rec>        recs;
-    std::vector<PlayerName> names;            // the players' names (a few)
-    Counts                  counts;
-    float                   tick_ms = 0, publish_ms = 0, publish_max_ms = 0;   // the stream's own numbers at the time
+    uint64_t                 tick = 0;         // the publish's number, 1 for the first
+    double                   world_time = 0;   // seconds
+    std::vector<Rec>         recs;
+    std::vector<std::string> rec_names;        // parallel display names for recs
+    std::vector<PlayerName>  names;            // the players' names (a few)
+    Counts                   counts;
+    float                    tick_ms = 0, publish_ms = 0, publish_max_ms = 0;   // the stream's own numbers at the time
 };
 
 /// A table from ids to the rows of an Overlay list, built once per publish.  Open addressing with a power-of-two size: a lookup is a multiply, a shift and a read or two of a table that
@@ -162,6 +170,35 @@ private:
     size_t                      mask_ = 0;
 };
 
+inline std::string leaf_of(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    std::string leaf = slash == std::string::npos ? path : path.substr(slash + 1);
+    const size_t dot = leaf.find_last_of('.');
+    if (dot != std::string::npos) leaf = leaf.substr(dot + 1);
+    if (leaf.size() > 2 && leaf.compare(leaf.size() - 2, 2, "_C") == 0) leaf.resize(leaf.size() - 2);
+    return leaf;
+}
+
+inline std::string actor_display_name(const WorldActor& a) {
+    if (!a.npc.name.empty()) return a.npc.name;
+    std::string name = a.label.empty() ? leaf_of(a.npc.archetype) : a.label;
+    constexpr char kDefault[] = "Default__";
+    if (name.compare(0, sizeof kDefault - 1, kDefault) == 0) name.erase(0, sizeof kDefault - 1);
+    if (name.size() > 2 && name.compare(name.size() - 2, 2, "_C") == 0) name.resize(name.size() - 2);
+    return name;
+}
+
+inline bool is_hostile_npc(const WorldActor& a) {
+    if (a.kind != ActorKind::Npc || a.npc.is_gm_vendor || a.npc.vendor_guid != 0 || a.npc.dialogue_root != 0 || a.npc.aggro_off || a.npc.ground_by_data ||
+        a.npc.spawn_ref >= 0x80000000u) {
+        return false;
+    }
+    if (a.npc.aggro_radius_cm > 0.0 || !a.npc.loot_tables.empty()) return true;
+    const std::string& p = a.npc.archetype;
+    return p.find("/NPC/Monster/") != std::string::npos || p.find("/NPC/Beast/") != std::string::npos || p.find("/NPC/Humanoid/") != std::string::npos ||
+           p.find("/Bandits") != std::string::npos || p.find("/Cultists") != std::string::npos;
+}
+
 /// The record of a registry actor.  `ov` is its row of the fights' overlay, if it has one.
 inline Rec make_rec(const WorldActor& a, uint8_t kind, const Overlay* ov) {
     Rec r;
@@ -174,9 +211,10 @@ inline Rec make_rec(const WorldActor& a, uint8_t kind, const Overlay* ov) {
     r.level = static_cast<uint16_t>(std::clamp(a.npc.level, 0, 65535));
     if (kind == kNpc) {
         r.health = 100;
+        if (is_hostile_npc(a)) r.state |= StateFlags::kHostile;
         if (ov) {
             r.health = ov->health;
-            r.state = ov->state;
+            r.state |= ov->state;
         }
     }
     return r;
@@ -224,6 +262,7 @@ public:
     /// Starts over from the registry's contents.
     void rebuild(const ActorRegistry& registry) {
         recs_.clear();
+        rec_names_.clear();
         slot_.clear();
         counts_ = {};
         registry.for_each([&](const WorldActor& a) { added(a); });
@@ -234,6 +273,7 @@ public:
         if (!kind_of(a.kind, kind) || slot_.count(a.id) != 0) return;
         slot_[a.id] = static_cast<uint32_t>(recs_.size());
         recs_.push_back(make_rec(a, kind, nullptr));
+        rec_names_.push_back(actor_display_name(a));
         count(kind, 1);
     }
 
@@ -256,13 +296,16 @@ public:
         count(recs_[slot].kind, -1);
         if (slot + 1 != recs_.size()) {   // the last record takes the hole
             recs_[slot] = recs_.back();
+            rec_names_[slot] = std::move(rec_names_.back());
             slot_[recs_[slot].id] = slot;
         }
         recs_.pop_back();
+        rec_names_.pop_back();
         slot_.erase(a.id);
     }
 
     const std::vector<Rec>& recs() const { return recs_; }
+    const std::vector<std::string>& rec_names() const { return rec_names_; }
     const Counts& counts() const { return counts_; }
     /// The slot of an entity in recs(); npos for an id the mirror does not hold.
     size_t slot_of(uint64_t id) const {
@@ -298,6 +341,7 @@ private:
 
     ActorRegistry*                         registry_ = nullptr;
     std::vector<Rec>                       recs_;
+    std::vector<std::string>               rec_names_;
     std::unordered_map<uint64_t, uint32_t> slot_;
     Counts                                 counts_;
 };
@@ -311,16 +355,18 @@ public:
         out.world_time = world_time;
         out.names.clear();
         out.recs = mirror.recs();   // reuses out.recs' room: a copy of plain bytes
+        out.rec_names = mirror.rec_names();
         out.counts = mirror.counts();
         for (const Overlay& o : overlay) {
             const size_t slot = mirror.slot_of(o.id);
             if (slot == Mirror::npos) continue;
             out.recs[slot].health = o.health;
-            out.recs[slot].state = o.state;
+            out.recs[slot].state |= o.state;
         }
         for (const PlayerRow& p : players) {
             if (p.id == 0) continue;
             out.recs.push_back(make_rec(p));
+            out.rec_names.push_back(p.name);
             out.names.push_back({p.id, p.name});
             ++out.counts.players;
         }
@@ -380,11 +426,12 @@ struct Grid {
 /// What a subscriber is owed.
 struct Frame {
     enum class Type : uint8_t { None, Snapshot, Delta, Density };
-    Type                    type = Type::None;
-    std::vector<Rec>        changed;   // a Snapshot: every entity in the area; a Delta: the ones that are new or differ
-    std::vector<PlayerName> names;     // the names of the players among `changed` that are new to this subscriber
-    std::vector<uint64_t>   removed;   // a Delta: the ids that left the area or the world
-    Grid                    grid;      // Density
+    Type                     type = Type::None;
+    std::vector<Rec>         changed;         // a Snapshot: every entity in the area; a Delta: the ones that are new or differ
+    std::vector<std::string> changed_names;   // parallel display names for changed entities
+    std::vector<PlayerName>  names;           // the names of the players among `changed` that are new to this subscriber
+    std::vector<uint64_t>    removed;         // a Delta: the ids that left the area or the world
+    Grid                     grid;            // Density
 };
 
 /// One subscriber's side: what it was last sent, and the work of finding what it is owed.  The request must have passed validate().
@@ -405,6 +452,7 @@ public:
     void next(const Snapshot& snap, bool heartbeat, Frame& out) {
         out.type = Frame::Type::None;
         out.changed.clear();
+        out.changed_names.clear();
         out.names.clear();
         out.removed.clear();
         if (req_.density) {
@@ -426,7 +474,8 @@ private:
     void next_entities(const Snapshot& snap, bool heartbeat, Frame& out) {
         ++gen_;
         const bool first = !started_;
-        for (const Rec& r : snap.recs) {
+        for (size_t idx = 0; idx < snap.recs.size(); ++idx) {
+            const Rec& r = snap.recs[idx];
             if ((req_.layers & layer_of(r.kind)) == 0 || !req_.area.contains(r.x, r.y)) continue;
             const auto [it, fresh] = held_.try_emplace(r.id);
             Held& h = it->second;
@@ -434,6 +483,7 @@ private:
             if (fresh || !(h.rec == r)) {
                 h.rec = r;
                 out.changed.push_back(r);
+                out.changed_names.push_back(idx < snap.rec_names.size() ? snap.rec_names[idx] : std::string{});
                 if (fresh && r.kind == kPlayer) {
                     for (const PlayerName& n : snap.names) {
                         if (n.id == r.id) {

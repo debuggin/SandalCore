@@ -12,7 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -30,6 +34,22 @@ var tzBase = [...]uint64{
 	22369621, 89478485, 357913941, 1431655765,
 }
 
+var (
+	oceanTilePNG      []byte
+	fallbackIconCache sync.Map
+)
+
+func init() {
+	img := image.NewNRGBA(image.Rect(0, 0, 256, 256))
+	for i := 3; i < len(img.Pix); i += 4 {
+		img.Pix[i] = 255
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err == nil {
+		oceanTilePNG = buf.Bytes()
+	}
+}
+
 type PmTilesEntry struct {
 	TileID    uint64
 	Offset    uint64
@@ -38,19 +58,22 @@ type PmTilesEntry struct {
 }
 
 type PmTilesNodeMeta struct {
-	NodeIndex   int     `json:"node_index"`
-	GUID        string  `json:"guid"`
-	Name        string  `json:"name"`
-	DisplayName string  `json:"display_name"`
-	TextureStem string  `json:"texture_stem,omitempty"`
-	Ox          float64 `json:"ox"`
-	Oy          float64 `json:"oy"`
-	Oz          float64 `json:"oz"`
-	YawDeg      float64 `json:"yaw_deg"`
-	SizeCm      int     `json:"size_cm"`
-	Level       int     `json:"level"`
-	PlugTier    int     `json:"plug_tier"`
-	StageName   string  `json:"stage_name"`
+	NodeIndex      int     `json:"node_index"`
+	GUID           string  `json:"guid"`
+	Name           string  `json:"name"`
+	DisplayName    string  `json:"display_name"`
+	TextureStem    string  `json:"texture_stem,omitempty"`
+	Ox             float64 `json:"ox"`
+	Oy             float64 `json:"oy"`
+	Oz             float64 `json:"oz"`
+	YawDeg         float64 `json:"yaw_deg"`
+	SizeCm         int     `json:"size_cm"`
+	Level          int     `json:"level"`
+	PlugTier       int     `json:"plug_tier"`
+	StageName      string  `json:"stage_name"`
+	MayorGuid      string  `json:"mayor_guid"`
+	MayorName      string  `json:"mayor_name"`
+	ElectionStatus string  `json:"election_status"`
 }
 
 type rawPmTilesMeta struct {
@@ -77,26 +100,36 @@ type rawPmTilesMeta struct {
 		Oz          float64     `json:"oz"`
 		YawDeg      float64     `json:"yaw_deg"`
 		SizeCm      int         `json:"size_cm"`
+		Level       int         `json:"level"`
 	} `json:"nodes"`
+	Icons []struct {
+		Index  uint32 `json:"index"`
+		Name   string `json:"name"`
+		Width  int    `json:"width"`
+		Height int    `json:"height"`
+	} `json:"icons"`
 }
 
+type PMTilesArchive = PmTilesArchive
+
 type PmTilesArchive struct {
-	path           string
-	file           *os.File
-	modTime        time.Time
-	size           int64
-	rootOffset     uint64
-	rootBytes      uint64
-	metadataOffset uint64
-	metadataBytes  uint64
-	leafOffset     uint64
-	leafBytes      uint64
-	dataOffset     uint64
-	dataBytes      uint64
-	rootEntries    []PmTilesEntry
-	meta           *rawPmTilesMeta
-	leafMu         sync.RWMutex
-	leafCache      map[uint64][]PmTilesEntry
+	path            string
+	file            *os.File
+	modTime         time.Time
+	size            int64
+	rootOffset      uint64
+	rootBytes       uint64
+	metadataOffset  uint64
+	metadataBytes   uint64
+	leafOffset      uint64
+	leafBytes       uint64
+	dataOffset      uint64
+	dataBytes       uint64
+	rootEntries     []PmTilesEntry
+	meta            *rawPmTilesMeta
+	iconIndexByName map[string]uint32
+	leafMu          sync.RWMutex
+	leafCache       map[uint64][]PmTilesEntry
 }
 
 func OpenPmTilesArchive(path string) (*PmTilesArchive, error) {
@@ -161,6 +194,7 @@ func (a *PmTilesArchive) loadRootAndMetadata() error {
 		return fmt.Errorf("pmtiles: decode root dir: %w", err)
 	}
 	a.rootEntries = entries
+	a.iconIndexByName = make(map[string]uint32)
 	if a.metadataBytes > 0 && a.metadataBytes <= 4<<20 {
 		metaBuf := make([]byte, a.metadataBytes)
 		if _, err := a.file.ReadAt(metaBuf, int64(a.metadataOffset)); err == nil {
@@ -169,11 +203,46 @@ func (a *PmTilesArchive) loadRootAndMetadata() error {
 				var parsed rawPmTilesMeta
 				if json.Unmarshal(rawJSON, &parsed) == nil {
 					a.meta = &parsed
+					for _, ic := range parsed.Icons {
+						if key := normalizeIconKey(ic.Name); key != "" {
+							a.iconIndexByName[key] = ic.Index
+						}
+					}
 				}
 			}
 		}
 	}
 	return nil
+}
+
+func (a *PmTilesArchive) IconIndex(iconName string) (uint32, bool) {
+	if a == nil || len(a.iconIndexByName) == 0 {
+		return 0, false
+	}
+	key := normalizeIconKey(iconName)
+	if idx, ok := a.iconIndexByName[key]; ok {
+		return idx, true
+	}
+	if key == "tui_icon_map_wayshrine" || key == "tui_icon_map_emberspring" {
+		if idx, ok := a.iconIndexByName["tui_icon_map_reviveshrine_active"]; ok {
+			return idx, true
+		}
+	}
+	return 0, false
+}
+
+func normalizeIconKey(raw string) string {
+	s := strings.TrimSpace(raw)
+	if idx := strings.LastIndexAny(s, `/\`); idx >= 0 {
+		s = s[idx+1:]
+	}
+	lower := strings.ToLower(s)
+	lower = strings.TrimSuffix(lower, ".png")
+	lower = strings.TrimSuffix(lower, ".webp")
+	if dot := strings.LastIndexByte(lower, '.'); dot >= 0 {
+		lower = lower[dot+1:]
+	}
+	return strings.TrimSpace(lower)
 }
 
 func maybeGunzip(data []byte) ([]byte, error) {
@@ -396,6 +465,16 @@ func (s *Server) handleWorldTile(w http.ResponseWriter, r *http.Request, _ Role)
 	}
 	data, entry, found, err := arch.ReadTile(z, x, y)
 	if err != nil || !found {
+		if err == nil && !found && z >= 0 && z <= 7 && len(oceanTilePNG) > 0 {
+			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("Cache-Control", "public, max-age=300")
+			w.Header().Set("Content-Length", strconv.Itoa(len(oceanTilePNG)))
+			w.WriteHeader(http.StatusOK)
+			if r.Method != http.MethodHead {
+				_, _ = w.Write(oceanTilePNG)
+			}
+			return
+		}
 		writeProblem(w, r, http.StatusNotFound, "tile-not-found", fmt.Sprintf("Tile %d/%d/%d not found in archive.", z, x, y))
 		return
 	}
@@ -405,7 +484,7 @@ func (s *Server) handleWorldTile(w http.ResponseWriter, r *http.Request, _ Role)
 	if !arch.modTime.IsZero() {
 		w.Header().Set("Last-Modified", arch.modTime.UTC().Format(http.TimeFormat))
 	}
-	w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+	w.Header().Set("Cache-Control", "public, max-age=300")
 	if matchesIfNoneMatch(r.Header.Get("If-None-Match"), etag) || notModifiedSince(r, arch.modTime) {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -418,7 +497,120 @@ func (s *Server) handleWorldTile(w http.ResponseWriter, r *http.Request, _ Role)
 	}
 }
 
+func (s *Server) ServeTile(w http.ResponseWriter, r *http.Request) {
+	s.handleWorldTile(w, r, RoleObserver)
+}
+
+func (s *Server) ServeIcon(w http.ResponseWriter, r *http.Request) {
+	s.handleWorldIcon(w, r, RoleObserver)
+}
+
+func (s *Server) handleWorldIcon(w http.ResponseWriter, r *http.Request, _ Role) {
+	iconRaw := r.PathValue("icon")
+	if iconRaw == "" {
+		iconRaw = r.URL.Path
+	}
+	iconKey := normalizeIconKey(iconRaw)
+	if arch := s.getPmTilesArchive(); arch != nil && iconKey != "" {
+		if idx, ok := arch.IconIndex(iconKey); ok {
+			if data, _, found, err := arch.ReadTile(9, int(idx), 0); err == nil && found && len(data) > 0 {
+				w.Header().Set("Content-Type", "image/png")
+				w.Header().Set("Cache-Control", "public, max-age=86400")
+				w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+				w.WriteHeader(http.StatusOK)
+				if r.Method != http.MethodHead {
+					_, _ = w.Write(data)
+				}
+				return
+			}
+		}
+	}
+	badge := renderFallbackIconBadgePNG(iconKey)
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Content-Length", strconv.Itoa(len(badge)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(badge)
+	}
+}
+
+func renderFallbackIconBadgePNG(iconKey string) []byte {
+	shape, fill := classifyIconShapeAndColor(iconKey)
+	cacheKey := shape + ":" + fmt.Sprintf("%02x%02x%02x", fill.R, fill.G, fill.B)
+	if v, ok := fallbackIconCache.Load(cacheKey); ok {
+		return v.([]byte)
+	}
+	const dim = 32
+	img := image.NewNRGBA(image.Rect(0, 0, dim, dim))
+	border := color.NRGBA{R: 15, G: 23, B: 42, A: 245}
+	highlight := color.NRGBA{R: 255, G: 255, B: 255, A: 220}
+	for y := 0; y < dim; y++ {
+		for x := 0; x < dim; x++ {
+			fx, fy := float64(x)+0.5-16.0, float64(y)+0.5-16.0
+			dist := badgeSignedDistance(shape, fx, fy)
+			if dist <= 1.0 {
+				img.SetNRGBA(x, y, blendBadgePixel(dist, fill, border, highlight))
+			}
+		}
+	}
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+	out := buf.Bytes()
+	fallbackIconCache.Store(cacheKey, out)
+	return out
+}
+
+func classifyIconShapeAndColor(iconKey string) (string, color.NRGBA) {
+	k := strings.ToLower(iconKey)
+	switch {
+	case strings.Contains(k, "wayshrine") || strings.Contains(k, "shrine") || strings.Contains(k, "attune"):
+		return "shrine", color.NRGBA{R: 56, G: 189, B: 248, A: 255}
+	case strings.Contains(k, "castle") || strings.Contains(k, "military") || strings.Contains(k, "martial") || strings.Contains(k, "siege"):
+		return "shield", color.NRGBA{R: 239, G: 68, B: 68, A: 255}
+	case strings.Contains(k, "harbor") || strings.Contains(k, "port") || strings.Contains(k, "naval"):
+		return "circle", color.NRGBA{R: 14, G: 165, B: 233, A: 255}
+	case strings.Contains(k, "scientific") || strings.Contains(k, "divine") || strings.Contains(k, "economic") || strings.Contains(k, "node"):
+		return "circle", color.NRGBA{R: 245, G: 158, B: 11, A: 255}
+	default:
+		return "diamond", color.NRGBA{R: 168, G: 85, B: 247, A: 255}
+	}
+}
+
+func badgeSignedDistance(shape string, fx, fy float64) float64 {
+	ax, ay := math.Abs(fx), math.Abs(fy)
+	switch shape {
+	case "shrine":
+		return (ax*1.25 + ay*0.85) - 11.5
+	case "shield":
+		if fy < 0 {
+			return math.Max(ax-10.0, -fy-11.0)
+		}
+		return (ax*1.1 + fy*0.95) - 11.5
+	case "circle":
+		return math.Hypot(fx, fy) - 11.5
+	default:
+		return (ax + ay) - 12.0
+	}
+}
+
+func blendBadgePixel(dist float64, fill, border, highlight color.NRGBA) color.NRGBA {
+	alpha := math.Max(0, math.Min(1, 1.0-dist))
+	var base color.NRGBA
+	if dist > -2.0 {
+		base = border
+	} else if dist > -3.2 {
+		base = highlight
+	} else {
+		base = fill
+	}
+	return color.NRGBA{R: base.R, G: base.G, B: base.B, A: uint8(float64(base.A) * alpha)}
+}
+
 func isValidTileZxy(z, x, y int) bool {
+	if z == 9 {
+		return y == 0 && x >= 0 && x < 512
+	}
 	if z == 8 {
 		return x >= 0 && x < 26 && y >= 0 && y < 5
 	}
@@ -437,6 +629,10 @@ func detectTileContentType(data []byte) string {
 		return "image/webp"
 	}
 	return "application/octet-stream"
+}
+
+func (s *Server) handleMapMeta(w http.ResponseWriter, r *http.Request) {
+	s.handleWorldMapMeta(w, r, RoleObserver)
 }
 
 func (s *Server) handleWorldMapMeta(w http.ResponseWriter, r *http.Request, _ Role) {
@@ -458,7 +654,8 @@ func (s *Server) handleWorldMapMeta(w http.ResponseWriter, r *http.Request, _ Ro
 func (s *Server) buildMapMetaPayload(ctx context.Context) map[string]any {
 	arch := s.getPmTilesArchive()
 	liveLevels := s.fetchCityNodeLevels(ctx)
-	nodes := buildMapMetaNodes(arch, liveLevels)
+	nodes := s.buildMapMetaNodes(arch, liveLevels)
+	icons := resolveMapMetaIcons(arch)
 	meta := map[string]any{
 		"schema_version":  "1.0",
 		"x0":              -47,
@@ -468,14 +665,20 @@ func (s *Server) buildMapMetaPayload(ctx context.Context) map[string]any {
 		"source_cm":       50000,
 		"source_px":       512,
 		"tile_px":         256,
+		"tile_size":       256,
 		"plug_px":         1024,
 		"width_px":        26112,
 		"height_px":       23552,
 		"min_zoom":        0,
 		"max_zoom":        7,
 		"plug_zoom":       8,
+		"icon_zoom":       9,
 		"pmtiles_present": arch != nil,
 		"nodes":           nodes,
+		"node_plugs":      nodes,
+		"icons":           icons,
+		"layers":          []string{"players", "npcs", "monsters", "resource_nodes", "mounts", "loot_piles", "pois", "city_nodes"},
+		"world_bounds":    map[string]any{"min_x_cm": -2350000, "min_y_cm": -850000, "max_x_cm": 200000, "max_y_cm": 1450000},
 	}
 	if arch != nil && arch.meta != nil && arch.meta.Cols > 0 {
 		meta["x0"] = arch.meta.X0
@@ -488,46 +691,94 @@ func (s *Server) buildMapMetaPayload(ctx context.Context) map[string]any {
 	return meta
 }
 
-func buildMapMetaNodes(arch *PmTilesArchive, liveLevels map[string]int) []PmTilesNodeMeta {
+func (s *Server) buildMapMetaNodes(arch *PmTilesArchive, liveLevels map[string]int) []PmTilesNodeMeta {
 	specs := admincatalog.DefaultLevelableNodes()
+	specByNorm := make(map[string]admincatalog.LevelableNodeSpec, len(specs)*3)
+	for _, sp := range specs {
+		specByNorm[strconv.FormatInt(sp.GUID, 10)] = sp
+		specByNorm[normalizeNodeKey(sp.Name)] = sp
+		specByNorm[normalizeNodeKey(sp.DisplayName)] = sp
+	}
 	out := make([]PmTilesNodeMeta, 0, len(specs))
 	if arch != nil && arch.meta != nil && len(arch.meta.Nodes) > 0 {
 		for _, n := range arch.meta.Nodes {
 			guidStr := n.GUID.String()
-			lv := resolveLiveLevel(liveLevels, guidStr, n.Name, n.DisplayName)
-			sizeCm := n.SizeCm
+			defLv := max(n.Level, defaultNodeLevel(n.Name))
+			lv := s.resolveLiveLevel(liveLevels, guidStr, n.Name, n.DisplayName, defLv)
+			ox, oy, oz, yaw, sizeCm := n.Ox, n.Oy, n.Oz, n.YawDeg, n.SizeCm
+			if sp, ok := specByNorm[guidStr]; ok {
+				ox, oy, oz, yaw, sizeCm = sp.Ox, sp.Oy, sp.Oz, sp.YawDeg, sp.SizeCm
+			} else if sp, ok := specByNorm[normalizeNodeKey(n.Name)]; ok {
+				ox, oy, oz, yaw, sizeCm = sp.Ox, sp.Oy, sp.Oz, sp.YawDeg, sp.SizeCm
+			}
 			if sizeCm <= 0 {
 				sizeCm = 100000
 			}
-			out = append(out, PmTilesNodeMeta{
+			meta := PmTilesNodeMeta{
 				NodeIndex: n.NodeIndex, GUID: guidStr, Name: n.Name, DisplayName: n.DisplayName,
-				TextureStem: n.TextureStem, Ox: n.Ox, Oy: n.Oy, Oz: n.Oz, YawDeg: n.YawDeg,
-				SizeCm: sizeCm, Level: lv, PlugTier: admincatalog.PlugTierForLevel(lv),
-				StageName: admincatalog.StageNameForLevel(lv),
-			})
+				TextureStem: n.TextureStem, Ox: ox, Oy: oy, Oz: oz, YawDeg: yaw,
+				SizeCm: sizeCm, Level: lv, PlugTier: nodePlugTierForLevel(lv),
+				StageName: admincatalog.StageNameForLevel(lv), ElectionStatus: "none",
+			}
+			s.applyNodeGovernance(&meta)
+			out = append(out, meta)
 		}
 		return out
 	}
 	for _, n := range specs {
 		guidStr := strconv.FormatInt(n.GUID, 10)
-		lv := resolveLiveLevel(liveLevels, guidStr, n.Name, n.DisplayName)
-		out = append(out, PmTilesNodeMeta{
+		lv := s.resolveLiveLevel(liveLevels, guidStr, n.Name, n.DisplayName, defaultNodeLevel(n.Name))
+		meta := PmTilesNodeMeta{
 			NodeIndex: n.NodeIndex, GUID: guidStr, Name: n.Name, DisplayName: n.DisplayName,
 			TextureStem: n.TextureStem, Ox: n.Ox, Oy: n.Oy, Oz: n.Oz, YawDeg: n.YawDeg,
-			SizeCm: n.SizeCm, Level: lv, PlugTier: admincatalog.PlugTierForLevel(lv),
-			StageName: admincatalog.StageNameForLevel(lv),
-		})
+			SizeCm: n.SizeCm, Level: lv, PlugTier: nodePlugTierForLevel(lv),
+			StageName: admincatalog.StageNameForLevel(lv), ElectionStatus: "none",
+		}
+		s.applyNodeGovernance(&meta)
+		out = append(out, meta)
 	}
 	return out
 }
 
-func resolveLiveLevel(levels map[string]int, guidStr, name, disp string) int {
-	for _, k := range []string{guidStr, strings.ToLower(name), strings.ToLower(disp)} {
+func nodePlugTierForLevel(level int) int {
+	if level <= 1 {
+		return 0
+	}
+	return min(level-1, 4)
+}
+
+func defaultNodeLevel(name string) int {
+	if strings.HasPrefix(name, "Verra_RVR_") {
+		return 3
+	}
+	return 0
+}
+
+func (s *Server) resolveLiveLevel(levels map[string]int, guidStr, name, disp string, defaultLevel int) int {
+	keys := []string{guidStr, strings.ToLower(name), strings.ToLower(disp)}
+	s.mu.Lock()
+	for _, k := range keys {
 		if k != "" {
-			if lv, ok := levels[k]; ok {
+			if lv, ok := s.localNodeLevels[k]; ok {
+				s.mu.Unlock()
 				return lv
 			}
 		}
 	}
-	return 0
+	s.mu.Unlock()
+	for _, k := range keys {
+		if k != "" {
+			if lv, ok := levels[k]; ok && lv > 0 {
+				return lv
+			}
+		}
+	}
+	return defaultLevel
+}
+
+func resolveMapMetaIcons(arch *PmTilesArchive) any {
+	if arch != nil && arch.meta != nil && len(arch.meta.Icons) >= 30 {
+		return arch.meta.Icons
+	}
+	return defaultVerraMapIcons(arch)
 }

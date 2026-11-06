@@ -450,9 +450,15 @@ void attach_service_auth(grpc::ClientContext& ctx) {
     ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(4));
 }
 
+std::string world_stream_addr() {
+    const char* e = std::getenv("AOC_WORLD_STREAM_ADDR");
+    std::string a = (e && *e) ? e : "127.0.0.1:50062";
+    if (a[0] == ':') return "127.0.0.1" + a;
+    return a.rfind("0.0.0.0:", 0) == 0 ? "127.0.0.1:" + a.substr(8) : a;
+}
+
 bool discover_live_goblin(LiveSession& s) {
-    auto stub = aoc::worldadmin::v1::WorldStreamService::NewStub(
-        grpc::CreateChannel("127.0.0.1:50057", grpc::InsecureChannelCredentials()));
+    auto stub = aoc::worldadmin::v1::WorldStreamService::NewStub(grpc::CreateChannel(world_stream_addr(), grpc::InsecureChannelCredentials()));
     grpc::ClientContext st_ctx;
     attach_service_auth(st_ctx);
     aoc::worldadmin::v1::GetStatusResponse st_resp;
@@ -598,8 +604,7 @@ bool run_stage7_talents_actionbar(LiveSession& s) {
 }
 
 bool inspect_goblin_combat(const LiveSession& s) {
-    auto stub = aoc::worldadmin::v1::WorldStreamService::NewStub(
-        grpc::CreateChannel("127.0.0.1:50057", grpc::InsecureChannelCredentials()));
+    auto stub = aoc::worldadmin::v1::WorldStreamService::NewStub(grpc::CreateChannel(world_stream_addr(), grpc::InsecureChannelCredentials()));
     grpc::ClientContext ctx;
     attach_service_auth(ctx);
     aoc::worldadmin::v1::InspectRequest req;

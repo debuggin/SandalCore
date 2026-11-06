@@ -50,12 +50,14 @@
 #include "npc/mover.h"
 #include "world/actor_registry.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <map>
 #include <optional>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -279,6 +281,11 @@ public:
     Stats stats() const;
     const NpcWorldConfig& config() const { return cfg_; }
     double now() const { return now_; }
+    bool simulate_all_npcs() const noexcept { return simulate_all_npcs_.load(std::memory_order_relaxed); }
+    void set_simulate_all_npcs(bool v) noexcept;
+    static bool global_simulate_all_npcs() noexcept;
+    static void set_global_simulate_all_npcs(bool v) noexcept;
+    static bool dispatch_gm_work_item(std::string_view kind, std::string_view payload, NpcWorld* world = nullptr) noexcept;
 
     /// How a group of NPCs (a town's people) stand on the ground, for the log and the tests.  The height the data gave an NPC is what it is judged against.
     struct StandReport {
@@ -344,10 +351,18 @@ private:
         double       settle_began = 0;        // after a montage: when it let go (its place goes out again at every step after that one) ...
         double       settle_until = 0;        // ... until then (NpcWorldConfig::settle_seconds) ...
         int          settle_sent = 0;         // ... and how many times it has
+        bool         hostile = false;
+        bool         can_ambient_roam = false;
+        bool         has_goal = false;
+        double       goal_x = 0, goal_y = 0, goal_z = 0;
+        double       wait_until = 0;
     };
 
     double next_unit(Npc& n);
     void   step(double t);
+    void   step_all_ambient(double t);
+    void   advance_ambient_patrol(Npc& n, world::WorldActor& a, double t, double dt);
+    void   advance_ambient_wander(Npc& n, world::WorldActor& a, double t, double dt);
     void   advance_npc(Npc& n, double t);
     void   decide(Npc& n, double t);
     void   start_wander(Npc& n);
@@ -388,6 +403,8 @@ private:
     double                        next_step_ = -1;
     size_t                        pathfinds_this_step_ = 0;
     int                           iterations_this_step_ = 0;
+    std::atomic<bool>             simulate_all_npcs_{true};
+    uint64_t                      seen_global_sim_epoch_ = 0;
 
     Stats                         stats_;
 };

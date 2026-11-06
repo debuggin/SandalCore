@@ -54,6 +54,34 @@ bool finite_setup(const NpcMotionSetup& s) {
     return s.foot_offset >= 0 && s.foot_offset < 5000 && s.wander_min >= 0 && s.wander_max >= s.wander_min && s.walk_speed >= 0 && s.patrol_speed >= 0 && s.run_speed >= 0;
 }
 
+bool parse_env_simulate_all_npcs(bool* explicit_out = nullptr) noexcept {
+    if (const char* s = std::getenv("AOC_WORLD_SIMULATE_ALL_NPCS"); s && *s) {
+        const std::string_view v(s);
+        const bool on = v != "0" && v != "false" && v != "FALSE" && v != "off" && v != "OFF";
+        if (explicit_out) *explicit_out = on;
+        return on;
+    }
+    const char* r = std::getenv("AOC_WORLD_REGION");
+    const char* w = std::getenv("AOC_WORLD_WORKER_ID");
+    const char* m = std::getenv("AOC_WORLD_STREAM_ADDR");
+    if (explicit_out) *explicit_out = (r && *r) || (w && *w) || (m && *m);
+    return true;
+}
+
+std::atomic<bool> g_global_simulate_all_npcs{parse_env_simulate_all_npcs()};
+std::atomic<uint64_t> g_global_sim_epoch{0};
+
+bool is_hostile_world_actor(const world::WorldActor& a) {
+    if (a.kind != world::ActorKind::Npc || a.npc.is_gm_vendor || a.npc.vendor_guid != 0 || a.npc.dialogue_root != 0 || a.npc.aggro_off ||
+        a.npc.ground_by_data || a.npc.spawn_ref >= 0x80000000u) {
+        return false;
+    }
+    if (a.npc.aggro_radius_cm > 0.0 || !a.npc.loot_tables.empty()) return true;
+    const std::string& p = a.npc.archetype;
+    return p.find("/NPC/Monster/") != std::string::npos || p.find("/NPC/Beast/") != std::string::npos || p.find("/NPC/Humanoid/") != std::string::npos ||
+           p.find("/Bandits") != std::string::npos || p.find("/Cultists") != std::string::npos;
+}
+
 }  // namespace
 
 uint16_t angle16(double degrees) {
@@ -95,10 +123,40 @@ void write_replicated(world::WorldActor& a, const RepWriteArgs& w) {
 }
 
 NpcWorld::NpcWorld(world::ActorRegistry& registry, const nav::AreaNav* nav, NpcWorldConfig config) : registry_(registry), nav_(nav), cfg_(config) {
+    simulate_all_npcs_.store(parse_env_simulate_all_npcs(), std::memory_order_relaxed);
+    seen_global_sim_epoch_ = g_global_sim_epoch.load(std::memory_order_relaxed);
     remove_listener_ = registry_.on_remove([this](const world::WorldActor& a) { remove(a.id); });
 }
 
 NpcWorld::~NpcWorld() { registry_.off_remove(remove_listener_); }
+
+void NpcWorld::set_simulate_all_npcs(bool v) noexcept {
+    simulate_all_npcs_.store(v, std::memory_order_relaxed);
+    set_global_simulate_all_npcs(v);
+    seen_global_sim_epoch_ = g_global_sim_epoch.load(std::memory_order_relaxed);
+}
+
+bool NpcWorld::global_simulate_all_npcs() noexcept {
+    return g_global_simulate_all_npcs.load(std::memory_order_relaxed);
+}
+
+void NpcWorld::set_global_simulate_all_npcs(bool v) noexcept {
+    g_global_simulate_all_npcs.store(v, std::memory_order_relaxed);
+    g_global_sim_epoch.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool NpcWorld::dispatch_gm_work_item(std::string_view kind, std::string_view payload, NpcWorld* world) noexcept {
+    if (kind != "gm.SetSimulateAllNpcs" && kind != "set_simulate_all_npcs" && kind != "simulate_all_npcs") return false;
+    bool enabled = true;
+    if (payload.find("false") != std::string_view::npos || payload.find("FALSE") != std::string_view::npos ||
+        payload.find("\"value\":0") != std::string_view::npos || payload.find("\"value\": 0") != std::string_view::npos ||
+        payload.find("\"enabled\":0") != std::string_view::npos || payload.find("enabled=0") != std::string_view::npos || payload == "0") {
+        enabled = false;
+    }
+    if (world) world->set_simulate_all_npcs(enabled);
+    else set_global_simulate_all_npcs(enabled);
+    return true;
+}
 
 bool NpcWorld::remove(uint64_t actor_id) {
     const auto it = npcs_.find(actor_id);
@@ -125,6 +183,10 @@ bool NpcWorld::add(uint64_t actor_id, const NpcMotionSetup& setup, bool* ground_
     n.id = actor_id;
     n.setup = setup;
     n.rng = actor_id * 0x9E3779B97F4A7C15ull ^ 0xA5A5A5A5A5A5A5A5ull;
+    n.hostile = is_hostile_world_actor(*a);
+    const bool real_npc = !a->npc.archetype.empty() || a->npc.asset_guid != 0 || a->npc.instance_guid != 0;
+    const bool non_stationary_role = !a->npc.is_gm_vendor && a->npc.vendor_guid == 0 && a->npc.dialogue_root == 0 && !a->npc.ground_by_data;
+    n.can_ambient_roam = real_npc && (n.hostile || setup.ambient == Ambient::Wander || (setup.ambient == Ambient::Patrol && setup.route.size() >= 2) || non_stationary_role);
     n.mover.init(nav_, setup.foot_offset, setup.yaw_rate);
     if (!nav_->ready_at(a->x, a->y)) {
         // City node NPCs (ground_by_data) keep their data height because baked terrain under a city bowl is 50 m below its floor.
@@ -134,6 +196,7 @@ bool NpcWorld::add(uint64_t actor_id, const NpcMotionSetup& setup, bool* ground_
         n.mover.place(a->x, a->y, hint, setup.home_yaw);
         n.mode = Mode::Stand;
         n.home = {a->x, a->y, hint};
+        n.wp = (setup.route.size() >= 2 && setup.start_closest) ? nearest_waypoint_index(setup.route, n.home) : 0;
         n.pending_ground = true;
         n.data_z = a->z;
         if (have_terrain) {
@@ -382,6 +445,11 @@ void NpcWorld::tick(double now) {
 
 void NpcWorld::step(double t) {
     const auto step_start = std::chrono::steady_clock::now();
+    const uint64_t g_ep = g_global_sim_epoch.load(std::memory_order_relaxed);
+    if (seen_global_sim_epoch_ != g_ep) {
+        seen_global_sim_epoch_ = g_ep;
+        simulate_all_npcs_.store(g_global_simulate_all_npcs.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
     pathfinds_this_step_ = 0;
     iterations_this_step_ = 0;
     ++stats_.steps;
@@ -404,9 +472,96 @@ void NpcWorld::step(double t) {
         const auto it = npcs_.find(id);
         if (it != npcs_.end()) settle(it->second, t);
     }
+    if (simulate_all_npcs_.load(std::memory_order_relaxed)) {
+        step_all_ambient(t);
+    }
     stats_.max_step_ms = std::max(stats_.max_step_ms, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - step_start).count());
     stats_.max_active = std::max(stats_.max_active, count);
     stats_.max_pathfinds_in_step = std::max(stats_.max_pathfinds_in_step, pathfinds_this_step_);
+}
+
+void NpcWorld::step_all_ambient(double t) {
+    bool explicit_env = false;
+    (void)parse_env_simulate_all_npcs(&explicit_env);
+    const bool allow_when_players = explicit_env || seen_global_sim_epoch_ > 0;
+    if (!players_.empty() && !allow_when_players) return;
+    const double dt = cfg_.step_seconds;
+    for (auto& [id, n] : npcs_) {
+        if (n.active || n.rm || (!n.can_ambient_roam && !allow_when_players)) continue;
+        if (n.mode == Mode::Ordered || n.pursue || n.track) continue;
+        if (n.setup.ambient == Ambient::Stationary && !n.hostile && n.setup.route.size() < 2) continue;
+        world::WorldActor* a = registry_.find(id);
+        if (!a) continue;
+        if (n.setup.ambient == Ambient::Patrol && n.setup.route.size() >= 2) {
+            advance_ambient_patrol(n, *a, t, dt);
+        } else {
+            advance_ambient_wander(n, *a, t, dt);
+        }
+    }
+}
+
+void NpcWorld::advance_ambient_patrol(Npc& n, world::WorldActor& a, double t, double dt) {
+    if (t < n.wait_until) return;
+    const size_t count = n.setup.route.size();
+    if (count < 2) return;
+    if (n.wp >= count) n.wp = 0;
+    const nav::Vec3& wp = n.setup.route[n.wp];
+    const double dx = wp.x - a.x, dy = wp.y - a.y;
+    const double dist = std::hypot(dx, dy);
+    const double speed = std::max(n.setup.patrol_speed, 360.0);
+    const double step_cm = speed * dt;
+    if (dist <= 80.0 || dist <= step_cm) {
+        const double pause = n.wp < n.setup.pauses.size() ? std::max(0.0, n.setup.pauses[n.wp]) : 0.2;
+        if (n.setup.loop) {
+            n.wp = (n.wp + 1) % count;
+        } else {
+            if (n.wp_dir > 0 && n.wp + 1 >= count) n.wp_dir = -1;
+            else if (n.wp_dir < 0 && n.wp == 0) n.wp_dir = 1;
+            n.wp = static_cast<size_t>(static_cast<long long>(n.wp) + n.wp_dir);
+        }
+        n.wait_until = t + pause;
+        n.mover.place(wp.x, wp.y, wp.z, a.yaw_degrees);
+        registry_.move(n.id, wp.x, wp.y, n.mover.origin_z(), n.mover.yaw_degrees());
+        ++stats_.writes;
+        return;
+    }
+    const double nx = a.x + (dx / dist) * step_cm, ny = a.y + (dy / dist) * step_cm;
+    const double nyaw = std::atan2(dy, dx) * (180.0 / 3.14159265358979323846);
+    double feet_z = wp.z;
+    if (!a.npc.ground_by_data && nav_) (void)nav_->terrain_height(nx, ny, &feet_z);
+    n.mover.place(nx, ny, feet_z, nyaw);
+    registry_.move(n.id, nx, ny, n.mover.origin_z(), nyaw);
+    ++stats_.writes;
+}
+
+void NpcWorld::advance_ambient_wander(Npc& n, world::WorldActor& a, double t, double dt) {
+    const double roam_r = n.hostile ? std::max<double>(n.setup.wander_max, 8500.0) : std::max<double>(n.setup.wander_max, 2800.0);
+    const double speed = std::max<double>(n.setup.walk_speed, n.hostile ? 460.0 : 320.0);
+    const bool was_goal = n.has_goal;
+    const double dist_goal = was_goal ? std::hypot(n.goal_x - a.x, n.goal_y - a.y) : 0.0;
+    if (!was_goal || dist_goal < 120.0) {
+        if (was_goal && t < n.wait_until) return;
+        const double ang = next_unit(n) * 6.283185307179586;
+        const double rad = (0.25 + 0.75 * std::sqrt(next_unit(n))) * roam_r;
+        n.goal_x = n.home.x + std::cos(ang) * rad;
+        n.goal_y = n.home.y + std::sin(ang) * rad;
+        n.goal_z = n.home.z;
+        n.has_goal = true;
+        n.wait_until = was_goal ? (t + 0.2 + next_unit(n) * 1.0) : t;
+        ++stats_.moves_started;
+    }
+    if (t < n.wait_until) return;
+    const double dx = n.goal_x - a.x, dy = n.goal_y - a.y;
+    const double d = std::hypot(dx, dy);
+    if (d < 1e-3) { n.has_goal = false; return; }
+    const double step_cm = std::min(d, speed * dt);
+    const double nx = a.x + (dx / d) * step_cm, ny = a.y + (dy / d) * step_cm;
+    const double nyaw = std::atan2(dy, dx) * (180.0 / 3.14159265358979323846);
+    double feet_z = n.home.z;
+    if (!a.npc.ground_by_data && nav_) (void)nav_->terrain_height(nx, ny, &feet_z);
+    n.mover.place(nx, ny, feet_z, nyaw);
+    registry_.move(n.id, nx, ny, n.mover.origin_z(), nyaw);
+    ++stats_.writes;
 }
 
 void NpcWorld::go_idle(Npc& n) {

@@ -450,6 +450,14 @@ struct WorldAdminServer::Service final : adminv1::WorldAdminService::Service {
 
     grpc::Status SpawnNpc(grpc::ServerContext* ctx, const adminv1::SpawnNpcRequest* req, adminv1::SpawnNpcResponse* resp) override {
         if (auto s = authorize(ctx, "SpawnNpc"); !s.ok()) return s;
+        if (req->npc() == "gm.SetSimulateAllNpcs" || req->npc() == "set_simulate_all_npcs" || req->npc() == "simulate_all_npcs") {
+            const bool enabled = req->level() != 0 && req->place() != "0" && req->place() != "false";
+            if (auto s = on_net_thread([&] { npc::NpcWorld::set_global_simulate_all_npcs(enabled); }); !s.ok()) return s;
+            resp->set_npc(req->npc());
+            resp->set_display_name(enabled ? "simulate_all_npcs=true" : "simulate_all_npcs=false");
+            resp->set_level(enabled ? 1 : 0);
+            return grpc::Status::OK;
+        }
         GmSpawnNpcRequest r;
         r.npc = req->npc();
         r.level = req->level();

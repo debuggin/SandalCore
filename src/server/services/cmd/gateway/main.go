@@ -48,6 +48,7 @@ import (
 	"aocrop/services/internal/svcauth"
 	"aocrop/services/internal/telemetry"
 	"aocrop/services/internal/tickets"
+	pkgtelemetry "aocrop/services/pkg/telemetry"
 )
 
 const shutdownGrace = 10 * time.Second
@@ -236,6 +237,9 @@ func newGatewayHTTPMux(authBaseURL, worldEndpoint string) http.Handler {
 func newGatewayHTTPMuxWithDeps(authBaseURL, worldEndpoint string, deps *ics.Deps, charStore *character.Store) http.Handler {
 	mux := http.NewServeMux()
 	bridge := newCharacterHTTPBridge(worldEndpoint, deps, charStore)
+	gate := pkgtelemetry.NewReadinessGate("gateway", 1)
+	gate.SetReady(true, true)
+	mux.Handle("/metrics", gate.Handler())
 	health := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))

@@ -5,13 +5,10 @@
 package admingateway
 
 import (
-	"crypto/sha1"
 	"crypto/subtle"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"net"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -107,13 +104,14 @@ type Config struct {
 	RoleTokens                                                 map[string]Role
 	Now                                                        func() time.Time
 	PmTilesPath, WorldAdminAddr, WorldStreamAddr, CityNodeAddr string
-	ServiceToken, DockerSocketPath                             string
+	ServiceToken, DockerSocketPath, WorldWorkersSpec           string
 	PmTilesArchive                                             *PmTilesArchive
 	DockerClient                                               *http.Client
 	WorldAdminClient                                           worldadminv1.WorldAdminServiceClient
 	WorldStreamClient                                          worldadminv1.WorldStreamServiceClient
 	CityNodeClient                                             citynodev1.CityNodeServiceClient
 	OfflinePlayers                                             []PlayerInfo
+	WorldWorkers                                               []*WorldWorkerEndpoint
 }
 
 type Server struct {
@@ -132,10 +130,12 @@ type Server struct {
 	hotfixIdem                                                 map[string]hotfixIdemRecord
 	overlayState                                               map[string]HotfixRowDiff
 	localNodeLevels                                            map[string]int
+	nodeGovernance                                             map[string]nodeGovernanceState
+	lastStreamAt                                               map[uint32]time.Time
 	auditLog                                                   []AuditEntry
 	catalogCache, metaCache, containersCache                   *ttlCache
 	pmtilesPath, worldAdminAddr, worldStreamAddr, cityNodeAddr string
-	serviceToken, dockerSocketPath                             string
+	serviceToken, dockerSocketPath, worldWorkersSpec           string
 	pmtilesArch                                                *PmTilesArchive
 	worldAdmin                                                 worldadminv1.WorldAdminServiceClient
 	worldStream                                                worldadminv1.WorldStreamServiceClient
@@ -143,6 +143,7 @@ type Server struct {
 	worldAdminConn, worldStreamConn, cityNodeConn              *grpc.ClientConn
 	dockerClient                                               *http.Client
 	offlinePlayers                                             []PlayerInfo
+	worldWorkers                                               []*WorldWorkerEndpoint
 	mux                                                        *http.ServeMux
 	etagHandler                                                http.Handler
 }
@@ -171,13 +172,19 @@ func NewRouter(cfg Config) *Server {
 		catalog: cfg.Catalog, coalescer: cfg.Coalescer, roleTokens: cfg.RoleTokens, now: cfg.Now, startedAt: nowTime,
 		idemStore: make(map[string]idempotencyRecord), hotfixIdem: make(map[string]hotfixIdemRecord),
 		overlayState: make(map[string]HotfixRowDiff), localNodeLevels: make(map[string]int),
+		nodeGovernance: make(map[string]nodeGovernanceState), lastStreamAt: make(map[uint32]time.Time),
 		catalogCache: newTTLCache(), metaCache: newTTLCache(), containersCache: newTTLCache(),
 		pmtilesPath: cfg.PmTilesPath, pmtilesArch: cfg.PmTilesArchive,
-		worldAdminAddr: cfg.WorldAdminAddr, worldStreamAddr: cfg.WorldStreamAddr, cityNodeAddr: cfg.CityNodeAddr,
-		serviceToken: cfg.ServiceToken, worldAdmin: cfg.WorldAdminClient, worldStream: cfg.WorldStreamClient,
+		worldAdminAddr:  firstNonEmpty(cfg.WorldAdminAddr, os.Getenv("AOC_WORLD_ADMIN_ADDR")),
+		worldStreamAddr: firstNonEmpty(cfg.WorldStreamAddr, os.Getenv("AOC_WORLD_STREAM_ADDR")),
+		cityNodeAddr:    firstNonEmpty(cfg.CityNodeAddr, os.Getenv("AOC_CITYNODE_GRPC_ADDR")),
+		serviceToken:     firstNonEmpty(cfg.ServiceToken, os.Getenv("AOC_SERVICE_TOKEN")),
+		worldWorkersSpec: firstNonEmpty(cfg.WorldWorkersSpec, os.Getenv("AOC_WORLD_WORKERS")),
+		worldAdmin: cfg.WorldAdminClient, worldStream: cfg.WorldStreamClient,
 		cityNode: cfg.CityNodeClient, dockerSocketPath: cfg.DockerSocketPath, dockerClient: cfg.DockerClient,
-		offlinePlayers: cfg.OfflinePlayers, mux: http.NewServeMux(),
+		offlinePlayers: cfg.OfflinePlayers, worldWorkers: cfg.WorldWorkers, mux: http.NewServeMux(),
 	}
+	s.initWorldWorkers()
 	s.lastMutatedUnixNano.Store(nowTime.UnixNano())
 	s.ready.Store(true)
 	s.snapshotEpoch.Store(1)
@@ -246,7 +253,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Alt-Svc", `h3=":8443"; ma=86400`)
 	cw := &canonicalHeaderWriter{ResponseWriter: w, start: start, server: s}
-	if r.URL.Path == "/api/v1/world/stream" || r.URL.Path == "/api/v1/world/pmtiles" || strings.HasPrefix(r.URL.Path, "/api/v1/world/tiles/") {
+	if r.URL.Path == "/api/v1/world/stream" || r.URL.Path == "/api/v1/world/pmtiles" ||
+		(strings.HasPrefix(r.URL.Path, "/api/v1/world/tiles/") && !strings.HasSuffix(r.URL.Path, "/metadata.json")) ||
+		strings.HasPrefix(r.URL.Path, "/api/v1/world/icons/") ||
+		strings.HasPrefix(r.URL.Path, "/api/v1/gm/world/icons/") {
 		s.mux.ServeHTTP(cw, r)
 		return
 	}
@@ -307,6 +317,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /livez", s.handleLivez)
 	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s.mux.HandleFunc("GET /metrics", s.handleOpenMetrics)
+	s.mux.HandleFunc("HEAD /metrics", s.handleOpenMetrics)
 	s.mux.HandleFunc("GET /api/v1/catalog/search", s.requireRole(RoleObserver, s.handleCatalogSearch))
 	s.registerReadRoute("/api/v1/catalog/items", s.optionalRole(RoleObserver, s.handleCatalogItems))
 	s.registerReadRoute("/api/v1/catalog/npcs", s.optionalRole(RoleObserver, s.handleCatalogNpcs))
@@ -314,22 +326,39 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/v1/world/entities", s.requireRole(RoleObserver, s.handleWorldEntities))
 	s.mux.HandleFunc("GET /api/v1/world/stream", s.requireRole(RoleObserver, s.handleWorldStream))
 	s.registerReadRoute("/api/v1/world/state", s.optionalRole(RoleObserver, s.handleWorldState))
+	s.registerReadRoute("/api/v1/gm/world/state", s.optionalRole(RoleObserver, s.handleWorldState))
 	s.registerReadRoute("/api/v1/world/players", s.optionalRole(RoleObserver, s.handleWorldPlayers))
-	s.registerReadRoute("/api/v1/world/map-meta", s.optionalRole(RoleObserver, s.handleWorldMapMeta))
+	s.registerReadRoute("/api/v1/gm/world/players", s.optionalRole(RoleObserver, s.handleWorldPlayers))
+	s.registerReadRoute("/api/v1/world/map-meta", s.optionalRole(RoleObserver, s.handleWorldMapMetaWithWorkers))
+	s.registerReadRoute("/api/v1/world/tiles/metadata.json", s.optionalRole(RoleObserver, s.handleWorldMapMetaWithWorkers))
+	s.registerReadRoute("/api/v1/gm/world/tiles/metadata.json", s.optionalRole(RoleObserver, s.handleWorldMapMetaWithWorkers))
 	s.registerReadRoute("/api/v1/world/pmtiles", s.optionalRole(RoleObserver, s.handleWorldPmTiles))
 	s.registerReadRoute("/api/v1/world/tiles/{z}/{x}/{y}", s.optionalRole(RoleObserver, s.handleWorldTile))
+	s.registerReadRoute("/api/v1/world/icons/{icon}", s.optionalRole(RoleObserver, s.handleWorldIcon))
+	s.registerReadRoute("/api/v1/gm/world/icons/{icon}", s.optionalRole(RoleObserver, s.handleWorldIcon))
 	s.mux.HandleFunc("PUT /api/v1/world/nodes/{node}", s.optionalRole(RoleArchitect, s.handlePutWorldNode))
+	s.mux.HandleFunc("POST /api/v1/world/nodes/{node}/mayor", s.optionalRole(RoleOperator, s.handleSetNodeMayor))
+	s.mux.HandleFunc("POST /api/v1/world/nodes/{node}/election", s.optionalRole(RoleOperator, s.handleTriggerNodeElection))
+	s.mux.HandleFunc("POST /api/v1/gm/node/mayor", s.optionalRole(RoleOperator, s.handleSetNodeMayor))
+	s.mux.HandleFunc("POST /api/v1/gm/node/election", s.optionalRole(RoleOperator, s.handleTriggerNodeElection))
 	s.mux.HandleFunc("/api/v1/world/nodes/{node}", s.methodNotAllowed("PUT"))
 	s.mux.HandleFunc("GET /api/v1/gm/commands", s.requireRole(RoleObserver, s.wrapHandler(s.HandleCommandList)))
 	s.mux.HandleFunc("HEAD /api/v1/gm/commands", s.requireRole(RoleObserver, s.wrapHandler(s.HandleCommandList)))
 	s.mux.HandleFunc("POST /api/v1/gm/commands", s.handleGMCommandsEndpoint)
 	s.mux.HandleFunc("/api/v1/gm/commands", s.methodNotAllowed("GET, HEAD, POST"))
-	s.mux.HandleFunc("POST /api/v1/gm/command", s.requireRole(RoleOperator, s.handleGMCommand))
+	s.mux.HandleFunc("POST /api/v1/gm/command", s.optionalRole(RoleArchitect, s.handleGMCommand))
+	for _, p := range []string{"/api/v1/gm/give_currency", "/api/v1/gm/currency", "/api/v1/gm/give_item", "/api/v1/gm/item", "/api/v1/gm/teleport", "/api/v1/gm/spawn_npc", "/api/v1/gm/spawn"} {
+		s.mux.HandleFunc("POST "+p, s.handleGMCommandsEndpoint)
+	}
 	s.mux.HandleFunc("POST /api/v1/gm/hotfix/dry-run", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleHotfixDryRun)))
 	s.mux.HandleFunc("POST /api/v1/gm/hotfix/apply", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleHotfixApply)))
 	s.mux.HandleFunc("GET /api/v1/gm/audit", s.requireRole(RoleObserver, s.wrapHandler(s.HandleAuditList)))
 	s.mux.HandleFunc("POST /api/v1/gm/audit/rollback", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleAuditRollback)))
 	s.registerReadRoute("/api/v1/gm/containers", s.optionalRole(RoleObserver, s.handleGMContainers))
+	s.registerReadRoute("/api/v1/gm/workers", s.optionalRole(RoleObserver, s.handleWorldWorkers))
+	s.registerReadRoute("/api/v1/world/workers", s.optionalRole(RoleObserver, s.handleWorldWorkers))
+	s.registerReadRoute("/api/v1/gm/metrics", s.optionalRole(RoleObserver, s.handlePrometheusMetrics))
+	s.registerReadRoute("/api/v1/metrics", s.optionalRole(RoleObserver, s.handlePrometheusMetrics))
 	s.registerReadRoute("/api/v1/gm/logs", s.optionalRole(RoleObserver, s.handleGMLogs))
 	s.registerReadRoute("/api/v1/gm/openapi.json", s.optionalRole(RoleObserver, s.handleOpenAPI))
 	s.registerReadRoute("/api/v1/world/openapi.json", s.optionalRole(RoleObserver, s.handleOpenAPI))
@@ -576,7 +605,7 @@ func (s *Server) handleCatalogPlaces(w http.ResponseWriter, r *http.Request, _ R
 	if !checkAcceptHeader(w, r) {
 		return
 	}
-	params, ok := parsePageParams(w, r, 50, 200)
+	params, ok := parsePageParams(w, r, 50, 2000)
 	if !ok {
 		return
 	}
@@ -612,7 +641,11 @@ func (s *Server) handleWorldEntities(w http.ResponseWriter, r *http.Request, _ R
 
 func parseViewportFilter(r *http.Request) (worldstream.ViewportFilter, error) {
 	q := r.URL.Query()
-	filter := worldstream.ViewportFilter{Zone: strings.TrimSpace(q.Get("zone"))}
+	z := strings.TrimSpace(q.Get("zone"))
+	if strings.EqualFold(z, "verra") || strings.EqualFold(z, "all") || z == "*" {
+		z = ""
+	}
+	filter := worldstream.ViewportFilter{Zone: z}
 	minXStr, minYStr, maxXStr, maxYStr := q.Get("minX"), q.Get("minY"), q.Get("maxX"), q.Get("maxY")
 	if minXStr == "" && minYStr == "" && maxXStr == "" && maxYStr == "" {
 		return filter, nil
@@ -649,97 +682,26 @@ func (s *Server) handleWorldStream(w http.ResponseWriter, r *http.Request, _ Rol
 	s.serveSSEStream(w, r, sub, maxFrames)
 }
 
-func (s *Server) serveSSEStream(w http.ResponseWriter, r *http.Request, sub *worldstream.Subscription, maxFrames int) {
-	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Time{})
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	_ = rc.Flush()
-	s.streamSubscriptionLoop(r, sub, maxFrames, func(payload []byte) error {
-		_ = rc.SetWriteDeadline(s.now().Add(5 * time.Second))
-		_, err := fmt.Fprintf(w, "event: delta\ndata: %s\n\n", payload)
-		if err == nil {
-			err = rc.Flush()
-		}
-		return err
-	})
-}
-
-func (s *Server) serveWebSocketStream(w http.ResponseWriter, r *http.Request, sub *worldstream.Subscription, maxFrames int) {
-	rc := http.NewResponseController(w)
-	conn, rw, err := rc.Hijack()
-	if err != nil {
-		writeProblem(w, r, http.StatusInternalServerError, "hijack-failed", "WebSocket upgrade hijack failed.")
-		return
-	}
-	defer conn.Close()
-	sum := sha1.Sum([]byte(strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key")) + wsMagicGUID))
-	handshake := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + base64.StdEncoding.EncodeToString(sum[:]) + "\r\n\r\n"
-	if _, err := rw.WriteString(handshake); err != nil || rw.Flush() != nil {
-		return
-	}
-	s.streamSubscriptionLoop(r, sub, maxFrames, func(payload []byte) error {
-		_ = conn.SetWriteDeadline(s.now().Add(5 * time.Second))
-		return writeWSFrame(conn, payload)
-	})
-}
-
-func (s *Server) streamSubscriptionLoop(r *http.Request, sub *worldstream.Subscription, maxFrames int, emit func([]byte) error) {
-	s.coalescer.Flush()
-	for sent := 0; ; {
-		select {
-		case <-r.Context().Done():
-			return
-		case delta, ok := <-sub.Updates():
-			if !ok {
-				return
-			}
-			payload, _ := json.Marshal(delta)
-			if emit(payload) != nil {
-				return
-			}
-			if sent++; maxFrames > 0 && sent >= maxFrames {
-				return
-			}
-		}
-	}
-}
-
-func writeWSFrame(conn net.Conn, payload []byte) error {
-	length, header := len(payload), []byte{0x81}
-	if length <= 125 {
-		header = append(header, byte(length))
-	} else if length <= 65535 {
-		header = append(header, 126, byte(length>>8), byte(length))
-	} else {
-		header = append(header, 127, 0, 0, 0, 0, 0, 0, 0, 0)
-		binary.BigEndian.PutUint64(header[2:10], uint64(length))
-	}
-	if _, err := conn.Write(header); err != nil {
-		return err
-	}
-	_, err := conn.Write(payload)
-	return err
-}
-
 func (s *Server) handleGMCommand(w http.ResponseWriter, r *http.Request, role Role) {
-	idemKey, ok := extractIdempotencyKey(r)
+	if !checkJSONContentType(w, r) || !checkAcceptHeader(w, r) {
+		return
+	}
+	rawBody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<10))
+	if err != nil {
+		writeProblem(w, r, http.StatusBadRequest, "invalid-json-body", "Request payload exceeds 16 KiB.")
+		return
+	}
+	req, ok := parseFlexibleCommandRequest(w, r, rawBody)
 	if !ok {
-		writeProblem(w, r, http.StatusBadRequest, "missing-idempotency-key", "Header 'X-Idempotency-Key' (1..128 chars) is required.")
-		return
-	}
-	var req CommandRequest
-	if !decodeBoundedJSON(w, r, &req) {
-		return
-	}
-	if req.Command = strings.ToLower(strings.TrimSpace(req.Command)); req.Command == "" {
-		writeProblem(w, r, http.StatusBadRequest, "missing-command", "Field 'command' is required.")
 		return
 	}
 	if required := requiredRoleForCommand(req.Command); !role.AtLeast(required) {
 		writeProblem(w, r, http.StatusForbidden, "insufficient-role", fmt.Sprintf("Command %q requires role %s.", req.Command, required))
 		return
+	}
+	idemKey, hasIdem := extractIdempotencyKey(r)
+	if !hasIdem {
+		idemKey = fmt.Sprintf("auto-%d", s.subSeq.Add(1))
 	}
 	s.dispatchIdempotentCommandWithGRPC(w, r, role, idemKey, req)
 }
@@ -755,15 +717,17 @@ func (s *Server) applyCommandSideEffect(req CommandRequest) {
 	if req.TargetID == "" {
 		return
 	}
-	if req.Command == "despawn_entity" {
-		s.coalescer.RemoveEntity(req.TargetID)
+	if req.Command == "despawn_entity" || req.Command == "despawn_npc" || req.Command == "kill_npc" {
+		s.RemoveEntity(req.TargetID)
 		return
 	}
-	s.coalescer.UpsertEntity(worldstream.EntitySnapshot{
-		ID: req.TargetID, Kind: "npc", Name: req.Command + ":" + req.TargetID,
-		Zone: firstNonEmpty(req.Zone, "riverlands"), HealthPct: 100, Level: 50,
-		State: "active", UpdatedAt: s.now().UnixMilli(),
-	})
+	if req.Command == "spawn_npc" {
+		s.coalescer.UpsertEntity(worldstream.EntitySnapshot{
+			ID: req.TargetID, Kind: "npc", Name: req.Command + ":" + req.TargetID,
+			Zone: firstNonEmpty(req.Zone, "riverlands"), HealthPct: 100, Level: 50,
+			State: "active", UpdatedAt: s.now().UnixMilli(),
+		})
+	}
 }
 
 func writeProblem(w http.ResponseWriter, r *http.Request, status int, code, detail string) {

@@ -85,8 +85,8 @@ function Get-DoctorPortChecks {
         @{ Port = 8080;  Protocol = 'TCP'; Service = 'ingress-http'; Container = 'aoc-ingress-proxy' },
         @{ Port = 9090;  Protocol = 'TCP'; Service = 'ingress-grpc'; Container = 'aoc-ingress-proxy' },
         @{ Port = 50061; Protocol = 'TCP'; Service = 'ics-tls';      Container = 'aoc-ingress-proxy' },
-        @{ Port = 7777;  Protocol = 'UDP'; Service = 'world-udp';    Container = 'aoc-world' },
-        @{ Port = 50055; Protocol = 'TCP'; Service = 'world-admin';  Container = 'aoc-world' }
+        @{ Port = 7777;  Protocol = 'UDP'; Service = 'world-udp';    Container = 'aoc-world-riverlands' },
+        @{ Port = 50055; Protocol = 'TCP'; Service = 'world-admin';  Container = 'aoc-world-riverlands' }
     )
     $results = [System.Collections.Generic.List[object]]::new()
     foreach ($spec in $specs) {

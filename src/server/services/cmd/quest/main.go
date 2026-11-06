@@ -10,6 +10,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,6 +24,7 @@ import (
 	"aocrop/services/internal/quest"
 	"aocrop/services/internal/questsgrpc"
 	"aocrop/services/internal/svcauth"
+	"aocrop/services/pkg/telemetry"
 )
 
 func main() {
@@ -58,6 +60,11 @@ func run() error {
 		return err
 	}
 	srv := newServer(token, quest.New(pool))
+	gate := telemetry.NewReadinessGate("quest", 1)
+	gate.SetReady(true, true)
+	httpSrv := &http.Server{Addr: ":8084", Handler: gate.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = httpSrv.ListenAndServe() }()
+	defer func() { _ = httpSrv.Close() }()
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(lis) }()

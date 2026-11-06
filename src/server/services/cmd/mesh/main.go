@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,6 +25,7 @@ import (
 	"aocrop/services/internal/mesh"
 	"aocrop/services/internal/meshgrpc"
 	"aocrop/services/internal/svcauth"
+	"aocrop/services/pkg/telemetry"
 )
 
 func main() {
@@ -64,6 +66,11 @@ func run() error {
 		return err
 	}
 	srv := newServer(token, mesh.NewRegistry(pool, cfg.MeshHeartbeatTTL, cfg.MeshStaticWorld))
+	gate := telemetry.NewReadinessGate("mesh", 1)
+	gate.SetReady(true, true)
+	httpSrv := &http.Server{Addr: ":8085", Handler: gate.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = httpSrv.ListenAndServe() }()
+	defer func() { _ = httpSrv.Close() }()
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(lis) }()

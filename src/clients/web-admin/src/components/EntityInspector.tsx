@@ -2,6 +2,7 @@
 
 import React from "react";
 import {
+  resolveWorkerForCoordinateOrZone,
   verraUnrealToLngLat,
   worldCmToMosaicPx,
   type WorldEntity,
@@ -112,10 +113,22 @@ function buildEntityAttributeRows(
     entity.activeBuffs && entity.activeBuffs.length > 0
       ? entity.activeBuffs.join(", ")
       : "None";
+  const worker = resolveWorkerForCoordinateOrZone(
+    entity.xCm,
+    entity.yCm,
+    entity.zoneId,
+    undefined,
+    entity.name,
+  );
   return [
     { rowId: "guid", label: "GUID", value: formatSafeValue(entity.guid) },
     { rowId: "name", label: "Name", value: formatSafeValue(entity.name) },
     { rowId: "kind", label: "Kind", value: formatSafeValue(entity.kind) },
+    {
+      rowId: "worker",
+      label: "Server Worker",
+      value: `${worker.worker_id} · ${worker.region_label}`,
+    },
     { rowId: "level", label: "Level", value: formatSafeValue(entity.level) },
     { rowId: "hp", label: "HP / MaxHP", value: hpText },
     {
@@ -188,15 +201,15 @@ export function EntityInspector(
       data-testid="verra-entity-inspector"
       data-view-state={model.viewState}
       style={{
-        position: "absolute",
-        top: "56px",
-        right: "12px",
-        width: "320px",
+        position: "relative",
+        width: "100%",
+        boxSizing: "border-box",
         padding: "12px",
-        borderRadius: "6px",
-        border: "1px solid #30363D",
-        backgroundColor: "#0D1117",
-        color: "#E6EDF3",
+        borderRadius: "8px",
+        border: "1px solid rgba(140, 108, 66, 0.47)",
+        background: "linear-gradient(135deg, rgba(11, 14, 23, 0.78) 0%, rgba(16, 23, 36, 0.84) 100%)",
+        backdropFilter: "blur(16px)",
+        color: "#F3EFE6",
         fontSize: "12px",
         fontVariantNumeric: "tabular-nums",
         zIndex: 20,

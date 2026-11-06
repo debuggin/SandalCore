@@ -7,20 +7,37 @@ package admingateway
 import (
 	"cmp"
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	worldadminv1 "aocrop/services/gen/aoc/worldadmin/v1"
 	admincatalog "aocrop/services/internal/admin-catalog"
 	worldstream "aocrop/services/internal/world-stream"
+	"google.golang.org/grpc"
 )
+
+type CityNodeState = PmTilesNodeMeta
+
+type nodeGovernanceState struct {
+	MayorGuid      string
+	MayorName      string
+	ElectionStatus string
+}
 
 type PlayerInfo struct {
 	ID          uint64  `json:"id"`
+	GUID        string  `json:"guid"`
+	Name        string  `json:"name"`
 	Character   string  `json:"character"`
 	CharacterID string  `json:"character_id,omitempty"`
 	Account     string  `json:"account,omitempty"`
@@ -29,6 +46,9 @@ type PlayerInfo struct {
 	X           float64 `json:"x"`
 	Y           float64 `json:"y"`
 	Z           float64 `json:"z"`
+	XCm         float64 `json:"x_cm"`
+	YCm         float64 `json:"y_cm"`
+	ZCm         float64 `json:"z_cm"`
 	YawDegrees  float64 `json:"yaw_degrees,omitempty"`
 	Health      uint32  `json:"health"`
 	MaxHealth   uint32  `json:"max_health"`
@@ -37,6 +57,29 @@ type PlayerInfo struct {
 	Dead        bool    `json:"dead,omitempty"`
 	Online      bool    `json:"online"`
 	Zone        string  `json:"zone"`
+}
+
+func normalizePlayerInfo(p PlayerInfo) PlayerInfo {
+	p.Character = firstNonEmpty(p.Character, p.Name)
+	p.Name = firstNonEmpty(p.Name, p.Character)
+	if p.X == 0 && p.XCm != 0 {
+		p.X = p.XCm
+	}
+	if p.Y == 0 && p.YCm != 0 {
+		p.Y = p.YCm
+	}
+	if p.Z == 0 && p.ZCm != 0 {
+		p.Z = p.ZCm
+	}
+	p.XCm, p.YCm, p.ZCm = p.X, p.Y, p.Z
+	p.Zone = firstNonEmpty(p.Zone, "verra")
+	if p.Level == 0 {
+		p.Level = 1
+	}
+	if p.GUID == "" {
+		p.GUID = firstNonEmpty(p.CharacterID, fmt.Sprintf("player:%d:%s", p.ID, p.Character))
+	}
+	return p
 }
 
 const (
@@ -169,9 +212,9 @@ func (s *Server) handleWorldState(w http.ResponseWriter, r *http.Request, _ Role
 	if sel.Pois {
 		liveLevels := s.fetchCityNodeLevels(r.Context())
 		worldPlaces := s.fetchWorldPlaces(r.Context())
-		nodes = buildMapMetaNodes(s.getPmTilesArchive(), liveLevels)
+		nodes = s.buildMapMetaNodes(s.getPmTilesArchive(), liveLevels)
 		pois, _ = s.catalog.SearchPlacesFiltered(r.Context(), admincatalog.PlaceFilter{
-			Limit: 200, ExtraPlaces: worldPlaces, NodeLevels: liveLevels,
+			Limit: 10000, ExtraPlaces: worldPlaces, NodeLevels: liveLevels,
 		})
 	}
 	payload := map[string]any{
@@ -179,6 +222,11 @@ func (s *Server) handleWorldState(w http.ResponseWriter, r *http.Request, _ Role
 		"layer_mask":     sel.LayerMask,
 		"stream_layers":  sel.StreamLayers,
 		"layers":         sel,
+		"layer_counts": map[string]int{
+			"players": len(players), "npcs": len(npcs), "monsters": len(monsters),
+			"resource_nodes": len(resourceNodes), "mounts": len(mounts),
+			"loot_piles": len(lootPiles), "pois": len(pois), "city_nodes": len(nodes),
+		},
 		"players":        players,
 		"npcs":           npcs,
 		"monsters":       monsters,
@@ -188,6 +236,8 @@ func (s *Server) handleWorldState(w http.ResponseWriter, r *http.Request, _ Role
 		"pois":           pois,
 		"places":         pois,
 		"nodes":          nodes,
+		"city_nodes":     nodes,
+		"workers":        s.snapshotWorldWorkers(),
 		"entities":       entities,
 		"count":          len(entities),
 		"serverTimeMs":   s.now().UnixMilli(),
@@ -196,24 +246,58 @@ func (s *Server) handleWorldState(w http.ResponseWriter, r *http.Request, _ Role
 }
 
 func (s *Server) pullWorldStreamSnapshot(ctx context.Context, filter worldstream.ViewportFilter, streamLayers uint32) {
-	cli := s.getWorldStreamClient()
-	if cli == nil || streamLayers == 0 {
+	effLayers := streamLayers & StreamLayerAll
+	if effLayers == 0 {
 		return
 	}
-	area := &worldadminv1.AreaBox{MinXCm: -2500000, MinYCm: -2500000, MaxXCm: 2500000, MaxYCm: 2500000}
-	if filter.HasBounds {
-		area = &worldadminv1.AreaBox{
-			MinXCm: int32(filter.MinX), MinYCm: int32(filter.MinY),
-			MaxXCm: int32(filter.MaxX), MaxYCm: int32(filter.MaxY),
+	now := s.now()
+	if !filter.HasBounds && filter.Zone == "" {
+		s.mu.Lock()
+		lastAt, ok := s.lastStreamAt[effLayers]
+		s.mu.Unlock()
+		if ok && now.Sub(lastAt) < 400*time.Millisecond {
+			return
 		}
 	}
-	sctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	area := &worldadminv1.AreaBox{MinXCm: -2500000, MinYCm: -1500000, MaxXCm: 1000000, MaxYCm: 2000000}
+	if filter.HasBounds {
+		area = &worldadminv1.AreaBox{MinXCm: int32(filter.MinX), MinYCm: int32(filter.MinY), MaxXCm: int32(filter.MaxX), MaxYCm: int32(filter.MaxY)}
+	}
+	nowMs := now.UnixMilli()
+	var wg sync.WaitGroup
+	for _, w := range s.worldWorkers {
+		if filter.Zone != "" && !strings.EqualFold(filter.Zone, w.ScopeKey) && !strings.EqualFold(filter.Zone, w.WorkerID) {
+			continue
+		}
+		if s.workerStreamClient(w) == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(worker *WorldWorkerEndpoint) {
+			defer wg.Done()
+			s.pullOneWorkerStream(ctx, worker, area, effLayers, nowMs)
+		}(w)
+	}
+	wg.Wait()
+	if !filter.HasBounds && filter.Zone == "" {
+		s.mu.Lock()
+		s.lastStreamAt[effLayers] = now
+		s.mu.Unlock()
+	}
+}
+
+func (s *Server) pullOneWorkerStream(ctx context.Context, w *WorldWorkerEndpoint, area *worldadminv1.AreaBox, effLayers uint32, nowMs int64) {
+	cli := s.workerStreamClient(w)
+	if cli == nil {
+		return
+	}
+	sctx, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
 	defer cancel()
-	stream, err := cli.Subscribe(s.outgoingCtx(sctx), &worldadminv1.SubscribeRequest{
-		Area:   area,
-		Detail: worldadminv1.StreamDetail_STREAM_DETAIL_ENTITIES,
-		Layers: streamLayers & StreamLayerAll,
-	})
+	stream, err := cli.Subscribe(
+		s.outgoingCtx(sctx),
+		&worldadminv1.SubscribeRequest{Area: area, Detail: worldadminv1.StreamDetail_STREAM_DETAIL_ENTITIES, Layers: effLayers},
+		grpc.MaxCallRecvMsgSize(64*1024*1024),
+	)
 	if err != nil || stream == nil {
 		return
 	}
@@ -221,19 +305,32 @@ func (s *Server) pullWorldStreamSnapshot(ctx context.Context, filter worldstream
 	if err != nil || frame == nil || frame.GetSnapshot() == nil {
 		return
 	}
-	nowMs := s.now().UnixMilli()
+	scope := strings.ToLower(strings.TrimSpace(firstNonEmpty(w.ScopeKey, w.WorkerID)))
+	seenIDs := make(map[string]struct{}, len(frame.GetSnapshot().GetEntities()))
 	for _, ent := range frame.GetSnapshot().GetEntities() {
-		s.coalescer.UpsertEntity(protoEntityToSnapshot(ent, nowMs))
+		snap := protoEntityToSnapshot(ent, nowMs)
+		if scope != "" && scope != "verra" {
+			snap.ID = scope + ":" + snap.ID
+			snap.Zone = scope
+		}
+		seenIDs[snap.ID] = struct{}{}
+		s.coalescer.UpsertEntity(snap)
 	}
+	s.pruneDespawnedWorkerEntities(scope, area, effLayers, seenIDs)
 }
 
 func protoEntityToSnapshot(ent *worldadminv1.Entity, nowMs int64) worldstream.EntitySnapshot {
 	kind := "npc"
+	stFlags := ent.GetState()
 	switch ent.GetKind() {
 	case worldadminv1.EntityKind_ENTITY_KIND_PLAYER:
 		kind = "player"
 	case worldadminv1.EntityKind_ENTITY_KIND_NPC:
-		kind = "npc"
+		if (stFlags&4) != 0 || (stFlags&uint32(worldadminv1.EntityState_ENTITY_STATE_IN_COMBAT)) != 0 || isHostileNpcName(ent.GetName()) {
+			kind = "monster"
+		} else {
+			kind = "npc"
+		}
 	case worldadminv1.EntityKind_ENTITY_KIND_RESOURCE_NODE:
 		kind = "resource_node"
 	case worldadminv1.EntityKind_ENTITY_KIND_MOUNT:
@@ -242,23 +339,19 @@ func protoEntityToSnapshot(ent *worldadminv1.Entity, nowMs int64) worldstream.En
 		kind = "loot_pile"
 	}
 	state := "active"
-	if (ent.GetState() & uint32(worldadminv1.EntityState_ENTITY_STATE_DEAD)) != 0 {
+	if (stFlags & uint32(worldadminv1.EntityState_ENTITY_STATE_DEAD)) != 0 {
 		state = "dead"
-	} else if (ent.GetState() & uint32(worldadminv1.EntityState_ENTITY_STATE_IN_COMBAT)) != 0 {
+	} else if (stFlags & uint32(worldadminv1.EntityState_ENTITY_STATE_IN_COMBAT)) != 0 {
 		state = "combat"
+	} else if (stFlags&4) != 0 || kind == "monster" {
+		state = "hostile"
 	}
-	hp := float64(ent.GetHealthPct())
-	if hp > 100 {
-		hp = 100
-	}
-	name := ent.GetName()
-	if name == "" {
-		name = fmt.Sprintf("%s:%d", kind, ent.GetId())
-	}
+	hp := min(float64(ent.GetHealthPct()), 100.0)
+	name := firstNonEmpty(ent.GetName(), fmt.Sprintf("%s:%d", kind, ent.GetId()))
 	return worldstream.EntitySnapshot{
 		ID: fmt.Sprintf("%s:%d", kind, ent.GetId()), Kind: kind, Name: name,
 		Zone: "verra", X: float64(ent.GetXCm()), Y: float64(ent.GetYCm()), Z: float64(ent.GetZCm()),
-		HealthPct: hp, Level: int(ent.GetLevel()), State: state, UpdatedAt: nowMs,
+		Yaw: float64(ent.GetYaw()) * 360.0 / 256.0, HealthPct: hp, Level: int(ent.GetLevel()), State: state, UpdatedAt: nowMs,
 	}
 }
 
@@ -299,6 +392,7 @@ func (s *Server) handleWorldPlayers(w http.ResponseWriter, r *http.Request, _ Ro
 func matchesPlayerQuery(p PlayerInfo, qLower string) bool {
 	return strings.Contains(strings.ToLower(p.Character), qLower) ||
 		strings.Contains(strings.ToLower(p.CharacterID), qLower) ||
+		strings.Contains(strings.ToLower(p.GUID), qLower) ||
 		strings.Contains(strings.ToLower(p.Account), qLower) ||
 		strings.Contains(strings.ToLower(p.Zone), qLower) ||
 		strings.Contains(strconv.FormatUint(p.ID, 10), qLower)
@@ -338,48 +432,22 @@ func sortPlayers(items []PlayerInfo, sortSpec string) {
 
 func (s *Server) collectPlayers(ctx context.Context) []PlayerInfo {
 	seen := make(map[string]bool)
-	var out []PlayerInfo
-	if cli := s.getWorldAdminClient(); cli != nil {
-		rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		resp, err := callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.ListPlayersResponse, error) {
-			return cli.ListPlayers(c, &worldadminv1.ListPlayersRequest{})
-		})
-		cancel()
-		if err == nil && resp != nil {
-			for i, p := range resp.GetPlayers() {
-				key := strings.ToLower(p.GetName())
-				seen[key] = true
-				var x, y, z float64
-				if pos := p.GetPosition(); pos != nil {
-					x, y, z = pos.GetX(), pos.GetY(), pos.GetZ()
-				}
-				hp := uint32(100)
-				if p.GetDead() {
-					hp = 0
-				}
-				out = append(out, PlayerInfo{
-					ID: uint64(i + 1), Character: p.GetName(), CharacterID: p.GetCharacterId(),
-					Level: 1, X: x, Y: y, Z: z, YawDegrees: p.GetYawDegrees(),
-					Health: hp, MaxHealth: 100, Mounted: p.GetMounted(), Dead: p.GetDead(),
-					Online: true, Zone: "verra",
-				})
-			}
-		}
-	}
+	out := s.collectMultiWorkerOnlinePlayers(ctx, seen)
 	for _, snap := range s.coalescer.Snapshot(worldstream.ViewportFilter{}) {
 		if snap.Kind == "player" && !seen[strings.ToLower(snap.Name)] {
 			seen[strings.ToLower(snap.Name)] = true
-			out = append(out, PlayerInfo{
-				Character: snap.Name, Level: uint32(snap.Level),
+			out = append(out, normalizePlayerInfo(PlayerInfo{
+				ID: uint64(len(out) + 1), GUID: snap.ID, Character: snap.Name, Level: uint32(snap.Level),
 				X: snap.X, Y: snap.Y, Z: snap.Z,
 				Health: uint32(snap.HealthPct), MaxHealth: 100, Online: true, Zone: snap.Zone,
-			})
+			}))
 		}
 	}
 	for _, off := range s.offlinePlayers {
-		if !seen[strings.ToLower(off.Character)] {
-			seen[strings.ToLower(off.Character)] = true
-			out = append(out, off)
+		nameKey := strings.ToLower(firstNonEmpty(off.Character, off.Name))
+		if !seen[nameKey] {
+			seen[nameKey] = true
+			out = append(out, normalizePlayerInfo(off))
 		}
 	}
 	return out
@@ -458,7 +526,11 @@ func isMonsterSnapshot(snap worldstream.EntitySnapshot) bool {
 	if st == "friendly" || st == "vendor" || st == "guard" || st == "quest" || st == "citizen" {
 		return false
 	}
-	nameLower := strings.ToLower(snap.Name)
+	return isHostileNpcName(snap.Name)
+}
+
+func isHostileNpcName(name string) bool {
+	nameLower := strings.ToLower(name)
 	for _, friendly := range []string{"vendor", "merchant", "innkeeper", "guard", "citizen", "villager", "guide", "quest", "trainer", "smith", "banker"} {
 		if strings.Contains(nameLower, friendly) {
 			return false
@@ -481,4 +553,234 @@ func computeHealthPct(health, maxHealth uint32) float64 {
 		return 100
 	}
 	return float64(health) * 100.0 / float64(maxHealth)
+}
+
+func normalizeNodeKey(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	s = strings.TrimPrefix(s, "verra_rvr_")
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func findCanonicalNodeSpec(nodeIdent string) (admincatalog.LevelableNodeSpec, bool) {
+	norm := normalizeNodeKey(nodeIdent)
+	trimmed := strings.TrimSpace(nodeIdent)
+	if norm == "" && trimmed == "" {
+		return admincatalog.LevelableNodeSpec{}, false
+	}
+	for _, sp := range admincatalog.DefaultLevelableNodes() {
+		guidStr := strconv.FormatInt(sp.GUID, 10)
+		if guidStr == trimmed || normalizeNodeKey(sp.Name) == norm || normalizeNodeKey(sp.DisplayName) == norm {
+			return sp, true
+		}
+	}
+	return admincatalog.LevelableNodeSpec{}, false
+}
+
+func (s *Server) applyNodeGovernance(meta *PmTilesNodeMeta) {
+	if meta.ElectionStatus == "" {
+		meta.ElectionStatus = "none"
+	}
+	s.mu.Lock()
+	gov, ok := s.nodeGovernance[meta.GUID]
+	if !ok {
+		gov, ok = s.nodeGovernance[normalizeNodeKey(meta.Name)]
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	meta.MayorGuid = gov.MayorGuid
+	meta.MayorName = gov.MayorName
+	if gov.ElectionStatus != "" {
+		meta.ElectionStatus = gov.ElectionStatus
+	}
+}
+
+func (s *Server) SetCityNodeMayor(nodeName, mayorGuid, mayorName string) (CityNodeState, bool) {
+	sp, ok := findCanonicalNodeSpec(nodeName)
+	if !ok {
+		return CityNodeState{}, false
+	}
+	guidStr := strconv.FormatInt(sp.GUID, 10)
+	mayorGuid = strings.TrimSpace(mayorGuid)
+	mayorName = strings.TrimSpace(mayorName)
+	gov := nodeGovernanceState{ElectionStatus: "none"}
+	if mayorName != "" || mayorGuid != "" {
+		if mayorName == "" {
+			mayorName = mayorGuid
+		}
+		gov = nodeGovernanceState{MayorGuid: mayorGuid, MayorName: mayorName, ElectionStatus: "active_term"}
+	}
+	s.mu.Lock()
+	s.nodeGovernance[guidStr] = gov
+	s.nodeGovernance[normalizeNodeKey(sp.Name)] = gov
+	lv, hasLv := s.localNodeLevels[guidStr]
+	s.mu.Unlock()
+	if !hasLv {
+		lv = defaultNodeLevel(sp.Name)
+	}
+	s.recordMutation()
+	return CityNodeState{
+		NodeIndex: sp.NodeIndex, GUID: guidStr, Name: sp.Name, DisplayName: sp.DisplayName,
+		TextureStem: sp.TextureStem, Ox: sp.Ox, Oy: sp.Oy, Oz: sp.Oz, YawDeg: sp.YawDeg,
+		SizeCm: sp.SizeCm, Level: lv, PlugTier: nodePlugTierForLevel(lv),
+		StageName: admincatalog.StageNameForLevel(lv), MayorGuid: gov.MayorGuid,
+		MayorName: gov.MayorName, ElectionStatus: gov.ElectionStatus,
+	}, true
+}
+
+func (s *Server) TriggerCityNodeElection(nodeName, action string) (CityNodeState, bool) {
+	sp, ok := findCanonicalNodeSpec(nodeName)
+	if !ok {
+		return CityNodeState{}, false
+	}
+	guidStr := strconv.FormatInt(sp.GUID, 10)
+	s.mu.Lock()
+	gov := s.nodeGovernance[guidStr]
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "start", "registration", "open_registration":
+		gov.ElectionStatus = "registration"
+	case "open_voting", "voting", "vote":
+		gov.ElectionStatus = "voting"
+	case "conclude", "finish", "complete", "active_term":
+		gov.ElectionStatus = "active_term"
+		if gov.MayorName == "" {
+			gov.MayorName = "Elected Mayor"
+		}
+	case "cancel", "clear", "none", "reset":
+		gov.ElectionStatus = "none"
+	default:
+		s.mu.Unlock()
+		return CityNodeState{}, false
+	}
+	s.nodeGovernance[guidStr] = gov
+	s.nodeGovernance[normalizeNodeKey(sp.Name)] = gov
+	lv, hasLv := s.localNodeLevels[guidStr]
+	s.mu.Unlock()
+	if !hasLv {
+		lv = defaultNodeLevel(sp.Name)
+	}
+	s.recordMutation()
+	return CityNodeState{
+		NodeIndex: sp.NodeIndex, GUID: guidStr, Name: sp.Name, DisplayName: sp.DisplayName,
+		TextureStem: sp.TextureStem, Ox: sp.Ox, Oy: sp.Oy, Oz: sp.Oz, YawDeg: sp.YawDeg,
+		SizeCm: sp.SizeCm, Level: lv, PlugTier: nodePlugTierForLevel(lv),
+		StageName: admincatalog.StageNameForLevel(lv), MayorGuid: gov.MayorGuid,
+		MayorName: gov.MayorName, ElectionStatus: gov.ElectionStatus,
+	}, true
+}
+
+func (s *Server) RemoveEntity(entityGuid string) {
+	id := strings.TrimSpace(entityGuid)
+	if id == "" {
+		return
+	}
+	s.coalescer.RemoveEntity(id)
+	s.coalescer.RemoveEntity("npc:" + id)
+	s.coalescer.RemoveEntity("monster:" + id)
+	for _, snap := range s.coalescer.Snapshot(worldstream.ViewportFilter{}) {
+		if strings.EqualFold(snap.ID, id) || strings.HasSuffix(strings.ToLower(snap.ID), ":"+strings.ToLower(id)) {
+			s.coalescer.RemoveEntity(snap.ID)
+		}
+	}
+}
+
+func (s *Server) recordGMAudit(role Role, domain, action, targetID, summary string) AuditEntry {
+	seq := s.auditSeq.Add(1)
+	entry := AuditEntry{
+		AuditID:        fmt.Sprintf("aud-%d", seq),
+		ActorSub:       strings.ToLower(string(role)),
+		ActorRole:      role,
+		CommandDomain:  domain,
+		ActionName:     action,
+		TargetEntityID: targetID,
+		DiffSummary:    summary,
+		SnapshotEpoch:  s.snapshotEpoch.Load(),
+		AppliedAt:      s.now().UTC().Format(time.RFC3339),
+	}
+	s.mu.Lock()
+	s.auditLog = append(s.auditLog, entry)
+	s.mu.Unlock()
+	s.recordMutation()
+	return entry
+}
+
+func (s *Server) serveSSEStream(w http.ResponseWriter, r *http.Request, sub *worldstream.Subscription, maxFrames int) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Time{})
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	_ = rc.Flush()
+	s.streamSubscriptionLoop(r, sub, maxFrames, func(payload []byte) error {
+		_ = rc.SetWriteDeadline(s.now().Add(5 * time.Second))
+		_, err := fmt.Fprintf(w, "event: delta\ndata: %s\n\n", payload)
+		if err == nil {
+			err = rc.Flush()
+		}
+		return err
+	})
+}
+
+func (s *Server) serveWebSocketStream(w http.ResponseWriter, r *http.Request, sub *worldstream.Subscription, maxFrames int) {
+	rc := http.NewResponseController(w)
+	conn, rw, err := rc.Hijack()
+	if err != nil {
+		writeProblem(w, r, http.StatusInternalServerError, "hijack-failed", "WebSocket upgrade hijack failed.")
+		return
+	}
+	defer conn.Close()
+	sum := sha1.Sum([]byte(strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key")) + wsMagicGUID))
+	handshake := "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + base64.StdEncoding.EncodeToString(sum[:]) + "\r\n\r\n"
+	if _, err := rw.WriteString(handshake); err != nil || rw.Flush() != nil {
+		return
+	}
+	s.streamSubscriptionLoop(r, sub, maxFrames, func(payload []byte) error {
+		_ = conn.SetWriteDeadline(s.now().Add(5 * time.Second))
+		return writeWSFrame(conn, payload)
+	})
+}
+
+func (s *Server) streamSubscriptionLoop(r *http.Request, sub *worldstream.Subscription, maxFrames int, emit func([]byte) error) {
+	s.coalescer.Flush()
+	for sent := 0; ; {
+		select {
+		case <-r.Context().Done():
+			return
+		case delta, ok := <-sub.Updates():
+			if !ok {
+				return
+			}
+			payload, _ := json.Marshal(delta)
+			if emit(payload) != nil {
+				return
+			}
+			if sent++; maxFrames > 0 && sent >= maxFrames {
+				return
+			}
+		}
+	}
+}
+
+func writeWSFrame(conn net.Conn, payload []byte) error {
+	length, header := len(payload), []byte{0x81}
+	if length <= 125 {
+		header = append(header, byte(length))
+	} else if length <= 65535 {
+		header = append(header, 126, byte(length>>8), byte(length))
+	} else {
+		header = append(header, 127, 0, 0, 0, 0, 0, 0, 0, 0)
+		binary.BigEndian.PutUint64(header[2:10], uint64(length))
+	}
+	if _, err := conn.Write(header); err != nil {
+		return err
+	}
+	_, err := conn.Write(payload)
+	return err
 }

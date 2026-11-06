@@ -12,11 +12,12 @@ registerHooks({
   resolve(specifier, context, nextResolve) {
     if (
       specifier === "react" ||
+      specifier === "react-dom" ||
       specifier === "react-dom/client" ||
       specifier === "react/jsx-runtime"
     ) {
       return {
-        url: "data:text/javascript,export const useState = (v) => [typeof v === 'function' ? v() : v, () => {}]; export const useEffect = () => {}; export const useMemo = (fn) => fn(); export const useCallback = (fn) => fn; export const useRef = (v) => ({ current: v }); export const createRoot = () => ({ render: () => {} }); export default { useState, useEffect, useMemo, useCallback, useRef, StrictMode: 'div' };",
+        url: "data:text/javascript,export const useState = (v) => [typeof v === 'function' ? v() : v, () => {}]; export const useEffect = () => {}; export const useMemo = (fn) => fn(); export const useCallback = (fn) => fn; export const useRef = (v) => ({ current: v }); export const createPortal = (node) => node; export const createElement = () => null; export class Component { constructor(props) { this.props = props; } } export const createRoot = () => ({ render: () => {} }); export default { useState, useEffect, useMemo, useCallback, useRef, createPortal, createElement, Component, StrictMode: 'div' };",
         shortCircuit: true,
       };
     }
@@ -56,16 +57,15 @@ registerHooks({
 
 async function step1ThreeTabShellAndClutterRemoval(): Promise<void> {
   const mainMod = await import("../src/main.tsx");
-  assert.equal(mainMod.ADMIN_TABS.length, 3);
+  assert.equal(mainMod.ADMIN_TABS.length, 2);
   assert.deepEqual(
     mainMod.ADMIN_TABS.map((t: { id: string; label: string }) => ({
       id: t.id,
       label: t.label,
     })),
     [
-      { id: "map", label: "World Map" },
-      { id: "players-spawner", label: "Players & Spawner" },
-      { id: "logs-containers", label: "Logs & Container Analytics" },
+      { id: "map", label: "Map" },
+      { id: "analytics", label: "Analytics & Logs" },
     ],
   );
 
@@ -89,13 +89,28 @@ async function step2WorldMapTilesNodePlugsAndLayerMaskPolling(): Promise<void> {
   const storeMod = await import("../src/state/worldStreamStore.ts");
 
   assert.equal(mapMod.DEFAULT_VERRA_PMTILES_URL, "/api/v1/world/pmtiles");
+  assert.equal(mapMod.PURE_BLACK_TILE_BG, "#000000");
+  assert.equal(mapMod.VERRA_ZOI_POLYGONS.length, 55);
+  const winsteadLv0 = { ...storeMod.DEFAULT_VERRA_CITY_NODES[0], level: 0 };
+  const winsteadPlug = storeMod.computeNodePlugTileOverlay(winsteadLv0);
+  assert.equal(winsteadPlug?.plugTier, 0);
+  const winsteadCenter = storeMod.getCityNodeCenterCm(winsteadLv0);
+  assert.equal(winsteadCenter.cx_cm, winsteadPlug?.cxCm);
+  assert.equal(winsteadCenter.cy_cm, winsteadPlug?.cyCm);
   const [lng, lat] = storeMod.verraUnrealToLngLat(128000.5, -64000.25);
   const roundTrip = storeMod.lngLatToVerraUnreal(lng, lat, 512.0);
   assert.ok(Math.abs(roundTrip.xCm - 128000.5) < 1e-6);
   assert.ok(Math.abs(roundTrip.yCm - -64000.25) < 1e-6);
 
-  // Verify high-res tiles across full zoom range (0..10)
-  for (const zoom of [0.0, 2.0, 5.0, 7.0, 10.0]) {
+  // Verify dynamic z = 0..7 pyramid selection across zoom range (0..10)
+  const expectedZoomMap: ReadonlyArray<readonly [number, number]> = [
+    [0.0, 1],
+    [2.0, 3],
+    [5.0, 6],
+    [7.0, 7],
+    [10.0, 7],
+  ];
+  for (const [zoom, expectedZ] of expectedZoomMap) {
     const tiles = storeMod.computeVisibleBaseTiles(
       storeMod.DEFAULT_VERRA_MAP_META,
       -777664,
@@ -104,7 +119,7 @@ async function step2WorldMapTilesNodePlugsAndLayerMaskPolling(): Promise<void> {
       { width: 1024, height: 768 },
     );
     assert.ok(tiles.length > 0);
-    assert.ok(tiles.every((t) => t.z === 6 || t.z === 7));
+    assert.ok(tiles.every((t) => t.z === expectedZ));
   }
 
   // Verify layer toggles update ?layer_mask= and ?layers= and pause polling when all OFF
@@ -155,8 +170,11 @@ async function step2WorldMapTilesNodePlugsAndLayerMaskPolling(): Promise<void> {
 async function step3PlayersAndSpawnerGmActions(): Promise<void> {
   const paletteMod = await import("../src/components/GmCommandPalette.tsx");
   const tab2Mod = await import("../src/components/PlayersAndSpawnerTab.tsx");
+  const storeMod = await import("../src/state/worldStreamStore.ts");
 
   assert.equal(typeof tab2Mod.PlayersAndSpawnerTab, "function");
+  assert.equal(typeof tab2Mod.CatalogComboboxPicker, "function");
+  assert.equal(tab2Mod.DEFAULT_ONLINE_PLAYERS.length, 0);
   assert.deepEqual(paletteMod.ITEM_RARITIES, [
     "Common",
     "Uncommon",
@@ -182,6 +200,15 @@ async function step3PlayersAndSpawnerGmActions(): Promise<void> {
   assert.equal(grantCmd.command, "grant_item");
   assert.equal(grantCmd.count, 3);
   assert.equal(grantCmd.rarity, "Epic");
+
+  // Verify CityNode Mayor & Election + Scoped Receipts
+  const store = storeMod.createWorldStreamStore();
+  await store.getState().setNodeMayor("Verra_RVR_Winstead", "Hatemost", async () =>
+    new Response(JSON.stringify({ message: "Mayor assigned" }), { status: 200 }),
+  );
+  assert.equal(store.getState().cityNodes[0].mayor_name, "Hatemost");
+  assert.equal(store.getState().lastReceiptsByScope.nodeMayor?.message, "Mayor assigned");
+  assert.equal(store.getState().lastReceiptsByScope.teleport, null);
 }
 
 async function step4LogsAndElevenContainerAnalytics(): Promise<void> {
@@ -195,7 +222,7 @@ async function step4LogsAndElevenContainerAnalytics(): Promise<void> {
     false,
   );
   assert.equal(
-    tab3Mod.CANONICAL_SANDAL_CONTAINERS.includes("aoc-world"),
+    tab3Mod.CANONICAL_SANDAL_CONTAINERS.includes("aoc-world-riverlands"),
     true,
   );
   assert.equal(
@@ -204,7 +231,7 @@ async function step4LogsAndElevenContainerAnalytics(): Promise<void> {
   );
 
   const normalized = tab3Mod.normalizeContainersScrapeResponse({
-    world_status: { players_online: 4, npcs_total: 12450 },
+    world_status: { players: 4, npcs: 12450, monsters: 320, resource_nodes: 810 },
     gateway_telemetry: {
       requests_total: 250,
       errors_total: 1,
@@ -214,7 +241,7 @@ async function step4LogsAndElevenContainerAnalytics(): Promise<void> {
     },
     containers: [
       {
-        name: "aoc-world",
+        name: "aoc-world-riverlands",
         state: "running",
         status: "Up 15 minutes",
         cpu_pct: 14.5,
@@ -227,19 +254,22 @@ async function step4LogsAndElevenContainerAnalytics(): Promise<void> {
   });
   assert.equal(normalized.world_status.players_online, 4);
   assert.equal(normalized.world_status.npcs_total, 12450);
+  assert.equal(normalized.world_status.monsters_total, 320);
+  assert.equal(normalized.world_status.resource_nodes_total, 810);
   assert.equal(normalized.gateway_telemetry.requests_total, 250);
   assert.equal(normalized.gateway_telemetry.transient_retries_total, 2);
+  assert.equal(normalized.prometheus.targets.length, 3);
   assert.equal(normalized.containers.length, 11);
 
   const logsUrl = paletteMod.buildPaginatedQueryUrl("/api/v1/gm/logs", {
     q: "NPC looks",
     limit: 100,
     offset: 0,
-    extra: { container: "aoc-world", tail: 200 },
+    extra: { container: "aoc-world-riverlands", tail: 200 },
   });
   assert.equal(
     logsUrl,
-    "/api/v1/gm/logs?q=NPC%20looks&limit=100&offset=0&container=aoc-world&tail=200",
+    "/api/v1/gm/logs?q=NPC%20looks&limit=100&offset=0&container=aoc-world-riverlands&tail=200",
   );
 }
 

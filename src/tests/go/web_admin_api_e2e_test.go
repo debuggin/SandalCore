@@ -11,6 +11,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"net"
@@ -377,25 +379,369 @@ func verifyStreamLayerBitmasks(t *testing.T, baseURL string) {
 func TestWebAdminLiveStackAPIsE2E(t *testing.T) { TestLiveWebAdminAPIsE2E(t) }
 
 func TestLiveWebAdminAPIsE2E(t *testing.T) {
-	baseURL := "http://127.0.0.1:8080"
-	probeCli := &http.Client{Timeout: 2 * time.Second}
-	if resp, err := probeCli.Get(baseURL + "/api/v1/gm/openapi.json"); err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
-		baseURL = ensureEphemeralAdminGateway(t)
-	} else {
-		_ = resp.Body.Close()
-	}
-
+	baseURL := resolveLiveOrEphemeralBaseURL(t)
 	client := &http.Client{Timeout: 8 * time.Second}
 	for _, ep := range []string{
 		"/api/v1/gm/openapi.json", "/api/v1/world/map-meta", "/api/v1/world/tiles/0/0/0", "/api/v1/world/tiles/8/0/0",
 		"/api/v1/catalog/items?page=1&page_size=5", "/api/v1/catalog/npcs?page=1&page_size=5", "/api/v1/catalog/places",
-		"/api/v1/world/state?layer_mask=95", "/api/v1/gm/containers", "/api/v1/gm/logs?container=aoc-world&tail=20",
+		"/api/v1/world/state?layer_mask=95", "/api/v1/gm/containers", "/api/v1/gm/logs?container=aoc-world-riverlands&tail=20",
 	} {
 		probeWebAdminEndpoint(t, client, baseURL+ep)
 	}
+	verifyLiveBaseMapOceanAndNodePlugs(t, baseURL)
+	verifyLiveMetadataPoisAndIcons(t, baseURL)
+	verifyLiveWorldStateAndPlayers(t, baseURL)
+	verifyLiveContainersAndLogs(t, baseURL)
+	verifyLiveCityNodeGovernance(t, baseURL)
+	verifyLiveGmWorkItemEndpoints(t, baseURL)
+}
+
+func resolveLiveOrEphemeralBaseURL(t *testing.T) string {
+	t.Helper()
+	baseURL := strings.TrimRight(os.Getenv("SANDAL_WEB_ADMIN_BASE_URL"), "/")
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:8080"
+	}
+	probeCli := &http.Client{Timeout: 2 * time.Second}
+	if resp, err := probeCli.Get(baseURL + "/api/v1/gm/openapi.json"); err == nil {
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return baseURL
+		}
+	}
+	if os.Getenv("SANDAL_REQUIRE_LIVE_WEB_ADMIN") == "1" {
+		t.Fatalf("live Web Admin stack at %s is unreachable while SANDAL_REQUIRE_LIVE_WEB_ADMIN=1", baseURL)
+	}
+	return ensureEphemeralAdminGateway(t)
+}
+
+func verifyLiveBaseMapOceanAndNodePlugs(t *testing.T, baseURL string) {
+	t.Helper()
+	for _, landPath := range []string{
+		"/api/v1/world/tiles/0/0/0.png",
+		"/api/v1/world/tiles/6/34/24.png",
+		"/api/v1/world/tiles/7/68/49.png",
+	} {
+		img := fetchAndDecodePNG(t, baseURL+landPath)
+		if img.Bounds().Dx() != 256 || img.Bounds().Dy() != 256 {
+			t.Fatalf("GET %s dim=%dx%d, want 256x256", landPath, img.Bounds().Dx(), img.Bounds().Dy())
+		}
+	}
+	for _, oceanPath := range []string{"/api/v1/world/tiles/6/0/0.png", "/api/v1/world/tiles/7/0/0.png"} {
+		img := fetchAndDecodePNG(t, baseURL+oceanPath)
+		cx, cy := img.Bounds().Dx()/2, img.Bounds().Dy()/2
+		px := color.NRGBAModel.Convert(img.At(cx, cy)).(color.NRGBA)
+		if px.R != 0 || px.G != 0 || px.B != 0 || px.A != 255 {
+			t.Fatalf("GET %s sparse ocean center pixel=%+v, want pure black RGBA(0,0,0,255) (#000000)", oceanPath, px)
+		}
+	}
+	for _, plugPath := range []string{
+		"/api/v1/world/tiles/8/0/0.png", "/api/v1/world/tiles/8/1/1.png",
+		"/api/v1/world/tiles/8/2/2.png", "/api/v1/world/tiles/8/12/3.png", "/api/v1/world/tiles/8/25/4.png",
+	} {
+		img := fetchAndDecodePNG(t, baseURL+plugPath)
+		if img.Bounds().Dx() != 1024 || img.Bounds().Dy() != 1024 {
+			t.Fatalf("GET %s plug dim=%dx%d, want 1024x1024", plugPath, img.Bounds().Dx(), img.Bounds().Dy())
+		}
+	}
+}
+
+func fetchAndDecodePNG(t *testing.T, fullURL string) image.Image {
+	t.Helper()
+	code, hdr, body := doAdminHTTP(t, http.MethodGet, fullURL, nil, nil)
+	if code != http.StatusOK || !strings.HasPrefix(hdr.Get("Content-Type"), "image/png") {
+		t.Fatalf("GET %s status=%d content-type=%q, want 200 image/png", fullURL, code, hdr.Get("Content-Type"))
+	}
+	img, err := png.Decode(bytes.NewReader(body))
+	if err != nil || img.Bounds().Dx() <= 0 || img.Bounds().Dy() <= 0 {
+		t.Fatalf("GET %s PNG decode failed: err=%v", fullURL, err)
+	}
+	return img
+}
+
+func verifyLiveMetadataPoisAndIcons(t *testing.T, baseURL string) {
+	t.Helper()
+	codeMeta, _, bodyMeta := doAdminHTTP(t, http.MethodGet, baseURL+"/api/v1/world/tiles/metadata.json", nil, nil)
+	if codeMeta != http.StatusOK {
+		t.Fatalf("GET /api/v1/world/tiles/metadata.json status=%d, want 200", codeMeta)
+	}
+	var metaDoc map[string]any
+	if err := json.Unmarshal(bodyMeta, &metaDoc); err != nil {
+		t.Fatalf("unmarshal metadata.json: %v", err)
+	}
+	nodes, _ := metaDoc["nodes"].([]any)
+	icons, _ := metaDoc["icons"].([]any)
+	if len(nodes) != 26 || len(icons) < 30 {
+		t.Fatalf("metadata.json nodes=%d (want 26) icons=%d (want >=30)", len(nodes), len(icons))
+	}
+	verifyCatalogPlacesAndIconURLs(t, baseURL)
+}
+
+func verifyCatalogPlacesAndIconURLs(t *testing.T, baseURL string) {
+	t.Helper()
+	codePl, _, bodyPl := doAdminHTTP(t, http.MethodGet, baseURL+"/api/v1/catalog/places?limit=300", nil, nil)
+	if codePl != http.StatusOK {
+		t.Fatalf("GET /api/v1/catalog/places?limit=300 status=%d, want 200", codePl)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(bodyPl, &env); err != nil {
+		t.Fatalf("unmarshal /api/v1/catalog/places: %v", err)
+	}
+	places := extractSliceField(env, "places", "items")
+	if len(places) < 150 {
+		t.Fatalf("GET /api/v1/catalog/places?limit=300 returned %d places, want >=150", len(places))
+	}
+	cats := make(map[string]bool)
+	var iconURLs []string
+	seenIcon := make(map[string]bool)
+	for _, raw := range places {
+		m, _ := raw.(map[string]any)
+		iconName, _ := m["icon_name"].(string)
+		iconURL, _ := m["icon_url"].(string)
+		tint, _ := m["tint_color"].(string)
+		cat, _ := m["category"].(string)
+		if iconName == "" || iconURL == "" || tint == "" {
+			t.Fatalf("place missing icon metadata: %#v", m)
+		}
+		cats[cat] = true
+		if !seenIcon[iconURL] {
+			seenIcon[iconURL] = true
+			iconURLs = append(iconURLs, iconURL)
+		}
+	}
+	if len(cats) < 2 || len(iconURLs) < 3 {
+		t.Fatalf("places categories=%d distinctIconURLs=%d, want >=2 categories and >=3 distinct icons", len(cats), len(iconURLs))
+	}
+	_ = fetchAndDecodePNG(t, baseURL+"/api/v1/world/icons/TUI_Icon_Map_MinorPOI.png")
+	for _, u := range iconURLs[:3] {
+		_ = fetchAndDecodePNG(t, baseURL+u)
+	}
+}
+
+func verifyLiveWorldStateAndPlayers(t *testing.T, baseURL string) {
+	t.Helper()
+	for _, statePath := range []string{"/api/v1/world/state", "/api/v1/gm/world/state"} {
+		code, _, body := doAdminHTTP(t, http.MethodGet, baseURL+statePath, nil, nil)
+		if code != http.StatusOK {
+			t.Fatalf("GET %s status=%d, want 200", statePath, code)
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(body, &doc); err != nil {
+			t.Fatalf("unmarshal %s: %v", statePath, err)
+		}
+		assertWorldStatePayload(t, statePath, doc)
+	}
+	for _, plPath := range []string{"/api/v1/world/players", "/api/v1/gm/world/players"} {
+		code, _, body := doAdminHTTP(t, http.MethodGet, baseURL+plPath, nil, nil)
+		if code != http.StatusOK {
+			t.Fatalf("GET %s status=%d, want 200", plPath, code)
+		}
+		lower := strings.ToLower(string(body))
+		if strings.Contains(lower, `"kaelen"`) || strings.Contains(lower, `"lyra"`) {
+			t.Fatalf("GET %s contains forbidden synthetic fake player Kaelen or Lyra: %s", plPath, string(body))
+		}
+	}
+}
+
+func assertWorldStatePayload(t *testing.T, statePath string, doc map[string]any) {
+	t.Helper()
+	entities := extractSliceField(doc, "entities")
+	if len(entities) < 1000 {
+		t.Fatalf("GET %s len(entities)=%d, want >=1000 live streamed actors from aoc-world-riverlands:50062", statePath, len(entities))
+	}
+	counts, _ := doc["layer_counts"].(map[string]any)
+	monstersCnt := intField(counts, "monsters")
+	npcsCnt := intField(counts, "npcs")
+	resCnt := max(intField(counts, "resources"), intField(counts, "resource_nodes"))
+	poisCnt := intField(counts, "pois")
+	if monstersCnt <= 0 || npcsCnt <= 0 || resCnt <= 0 || poisCnt < 150 {
+		t.Fatalf("GET %s layer_counts invalid: monsters=%d npcs=%d resources=%d pois=%d", statePath, monstersCnt, npcsCnt, resCnt, poisCnt)
+	}
+	for _, raw := range entities {
+		ent, _ := raw.(map[string]any)
+		kind, _ := ent["kind"].(string)
+		if kind == "npc" || kind == "monster" {
+			if name, _ := ent["name"].(string); strings.TrimSpace(name) == "" {
+				t.Fatalf("GET %s contains unnamed blank %s entity: %#v", statePath, kind, ent)
+			}
+		}
+	}
+}
+
+func verifyLiveContainersAndLogs(t *testing.T, baseURL string) {
+	t.Helper()
+	start := time.Now()
+	code, _, body := doAdminHTTP(t, http.MethodGet, baseURL+"/api/v1/gm/containers", nil, nil)
+	elapsed := time.Since(start)
+	if code != http.StatusOK || elapsed >= 3*time.Second {
+		t.Fatalf("GET /api/v1/gm/containers status=%d elapsed=%v (want 200 in <3.0s)", code, elapsed)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("unmarshal /api/v1/gm/containers: %v", err)
+	}
+	containers := extractSliceField(doc, "containers", "items")
+	if len(containers) < 11 {
+		t.Fatalf("GET /api/v1/gm/containers len=%d, want >=11", len(containers))
+	}
+	for _, raw := range containers {
+		c, _ := raw.(map[string]any)
+		if name, state := fmt.Sprint(c["name"]), fmt.Sprint(c["state"]); strings.HasPrefix(name, "aoc-") && state != "running" {
+			t.Fatalf("container %s state=%q, want \"running\"", name, state)
+		}
+	}
+	if ws, _ := doc["world_status"].(map[string]any); ws["connected"] != true || intField(ws, "npcs_total", "npcs") <= 0 {
+		t.Fatalf("world_status invalid: %#v", ws)
+	}
+	codeLogs, _, bodyLogs := doAdminHTTP(t, http.MethodGet, baseURL+"/api/v1/gm/logs?container=aoc-world-riverlands&tail=30", nil, nil)
+	var logsDoc map[string]any
+	_ = json.Unmarshal(bodyLogs, &logsDoc)
+	if codeLogs != http.StatusOK || len(extractSliceField(logsDoc, "items", "lines")) == 0 {
+		t.Fatalf("GET /api/v1/gm/logs?container=aoc-world-riverlands&tail=30 code=%d items=%d", codeLogs, len(extractSliceField(logsDoc, "items", "lines")))
+	}
+}
+
+func verifyLiveCityNodeGovernance(t *testing.T, baseURL string) {
+	t.Helper()
+	hdrs := map[string]string{"Content-Type": "application/json", "Accept": "application/json"}
+	t.Cleanup(func() {
+		_, _, _ = doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/node/mayor", hdrs, []byte(`{"node_name":"NewAela","mayor_guid":"","mayor_name":""}`))
+		_, _, _ = doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/node/election", hdrs, []byte(`{"node_name":"NewAela","action":"cancel"}`))
+		_, _, _ = doAdminHTTP(t, http.MethodPut, baseURL+"/api/v1/world/nodes/NewAela", hdrs, []byte(`{"level":3}`))
+	})
+	mayorBody := []byte(`{"node_name":"NewAela","mayor_guid":"char-9001","mayor_name":"ArchonVael"}`)
+	if code, _, raw := doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/node/mayor", hdrs, mayorBody); code != http.StatusOK {
+		t.Fatalf("POST /api/v1/gm/node/mayor status=%d body=%s", code, string(raw))
+	}
+	assertNewAelaGovernanceState(t, baseURL, "ArchonVael", "active_term")
+	for _, tr := range []struct{ action, want string }{{"start", "registration"}, {"open_voting", "voting"}, {"conclude", "active_term"}, {"cancel", "none"}} {
+		if code, _, raw := doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/node/election", hdrs, []byte(fmt.Sprintf(`{"node_name":"NewAela","action":%q}`, tr.action))); code != http.StatusOK {
+			t.Fatalf("POST /api/v1/gm/node/election (%s) status=%d body=%s", tr.action, code, string(raw))
+		}
+		assertNewAelaGovernanceState(t, baseURL, "", tr.want)
+	}
+}
+
+func assertNewAelaGovernanceState(t *testing.T, baseURL, wantMayor, wantElection string) {
+	t.Helper()
+	code, _, body := doAdminHTTP(t, http.MethodGet, baseURL+"/api/v1/world/state", nil, nil)
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/v1/world/state status=%d", code)
+	}
+	var doc map[string]any
+	_ = json.Unmarshal(body, &doc)
+	for _, raw := range extractSliceField(doc, "nodes") {
+		n, _ := raw.(map[string]any)
+		name, _ := n["name"].(string)
+		disp, _ := n["display_name"].(string)
+		if strings.Contains(strings.ToLower(name), "newaela") || strings.EqualFold(disp, "New Aela") {
+			mayor, _ := n["mayor_name"].(string)
+			el, _ := n["election_status"].(string)
+			if (wantMayor != "" && mayor != wantMayor) || el != wantElection {
+				t.Fatalf("NewAela governance mayor=%q (want %q) election_status=%q (want %q)", mayor, wantMayor, el, wantElection)
+			}
+			return
+		}
+	}
+	t.Fatal("NewAela not found in GET /api/v1/world/state nodes")
+}
+
+type gmWorkItemSpec struct {
+	name   string
+	routes []string
+	body   string
+}
+
+func verifyLiveGmWorkItemEndpoints(t *testing.T, baseURL string) {
+	t.Helper()
+	workItems := []gmWorkItemSpec{
+		{"give_currency", []string{"/api/v1/gm/give_currency", "/api/v1/gm/currency", "/api/v1/gm/commands"}, `{"command":"give_currency","character":"ArchonVael","player_guid":"char-9001","target_player_guid":"char-9001","gold":5,"silver":10,"copper":50,"amount":51050}`},
+		{"give_item", []string{"/api/v1/gm/give_item", "/api/v1/gm/item", "/api/v1/gm/commands"}, `{"command":"give_item","character":"ArchonVael","player_guid":"char-9001","target_player_guid":"char-9001","item":"6064629100001","item_guid":"6064629100001","quantity":1,"count":1,"rarity":"Epic"}`},
+		{"teleport", []string{"/api/v1/gm/teleport", "/api/v1/gm/commands"}, `{"command":"teleport","character":"ArchonVael","player_guid":"char-9001","target_player_guid":"char-9002","target_player":"Hatemost","place":"Winstead","x_cm":-641389,"y_cm":377367.1,"z_cm":12500}`},
+		{"spawn_npc", []string{"/api/v1/gm/spawn_npc", "/api/v1/gm/spawn", "/api/v1/gm/commands"}, `{"command":"spawn_npc","npc":"DesignData_NPC_Goblin","npc_guid":"6064630100001","place":"Winstead","x_cm":-641389,"y_cm":377367.1,"z_cm":12500,"level":10}`},
+		{"set_simulate_all_npcs", []string{"/api/v1/gm/commands"}, `{"command":"set_simulate_all_npcs","enabled":true}`},
+	}
+	for i, wi := range workItems {
+		postWorkItemAndAssert(t, baseURL, wi, i+1)
+	}
+	verifyLiveBorderHandoverHysteresis(t, baseURL)
+	codeAud, _, bodyAud := doAdminHTTP(t, http.MethodGet, baseURL+"/api/v1/gm/audit", nil, nil)
+	var audDoc map[string]any
+	_ = json.Unmarshal(bodyAud, &audDoc)
+	if codeAud != http.StatusOK || len(extractSliceField(audDoc, "entries", "items")) < len(workItems) {
+		t.Fatalf("GET /api/v1/gm/audit code=%d entries=%d, want >=%d", codeAud, len(extractSliceField(audDoc, "entries", "items")), len(workItems))
+	}
+}
+
+func verifyLiveBorderHandoverHysteresis(t *testing.T, baseURL string) {
+	t.Helper()
+	charName := fmt.Sprintf("BorderRunner_%d", time.Now().UnixNano()%100000)
+	steps := []struct {
+		body       string
+		wantRegion string
+		wantCount  int
+		wantSuppr  bool
+	}{
+		{fmt.Sprintf(`{"command":"step_player_border","character":%q,"x_cm":-454000,"y_cm":-568000}`, charName), "riverlands", 0, false},
+		{fmt.Sprintf(`{"command":"step_player_border","character":%q,"x_cm":-454000,"y_cm":2400,"border_distance_cm":2400}`, charName), "riverlands", 0, true},
+		{fmt.Sprintf(`{"command":"step_player_border","character":%q,"x_cm":-619803,"y_cm":873514}`, charName), "riverlands", 0, true},
+		{fmt.Sprintf(`{"command":"step_player_border","character":%q,"x_cm":-619803,"y_cm":873514}`, charName), "riverlands", 0, true},
+		{fmt.Sprintf(`{"command":"step_player_border","character":%q,"x_cm":-619803,"y_cm":873514}`, charName), "sandsquall", 1, false},
+		{fmt.Sprintf(`{"command":"step_player_border","character":%q,"x_cm":-1174491,"y_cm":-694106}`, charName), "sandsquall", 1, true},
+	}
+	for i, s := range steps {
+		hdrs := map[string]string{"Content-Type": "application/json", "Accept": "application/json", "Idempotency-Key": fmt.Sprintf("hb-%s-%d", charName, i)}
+		code, _, raw := doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/commands", hdrs, []byte(s.body))
+		if code != http.StatusOK {
+			t.Fatalf("step_player_border[%d] status=%d body=%s", i, code, string(raw))
+		}
+		var doc map[string]any
+		_ = json.Unmarshal(raw, &doc)
+		if reg, _ := doc["authoritative_region"].(string); reg != s.wantRegion || intField(doc, "handover_count") != s.wantCount || (doc["hysteresis_suppressed"] == true) != s.wantSuppr {
+			t.Fatalf("step_player_border[%d] got region=%q count=%d suppr=%v, want region=%q count=%d suppr=%v", i, reg, intField(doc, "handover_count"), doc["hysteresis_suppressed"], s.wantRegion, s.wantCount, s.wantSuppr)
+		}
+	}
+}
+
+func postWorkItemAndAssert(t *testing.T, baseURL string, spec gmWorkItemSpec, seq int) {
+	t.Helper()
+	idem := fmt.Sprintf("e2e-%s-%d-%d", spec.name, time.Now().UnixNano(), seq)
+	hdrs := map[string]string{"Content-Type": "application/json", "Accept": "application/json", "Idempotency-Key": idem, "X-Idempotency-Key": idem}
+	var lastCode int
+	var lastBody []byte
+	for _, route := range spec.routes {
+		lastCode, _, lastBody = doAdminHTTP(t, http.MethodPost, baseURL+route, hdrs, []byte(spec.body))
+		if lastCode != http.StatusNotFound && lastCode != http.StatusMethodNotAllowed {
+			break
+		}
+	}
+	if lastCode != http.StatusOK {
+		t.Fatalf("GM work-item %s status=%d body=%s, want 200 OK", spec.name, lastCode, string(lastBody))
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(lastBody, &resp)
+	st, _ := resp["status"].(string)
+	if !strings.EqualFold(st, "executed") && !strings.EqualFold(st, "queued") {
+		t.Fatalf("GM work-item %s status=%q, want executed or queued (body=%s)", spec.name, st, string(lastBody))
+	}
+}
+
+func extractSliceField(doc map[string]any, keys ...string) []any {
+	for _, k := range keys {
+		if arr, ok := doc[k].([]any); ok {
+			return arr
+		}
+	}
+	return nil
+}
+
+func intField(doc map[string]any, keys ...string) int {
+	for _, k := range keys {
+		if v, ok := doc[k].(float64); ok {
+			return int(v)
+		}
+	}
+	return 0
 }
 
 func probeWebAdminEndpoint(t *testing.T, client *http.Client, fullURL string) {

@@ -5,6 +5,7 @@ param(
     [string]$Profile = 'default',
     [switch]$Detach,
     [switch]$Build,
+    [switch]$SingleWorker,
     [switch]$DryRun,
     [switch]$Json,
     [switch]$NoColor,
@@ -18,34 +19,32 @@ $ErrorActionPreference = 'Stop'
 
 function Resolve-UpOptions {
     param(
-        [string]$BaseProfile,
-        [bool]$BaseDetach,
-        [bool]$BaseBuild,
-        [bool]$BaseDryRun,
-        [bool]$BaseJson,
+        [hashtable]$Defaults,
         [string[]]$RawArgs
     )
-    $prof = $BaseProfile
-    $det = $BaseDetach
-    $bld = $BaseBuild
-    $dry = $BaseDryRun
-    $jsn = $BaseJson
+    $prof = [string]$Defaults.Profile
+    $det = [bool]$Defaults.Detach
+    $bld = [bool]$Defaults.Build
+    $sng = [bool]$Defaults.SingleWorker
+    $dry = [bool]$Defaults.DryRun
+    $jsn = [bool]$Defaults.Json
     for ($i = 0; $i -lt $RawArgs.Count; $i++) {
         $arg = $RawArgs[$i]
         switch -Regex ($arg) {
             '^(-Profile|--profile)$' {
                 if (($i + 1) -lt $RawArgs.Count) { $i++; $prof = $RawArgs[$i] }
             }
-            '^(-Detach|--detach|-d)$' { $det = $true }
-            '^(-Build|--build)$'      { $bld = $true }
-            '^(-DryRun|--dry-run)$'   { $dry = $true }
-            '^(-Json|--json)$'        { $jsn = $true }
+            '^(-Detach|--detach|-d)$'             { $det = $true }
+            '^(-Build|--build)$'                  { $bld = $true }
+            '^(-SingleWorker|--single-worker)$'   { $sng = $true }
+            '^(-DryRun|--dry-run)$'               { $dry = $true }
+            '^(-Json|--json)$'                    { $jsn = $true }
         }
     }
     if ($prof -notin @('default', 'dev', 'admin', 'full')) {
         throw [System.ArgumentException]::new("Unsupported profile '$prof'. Valid profiles: default, dev, admin, full.")
     }
-    return [pscustomobject]@{ Profile = $prof; Detach = $det; Build = $bld; DryRun = $dry; Json = $jsn }
+    return [pscustomobject]@{ Profile = $prof; Detach = $det; Build = $bld; SingleWorker = $sng; DryRun = $dry; Json = $jsn }
 }
 
 function Get-NewestSourceWriteUtc {
@@ -75,19 +74,26 @@ function Get-DockerCreatedUtc {
 
 function Get-SandalStaleComposeServices {
     param([string]$RootPath, [bool]$ForceBuild = $false)
-    $goServices = @('auth', 'character', 'citynode', 'quest', 'mesh', 'gateway', 'mesh-gateway', 'web-admin')
-    if ($ForceBuild) { return @('world') + $goServices }
+    $goServices = @('auth', 'character', 'citynode', 'quest', 'mesh', 'gateway', 'mesh-gateway')
+    if ($ForceBuild) { return @('world') + $goServices + @('web-admin') }
     $stale = [System.Collections.Generic.List[string]]::new()
     $cppNewest = Get-NewestSourceWriteUtc -RootPath $RootPath -RelPaths @('src\server\world', 'src\libs', 'src\server\proto', 'src\deploy\docker\cpp.Dockerfile', 'build\gen\world')
-    $worldCreated = Get-DockerCreatedUtc -Target 'aoc-world'
-    $imgCreated = Get-DockerCreatedUtc -Target 'sandal-cpp:local'
+    $worldCreated = Get-DockerCreatedUtc -Target 'aoc-world-riverlands'
+    $imgCreated = Get-DockerCreatedUtc -Target 'sandal-world:local'
     if ($imgCreated -gt $worldCreated) { $worldCreated = $imgCreated }
     if ($worldCreated -eq [datetime]::MinValue -or $cppNewest -gt $worldCreated) { $stale.Add('world') }
     $goNewest = Get-NewestSourceWriteUtc -RootPath $RootPath -RelPaths @('src\server\services', 'src\server\proto', 'src\deploy\docker\go.Dockerfile', 'build\gen\go')
     foreach ($svc in $goServices) {
         $cTime = Get-DockerCreatedUtc -Target "aoc-$svc"
+        $sImgTime = Get-DockerCreatedUtc -Target "sandal-${svc}:local"
+        if ($sImgTime -gt $cTime) { $cTime = $sImgTime }
         if ($cTime -eq [datetime]::MinValue -or $goNewest -gt $cTime) { $stale.Add($svc) }
     }
+    $webNewest = Get-NewestSourceWriteUtc -RootPath $RootPath -RelPaths @('src\clients\web-admin\src', 'src\clients\web-admin\Dockerfile')
+    $webCreated = Get-DockerCreatedUtc -Target 'aoc-web-admin'
+    $webImgCreated = Get-DockerCreatedUtc -Target 'sandal-web-admin:local'
+    if ($webImgCreated -gt $webCreated) { $webCreated = $webImgCreated }
+    if ($webCreated -eq [datetime]::MinValue -or $webNewest -gt $webCreated) { $stale.Add('web-admin') }
     return $stale.ToArray()
 }
 
@@ -105,7 +111,7 @@ function Get-UpStageReadiness {
 }
 
 function Build-ComposeUpArguments {
-    param([string]$ComposeFile, [string]$EnvFile, [string]$ProfileName, [bool]$IsDetach)
+    param([string]$ComposeFile, [string]$EnvFile, [string]$ProfileName, [bool]$IsDetach, [bool]$IsSingleWorker = $false)
     $cmdArgs = [System.Collections.Generic.List[string]]::new()
     $cmdArgs.AddRange([string[]]@('compose', '-f', $ComposeFile, '--env-file', $EnvFile))
     if ($ProfileName -ne 'default') {
@@ -115,7 +121,26 @@ function Build-ComposeUpArguments {
     if ($IsDetach) {
         $cmdArgs.AddRange([string[]]@('-d', '--wait'))
     }
+    if ($IsSingleWorker) {
+        $cmdArgs.AddRange([string[]]@(
+            'postgres', 'auth', 'character', 'citynode', 'quest',
+            'mesh', 'gateway', 'mesh-gateway', 'world', 'web-admin', 'ingress-proxy'
+        ))
+    }
     return $cmdArgs.ToArray()
+}
+
+function Set-SandalSingleWorkerMode {
+    param([bool]$RemoveExtraContainers = $false)
+    $env:AOC_WORLD_SHARD_MODE = 'single'
+    $env:AOC_WORLD_REGION = 'all'
+    $env:AOC_WORLD_WORKER_ID = 'world-verra'
+    $env:AOC_WORLD_WORKERS = 'world-verra|all|world|world:50061|world:50062|aoc-world-riverlands'
+    if ($RemoveExtraContainers -and (Get-Command docker -ErrorAction SilentlyContinue)) {
+        $extraWorkers = @('aoc-world-sandsquall', 'aoc-world-jundark', 'aoc-world-anvils', 'aoc-world-turquoise-sea')
+        try { & docker rm -f @extraWorkers *> $null } catch { }
+        $global:LASTEXITCODE = 0
+    }
 }
 
 $inheritedJson = [bool](Get-Variable -Name AsJson -ValueOnly -ErrorAction SilentlyContinue)
@@ -148,6 +173,25 @@ function Sync-SandalPostgresPassword {
     $global:LASTEXITCODE = 0
 }
 
+function Remove-SandalLegacyOrUntaggedContainers {
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
+    $toRemove = [System.Collections.Generic.List[string]]::new()
+    $lines = @(& docker ps -a --filter 'name=^/aoc-' --format '{{.Names}}|{{.Image}}' 2>$null)
+    foreach ($line in $lines) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $parts = $line.Split('|', 2)
+        $cName = $parts[0].Trim()
+        $cImg = if ($parts.Count -gt 1) { $parts[1].Trim() } else { '' }
+        if ($cName -eq 'aoc-world' -or -not $cImg.StartsWith('sandal-', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $toRemove.Add($cName)
+        }
+    }
+    if ($toRemove.Count -gt 0) {
+        try { & docker rm -f @($toRemove) *> $null } catch { }
+    }
+    $global:LASTEXITCODE = 0
+}
+
 function Remove-SandalStaleTestAccounts {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
     $sql = "DELETE FROM accounts WHERE lower(username) LIKE 'tmp\_%' ESCAPE '\' OR lower(username) LIKE 'temp\_%' ESCAPE '\' OR lower(username) LIKE 'e2e\_%' ESCAPE '\' OR lower(username) = 'ephem_hero';"
@@ -155,7 +199,18 @@ function Remove-SandalStaleTestAccounts {
     $global:LASTEXITCODE = 0
 }
 
-$opts = Resolve-UpOptions -BaseProfile $Profile -BaseDetach ([bool]$Detach) -BaseBuild ([bool]$Build) -BaseDryRun ([bool]($DryRun -or $inheritedDryRun)) -BaseJson ([bool]($Json -or $inheritedJson)) -RawArgs (@($Arguments) + @($RemainingArgs))
+$baseDefaults = @{
+    Profile      = $Profile
+    Detach       = [bool]$Detach
+    Build        = [bool]$Build
+    SingleWorker = [bool]($SingleWorker -or ($env:AOC_WORLD_SHARD_MODE -eq 'single'))
+    DryRun       = [bool]($DryRun -or $inheritedDryRun)
+    Json         = [bool]($Json -or $inheritedJson)
+}
+$opts = Resolve-UpOptions -Defaults $baseDefaults -RawArgs (@($Arguments) + @($RemainingArgs))
+if ($opts.SingleWorker) {
+    Set-SandalSingleWorkerMode -RemoveExtraContainers $false
+}
 $quiet = [bool]$opts.Json
 $fromRun = ($env:SANDAL_FROM_RUN -eq '1')
 if ($quiet) { $env:SANDAL_QUIET = '1' }
@@ -166,7 +221,7 @@ if (-not $fromRun) {
 }
 $composeFile = Join-Path $rootPath 'deploy\compose.yml'
 $envFile = Join-Path $rootPath 'deploy\.env'
-$composeArgs = Build-ComposeUpArguments -ComposeFile $composeFile -EnvFile $envFile -ProfileName $opts.Profile -IsDetach $opts.Detach
+$composeArgs = Build-ComposeUpArguments -ComposeFile $composeFile -EnvFile $envFile -ProfileName $opts.Profile -IsDetach $opts.Detach -IsSingleWorker $opts.SingleWorker
 $stageChecks = @(Get-UpStageReadiness -RootPath $rootPath)
 $allUpToDate = (@($stageChecks | Where-Object { -not $_.up_to_date }).Count -eq 0)
 
@@ -178,6 +233,9 @@ if (-not $opts.DryRun) {
     }
     if (Get-Command Set-SandalWslComposeMountEnv -ErrorAction SilentlyContinue) {
         Set-SandalWslComposeMountEnv -DeployDir (Join-Path $rootPath 'deploy')
+    }
+    if ($opts.SingleWorker) {
+        Set-SandalSingleWorkerMode -RemoveExtraContainers $true
     }
     Push-Location $rootPath
     try {
@@ -191,6 +249,7 @@ if (-not $opts.DryRun) {
             }
         }
         Sync-SandalPostgresPassword -ComposeFile $composeFile -EnvFile $envFile
+        Remove-SandalLegacyOrUntaggedContainers
         & docker @composeArgs
         if ($LASTEXITCODE -ne 0) {
             throw "docker compose up failed with exit code $LASTEXITCODE."

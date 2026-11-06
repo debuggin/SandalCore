@@ -76,7 +76,7 @@ func run() error {
 	go func() { errc <- httpSrv.Serve(httpLis) }()
 	go func() { errc <- grpcSrv.Serve(grpcLis) }()
 	go purgeTokens(ctx, store)
-	slog.Info("auth listening", "http", httpLis.Addr().String(), "grpc", grpcLis.Addr().String())
+	slog.Info("auth listening", "http", httpLis.Addr().String(), "grpc", grpcLis.Addr().String(), "metrics", "/metrics")
 
 	select {
 	case <-ctx.Done():

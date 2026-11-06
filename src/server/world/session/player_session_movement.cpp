@@ -351,6 +351,13 @@ void PlayerSession::SessionInternal::accept_move(PlayerSession& s, Connection& c
     const bool on_mount = s.mounted();
     s.pending_fix_.reset();
     if (!on_mount && s.is_moving(before, move)) s.moved_at_ = now;
+    if (s.npc_world_) {
+        const GoodPosition& good = s.checker_.good();
+        const uint64_t pid = s.world_pawn_ != 0
+            ? s.world_pawn_
+            : static_cast<uint64_t>(s.pb_.setup().guids.pawn.ObjectId);
+        (void)s.npc_world_->update_border_authority(pid, good.x, good.y);
+    }
     if (AbilityRuntime* abilities = s.ability_runtime(now)) {
         const bool moving = s.is_moving(before, move);
         abilities->set_moving(moving, s.ability_seconds(now));

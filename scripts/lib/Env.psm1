@@ -730,7 +730,7 @@ function Restart-SandalContentDbContainers {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return @() }
     $running = @(& docker ps --format '{{.Names}}' 2>$null)
     if ($LASTEXITCODE -ne 0 -or $running.Count -eq 0) { return @() }
-    $targets = @('aoc-world', 'aoc-character', 'aoc-citynode') | Where-Object { $_ -in $running }
+    $targets = @('aoc-world-riverlands', 'aoc-character', 'aoc-citynode') | Where-Object { $_ -in $running }
     if ($targets.Count -gt 0) { Write-SandalStep -Step 'DeployStage' -Message "Restarting content.db consumers ($($targets -join ', '))..."; $null = & docker restart @targets 2>$null }
     return $targets
 }

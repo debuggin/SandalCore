@@ -378,6 +378,10 @@ services:
     user: "65532:0"
     group_add:
       - "0"
+      - "986"
+      - "998"
+      - "999"
+      - "1001"
     command:
       - "-http=:${MESH_GATEWAY_HTTP_PORT:-8082}"
       - "-mesh=${MESH_GRPC_ADDR:-mesh:50054}"
@@ -401,6 +405,8 @@ services:
       AOC_WORLD_ADMIN_ADDR: ${WORLD_ADMIN_GRPC_ADDR:-world:50061}
       WORLD_ADMIN_GRPC_ADDR: ${WORLD_ADMIN_GRPC_ADDR:-world:50061}
       AOC_WORLD_STREAM_ADDR: ${WORLD_STREAM_GRPC_ADDR:-world:50062}
+      AOC_WORLD_SHARD_MODE: ${AOC_WORLD_SHARD_MODE:-regional}
+      AOC_WORLD_WORKERS: ${AOC_WORLD_WORKERS:-world-riverlands|riverlands|region|world:50061|world:50062|aoc-world-riverlands,world-sandsquall|sandsquall|region|world-sandsquall:50061|world-sandsquall:50062|aoc-world-sandsquall,world-jundark|jundark|region|world-jundark:50061|world-jundark:50062|aoc-world-jundark,world-anvils|anvils|region|world-anvils:50061|world-anvils:50062|aoc-world-anvils,world-turquoise-sea|turquoise_sea|region|world-turquoise-sea:50061|world-turquoise-sea:50062|aoc-world-turquoise-sea}
       AOC_CONTENT_DB: /content/content.db
       AOC_PMTILES_PATH: /content/verra.pmtiles
       AOC_JWT_SECRET: ${AOC_JWT_SECRET:?AOC_JWT_SECRET must be set in deploy/.env}
@@ -459,7 +465,7 @@ services:
 
   world:
     <<: *hardened
-    container_name: aoc-world
+    container_name: aoc-world-riverlands
     hostname: world
     build:
       context: ..
@@ -473,25 +479,30 @@ services:
     cpus: 4.0
     mem_limit: 6g
     entrypoint: ["/app/world"]
-    command:
+    command: &world_cmd
       - "--mesh=mesh:50054"
       - "--gateway=gateway:50050"
       - "--character=character:50053"
       - "--citynode=citynode:50056"
       - "--port=${WORLD_UDP_PORT:-7777}"
       - "--admin-port=${WORLD_ADMIN_PORT:-50061}"
-    environment:
+    environment: &world_env
       WORLD_UDP_PORT: ${WORLD_UDP_PORT:-7777}
       WORLD_ADMIN_PORT: ${WORLD_ADMIN_PORT:-50061}
       AOC_WORLD_UDP_PORT: ${WORLD_UDP_PORT:-7777}
       AOC_WORLD_ADMIN_ADDR: ":${WORLD_ADMIN_PORT:-50061}"
+      AOC_WORLD_STREAM_ADDR: ":${WORLD_STREAM_PORT:-50062}"
+      AOC_WORLD_REGION: "${AOC_WORLD_REGION:-riverlands}"
+      AOC_WORLD_WORKER_ID: "${AOC_WORLD_WORKER_ID:-world-riverlands}"
+      AOC_ADVERTISE_HOST: "world"
       AOC_CITYNODE_GRPC_ADDR: citynode:50056
       AOC_QUESTS_GRPC_ADDR: quest:50057
       AOC_CONTENT_DB: /app/content/content.db
       AOC_AREA_RADIUS_M: "${AOC_AREA_RADIUS_M:--1}"
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:?AOC_SERVICE_TOKEN must be set in deploy/.env}
+      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
       AOC_WORLD_CACHE_ALL_CONTENT_IN_MEMORY: ${AOC_WORLD_CACHE_ALL_CONTENT_IN_MEMORY:-true}
-      AOC_WORLD_CACHE_CONTENT_DB_IN_MEMORY: ${AOC_WORLD_CACHE_CONTENT_DB_IN_MEMORY:-true}
+      AOC_WORLD_CACHE_CONTENT_DB_IN_MEMORY: ${AOC_WORLD_CACHE_CONTENT_DB_IN_MEMORY:-false}
       AOC_WORLD_CACHE_AREA_NAV_IN_MEMORY: ${AOC_WORLD_CACHE_AREA_NAV_IN_MEMORY:-true}
       AOC_WORLD_CACHE_FILES: ${AOC_WORLD_CACHE_FILES:-content.db,area_nav.bin}
       AOC_WORLD_NAV_PUMP_BUDGET_MS: ${AOC_WORLD_NAV_PUMP_BUDGET_MS:-4.0}
@@ -507,7 +518,7 @@ services:
     ports:
       - "127.0.0.1:${WORLD_UDP_PORT:-7777}:7777/udp"
       - "127.0.0.1:${WORLD_ADMIN_HOST_PORT:-50055}:50061/tcp"
-    volumes:
+    volumes: &world_volumes
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/content:ro
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
       - ${AOC_DIST_NAV_DIR:-./nav}:/app/nav:ro
@@ -522,14 +533,96 @@ services:
       citynode:
         condition: service_healthy
     networks:
-      - edge_net
-      - service_net
-    healthcheck:
+      edge_net:
+        aliases:
+          - world
+          - world-riverlands
+          - aoc-world
+          - aoc-world-riverlands
+      service_net:
+        aliases:
+          - world
+          - world-riverlands
+          - aoc-world
+          - aoc-world-riverlands
+    healthcheck: &world_healthcheck
       test: ["CMD", "/app/world", "--healthcheck", "http://127.0.0.1:50061/livez"]
       interval: 5s
       timeout: 3s
       start_period: 5s
       retries: 5
+
+  world-sandsquall: &world_regional_worker
+    <<: *hardened
+    container_name: aoc-world-sandsquall
+    hostname: world-sandsquall
+    image: sandal-world:local
+    pull_policy: never
+    cpus: 2.0
+    mem_limit: 2g
+    entrypoint: ["/app/world"]
+    command: *world_cmd
+    environment:
+      <<: *world_env
+      AOC_WORLD_REGION: "sandsquall"
+      AOC_WORLD_WORKER_ID: "world-sandsquall"
+      AOC_ADVERTISE_HOST: "world-sandsquall"
+      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
+    ports:
+      - "127.0.0.1:7778:7777/udp"
+    volumes: *world_volumes
+    depends_on: &world_regional_deps
+      world:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      citynode:
+        condition: service_healthy
+      mesh:
+        condition: service_healthy
+    networks: &world_networks
+      - edge_net
+      - service_net
+    healthcheck: *world_healthcheck
+
+  world-jundark:
+    <<: *world_regional_worker
+    container_name: aoc-world-jundark
+    hostname: world-jundark
+    environment:
+      <<: *world_env
+      AOC_WORLD_REGION: "jundark"
+      AOC_WORLD_WORKER_ID: "world-jundark"
+      AOC_ADVERTISE_HOST: "world-jundark"
+      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
+    ports:
+      - "127.0.0.1:7779:7777/udp"
+
+  world-anvils:
+    <<: *world_regional_worker
+    container_name: aoc-world-anvils
+    hostname: world-anvils
+    environment:
+      <<: *world_env
+      AOC_WORLD_REGION: "anvils"
+      AOC_WORLD_WORKER_ID: "world-anvils"
+      AOC_ADVERTISE_HOST: "world-anvils"
+      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
+    ports:
+      - "127.0.0.1:7780:7777/udp"
+
+  world-turquoise-sea:
+    <<: *world_regional_worker
+    container_name: aoc-world-turquoise-sea
+    hostname: world-turquoise-sea
+    environment:
+      <<: *world_env
+      AOC_WORLD_REGION: "turquoise_sea"
+      AOC_WORLD_WORKER_ID: "world-turquoise-sea"
+      AOC_ADVERTISE_HOST: "world-turquoise-sea"
+      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
+    ports:
+      - "127.0.0.1:7781:7777/udp"
 
   ingress-proxy:
     <<: *hardened

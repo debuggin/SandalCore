@@ -364,6 +364,7 @@ function(world_add_test name)
 endfunction()
 
 world_add_test(test_world_live_e2e tests/test_world_live_e2e.cpp)
+world_add_test(test_world_loop tests/test_world_loop.cpp)
 
 if(AOC_BUILD_TESTS)
 foreach(t

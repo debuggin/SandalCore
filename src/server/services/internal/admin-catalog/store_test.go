@@ -5,8 +5,11 @@
 package admincatalog
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -99,7 +102,78 @@ func TestCatalogLoadContentDBAndSearch(t *testing.T) {
 		Query:      "Winstead",
 		NodeLevels: map[string]int{"winstead": 4},
 	})
-	if total != 1 || len(places) != 1 || places[0].Level != 4 || places[0].StageName != "Town" || places[0].X == 0 {
+	if total != 1 || len(places) != 1 || places[0].Level != 4 || places[0].StageName != "Town" || places[0].X != -644519.11 {
 		t.Fatalf("unexpected SearchPlaces(Winstead): %+v", places)
+	}
+}
+
+func TestLoadPlacesWithGzipRecordsAndVisuals(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "content.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	ddl := `
+	CREATE TABLE record (guid INTEGER PRIMARY KEY, type TEXT NOT NULL, name TEXT NOT NULL, data BLOB NOT NULL);
+	CREATE TABLE attune_point (guid INTEGER PRIMARY KEY, name TEXT NOT NULL, descriptor TEXT NOT NULL, x REAL NOT NULL, y REAL NOT NULL, z REAL NOT NULL, radius REAL NOT NULL);
+	INSERT INTO attune_point VALUES (9001, 'Attune_Riverlands_North', 'North Riverlands Wayshrine', -500000, 300000, 12000, 1500);
+	`
+	if _, err := db.Exec(ddl); err != nil {
+		t.Fatalf("exec ddl: %v", err)
+	}
+	gzJSON := func(doc string) []byte {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		_, _ = zw.Write([]byte(doc))
+		_ = zw.Close()
+		return buf.Bytes()
+	}
+	records := []struct {
+		guid int64
+		typ  string
+		name string
+		blob []byte
+	}{
+		{8001, "MapIconVisualRecordBase", "MapIcon_MinorPOI", gzJSON(`{"MapIcon":{"AssetPathName":"/Game/UI/Icons/TUI_Icon_Map_MinorPOI.TUI_Icon_Map_MinorPOI"},"Color":{"R":0.5,"G":0.25,"B":1.0},"IconSize":{"X":26,"Y":26}}`)},
+		{108646108518008, "CityNodeRecordBase", "Verra_RVR_Winstead", gzJSON(`{"nodeName":"Winstead","description":"Winstead","nodeType":"ECityNodeType::Economic","biomeType":"EBiomeType::Riverlands","location":{"x":-644519.11,"y":376773.24,"z":12012.23},"yaw":319.20846,"radius":50000}`)},
+		{8501, "POIRecordBase", "POI_TowerOfCarphin", []byte(`{"Name":"POI_TowerOfCarphin","PlayerFacingName":{"Source":"Tower of Carphin"},"MapLocation":{"X":-620000,"Y":410000,"Z":14000},"MapIconVisualId":{"Guid":"8001"}}`)},
+	}
+	for _, r := range records {
+		if _, err := db.Exec(`INSERT INTO record (guid, type, name, data) VALUES (?, ?, ?, ?)`, r.guid, r.typ, r.name, r.blob); err != nil {
+			t.Fatalf("insert record %d: %v", r.guid, err)
+		}
+	}
+	places, err := loadPlaces(db)
+	if err != nil {
+		t.Fatalf("loadPlaces: %v", err)
+	}
+	byGUID := make(map[string]PlaceEntry, len(places))
+	for _, p := range places {
+		byGUID[p.GUID] = p
+	}
+	win, ok := byGUID["108646108518008"]
+	if !ok || win.IconName() != "TUI_Icon_NodeSummary_NodeEmblem_Economic" || win.Biome() != "Riverlands" || win.IconUrl() != "/api/v1/world/icons/TUI_Icon_NodeSummary_NodeEmblem_Economic.png" {
+		t.Fatalf("unexpected Winstead place: %+v (meta=%+v)", win, win.VisualMeta())
+	}
+	poi, ok := byGUID["8501"]
+	if !ok || poi.DisplayName != "Tower of Carphin" || poi.IconName() != "TUI_Icon_Map_MinorPOI" || poi.IconSize() != 26 {
+		t.Fatalf("unexpected POI place: %+v (meta=%+v)", poi, poi.VisualMeta())
+	}
+	ws, ok := byGUID["9001"]
+	if !ok || ws.Kind != "wayshrine" || ws.IconName() != "TUI_Icon_Map_ReviveShrine_Active" {
+		t.Fatalf("unexpected wayshrine place: %+v (meta=%+v)", ws, ws.VisualMeta())
+	}
+	rawJSON, err := json.Marshal(poi)
+	if err != nil {
+		t.Fatalf("json.Marshal(poi): %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(rawJSON, &wire); err != nil {
+		t.Fatalf("json.Unmarshal(poi): %v", err)
+	}
+	if wire["icon_name"] != "TUI_Icon_Map_MinorPOI" || wire["icon_url"] != "/api/v1/world/icons/TUI_Icon_Map_MinorPOI.png" || wire["category"] != "poi" {
+		t.Fatalf("unexpected PlaceEntry wire JSON: %+v", wire)
 	}
 }

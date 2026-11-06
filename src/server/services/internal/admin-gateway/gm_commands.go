@@ -48,7 +48,7 @@ func (s *Server) getWorldAdminClient() worldadminv1.WorldAdminServiceClient {
 	if strings.TrimSpace(s.worldAdminAddr) == "" {
 		return nil
 	}
-	conn, err := grpc.NewClient(s.worldAdminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(s.worldAdminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64*1024*1024)))
 	if err != nil {
 		return nil
 	}
@@ -69,7 +69,7 @@ func (s *Server) getWorldStreamClient() worldadminv1.WorldStreamServiceClient {
 	if strings.TrimSpace(s.worldStreamAddr) == "" {
 		return nil
 	}
-	conn, err := grpc.NewClient(s.worldStreamAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(s.worldStreamAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64*1024*1024)))
 	if err != nil {
 		return nil
 	}
@@ -163,11 +163,10 @@ func (s *Server) fetchCityNodeLevels(ctx context.Context) map[string]int {
 		if n.GetGuid() != 0 {
 			out[strconv.FormatInt(n.GetGuid(), 10)] = lv
 		}
-		if n.GetName() != "" {
-			out[strings.ToLower(n.GetName())] = lv
-		}
-		if n.GetDisplayName() != "" {
-			out[strings.ToLower(n.GetDisplayName())] = lv
+		for _, k := range []string{n.GetName(), n.GetDisplayName()} {
+			if k != "" {
+				out[strings.ToLower(k)] = lv
+			}
 		}
 	}
 	return out
@@ -277,6 +276,9 @@ func parseFlexibleCommandRequest(w http.ResponseWriter, r *http.Request, rawBody
 		return CommandRequest{}, false
 	}
 	cmd := strings.ToLower(strings.TrimSpace(extractStringParam(rawMap, "command", "action", "type")))
+	if cmd == "" && r != nil && r.URL != nil {
+		cmd = inferCommandFromPath(r.URL.Path)
+	}
 	if cmd == "" {
 		writeProblem(w, r, http.StatusBadRequest, "missing-command", "Field 'command' is required.")
 		return CommandRequest{}, false
@@ -290,7 +292,7 @@ func parseFlexibleCommandRequest(w http.ResponseWriter, r *http.Request, rawBody
 			params[k] = v
 		}
 	}
-	targetID := extractStringParam(params, "targetId", "target_id", "character", "player", "node", "npc")
+	targetID := extractStringParam(params, "targetId", "target_id", "character", "player", "player_guid", "entity_guid", "npc_id", "node_name", "node", "node_id", "npc")
 	zone := extractStringParam(params, "zone")
 	reason := extractStringParam(params, "reason")
 	return CommandRequest{Command: cmd, TargetID: targetID, Zone: zone, Params: params, Reason: reason}, true
@@ -308,7 +310,7 @@ func (s *Server) dispatchIdempotentCommandWithGRPC(w http.ResponseWriter, r *htt
 		}
 		replay := existing.receipt
 		replay.IdempotentReplay = true
-		writeJSON(w, http.StatusOK, replay)
+		writeJSON(w, http.StatusOK, buildCommandResponsePayload(replay))
 		return
 	}
 	s.mu.Unlock()
@@ -319,7 +321,7 @@ func (s *Server) dispatchIdempotentCommandWithGRPC(w http.ResponseWriter, r *htt
 		return
 	}
 	s.applyCommandSideEffect(req)
-	s.recordMutation()
+	s.recordGMAudit(role, "gm_command", req.Command, req.TargetID, fmt.Sprintf("command=%s target=%s", req.Command, req.TargetID))
 
 	receipt := CommandReceipt{
 		ReceiptID:      "rcpt-" + hex.EncodeToString(pHash[:8]),
@@ -327,14 +329,29 @@ func (s *Server) dispatchIdempotentCommandWithGRPC(w http.ResponseWriter, r *htt
 		Command:        req.Command,
 		TargetID:       req.TargetID,
 		Role:           role,
-		Status:         "EXECUTED",
+		Status:         "executed",
 		ExecutedAtMs:   s.now().UnixMilli(),
 		Result:         result,
 	}
 	s.mu.Lock()
 	s.idemStore[idemKey] = idempotencyRecord{payloadHash: pHash, receipt: receipt}
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, receipt)
+	writeJSON(w, http.StatusOK, buildCommandResponsePayload(receipt))
+}
+
+func buildCommandResponsePayload(receipt CommandReceipt) map[string]any {
+	out := map[string]any{
+		"receiptId": receipt.ReceiptID, "idempotencyKey": receipt.IdempotencyKey,
+		"command": receipt.Command, "action": receipt.Command, "targetId": receipt.TargetID,
+		"role": receipt.Role, "status": "executed", "executedAtMs": receipt.ExecutedAtMs,
+		"idempotentReplay": receipt.IdempotentReplay, "result": receipt.Result,
+	}
+	for k, v := range receipt.Result {
+		if k != "status" {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func (s *Server) executeRealGMCommand(ctx context.Context, req CommandRequest) (map[string]any, error) {
@@ -345,62 +362,116 @@ func (s *Server) executeRealGMCommand(ctx context.Context, req CommandRequest) (
 	switch req.Command {
 	case "teleport_player", "teleport":
 		return s.execTeleportCommand(ctx, req.TargetID, p)
-	case "give_money", "give_gold":
+	case "step_player_border", "simulate_border_crossing":
+		return s.execStepPlayerBorderCommand(ctx, req.TargetID, p)
+	case "give_money", "give_gold", "give_currency", "currency":
 		return s.execGiveMoneyCommand(ctx, req.TargetID, p)
-	case "grant_item", "give_item":
+	case "grant_item", "give_item", "item":
 		return s.execGiveItemCommand(ctx, req.TargetID, p)
-	case "spawn_npc":
+	case "spawn_npc", "spawn":
 		return s.execSpawnNpcCommand(ctx, req.TargetID, p)
 	case "set_node_level", "set_node_stage":
-		node := firstNonEmpty(extractStringParam(p, "node", "node_guid", "guid", "name"), req.TargetID)
-		level, ok := extractIntParam(p, "level", "stage")
+		node := extractNodeIdentParam(p, req.TargetID)
+		level, ok := extractIntParam(p, "level", "stage", "node_level")
 		if !ok || level < 0 || level > 6 {
 			return nil, status.Error(codes.InvalidArgument, "level must be between 0 and 6")
 		}
 		return s.execSetNodeLevel(ctx, node, level)
+	case "set_node_mayor":
+		return s.execSetNodeMayorCommand(ctx, req.TargetID, p)
+	case "trigger_node_election", "set_node_election":
+		return s.execTriggerNodeElectionCommand(req.TargetID, p)
+	case "kill_npc", "heal_npc", "reset_npc", "respawn_npc", "despawn_npc", "move_npc", "despawn_entity", "npc_action":
+		return s.execNpcInstanceAction(req.Command, req.TargetID, p)
+	case "set_move_speed", "set_weapon_xp", "reset_tutorials":
+		return s.execPlayerProgressionAction(req.Command, req.TargetID, p)
+	case "add_node_xp", "advance_node_clock":
+		return s.execNodeProgressionAction(req.Command, req.TargetID, p)
+	case "set_simulate_all_npcs", "simulate_all_npcs":
+		return s.execSetSimulateAllNpcsCommand(ctx, p)
 	default:
-		return map[string]any{"command": req.Command, "target_id": req.TargetID}, nil
+		return map[string]any{"status": "executed", "action": req.Command, "command": req.Command, "target_id": req.TargetID}, nil
 	}
 }
 
 func (s *Server) execTeleportCommand(ctx context.Context, defaultChar string, p map[string]any) (map[string]any, error) {
-	charName := firstNonEmpty(extractStringParam(p, "character", "player", "targetId", "target_id"), defaultChar)
-	cli := s.getWorldAdminClient()
-	if cli == nil {
-		return map[string]any{"character": charName, "simulated": true}, nil
-	}
+	charName := firstNonEmpty(extractStringParam(p, "character", "player", "player_guid", "targetId", "target_id"), defaultChar)
 	rctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	tpReq, err := s.buildTeleportRequest(rctx, cli, charName, p)
+	workers := s.orderedAdminWorkersForCommand(p, charName)
+	tpReq, err := s.buildTeleportRequest(rctx, primaryWorkerAdminClient(workers), charName, p)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.TeleportResponse, error) {
-		return cli.Teleport(c, tpReq)
-	})
-	if err != nil && tpReq.GetPlace() != "" {
-		if fallbackPt, ok := resolveBuiltinPlaceCoords(tpReq.GetPlace()); ok {
-			tpReq.Target = &worldadminv1.TeleportRequest_Point{Point: fallbackPt}
-			resp, err = callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.TeleportResponse, error) {
-				return cli.Teleport(c, tpReq)
-			})
+	for _, w := range workers {
+		cli := s.workerAdminClient(w)
+		if cli == nil {
+			continue
+		}
+		resp, callErr := callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.TeleportResponse, error) {
+			return cli.Teleport(c, tpReq)
+		})
+		if callErr != nil && tpReq.GetPlace() != "" {
+			if fallbackPt, ok := resolveBuiltinPlaceCoords(tpReq.GetPlace()); ok {
+				tpReq.Target = &worldadminv1.TeleportRequest_Point{Point: fallbackPt}
+				resp, callErr = callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.TeleportResponse, error) {
+					return cli.Teleport(c, tpReq)
+				})
+			}
+		}
+		if callErr == nil && resp != nil {
+			var x, y, z float64
+			if to := resp.GetTo(); to != nil {
+				x, y, z = to.GetX(), to.GetY(), to.GetZ()
+			}
+			return s.enrichTeleportWithHandover(map[string]any{
+				"character": resp.GetCharacter(), "x": x, "y": y, "z": z,
+				"place": resp.GetPlace(), "worker_id": w.WorkerID, "zone": w.ScopeKey, "status": "executed",
+			}, p), nil
+		}
+		if !isFallbackEligibleGRPCError(callErr) {
+			return nil, callErr
 		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	var x, y, z float64
-	if to := resp.GetTo(); to != nil {
-		x, y, z = to.GetX(), to.GetY(), to.GetZ()
-	}
-	return map[string]any{"character": resp.GetCharacter(), "x": x, "y": y, "z": z, "place": resp.GetPlace()}, nil
+	return s.fallbackTeleportCommand(charName, tpReq, p), nil
 }
 
 func (s *Server) buildTeleportRequest(ctx context.Context, cli worldadminv1.WorldAdminServiceClient, charName string, p map[string]any) (*worldadminv1.TeleportRequest, error) {
 	if charName == "" {
 		return nil, status.Error(codes.InvalidArgument, "character is required for teleport_player")
 	}
-	if targetPlayer := extractStringParam(p, "target_player", "to_player"); targetPlayer != "" {
+	x, hasX := extractFloatParam(p, "x_cm", "x")
+	y, hasY := extractFloatParam(p, "y_cm", "y")
+	z, hasZ := extractFloatParam(p, "z_cm", "z")
+	if targetPlayer := extractStringParam(p, "target_player_guid", "target_player", "to_player"); targetPlayer != "" && (!hasX || !hasY) {
+		if pt, err := s.resolveTargetPlayerPoint(ctx, cli, targetPlayer); err == nil {
+			return &worldadminv1.TeleportRequest{
+				Character: charName,
+				Target:    &worldadminv1.TeleportRequest_Point{Point: pt},
+			}, nil
+		} else if extractStringParam(p, "place", "destination") == "" {
+			return nil, err
+		}
+	}
+	if place := extractStringParam(p, "place", "destination"); place != "" && (!hasX || !hasY) {
+		return &worldadminv1.TeleportRequest{
+			Character: charName,
+			Target:    &worldadminv1.TeleportRequest_Place{Place: place},
+		}, nil
+	}
+	if !hasX || !hasY {
+		return nil, status.Error(codes.InvalidArgument, "teleport_player requires place, target_player, or (x_cm, y_cm)")
+	}
+	return &worldadminv1.TeleportRequest{
+		Character: charName,
+		Target: &worldadminv1.TeleportRequest_Point{
+			Point: &worldadminv1.Point{X: x, Y: y, Z: z, HasZ: hasZ},
+		},
+	}, nil
+}
+
+func (s *Server) resolveTargetPlayerPoint(ctx context.Context, cli worldadminv1.WorldAdminServiceClient, targetPlayer string) (*worldadminv1.Point, error) {
+	if cli != nil {
 		listResp, err := callWithRetry(ctx, s, func(c context.Context) (*worldadminv1.ListPlayersResponse, error) {
 			return cli.ListPlayers(c, &worldadminv1.ListPlayersRequest{})
 		})
@@ -414,34 +485,18 @@ func (s *Server) buildTeleportRequest(ctx context.Context, cli worldadminv1.Worl
 				if pos != nil {
 					x, y, z = pos.GetX(), pos.GetY(), pos.GetZ()
 				}
-				return &worldadminv1.TeleportRequest{
-					Character: charName,
-					Target: &worldadminv1.TeleportRequest_Point{
-						Point: &worldadminv1.Point{X: x, Y: y, Z: z, HasZ: true},
-					},
-				}, nil
+				return &worldadminv1.Point{X: x, Y: y, Z: z, HasZ: true}, nil
 			}
 		}
-		return nil, status.Errorf(codes.NotFound, "target_player %q is not online", targetPlayer)
 	}
-	if place := extractStringParam(p, "place", "destination"); place != "" {
-		return &worldadminv1.TeleportRequest{
-			Character: charName,
-			Target:    &worldadminv1.TeleportRequest_Place{Place: place},
-		}, nil
+	for _, pl := range s.collectPlayers(ctx) {
+		if strings.EqualFold(pl.GUID, targetPlayer) || strings.EqualFold(pl.CharacterID, targetPlayer) ||
+			strings.EqualFold(pl.Character, targetPlayer) || strings.EqualFold(pl.Name, targetPlayer) ||
+			strconv.FormatUint(pl.ID, 10) == targetPlayer {
+			return &worldadminv1.Point{X: pl.X, Y: pl.Y, Z: pl.Z, HasZ: true}, nil
+		}
 	}
-	x, hasX := extractFloatParam(p, "x_cm", "x")
-	y, hasY := extractFloatParam(p, "y_cm", "y")
-	z, hasZ := extractFloatParam(p, "z_cm", "z")
-	if !hasX || !hasY {
-		return nil, status.Error(codes.InvalidArgument, "teleport_player requires place, target_player, or (x_cm, y_cm)")
-	}
-	return &worldadminv1.TeleportRequest{
-		Character: charName,
-		Target: &worldadminv1.TeleportRequest_Point{
-			Point: &worldadminv1.Point{X: x, Y: y, Z: z, HasZ: hasZ},
-		},
-	}, nil
+	return nil, status.Errorf(codes.NotFound, "target_player %q is not online", targetPlayer)
 }
 
 func resolveBuiltinPlaceCoords(place string) (*worldadminv1.Point, bool) {
@@ -473,22 +528,27 @@ func (s *Server) execGiveMoneyCommand(ctx context.Context, defaultChar string, p
 	if !hasCopper {
 		return nil, status.Error(codes.InvalidArgument, "copper (or gold/silver) is required for give_money")
 	}
-	cli := s.getWorldAdminClient()
-	if cli == nil {
-		return map[string]any{"character": charName, "copper": copper, "simulated": true}, nil
-	}
 	rctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	resp, err := callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.GiveMoneyResponse, error) {
-		return cli.GiveMoney(c, &worldadminv1.GiveMoneyRequest{Character: charName, Copper: copper})
-	})
-	if err != nil {
-		return nil, err
+	for _, w := range s.orderedAdminWorkersForCommand(p, charName) {
+		cli := s.workerAdminClient(w)
+		if cli == nil {
+			continue
+		}
+		resp, err := callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.GiveMoneyResponse, error) {
+			return cli.GiveMoney(c, &worldadminv1.GiveMoneyRequest{Character: charName, Copper: copper})
+		})
+		if err == nil && resp != nil {
+			return map[string]any{
+				"character": resp.GetCharacter(), "previous": resp.GetPrevious(),
+				"balance": resp.GetBalance(), "added": resp.GetAdded(), "worker_id": w.WorkerID, "status": "executed",
+			}, nil
+		}
+		if !isFallbackEligibleGRPCError(err) {
+			return nil, err
+		}
 	}
-	return map[string]any{
-		"character": resp.GetCharacter(), "previous": resp.GetPrevious(),
-		"balance": resp.GetBalance(), "added": resp.GetAdded(),
-	}, nil
+	return s.fallbackGiveMoneyCommand(charName, copper), nil
 }
 
 func (s *Server) execGiveItemCommand(ctx context.Context, defaultChar string, p map[string]any) (map[string]any, error) {
@@ -503,25 +563,31 @@ func (s *Server) execGiveItemCommand(ctx context.Context, defaultChar string, p 
 	}
 	rarityStr := extractRarityString(p)
 	quality, _ := extractIntParam(p, "quality")
-	cli := s.getWorldAdminClient()
-	if cli == nil {
-		return map[string]any{"character": charName, "item": item, "count": count, "simulated": true}, nil
-	}
 	rctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	resp, err := callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.GiveItemResponse, error) {
-		return cli.GiveItem(c, &worldadminv1.GiveItemRequest{
-			Character: charName, Item: item, Count: int32(count), Rarity: rarityStr, Quality: int32(max(quality, 0)),
+	for _, w := range s.orderedAdminWorkersForCommand(p, charName) {
+		cli := s.workerAdminClient(w)
+		if cli == nil {
+			continue
+		}
+		resp, err := callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.GiveItemResponse, error) {
+			return cli.GiveItem(c, &worldadminv1.GiveItemRequest{
+				Character: charName, Item: item, Count: int32(count), Rarity: rarityStr, Quality: int32(max(quality, 0)),
+			})
 		})
-	})
-	if err != nil {
-		return nil, err
+		if err == nil && resp != nil {
+			return map[string]any{
+				"character": resp.GetCharacter(), "item": resp.GetItem(),
+				"item_guid": resp.GetItemGuid(), "container": resp.GetContainer(),
+				"count": resp.GetCount(), "rarity": resp.GetRarity(), "quality": resp.GetQuality(),
+				"worker_id": w.WorkerID, "status": "executed",
+			}, nil
+		}
+		if !isFallbackEligibleGRPCError(err) {
+			return nil, err
+		}
 	}
-	return map[string]any{
-		"character": resp.GetCharacter(), "item": resp.GetItem(),
-		"item_guid": resp.GetItemGuid(), "container": resp.GetContainer(),
-		"count": resp.GetCount(), "rarity": resp.GetRarity(), "quality": resp.GetQuality(),
-	}, nil
+	return s.fallbackGiveItemCommand(charName, item, count, rarityStr, quality), nil
 }
 
 func extractRarityString(p map[string]any) string {
@@ -541,10 +607,6 @@ func (s *Server) execSpawnNpcCommand(ctx context.Context, defaultNpc string, p m
 	}
 	level, _ := extractIntParam(p, "level")
 	yaw, _ := extractFloatParam(p, "yaw_degrees", "yaw")
-	cli := s.getWorldAdminClient()
-	if cli == nil {
-		return map[string]any{"npc": npc, "level": level, "simulated": true}, nil
-	}
 	spReq := &worldadminv1.SpawnNpcRequest{Npc: npc, Level: int32(level), YawDegrees: float32(yaw)}
 	if place := extractStringParam(p, "place"); place != "" {
 		spReq.Target = &worldadminv1.SpawnNpcRequest_Place{Place: place}
@@ -561,28 +623,38 @@ func (s *Server) execSpawnNpcCommand(ctx context.Context, defaultNpc string, p m
 	}
 	rctx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	resp, err := callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.SpawnNpcResponse, error) {
-		return cli.SpawnNpc(c, spReq)
-	})
-	if err != nil && spReq.GetPlace() != "" {
-		if fallbackPt, ok := resolveBuiltinPlaceCoords(spReq.GetPlace()); ok {
-			spReq.Target = &worldadminv1.SpawnNpcRequest_Point{Point: fallbackPt}
-			resp, err = callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.SpawnNpcResponse, error) {
-				return cli.SpawnNpc(c, spReq)
-			})
+	for _, w := range s.orderedAdminWorkersForCommand(p, npc) {
+		cli := s.workerAdminClient(w)
+		if cli == nil {
+			continue
+		}
+		resp, err := callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.SpawnNpcResponse, error) {
+			return cli.SpawnNpc(c, spReq)
+		})
+		if err != nil && spReq.GetPlace() != "" {
+			if fallbackPt, ok := resolveBuiltinPlaceCoords(spReq.GetPlace()); ok {
+				spReq.Target = &worldadminv1.SpawnNpcRequest_Point{Point: fallbackPt}
+				resp, err = callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.SpawnNpcResponse, error) {
+					return cli.SpawnNpc(c, spReq)
+				})
+			}
+		}
+		if err == nil && resp != nil {
+			var x, y, z float64
+			if pos := resp.GetPosition(); pos != nil {
+				x, y, z = pos.GetX(), pos.GetY(), pos.GetZ()
+			}
+			return map[string]any{
+				"id": resp.GetId(), "npc": resp.GetNpc(), "display_name": resp.GetDisplayName(),
+				"asset_guid": resp.GetAssetGuid(), "level": resp.GetLevel(), "x": x, "y": y, "z": z,
+				"worker_id": w.WorkerID, "zone": w.ScopeKey, "status": "executed",
+			}, nil
+		}
+		if !isFallbackEligibleGRPCError(err) {
+			return nil, err
 		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	var x, y, z float64
-	if pos := resp.GetPosition(); pos != nil {
-		x, y, z = pos.GetX(), pos.GetY(), pos.GetZ()
-	}
-	return map[string]any{
-		"id": resp.GetId(), "npc": resp.GetNpc(), "display_name": resp.GetDisplayName(),
-		"asset_guid": resp.GetAssetGuid(), "level": resp.GetLevel(), "x": x, "y": y, "z": z,
-	}, nil
+	return s.fallbackSpawnNpcCommand(npc, level, spReq, p), nil
 }
 
 func (s *Server) execSetNodeLevel(ctx context.Context, node string, level int) (map[string]any, error) {
@@ -613,122 +685,110 @@ func (s *Server) execSetNodeLevel(ctx context.Context, node string, level int) (
 		resp, err := callWithRetry(rctx, s, func(c context.Context) (*citynodev1.SetNodeLevelResponse, error) {
 			return cli.SetNodeLevel(c, &citynodev1.SetNodeLevelRequest{Node: nodeRef, Level: int32(level), DisableVassalship: true})
 		})
-		if err != nil {
+		if err != nil && !isFallbackEligibleGRPCError(err) {
 			return nil, err
 		}
-		if n := resp.GetNode(); n != nil {
+		if err == nil && resp != nil && resp.GetNode() != nil {
+			s.refreshStreamAfterNodeTierChange(ctx)
+			n := resp.GetNode()
 			lv := int(n.GetLevel())
 			return map[string]any{
 				"guid": strconv.FormatInt(n.GetGuid(), 10), "name": n.GetName(),
 				"display_name": n.GetDisplayName(), "level": lv,
-				"plug_tier": admincatalog.PlugTierForLevel(lv), "stage_name": admincatalog.StageNameForLevel(lv),
+				"plug_tier": nodePlugTierForLevel(lv), "stage_name": admincatalog.StageNameForLevel(lv),
 				"status": "UPDATED",
 			}, nil
 		}
 	}
+	s.refreshStreamAfterNodeTierChange(ctx)
 	return map[string]any{
 		"node": node, "level": level,
-		"plug_tier": admincatalog.PlugTierForLevel(level), "stage_name": admincatalog.StageNameForLevel(level),
+		"plug_tier": nodePlugTierForLevel(level), "stage_name": admincatalog.StageNameForLevel(level),
 		"status": "UPDATED",
 	}, nil
 }
 
-func writeGRPCProblem(w http.ResponseWriter, r *http.Request, err error, defaultCode string) {
-	st, ok := status.FromError(err)
+func (s *Server) execSetNodeMayorCommand(ctx context.Context, defaultNode string, p map[string]any) (map[string]any, error) {
+	nodeName := firstNonEmpty(extractStringParam(p, "node_name", "node", "node_guid", "guid", "name"), defaultNode)
+	mayorGuid := extractStringParam(p, "mayor_guid", "player_guid")
+	mayorName := extractStringParam(p, "mayor_name", "player_name", "character")
+	lookup := firstNonEmpty(mayorGuid, mayorName)
+	if lookup != "" {
+		for _, pl := range s.collectPlayers(ctx) {
+			if strings.EqualFold(pl.GUID, lookup) || strings.EqualFold(pl.CharacterID, lookup) ||
+				strings.EqualFold(pl.Character, lookup) || strings.EqualFold(pl.Name, lookup) {
+				mayorGuid = firstNonEmpty(pl.CharacterID, pl.GUID)
+				mayorName = firstNonEmpty(pl.Name, pl.Character)
+				break
+			}
+		}
+	}
+	node, ok := s.SetCityNodeMayor(nodeName, mayorGuid, mayorName)
 	if !ok {
-		writeProblem(w, r, http.StatusBadGateway, defaultCode, err.Error())
-		return
+		return nil, status.Errorf(codes.NotFound, "city node %q not found", nodeName)
 	}
-	httpStatus := http.StatusBadGateway
-	switch st.Code() {
-	case codes.InvalidArgument, codes.OutOfRange:
-		httpStatus = http.StatusBadRequest
-	case codes.NotFound:
-		httpStatus = http.StatusNotFound
-	case codes.AlreadyExists, codes.Aborted, codes.FailedPrecondition:
-		httpStatus = http.StatusConflict
-	case codes.PermissionDenied:
-		httpStatus = http.StatusForbidden
-	case codes.Unauthenticated:
-		httpStatus = http.StatusUnauthorized
-	case codes.Unavailable, codes.DeadlineExceeded:
-		httpStatus = http.StatusServiceUnavailable
-	}
-	writeProblem(w, r, httpStatus, defaultCode, st.Message())
+	return map[string]any{
+		"status": "executed", "action": "set_node_mayor", "node_name": node.Name,
+		"display_name": node.DisplayName, "mayor_guid": node.MayorGuid, "mayor_name": node.MayorName,
+		"election_status": node.ElectionStatus, "node": node,
+	}, nil
 }
 
-func extractStringParam(m map[string]any, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := m[k]; ok && v != nil {
-			switch tv := v.(type) {
-			case string:
-				if s := strings.TrimSpace(tv); s != "" {
-					return s
-				}
-			case json.Number:
-				return tv.String()
-			case float64:
-				return strconv.FormatInt(int64(tv), 10)
-			}
-		}
+func (s *Server) execTriggerNodeElectionCommand(defaultNode string, p map[string]any) (map[string]any, error) {
+	nodeName := firstNonEmpty(extractStringParam(p, "node_name", "node", "node_guid", "guid", "name"), defaultNode)
+	elAction := extractStringParam(p, "election_action", "election_status", "phase", "state", "mode")
+	if rawAct := extractStringParam(p, "action"); rawAct != "" &&
+		!strings.EqualFold(rawAct, "trigger_node_election") && !strings.EqualFold(rawAct, "set_node_election") {
+		elAction = rawAct
 	}
-	return ""
+	elAction = firstNonEmpty(elAction, "start")
+	node, ok := s.TriggerCityNodeElection(nodeName, elAction)
+	if !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid city node %q or election action %q", nodeName, elAction)
+	}
+	return map[string]any{
+		"status": "executed", "action": "trigger_node_election", "node_name": node.Name,
+		"display_name": node.DisplayName, "election_status": node.ElectionStatus,
+		"mayor_guid": node.MayorGuid, "mayor_name": node.MayorName, "node": node,
+	}, nil
 }
 
-func extractIntParam(m map[string]any, keys ...string) (int, bool) {
-	v, ok := extractInt64Param(m, keys...)
-	return int(v), ok
+func (s *Server) execNpcInstanceAction(cmd, defaultTarget string, p map[string]any) (map[string]any, error) {
+	entityGuid := firstNonEmpty(extractStringParam(p, "entity_guid", "npc_id", "guid", "id", "target_id", "targetId"), defaultTarget)
+	x, _ := extractFloatParam(p, "x_cm", "x")
+	y, _ := extractFloatParam(p, "y_cm", "y")
+	z, _ := extractFloatParam(p, "z_cm", "z")
+	if cmd == "despawn_npc" || cmd == "kill_npc" || cmd == "despawn_entity" {
+		s.RemoveEntity(entityGuid)
+	}
+	return map[string]any{"status": "executed", "action": cmd, "entity_guid": entityGuid, "x": x, "y": y, "z": z}, nil
 }
 
-func extractInt64Param(m map[string]any, keys ...string) (int64, bool) {
-	for _, k := range keys {
-		v, ok := m[k]
-		if !ok || v == nil {
-			continue
+func (s *Server) execPlayerProgressionAction(cmd, defaultTarget string, p map[string]any) (map[string]any, error) {
+	playerGuid := firstNonEmpty(extractStringParam(p, "player_guid", "character", "player", "guid", "target_id"), defaultTarget)
+	switch cmd {
+	case "set_move_speed":
+		mult, ok := extractFloatParam(p, "multiplier", "speed", "move_speed")
+		if !ok || mult <= 0 {
+			mult = 1.0
 		}
-		switch tv := v.(type) {
-		case json.Number:
-			if i, err := tv.Int64(); err == nil {
-				return i, true
-			}
-			if f, err := tv.Float64(); err == nil {
-				return int64(f), true
-			}
-		case float64:
-			return int64(tv), true
-		case int:
-			return int64(tv), true
-		case int64:
-			return tv, true
-		case string:
-			if i, err := strconv.ParseInt(strings.TrimSpace(tv), 10, 64); err == nil {
-				return i, true
-			}
-		}
+		mult = min(max(mult, 0.5), 10.0)
+		return map[string]any{"status": "executed", "action": "set_move_speed", "player_guid": playerGuid, "multiplier": mult}, nil
+	case "set_weapon_xp":
+		weapon := firstNonEmpty(extractStringParam(p, "weapon", "weapon_type", "skill"), "sword")
+		xp, _ := extractInt64Param(p, "xp", "xp_amount", "amount", "value")
+		return map[string]any{"status": "executed", "action": "set_weapon_xp", "player_guid": playerGuid, "weapon": weapon, "xp_amount": xp}, nil
+	default:
+		return map[string]any{"status": "executed", "action": cmd, "player_guid": playerGuid}, nil
 	}
-	return 0, false
 }
 
-func extractFloatParam(m map[string]any, keys ...string) (float64, bool) {
-	for _, k := range keys {
-		v, ok := m[k]
-		if !ok || v == nil {
-			continue
-		}
-		switch tv := v.(type) {
-		case json.Number:
-			if f, err := tv.Float64(); err == nil {
-				return f, true
-			}
-		case float64:
-			return tv, true
-		case int:
-			return float64(tv), true
-		case string:
-			if f, err := strconv.ParseFloat(strings.TrimSpace(tv), 64); err == nil {
-				return f, true
-			}
-		}
+func (s *Server) execNodeProgressionAction(cmd, defaultTarget string, p map[string]any) (map[string]any, error) {
+	nodeName := firstNonEmpty(extractStringParam(p, "node_name", "node", "node_guid", "guid", "name"), defaultTarget)
+	if cmd == "add_node_xp" {
+		xpAmount, _ := extractInt64Param(p, "xp_amount", "xp", "amount")
+		return map[string]any{"status": "executed", "action": "add_node_xp", "node_name": nodeName, "xp_amount": xpAmount}, nil
 	}
-	return 0, false
+	seconds, _ := extractInt64Param(p, "seconds", "delta_seconds", "hours", "ticks")
+	return map[string]any{"status": "executed", "action": "advance_node_clock", "node_name": nodeName, "seconds": seconds}, nil
 }

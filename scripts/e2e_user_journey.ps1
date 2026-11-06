@@ -176,7 +176,7 @@ function Get-ContainerDiagnosticSnapshot {
             $null = $_
         }
     }
-    foreach ($name in @('aoc-ingress-proxy', 'aoc-gateway', 'aoc-auth', 'aoc-character', 'aoc-world')) {
+    foreach ($name in @('aoc-ingress-proxy', 'aoc-gateway', 'aoc-auth', 'aoc-character', 'aoc-world-riverlands')) {
         try {
             $st = (& docker inspect --format '{{.State.Status}} ({{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}})' $name 2>$null) -join ''
             $containers[$name] = if ($LASTEXITCODE -eq 0 -and $st) { $st.Trim() } else { 'not-found' }
@@ -184,7 +184,7 @@ function Get-ContainerDiagnosticSnapshot {
             $containers[$name] = 'unreachable'
         }
     }
-    foreach ($logSvc in @('aoc-ingress-proxy', 'aoc-gateway', 'aoc-auth', 'aoc-world')) {
+    foreach ($logSvc in @('aoc-ingress-proxy', 'aoc-gateway', 'aoc-auth', 'aoc-world-riverlands')) {
         try {
             $tail = @(& docker logs --tail 40 $logSvc 2>&1 | ForEach-Object { "$_" })
             $logs[$logSvc] = if ($LASTEXITCODE -eq 0) { $tail } else { @() }

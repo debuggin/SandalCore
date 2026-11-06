@@ -399,8 +399,8 @@ func encodeDecodeMeshHeader(srcZone, dstZone, epoch uint32, payload []byte) ([3]
 func verifyEnvoyAndComposeGrpcContractParity(t *testing.T) {
 	t.Helper()
 	envoyYaml, composeYaml := readRepoFile(t, "src/deploy/envoy/envoy.yaml"), readRepoFile(t, "src/deploy/compose.yml")
-	if strings.Count(composeYaml, "container_name: aoc-") != 11 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") {
-		t.Fatal("compose.yml must declare container_name: aoc-* on all 11 services, exclude aoc-tether, and not expose :5432 or :9901 to host")
+	if strings.Count(composeYaml, "container_name: aoc-") != 15 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") {
+		t.Fatal("compose.yml must declare container_name: aoc-* on all 15 services, exclude aoc-tether, and not expose :5432 or :9901 to host")
 	}
 	if strings.Contains(envoyYaml, "tether_tcp") || strings.Contains(envoyYaml, "50051") || !strings.Contains(envoyYaml, "mesh_gateway_http") { t.Fatal("envoy.yaml must configure mesh_gateway_http without tether_tcp or :50051") }
 	for _, c := range []struct{ protoFile, grpcPrefix, envoyCluster, serviceSource, composeSvc string }{
@@ -567,7 +567,7 @@ func extractLiveToken(payload map[string]any) string {
 func probeLiveComposeIngress(t *testing.T) {
 	t.Helper()
 	composeYaml := readRepoFile(t, "src/deploy/compose.yml")
-	if strings.Count(composeYaml, "container_name: aoc-") != 11 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") { t.Fatal("compose.yml must declare container_name: aoc-* on all 11 services, exclude aoc-tether, and not expose :5432 or :9901 to host") }
+	if strings.Count(composeYaml, "container_name: aoc-") != 15 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") { t.Fatal("compose.yml must declare container_name: aoc-* on all 15 services, exclude aoc-tether, and not expose :5432 or :9901 to host") }
 	client := &http.Client{Timeout: 5 * time.Second}
 	for _, u := range []string{"http://127.0.0.1:8080/healthz", "http://127.0.0.1:8080/"} {
 		resp, err := client.Get(u)
@@ -722,7 +722,7 @@ func runWorldLive10StageE2E(t *testing.T, charID, charName, ticket string) {
 	defer cancel()
 	adminErrCh := make(chan error, 1)
 	go func() { adminErrCh <- probeLiveWorldAdminDuringSession(t, charID, charName) }()
-	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", "-e", "AOC_LIVE_CHAR_ID="+charID, "-e", "AOC_LIVE_TICKET="+ticket, "-e", "AOC_LIVE_UDP_HOST=127.0.0.1", "-e", "AOC_LIVE_UDP_PORT=7777", "-e", "AOC_LIVE_USMAP_PATH=/app/content/aoc.usmap", "-e", "AOC_LIVE_HOLD_MS=1500", "aoc-world", "/app/test_world_live_e2e")
+	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", "-e", "AOC_LIVE_CHAR_ID="+charID, "-e", "AOC_LIVE_TICKET="+ticket, "-e", "AOC_LIVE_UDP_HOST=127.0.0.1", "-e", "AOC_LIVE_UDP_PORT=7777", "-e", "AOC_LIVE_USMAP_PATH=/app/content/aoc.usmap", "-e", "AOC_LIVE_HOLD_MS=1500", "aoc-world-riverlands", "/app/test_world_live_e2e")
 	stdinR, stdinW, _ := os.Pipe(); defer stdinR.Close(); defer stdinW.Close(); cmd.Stdin = stdinR
 	if runtime.GOOS == "windows" && strings.TrimSpace(os.Getenv("DOCKER_HOST")) == "" { cmd.Env = append(os.Environ(), "DOCKER_HOST=tcp://127.0.0.1:2375") }
 	out, err := cmd.CombinedOutput()

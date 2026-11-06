@@ -18,6 +18,7 @@ import (
 	"flag"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -31,6 +32,7 @@ import (
 	"aocrop/services/internal/config"
 	"aocrop/services/internal/db"
 	"aocrop/services/internal/svcauth"
+	"aocrop/services/pkg/telemetry"
 )
 
 func main() {
@@ -82,6 +84,11 @@ func run(seedPath string) error {
 		return err
 	}
 	srv := newServer(token, svc)
+	gate := telemetry.NewReadinessGate("citynode", 1)
+	gate.SetReady(true, true)
+	httpSrv := &http.Server{Addr: ":8083", Handler: gate.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = httpSrv.ListenAndServe() }()
+	defer func() { _ = httpSrv.Close() }()
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(lis) }()

@@ -6,6 +6,7 @@ param(
     [switch]$Json,
     [switch]$NoColor,
     [switch]$DryRun,
+    [switch]$SingleWorker,
     [switch]$Help,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$RemainingArgs = @()
@@ -94,6 +95,12 @@ if ($normCmd -notin $script:ValidCommands) {
 }
 
 try {
+    if ($SingleWorker -or @($RemainingArgs | Where-Object { $_ -match '^(-SingleWorker|--single-worker)$' }).Count -gt 0) {
+        $env:AOC_WORLD_SHARD_MODE = 'single'
+        if ($SingleWorker -and @($RemainingArgs | Where-Object { $_ -match '^(-SingleWorker|--single-worker)$' }).Count -eq 0) {
+            $RemainingArgs = @($RemainingArgs) + @('-SingleWorker')
+        }
+    }
     Import-Module (Join-Path $PSScriptRoot 'scripts\lib\SandalCore.psd1') -Force -DisableNameChecking
     Invoke-SandalSubcommand -Subcommand $normCmd -RepoRoot $PSScriptRoot -AsJson:$Json -IsDryRun:$DryRun -SubcommandArgs $RemainingArgs
     exit 0

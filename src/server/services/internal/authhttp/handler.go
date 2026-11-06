@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"aocrop/services/internal/account"
+	"aocrop/services/pkg/telemetry"
 )
 
 // Accounts is the part of account.Store the handlers use.
@@ -41,6 +42,12 @@ type credentials struct {
 
 func Handler(accounts Accounts) http.Handler {
 	mux := http.NewServeMux()
+	gate := telemetry.NewReadinessGate("auth", 1)
+	gate.SetReady(true, true)
+	probeHandler := gate.Handler()
+	for _, p := range []string{"GET /livez", "GET /readyz", "GET /healthz", "GET /metrics"} {
+		mux.Handle(p, probeHandler)
+	}
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})

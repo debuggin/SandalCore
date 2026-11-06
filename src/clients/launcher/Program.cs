@@ -588,7 +588,7 @@ namespace SandalLauncher.ViewModels
             if (colon <= 0) return trimmed;
             string host = trimmed[..colon];
             if (host.Equals("world", StringComparison.OrdinalIgnoreCase) ||
-                host.Equals("aoc-world", StringComparison.OrdinalIgnoreCase) ||
+                host.Equals("aoc-world", StringComparison.OrdinalIgnoreCase) || host.StartsWith("aoc-world-", StringComparison.OrdinalIgnoreCase) ||
                 host.Equals("0.0.0.0", StringComparison.OrdinalIgnoreCase))
             {
                 return $"127.0.0.1{trimmed[colon..]}";

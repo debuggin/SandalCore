@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -49,6 +50,7 @@ import (
 	"aocrop/services/internal/db"
 	"aocrop/services/internal/kit"
 	"aocrop/services/internal/svcauth"
+	"aocrop/services/pkg/telemetry"
 )
 
 // (CoA) (C | Y | B)
@@ -102,6 +104,11 @@ func run(contentDB string, backfill bool, starterSet bool) error {
 		backfillStarterSets(ctx, store, starter)
 	}
 	srv := newServer(token, store, check, kits, starter)
+	gate := telemetry.NewReadinessGate("character", 1)
+	gate.SetReady(true, true)
+	httpSrv := &http.Server{Addr: ":8082", Handler: gate.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = httpSrv.ListenAndServe() }()
+	defer func() { _ = httpSrv.Close() }()
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(lis) }()

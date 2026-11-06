@@ -106,14 +106,14 @@ Why SpawnFilter::filter(const content::PopFilter& f, const std::set<std::string>
     const int lo = node_level_number(f.node_level_min), hi = node_level_number(f.node_level_max);
     // cCount (7) is no level: a filter that bounds the level with it is the design data's "never" (StartArcSpawn and the like)
     if (lo < 0 || hi < 0 || lo >= 7 || hi >= 7 || level < lo || level > hi) return Why::NodeLevel;
-    if (!f.cultures.empty() && !has(f.cultures, ctx_.culture)) return Why::Culture;
+    if (!f.cultures.empty() && ctx_.culture != "*" && !has(f.cultures, ctx_.culture)) return Why::Culture;
     if (!f.node_ids.empty() && std::find(f.node_ids.begin(), f.node_ids.end(), ctx_.node_id) == f.node_ids.end()) return Why::NodeOrZone;
     // a zone of influence: the point's own (G1: the Riverlands' grid); an area with none (E1's circle: zoi 0) matches no zone
     // (Nodes 1, stage 3b: the context's own zone stands in for a point that has none, a node's populations)
     const int64_t zone = zoi != 0 ? zoi : ctx_.zone;
     if (!f.zones.empty() && (zone == 0 || std::find(f.zones.begin(), f.zones.end(), zone) == f.zones.end())) return Why::NodeOrZone;
     if (!f.node_types.empty() && !has(f.node_types, ctx_.node_type)) return Why::NodeType;
-    if (!f.biomes.empty() && !has(f.biomes, ctx_.biome)) return Why::Biome;
+    if (!f.biomes.empty() && ctx_.biome != "*" && !has(f.biomes, ctx_.biome)) return Why::Biome;
     if (!f.seasons.empty() && !has(f.seasons, ctx_.season)) return Why::Season;
     if (!f.weather.empty() && !has(f.weather, ctx_.weather)) return Why::Weather;
     if (f.time_of_day_start != -1 || f.time_of_day_end != -1) {

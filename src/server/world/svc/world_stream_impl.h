@@ -238,7 +238,8 @@ struct WorldStreamServer::Impl final : wsv1::WorldStreamService::Service {
             mstream::Overlay o;
             o.id = s.id;
             o.health = s.health_pct;
-            o.state = static_cast<uint8_t>((s.in_combat ? mstream::kInCombat : 0) | (s.dead ? mstream::kDead : 0));
+            o.state = static_cast<uint8_t>((s.in_combat ? mstream::kInCombat : 0) | (s.dead ? mstream::kDead : 0) |
+                                           (cw->ai_of(s.id) != nullptr ? mstream::StateFlags::kHostile : 0));
             out.push_back(o);
         }
     }
@@ -393,14 +394,19 @@ struct WorldStreamServer::Impl final : wsv1::WorldStreamService::Service {
 
     static void fill_body(const mstream::Frame& frame, wsv1::SubscribeResponse& resp) {
         const auto put_all = [&](const auto& add) {
-            for (const mstream::Rec& r : frame.changed) {
+            for (size_t i = 0; i < frame.changed.size(); ++i) {
+                const mstream::Rec& r = frame.changed[i];
                 wsv1::Entity* e = add();
                 stream_detail::put_entity(e, r);
-                if (r.kind == mstream::kPlayer) {
-                    for (const mstream::PlayerName& n : frame.names) {
-                        if (n.id == r.id) {
-                            e->set_name(n.name);
-                            break;
+                if (r.kind == mstream::kPlayer || r.kind == mstream::kNpc) {
+                    if (i < frame.changed_names.size() && !frame.changed_names[i].empty()) {
+                        e->set_name(frame.changed_names[i]);
+                    } else if (r.kind == mstream::kPlayer) {
+                        for (const mstream::PlayerName& n : frame.names) {
+                            if (n.id == r.id) {
+                                e->set_name(n.name);
+                                break;
+                            }
                         }
                     }
                 }

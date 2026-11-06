@@ -22,7 +22,7 @@
 #include "net/endpoint.h"
 #include "net/tick_loop.h"
 #include "net/tick_profile.h"
-#include "net/udp_socket.h"
+#include "telemetry/health_metrics_http.h"
 #include "protocol/server_guid_allocator.h"
 #include "session/player_world.h"
 #include "session/shared_updates.h"
@@ -86,7 +86,7 @@ struct WorldCliOptions {
     spawns::AreaConfig area;
     double area_radius_m = -1;
     bool no_zone_filter = false, gm_garden = false, no_node_scenery = false, no_node_people = false;
-    std::string node_origin = "captured", roads_levels_path = "dist/content/roads_levels.tsv";
+    std::string node_origin = "captured", roads_levels_path = "dist/content/roads_levels.tsv", area_region, area_zoi, area_exclude_zoi, area_node_plug, area_exclude_node_plug;
     double scenery_radius_m = 1450.0;
     std::string area_nav_path = "dist/content/area_nav.bin", npc_motion_path = "dist/content/npc_motion.tsv";
     bool no_npc_movement = false, no_generic_npcs = false, no_spawn_filter = false, spawn_humanoids = false;
@@ -164,26 +164,22 @@ void register_service_cli_options(CLI::App& app, WorldCliOptions& o) {
 
 void register_area_cli_options(CLI::App& app, WorldCliOptions& o) {
     app.add_option("--area-radius", o.area_radius_m,
-                   "the area filled with NPCs, resource nodes and the GM vendors: -1 (the default) the whole Riverlands (the 12 zones of influence of that biome, 49 km^2); "
+                   "the area filled with NPCs, resource nodes and the GM vendors: -1 (the default) the whole Verra continent (all 55 zones of influence); "
                    "a radius in metres > 0 a circle of that radius around the login spot (E1's was 1000); 0: no other actors")
         ->envname("AOC_AREA_RADIUS_M")->check(CLI::Range(-1.0, 20000.0))->capture_default_str();
-    app.add_flag("--no-zone-filter", o.no_zone_filter,
-                 "the Riverlands' points have no zone of influence: a spawn filter that names one (11 of them: Aela, Winstead, NewAela) never passes, as in E1's circle")
-        ->envname("AOC_NO_ZONE_FILTER");
-    app.add_flag("--gm-garden", o.gm_garden,
-                 "a GM garden near the login spot: one resource node for each gathering profession (Mining, Lumberjacking, Herbalism) and certification tier "
-                 "(Novice to GrandMaster), 15 in all, to test every tier; visible only (gathering is G1 stage 2). Off by default")
-        ->envname("AOC_GM_GARDEN");
-    app.add_flag("--no-node-scenery", o.no_node_scenery, "no town replicators: the nodes' buildings and props are not sent (the towns are empty holes, as before stage 3a)")
-        ->envname("AOC_NO_NODE_SCENERY");
-    app.add_option("--node-origin", o.node_origin,
-                   "where a town's replicator stands: captured (the default: the open locations of the 13 nodes the retail captures show, the node record's location for the rest) or "
-                   "record (every node at its record's location; the layout may sit 6 to 40 m off)")
+    app.add_option("--area-region", o.area_region, "worker region partition (riverlands, sandsquall, jundark, anvils, turquoise_sea, continent)")->envname("AOC_WORLD_REGION");
+    app.add_option("--area-zoi", o.area_zoi, "comma-separated ZOI GUID/name allowlist for per-ZOI worker partitioning")->envname("AOC_WORLD_ZOI");
+    app.add_option("--area-exclude-zoi", o.area_exclude_zoi, "comma-separated ZOI GUIDs/names carved out of the worker's region")->envname("AOC_WORLD_EXCLUDE_ZOI");
+    app.add_option("--area-node-plug", o.area_node_plug, "comma-separated CityNode names/GUIDs included as rotated 1 km x 1 km Node Plug OBBs")->envname("AOC_WORLD_NODE_PLUG");
+    app.add_option("--area-exclude-node-plug", o.area_exclude_node_plug, "comma-separated CityNode names/GUIDs carved out of the surrounding ZOI/region worker")->envname("AOC_WORLD_EXCLUDE_NODE_PLUG");
+    app.add_flag("--no-zone-filter", o.no_zone_filter, "points have no zone of influence: a spawn filter that names one never passes, as in E1's circle")->envname("AOC_NO_ZONE_FILTER");
+    app.add_flag("--gm-garden", o.gm_garden, "a GM garden near the login spot: 15 resource nodes across Mining, Lumberjacking, and Herbalism (Novice to GrandMaster)")->envname("AOC_GM_GARDEN");
+    app.add_flag("--no-node-scenery", o.no_node_scenery, "no town replicators: the nodes' buildings and props are not sent (the towns are empty holes, as before stage 3a)")->envname("AOC_NO_NODE_SCENERY");
+    app.add_option("--node-origin", o.node_origin, "where a town's replicator stands: captured (the default: the open locations of the 13 nodes the retail captures show) or record")
         ->envname("AOC_NODE_ORIGIN")->transform(CLI::IsMember({"captured", "record"}, CLI::ignore_case))->capture_default_str();
-    app.add_flag("--no-node-people", o.no_node_people, "no town people: the layouts' and buildings' populations (vendors, clerks, guards, villagers) are not spawned, and a node's level does not change them")
+    app.add_flag("--no-node-people", o.no_node_people, "no town people: the layouts' and buildings' populations (vendors, clerks, guards, villagers) are not spawned")
         ->envname("AOC_NO_NODE_PEOPLE");
-    app.add_option("--roads-levels", o.roads_levels_path,
-                   "the roads of every node level with their owner zones (contentc roads --levels): a road is worth what its zone's node level makes it; used instead of --roads when the file exists")
+    app.add_option("--roads-levels", o.roads_levels_path, "the roads of every node level with their owner zones (contentc roads --levels); used instead of --roads when the file exists")
         ->envname("AOC_ROADS_LEVELS")->capture_default_str();
     app.add_option("--scenery-radius", o.scenery_radius_m, "a town's replicator is sent to a player within this many metres of it (retail opened it at 1,190 to 1,450 m)")
         ->envname("AOC_SCENERY_RADIUS_M")->check(CLI::Range(100.0, 10000.0))->capture_default_str();
@@ -191,34 +187,21 @@ void register_area_cli_options(CLI::App& app, WorldCliOptions& o) {
         ->envname("AOC_AREA_NAV")->capture_default_str();
     app.add_option("--npc-motion", o.npc_motion_path, "the NPC archetypes' capsules and speeds tools/mapc reads from the game (a missing file: the Blueprint defaults)")
         ->envname("AOC_NPC_MOTION")->capture_default_str();
-    app.add_option("--npc-abilities", o.npc_abilities_path, "the creature Blueprints' ability tasks tools/npcabilities reads from the game (a missing file: every creature swings without an animation)")
-        ->envname("AOC_NPC_ABILITIES")->capture_default_str();
-    app.add_option("--npc-targeting", o.npc_targeting_path, "where each creature ability's hit lands, tools/npcabilities (a missing file: every creature swings without an animation)")
-        ->envname("AOC_NPC_TARGETING")->capture_default_str();
-    app.add_option("--npc-montages", o.npc_montages_path, "the creature animation montages tools/npcabilities reads from the game: their lengths and hit notifies (a missing file: every creature swings without an animation)")
+    app.add_option("--npc-abilities", o.npc_abilities_path, "the creature Blueprints' ability tasks tools/npcabilities reads from the game")->envname("AOC_NPC_ABILITIES")->capture_default_str();
+    app.add_option("--npc-targeting", o.npc_targeting_path, "where each creature ability's hit lands, tools/npcabilities")->envname("AOC_NPC_TARGETING")->capture_default_str();
+    app.add_option("--npc-montages", o.npc_montages_path, "the creature animation montages tools/npcabilities reads from the game: their lengths and hit notifies")
         ->envname("AOC_NPC_MONTAGES")->capture_default_str();
-    app.add_option("--npc-senses", o.npc_senses_path, "what each creature Blueprint notices and how far it follows, tools/npcabilities (a missing file: every creature notices within --npc-aggro-cm and leashes at --npc-leash-cm)")
-        ->envname("AOC_NPC_SENSES")->capture_default_str();
-    app.add_option("--npc-aggro-curves", o.npc_aggro_curves_path, "the level curve that scales a creature's aggro radius, tools/npcabilities (a missing file: no scaling)")
-        ->envname("AOC_NPC_AGGRO_CURVES")->capture_default_str();
-    app.add_option("--mount-speeds", o.mount_speeds_path, "the mount Blueprints' speeds tools/mapc reads from the game (a missing file: 600 cm/s times the item's ground percentage)")
-        ->envname("AOC_MOUNT_SPEEDS")->capture_default_str();
-    app.add_option("--mount-riders", o.mount_riders_path, "the mount Blueprints' rider AnimBPs tools/mapc reads from the game (a missing file: each mount names the AnimBP of its kind's retail donor)")
-        ->envname("AOC_MOUNT_RIDERS")->capture_default_str();
-    app.add_option("--roads", o.roads_path, "the area's roads, dist/content/roads.tsv (mapc roads, then contentc roads --node-level <the --spawn-node-level>; a missing file: no roads, a mount rides at its own speed)")
-        ->envname("AOC_ROADS")->capture_default_str();
-    app.add_option("--town-platforms", o.town_platforms_path, "the floor of the five city nodes' bowls, dist/content/town_platforms.bin (mapc town-floors; a missing file: the interim town floor model answers in a bowl, and a long teleport into a town can fall through)")
-        ->envname("AOC_TOWN_PLATFORMS")->capture_default_str();
+    app.add_option("--npc-senses", o.npc_senses_path, "what each creature Blueprint notices and how far it follows, tools/npcabilities")->envname("AOC_NPC_SENSES")->capture_default_str();
+    app.add_option("--npc-aggro-curves", o.npc_aggro_curves_path, "the level curve that scales a creature's aggro radius, tools/npcabilities")->envname("AOC_NPC_AGGRO_CURVES")->capture_default_str();
+    app.add_option("--mount-speeds", o.mount_speeds_path, "the mount Blueprints' speeds tools/mapc reads from the game")->envname("AOC_MOUNT_SPEEDS")->capture_default_str();
+    app.add_option("--mount-riders", o.mount_riders_path, "the mount Blueprints' rider AnimBPs tools/mapc reads from the game")->envname("AOC_MOUNT_RIDERS")->capture_default_str();
+    app.add_option("--roads", o.roads_path, "the area's roads, dist/content/roads.tsv")->envname("AOC_ROADS")->capture_default_str();
+    app.add_option("--town-platforms", o.town_platforms_path, "the floor of the five city nodes' bowls, dist/content/town_platforms.bin")->envname("AOC_TOWN_PLATFORMS")->capture_default_str();
     app.add_flag("--no-npc-movement", o.no_npc_movement, "NPCs stand still where the data puts them (stage 1's behaviour)");
-    app.add_flag("--no-generic-npcs", o.no_generic_npcs, "only the NPCs whose Blueprint a retail capture opened spawn (stage 1's NPCs); the rest are not made")
-        ->envname("AOC_NO_GENERIC_NPCS");
-    app.add_option("--npc-exclude", o.npc_exclude,
-                   "the kill switch for one NPC type: Blueprint names (Goblin_Gravehide, Hawk_C ...) or archetype paths, comma separated, that are not spawned (the log counts each type that is)")
-        ->envname("AOC_NPC_EXCLUDE");
-    app.add_flag("--no-spawn-filter", o.no_spawn_filter, "spawn every point of the design data whose Blueprint opens, as stage 2 did (quest and event spawns, other maps' spawns, humanoids with no look ...)")
-        ->envname("AOC_NO_SPAWN_FILTER");
-    app.add_flag("--spawn-humanoids", o.spawn_humanoids, "let the humanoid Blueprints through whose body needs an NPCAppearanceComponent the open does not carry (they show invisible)")
-        ->envname("AOC_SPAWN_HUMANOIDS");
+    app.add_flag("--no-generic-npcs", o.no_generic_npcs, "only the NPCs whose Blueprint a retail capture opened spawn (stage 1's NPCs); the rest are not made")->envname("AOC_NO_GENERIC_NPCS");
+    app.add_option("--npc-exclude", o.npc_exclude, "the kill switch for one NPC type: Blueprint names or archetype paths, comma separated, that are not spawned")->envname("AOC_NPC_EXCLUDE");
+    app.add_flag("--no-spawn-filter", o.no_spawn_filter, "spawn every point of the design data whose Blueprint opens, as stage 2 did")->envname("AOC_NO_SPAWN_FILTER");
+    app.add_flag("--spawn-humanoids", o.spawn_humanoids, "let the humanoid Blueprints through whose body needs an NPCAppearanceComponent the open does not carry")->envname("AOC_SPAWN_HUMANOIDS");
     app.add_option("--spawn-hour", o.spawn_hour, "the game hour (0-24) the spawns' time-of-day conditions are judged at (default: the machine's local hour)")
         ->envname("AOC_SPAWN_HOUR")->check(CLI::Range(-1.0, 24.0));
     app.add_option("--spawn-node-level", o.spawn_node_level, "the node level the spawns' conditions are judged at: Wilderness, Crossroads, Encampment, Village, Town, City, Metropolis")
@@ -333,14 +316,21 @@ bool init_logging_token_and_content(WorldCliOptions& o, std::string& token_out,
                                     std::optional<content::ContentDb>& content, std::string& content_problem) {
     if (!o.port_opt.empty()) o.bind = "0.0.0.0:" + o.port_opt;
     if (!o.admin_port_opt.empty()) o.world_admin = "0.0.0.0:" + o.admin_port_opt;
-    if (const char* env_tf = std::getenv("AOC_SERVICE_TOKEN_FILE"); env_tf && *env_tf && o.token_file == "dist/services/service.token") {
-        o.token_file = env_tf;
-    }
+    if (!o.world_admin.empty() && o.world_admin[0] == ':') o.world_admin = "0.0.0.0" + o.world_admin;
+    if (!o.world_stream.empty() && o.world_stream[0] == ':') o.world_stream = "0.0.0.0" + o.world_stream;
+    if (const char* env_tf = std::getenv("AOC_SERVICE_TOKEN_FILE"); env_tf && *env_tf && o.token_file == "dist/services/service.token") o.token_file = env_tf;
     std::vector<spdlog::sink_ptr> sinks{std::make_shared<spdlog::sinks::stderr_color_sink_mt>()};
     if (!o.log_file.empty()) sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(o.log_file, true));
     auto logger = std::make_shared<spdlog::logger>("world", sinks.begin(), sinks.end());
     logger->flush_on(spdlog::level::info);
     spdlog::set_default_logger(logger);
+    o.area = spawns::AreaConfig::resolve_worker_area(
+        spawns::WorkerAreaSpec{o.area_radius_m, o.area_region, o.area_zoi, o.area_exclude_zoi, o.area_node_plug, o.area_exclude_node_plug, o.no_zone_filter});
+    if (o.area.whole_world) {
+        spdlog::info("[world] worker region={} (region_mask=0x{:02x}, zoi_filter={}, exclude_zoi={}, node_plugs={}, exclude_plugs={})",
+                     o.area.region_label, o.area.region_mask, o.area.zoi_guids.size(), o.area.exclude_zoi_guids.size(),
+                     o.area.include_node_plugs.size(), o.area.exclude_node_plugs.size());
+    }
 
     std::string error;
     auto token = svc::load_service_token(o.token_file, &error);
@@ -367,19 +357,19 @@ bool init_logging_token_and_content(WorldCliOptions& o, std::string& token_out,
     return true;
 }
 
-int register_with_mesh(svc::GrpcServices& services, const Address& public_addr, const std::string& mesh, svc::RegisterResult& reg) {
+int register_with_mesh(svc::GrpcServices& services, const Address& public_addr, const WorldCliOptions& o, svc::RegisterResult& reg) {
     for (auto backoff = std::chrono::milliseconds(500); !g_stop;) {
-        reg = services.register_server(public_addr.to_string(), {});
+        reg = services.register_server(public_addr.to_string(), {o.area.region_label});
         if (reg.status == svc::CallStatus::Ok) break;
         if (reg.status == svc::CallStatus::Refused) {
             spdlog::error("mesh refused to register {}", public_addr.to_string());
             return 1;
         }
-        spdlog::warn("registering with mesh at {} failed ({}); retrying", mesh, svc::call_status_name(reg.status));
+        spdlog::warn("registering with mesh at {} failed ({}); retrying", o.mesh, svc::call_status_name(reg.status));
         sleep_unless_stopped(backoff);
         backoff = std::min(backoff * 2, std::chrono::milliseconds(5000));
     }
-    if (!g_stop) spdlog::info("world {} registered with mesh as server {}", public_addr.to_string(), reg.server_id);
+    if (!g_stop) spdlog::info("world {} registered with mesh as server {} (region={})", public_addr.to_string(), reg.server_id, o.area.region_label);
     return 0;
 }
 
@@ -506,6 +496,7 @@ void configure_area_spawns_and_combat(PlayerWorld& players, const WorldCliOption
     spawns::SpawnContext context;
     context.enabled = !o.no_spawn_filter;
     context.humanoids = o.spawn_humanoids;
+    if (o.area.whole_world) { context.biome = "*"; context.culture = "*"; }
     context.node_level = o.spawn_node_level;
     if (spawns::SpawnFilter::node_level_number(o.spawn_node_level) < 0 || spawns::SpawnFilter::node_level_number(o.spawn_node_level) > 6) {
         spdlog::warn("[area] --spawn-node-level {} is no node level: Wilderness is used", o.spawn_node_level);
@@ -580,12 +571,6 @@ void load_living_area_and_gathering(PlayerWorld& players, WorldCliOptions& o, ui
     if (!players.ready() || o.area_radius_m == 0) {
         if (o.area_radius_m == 0) spdlog::info("--area-radius 0: players see no other actors");
         return;
-    }
-    if (o.area_radius_m < 0) {
-        o.area = spawns::AreaConfig::riverlands();
-        o.area.zones = !o.no_zone_filter;
-    } else {
-        o.area.radius_cm = o.area_radius_m * 100.0;
     }
     players.set_gm_garden(o.gm_garden);
     const auto started = std::chrono::steady_clock::now();
@@ -673,6 +658,20 @@ std::unique_ptr<svc::WorldStreamServer> start_stream_server(const WorldCliOption
     return stream;
 }
 
+std::unique_ptr<aoc::world::telemetry::HealthMetricsHttpServer> start_metrics_server(
+    const WorldCliOptions& o, const PlayerWorld& players, const Endpoint& endpoint, const LoopStats& loop_stats) {
+    const auto* rep = players.area_report();
+    const uint64_t monsters = rep ? rep->data_npcs : 0, resources = rep ? rep->gatherables : 0;
+    const uint64_t npcs = players.registry().size() > resources ? players.registry().size() - resources : monsters;
+    const auto started = std::chrono::steady_clock::now();
+    return std::make_unique<aoc::world::telemetry::HealthMetricsHttpServer>([&, monsters, resources, npcs, started] {
+        const auto up = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+        return aoc::world::telemetry::HealthMetricsState{o.area.region_label, players.ready(), true, g_stop.load(),
+            static_cast<uint32_t>(endpoint.session_count()), static_cast<uint32_t>(o.tick_hz),
+            static_cast<uint64_t>(std::max<int64_t>(0, up)), loop_stats.datagrams, loop_stats.packets_out, npcs, monsters, resources};
+    });
+}
+
 std::thread start_heartbeat_thread(svc::GrpcServices& services, const svc::RegisterResult& reg, std::atomic<int>& exit_code) {
     return std::thread([&] {
         const auto interval = std::chrono::milliseconds(std::max<int64_t>(reg.heartbeat_interval_ms, 100));
@@ -729,7 +728,7 @@ int main(int argc, char** argv) {
 
     svc::GrpcServices services({o.gateway, o.character, o.mesh}, token);
     svc::RegisterResult reg;
-    if (const int rc = register_with_mesh(services, *public_addr, o.mesh, reg); rc != 0) return rc;
+    if (const int rc = register_with_mesh(services, *public_addr, o, reg); rc != 0) return rc;
     if (g_stop) return 0;
 
     uint32_t randomizer = 0;
@@ -777,11 +776,13 @@ int main(int argc, char** argv) {
     svc::AdminQueue admin_queue;
     auto admin = start_admin_server(o, token, players, travel, admin_queue);
     auto stream = start_stream_server(o, token, players, endpoint, admin_queue);
+    auto metrics = start_metrics_server(o, players, endpoint, loop_stats);
     TickLoopBudget tick_budget;
     WorldLoopContext loop_ctx{*socket, endpoint, saver, admin_queue, stream.get(), shared_updates.get(),
                               loop_stats, g_stop, exit_code, o.tick_hz, o.loop_stats_seconds, &tick_budget};
     run_world_loop(loop_ctx);
 
+    if (metrics) metrics->stop();
     if (stream) stream->stop();
     if (admin) admin->stop();
     players.set_gm_port(nullptr);

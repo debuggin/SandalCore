@@ -3,6 +3,7 @@
 import React from "react";
 import {
   type CameraMode,
+  computeLayerEntityCounts,
   type StreamConnectionState,
   STREAM_TARGET_HZ,
   UI_FRAME_BUDGET_MS,
@@ -38,12 +39,12 @@ export interface StreamStatusVisualDescriptor {
 const CONTAINER_BASE_STYLE: React.CSSProperties = Object.freeze({
   display: "inline-flex",
   alignItems: "center",
-  gap: "12px",
-  padding: "6px 12px",
+  gap: "10px",
+  padding: "5px 12px",
   borderRadius: "6px",
-  backgroundColor: "#0D1117",
-  color: "#E6EDF3",
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  background: "linear-gradient(135deg, rgba(11, 14, 23, 0.78) 0%, rgba(16, 23, 36, 0.84) 100%)",
+  backdropFilter: "blur(16px)",
+  color: "#F4F1EA",
   fontSize: "12px",
   lineHeight: 1.4,
   fontVariantNumeric: "tabular-nums",
@@ -54,91 +55,82 @@ const BADGE_BASE_STYLE: React.CSSProperties = Object.freeze({
   alignItems: "center",
   gap: "6px",
   padding: "2px 8px",
-  borderRadius: "4px",
+  borderRadius: "999px",
   fontWeight: 600,
 });
 
 const TOGGLE_BUTTON_BASE_STYLE: React.CSSProperties = Object.freeze({
-  minWidth: "44px",
-  minHeight: "28px",
+  minWidth: "40px",
+  minHeight: "32px",
   padding: "4px 10px",
   borderRadius: "4px",
-  border: "1px solid #30363D",
-  color: "#F0F6FC",
+  border: "1px solid rgba(140, 108, 66, 0.47)",
+  color: "#F4F1EA",
   fontWeight: 600,
-  fontSize: "12px",
+  fontSize: "11px",
   cursor: "pointer",
 });
 
 function formatFiniteInt(value: number | undefined, fallback = 0): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return String(fallback);
-  }
+  if (typeof value !== "number" || !Number.isFinite(value)) return String(fallback);
   const rounded = Math.max(0, Math.round(value));
   return Object.is(rounded, -0) ? "0" : String(rounded);
 }
 
 function formatFiniteMs(value: number | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    return "0.0 ms";
-  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return "0.0 ms";
   const clamped = Object.is(value, -0) ? 0 : value;
   return `${clamped.toFixed(1)} ms`;
 }
 
-// Redundant Color + Shape + Text encoding satisfies MIL-STD-1472H & WCAG 1.4.1 non-color telemetry laws.
 function resolveConnectionVisuals(
   connectionState: StreamConnectionState,
-  hz: number,
+  _hz: number,
 ): Pick<
   StreamStatusVisualDescriptor,
   "badgeLabel" | "glyph" | "toneColor" | "borderColor" | "backgroundColor"
 > {
-  const safeHz =
-    typeof hz === "number" && Number.isFinite(hz) && hz > 0
-      ? Math.round(hz)
-      : STREAM_TARGET_HZ;
   switch (connectionState) {
     case "live":
       return {
-        badgeLabel: `LIVE ${safeHz}Hz`,
+        badgeLabel: "ONLINE",
         glyph: "\u25CF",
-        toneColor: "#3FB950",
-        borderColor: "#238636",
-        backgroundColor: "rgba(35, 134, 54, 0.16)",
+        toneColor: "#20D8CE",
+        borderColor: "rgba(32, 216, 206, 0.45)",
+        backgroundColor: "rgba(32, 216, 206, 0.14)",
       };
     case "degraded":
       return {
         badgeLabel: "DEGRADED",
         glyph: "\u25B2",
-        toneColor: "#D29922",
-        borderColor: "#9E6A03",
-        backgroundColor: "rgba(158, 106, 3, 0.18)",
+        toneColor: "#F5C469",
+        borderColor: "rgba(245, 196, 105, 0.45)",
+        backgroundColor: "rgba(245, 196, 105, 0.16)",
       };
     case "replaying":
       return {
-        badgeLabel: `REPLAY ${safeHz}Hz`,
+        badgeLabel: "REPLAY",
         glyph: "\u25B6",
-        toneColor: "#58A6FF",
-        borderColor: "#1F6FEB",
-        backgroundColor: "rgba(31, 111, 235, 0.18)",
+        toneColor: "#E8B25A",
+        borderColor: "rgba(232, 178, 90, 0.47)",
+        backgroundColor: "rgba(232, 178, 90, 0.16)",
       };
     case "connecting":
       return {
         badgeLabel: "CONNECTING",
         glyph: "\u25CC",
-        toneColor: "#8B949E",
-        borderColor: "#30363D",
-        backgroundColor: "rgba(48, 54, 61, 0.25)",
+        toneColor: "#B8C4D4",
+        borderColor: "rgba(140, 108, 66, 0.47)",
+        backgroundColor: "rgba(22, 30, 46, 0.65)",
       };
     case "offline":
     default:
       return {
         badgeLabel: "OFFLINE",
         glyph: "\u25A0",
-        toneColor: "#F85149",
-        borderColor: "#DA3633",
-        backgroundColor: "rgba(218, 54, 51, 0.18)",
+        toneColor: "#E05258",
+        borderColor: "rgba(224, 82, 88, 0.5)",
+        backgroundColor: "rgba(224, 82, 88, 0.16)",
       };
   }
 }
@@ -152,7 +144,7 @@ export function buildStreamStatusDescriptor(
   const entityCount = props.entityCount ?? state.entities.size;
   const lastSeq = props.lastSeq ?? state.lastSeq;
   const tickLatencyMs = props.tickLatencyMs ?? state.tickLatencyMs;
-  const streamHz = props.streamHz ?? state.streamHz;
+  const streamHz = props.streamHz ?? state.streamHz ?? STREAM_TARGET_HZ;
   const cameraMode = props.cameraMode ?? state.camera.mode;
   const visuals = resolveConnectionVisuals(connectionState, streamHz);
   const nextCameraMode: CameraMode = cameraMode === "2d" ? "3d" : "2d";
@@ -160,7 +152,7 @@ export function buildStreamStatusDescriptor(
   return {
     ...visuals,
     formattedEntityCount: formatFiniteInt(entityCount, 0),
-    formattedSeq: `#${formatFiniteInt(lastSeq, 0)}`,
+    formattedSeq: formatFiniteInt(lastSeq, 0),
     formattedLatencyMs: formatFiniteMs(tickLatencyMs),
     latencyWarn:
       typeof tickLatencyMs === "number" &&
@@ -174,6 +166,7 @@ export function buildStreamStatusDescriptor(
 export function StreamStatus(props: StreamStatusProps): React.ReactElement {
   const storeSnap = useWorldStreamStore();
   const descriptor = buildStreamStatusDescriptor(props, storeSnap);
+  const counts = computeLayerEntityCounts(storeSnap);
   const cameraMode = props.cameraMode ?? storeSnap.camera.mode;
   const needsResync = props.needsSnapshotResync ?? storeSnap.needsSnapshotResync;
 
@@ -190,7 +183,7 @@ export function StreamStatus(props: StreamStatusProps): React.ReactElement {
       role="status"
       aria-live="polite"
       aria-atomic="true"
-      aria-label={`World stream status: ${descriptor.badgeLabel}`}
+      aria-label={`World status: ${descriptor.badgeLabel}`}
       data-testid="verra-stream-status"
       data-connection-state={props.connectionState ?? storeSnap.connectionState}
       style={{ ...CONTAINER_BASE_STYLE, border: `1px solid ${descriptor.borderColor}` }}
@@ -206,22 +199,12 @@ export function StreamStatus(props: StreamStatusProps): React.ReactElement {
         <span aria-hidden="true">{descriptor.glyph}</span>
         <span>{descriptor.badgeLabel}</span>
       </span>
-      <span data-testid="stream-entity-count" title="Active tracked entities">
-        Entities: <strong>{descriptor.formattedEntityCount}</strong>
-      </span>
-      <span data-testid="stream-sequence-number" title="Last world delta sequence">
-        Seq: <strong>{descriptor.formattedSeq}</strong>
-      </span>
-      <span
-        data-testid="stream-tick-latency"
-        style={{ color: descriptor.latencyWarn ? "#D29922" : "#8B949E" }}
-        title="World stream tick latency"
-      >
-        Tick: <strong>{descriptor.formattedLatencyMs}</strong>
+      <span data-testid="stream-entity-count" style={{ color: "#B8C4D4" }} title="Online players in world">
+        Players Online: <strong style={{ color: "#F4F1EA" }}>{counts.players}</strong>
       </span>
       {needsResync ? (
-        <span role="alert" data-testid="stream-resync-alert" style={{ color: "#F85149", fontWeight: 600 }}>
-          RESYNC REQUIRED
+        <span role="alert" data-testid="stream-resync-alert" style={{ color: "#E05258", fontWeight: 600 }}>
+          RESYNCING
         </span>
       ) : null}
       <button
@@ -232,7 +215,8 @@ export function StreamStatus(props: StreamStatusProps): React.ReactElement {
         onClick={handleToggleCameraMode}
         style={{
           ...TOGGLE_BUTTON_BASE_STYLE,
-          backgroundColor: cameraMode === "3d" ? "#1F6FEB" : "#21262D",
+          backgroundColor: cameraMode === "3d" ? "#E8B25A" : "rgba(22, 30, 46, 0.92)",
+          color: cameraMode === "3d" ? "#0B0E17" : "#F4F1EA",
         }}
       >
         {cameraMode.toUpperCase()}
