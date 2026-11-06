@@ -16,11 +16,11 @@ import (
 	"syscall"
 	"time"
 
-	"aocrop/services/internal/admincatalog"
-	"aocrop/services/internal/admingw"
+	admincatalog "aocrop/services/internal/admin-catalog"
+	admingateway "aocrop/services/internal/admin-gateway"
 	"aocrop/services/internal/config"
 	"aocrop/services/internal/telemetry"
-	"aocrop/services/internal/worldstream"
+	worldstream "aocrop/services/internal/world-stream"
 )
 
 const (
@@ -32,7 +32,7 @@ func main() {
 	config.HandleHealthcheck("8090", "AOC_ADMIN_HTTP_BIND_ADDR", "AOC_ADMIN_HTTP_ADDR", "AOC_ADMIN_ADDR")
 	config.BindContainerFlags("admin")
 	if err := run(context.Background()); err != nil {
-		slog.Error("admingw stopped", "err", err)
+		slog.Error("admin-gateway stopped", "err", err)
 		os.Exit(1)
 	}
 }
@@ -44,7 +44,7 @@ func run(parent context.Context) error {
 	addr := resolveAddr()
 	catalog := admincatalog.NewDefaultCatalog()
 	coalescer := worldstream.NewCoalescer(worldstream.DefaultTickInterval)
-	router := admingw.NewRouter(admingw.Config{
+	router := admingateway.NewRouter(admingateway.Config{
 		Catalog:    catalog,
 		Coalescer:  coalescer,
 		RoleTokens: loadRoleTokens(),
@@ -68,7 +68,7 @@ func run(parent context.Context) error {
 		errCh <- nil
 	}()
 
-	slog.Info("admingw listening", "addr", lis.Addr().String())
+	slog.Info("admin-gateway listening", "addr", lis.Addr().String())
 
 	select {
 	case <-ctx.Done():
@@ -92,16 +92,22 @@ func resolveAddr() string {
 	return defaultAdminAddr
 }
 
-func loadRoleTokens() map[string]admingw.Role {
-	tokens := admingw.DefaultRoleTokens()
-	if v := strings.TrimSpace(os.Getenv("AOC_GM_OBSERVER_TOKEN")); v != "" {
-		tokens[v] = admingw.RoleObserver
+func loadRoleTokens() map[string]admingateway.Role {
+	tokens := admingateway.DefaultRoleTokens()
+	for _, k := range []string{"AOC_GM_OBSERVER_TOKEN", "AOC_ADMIN_GATEWAY_OBSERVER_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			tokens[v] = admingateway.RoleObserver
+		}
 	}
-	if v := strings.TrimSpace(os.Getenv("AOC_GM_OPERATOR_TOKEN")); v != "" {
-		tokens[v] = admingw.RoleOperator
+	for _, k := range []string{"AOC_GM_OPERATOR_TOKEN", "AOC_ADMIN_GATEWAY_OPERATOR_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			tokens[v] = admingateway.RoleOperator
+		}
 	}
-	if v := strings.TrimSpace(os.Getenv("AOC_GM_ARCHITECT_TOKEN")); v != "" {
-		tokens[v] = admingw.RoleArchitect
+	for _, k := range []string{"AOC_GM_ARCHITECT_TOKEN", "AOC_ADMIN_GATEWAY_ARCHITECT_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			tokens[v] = admingateway.RoleArchitect
+		}
 	}
 	return tokens
 }

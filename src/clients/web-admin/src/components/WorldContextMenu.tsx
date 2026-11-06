@@ -1,4 +1,7 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import React from "react";
+import { worldCmToMosaicPx } from "../state/worldStreamStore";
 
 export const K_CAPSULE_HALF_HEIGHT_CM = 96.0;
 
@@ -55,7 +58,13 @@ export interface RaycastLosSpatialPayload {
   readonly material_mask: number;
 }
 
-export type WorldContextActionId = "Teleport" | "SpawnNpc" | "MoveNpc" | "RaycastLos" | "Dismiss";
+export type WorldContextActionId =
+  | "Teleport"
+  | "SpawnNpc"
+  | "OpenSpawnerTab"
+  | "MoveNpc"
+  | "RaycastLos"
+  | "Dismiss";
 
 export interface WorldContextMenuItem {
   readonly id: WorldContextActionId;
@@ -70,10 +79,15 @@ export interface ContextMenuKeyResult {
 
 export interface WorldContextMenuProps {
   readonly picked: SpatialPointCm | null;
+  readonly selectedPlayer?: string;
   readonly selectedEntityGuid?: string | null;
   readonly selectedEntityOrigin?: SpatialPointCm | null;
   readonly focusedIndex?: number;
-  readonly onAction?: (action: WorldContextActionId, payload: Readonly<Record<string, unknown>> | null) => void;
+  readonly statusNote?: string | null;
+  readonly onAction?: (
+    action: WorldContextActionId,
+    payload: Readonly<Record<string, unknown>> | null,
+  ) => void;
   readonly onDismiss: () => void;
 }
 
@@ -90,7 +104,6 @@ function assertSpatialPointFinite(point: SpatialPointCm, prefix: string): void {
   assertFiniteFloat64(point.zCm, `${prefix}.zCm`);
 }
 
-// Emits ground-snapped Teleport payload with has_z=false so server resolves ground_at(x, y) + kCapsuleHalfHeightCm.
 export function buildGroundSnappedTeleportPayload(
   point: SpatialPointCm,
   targetGuid: string | null = null,
@@ -118,7 +131,10 @@ export function buildSpawnNpcPayload(
     throw new RangeError("npcTemplateId must be non-empty");
   }
   assertSpatialPointFinite(point, "point");
-  const cleanLevel = Math.max(1, Math.min(80, Math.trunc(assertFiniteFloat64(level, "level"))));
+  const cleanLevel = Math.max(
+    1,
+    Math.min(80, Math.trunc(assertFiniteFloat64(level, "level"))),
+  );
   return {
     command: "SpawnNpc",
     npc_template_id: npcTemplateId.trim(),
@@ -129,7 +145,10 @@ export function buildSpawnNpcPayload(
   };
 }
 
-export function buildMoveNpcPayload(npcGuid: string, destination: SpatialPointCm): MoveNpcHomePayload {
+export function buildMoveNpcPayload(
+  npcGuid: string,
+  destination: SpatialPointCm,
+): MoveNpcHomePayload {
   if (!npcGuid || npcGuid.trim().length === 0) {
     throw new RangeError("npcGuid must be non-empty for MoveNpc relocation");
   }
@@ -151,11 +170,19 @@ export function buildRaycastLosPayload(
 ): RaycastLosSpatialPayload {
   assertSpatialPointFinite(origin, "origin");
   assertSpatialPointFinite(target, "target");
-  const hitT = probe.hit_t !== undefined ? assertFiniteFloat64(probe.hit_t, "probe.hit_t") : 1.0;
+  const hitT =
+    probe.hit_t !== undefined
+      ? assertFiniteFloat64(probe.hit_t, "probe.hit_t")
+      : 1.0;
   if (hitT < 0 || hitT > 1) {
     throw new RangeError("BVH raycast hit_t must be within [0.0, 1.0]");
   }
-  const mask = probe.material_mask !== undefined ? Math.trunc(assertFiniteFloat64(probe.material_mask, "probe.material_mask")) >>> 0 : 0x01;
+  const mask =
+    probe.material_mask !== undefined
+      ? Math.trunc(
+          assertFiniteFloat64(probe.material_mask, "probe.material_mask"),
+        ) >>> 0
+      : 0x01;
   return {
     command: "RaycastLos",
     origin_x: origin.xCm,
@@ -170,53 +197,103 @@ export function buildRaycastLosPayload(
   };
 }
 
-export function navigateContextMenuKey(currentIndex: number, itemCount: number, key: string): ContextMenuKeyResult {
+export function navigateContextMenuKey(
+  currentIndex: number,
+  itemCount: number,
+  key: string,
+): ContextMenuKeyResult {
   if (itemCount <= 0) {
     return { nextIndex: 0, dismissed: key === "Escape" };
   }
   const clamped = Math.min(Math.max(0, currentIndex), itemCount - 1);
-  if (key === "Escape") {
-    return { nextIndex: clamped, dismissed: true };
-  }
+  if (key === "Escape") return { nextIndex: clamped, dismissed: true };
   if (key === "ArrowDown") {
     return { nextIndex: (clamped + 1) % itemCount, dismissed: false };
   }
   if (key === "ArrowUp") {
-    return { nextIndex: (clamped - 1 + itemCount) % itemCount, dismissed: false };
+    return {
+      nextIndex: (clamped - 1 + itemCount) % itemCount,
+      dismissed: false,
+    };
   }
-  if (key === "Home") {
-    return { nextIndex: 0, dismissed: false };
-  }
-  if (key === "End") {
-    return { nextIndex: itemCount - 1, dismissed: false };
-  }
+  if (key === "Home") return { nextIndex: 0, dismissed: false };
+  if (key === "End") return { nextIndex: itemCount - 1, dismissed: false };
   return { nextIndex: clamped, dismissed: false };
 }
 
-export function WorldContextMenu(props: WorldContextMenuProps): React.ReactElement | null {
+export function WorldContextMenu(
+  props: WorldContextMenuProps,
+): React.ReactElement | null {
   if (!props.picked) {
     return null;
   }
-  const hasEntity = Boolean(props.selectedEntityGuid);
+  const [mosaicU, mosaicV] = worldCmToMosaicPx(
+    props.picked.xCm,
+    props.picked.yCm,
+  );
   const items: readonly WorldContextMenuItem[] = [
-    { id: "Teleport", label: "Teleport (Ground-Snapped)", disabled: false },
+    {
+      id: "Teleport",
+      label: props.selectedPlayer
+        ? `Teleport ${props.selectedPlayer} Here`
+        : "Teleport Player Here",
+      disabled: false,
+    },
     { id: "SpawnNpc", label: "Spawn NPC Here", disabled: false },
-    { id: "MoveNpc", label: "Move Selected NPC Home", disabled: !hasEntity },
-    { id: "RaycastLos", label: "BVH LOS Raycast Probe", disabled: !props.selectedEntityOrigin },
+    {
+      id: "OpenSpawnerTab",
+      label: "Open in Players & Spawner Tab",
+      disabled: false,
+    },
     { id: "Dismiss", label: "Dismiss", disabled: false },
   ];
-  const focusIdx = Math.min(Math.max(0, props.focusedIndex ?? 0), items.length - 1);
+  const focusIdx = Math.min(
+    Math.max(0, props.focusedIndex ?? 0),
+    items.length - 1,
+  );
   return (
     <div
       role="menu"
       aria-label="Picked Verra Unreal Coordinate Context Menu"
       data-testid="verra-coordinate-context-menu"
-      style={{ position: "absolute", left: "12px", top: "12px", padding: "10px 12px", borderRadius: "6px", border: "1px solid #30363D", backgroundColor: "rgba(13, 17, 23, 0.96)", color: "#F0F6FC", fontSize: "12px", fontVariantNumeric: "tabular-nums" }}
+      style={{
+        position: "absolute",
+        left: "12px",
+        top: "12px",
+        padding: "10px 12px",
+        borderRadius: "6px",
+        border: "1px solid #30363D",
+        backgroundColor: "rgba(13, 17, 23, 0.96)",
+        color: "#F0F6FC",
+        fontSize: "12px",
+        fontVariantNumeric: "tabular-nums",
+        zIndex: 25,
+      }}
     >
-      <div><strong>Picked Unreal Coordinate (cm)</strong></div>
-      <div data-testid="picked-coordinate-readout" style={{ marginBottom: "6px", color: "#C9D1D9" }}>
-        X: {Math.round(props.picked.xCm)} | Y: {Math.round(props.picked.yCm)} | Z: {Math.round(props.picked.zCm)}
+      <div>
+        <strong>Picked Unreal Coordinate (cm)</strong>
       </div>
+      <div
+        data-testid="picked-coordinate-readout"
+        style={{ marginBottom: "2px", color: "#C9D1D9" }}
+      >
+        X: {Math.round(props.picked.xCm)} | Y: {Math.round(props.picked.yCm)} | Z:{" "}
+        {Math.round(props.picked.zCm)}
+      </div>
+      <div style={{ marginBottom: "6px", color: "#8B949E", fontSize: "11px" }}>
+        Mosaic px: ({Math.round(mosaicU)}, {Math.round(mosaicV)})
+      </div>
+      {props.statusNote ? (
+        <div
+          style={{
+            marginBottom: "6px",
+            color: "#58A6FF",
+            fontSize: "11px",
+          }}
+        >
+          {props.statusNote}
+        </div>
+      ) : null}
       {items.map((item, idx) => (
         <button
           key={item.id}
@@ -224,9 +301,29 @@ export function WorldContextMenu(props: WorldContextMenuProps): React.ReactEleme
           role="menuitem"
           disabled={item.disabled}
           tabIndex={idx === focusIdx ? 0 : -1}
-          data-testid={item.id === "Dismiss" ? "dismiss-picked-coordinate" : `context-menu-${item.id}`}
-          onClick={() => (item.id === "Dismiss" ? props.onDismiss() : props.onAction?.(item.id, null))}
-          style={{ display: "block", width: "100%", minHeight: "26px", marginTop: "4px", padding: "3px 8px", textAlign: "left", borderRadius: "4px", border: "1px solid #30363D", backgroundColor: idx === focusIdx ? "#1F6FEB" : "#21262D", color: item.disabled ? "#6E7681" : "#F0F6FC", cursor: item.disabled ? "not-allowed" : "pointer" }}
+          data-testid={
+            item.id === "Dismiss"
+              ? "dismiss-picked-coordinate"
+              : `context-menu-${item.id}`
+          }
+          onClick={() =>
+            item.id === "Dismiss"
+              ? props.onDismiss()
+              : props.onAction?.(item.id, null)
+          }
+          style={{
+            display: "block",
+            width: "100%",
+            minHeight: "26px",
+            marginTop: "4px",
+            padding: "4px 8px",
+            textAlign: "left",
+            borderRadius: "4px",
+            border: "1px solid #30363D",
+            backgroundColor: idx === focusIdx ? "#1F6FEB" : "#21262D",
+            color: item.disabled ? "#6E7681" : "#F0F6FC",
+            cursor: item.disabled ? "not-allowed" : "pointer",
+          }}
         >
           {item.label}
         </button>

@@ -293,7 +293,7 @@ function Sync-SandalDeployRuntimeDirs {
     }
     $distContent = Join-Path $distDir 'content'; $deployContent = Join-Path $DeployDir 'content'
     if (-not (Test-Path -LiteralPath $distContent -PathType Container)) { return }
-    foreach ($f in @(Get-ChildItem -LiteralPath $distContent -File -Force | Where-Object { $_.Extension -in @('.tsv', '.usmap', '.db', '.bin', '.json', '.sql') })) {
+    foreach ($f in @(Get-ChildItem -LiteralPath $distContent -File -Force | Where-Object { $_.Extension -in @('.tsv', '.usmap', '.db', '.bin', '.json', '.sql', '.pmtiles') })) {
         $dst = Join-Path $deployContent $f.Name; $dstItem = Get-Item -LiteralPath $dst -ErrorAction SilentlyContinue
         if ($null -ne $dstItem -and $dstItem.Length -eq $f.Length -and $dstItem.LastWriteTimeUtc -ge $f.LastWriteTimeUtc) { continue }
         if ($null -ne $dstItem) { Remove-Item -LiteralPath $dst -Force }

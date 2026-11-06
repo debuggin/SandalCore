@@ -185,7 +185,7 @@ func TestSetNodeLevelBounds(t *testing.T) {
 	}
 	defer w.Close()
 
-	for _, bad := range []int{-1, 5, 6, 7, 100, math.MaxInt32} {
+	for _, bad := range []int{-1, 7, 100, math.MaxInt32} {
 		_, _, err := e.Svc.SetNodeLevel(ctx, 0, "Winstead", bad, false)
 		if !errors.Is(err, citynode.ErrInvalid) {
 			t.Errorf("SetNodeLevel(%d) = %v, want ErrInvalid", bad, err)
@@ -197,7 +197,7 @@ func TestSetNodeLevelBounds(t *testing.T) {
 	for _, st := range []struct {
 		level   int
 		changed bool
-	}{{0, false}, {1, true}, {2, true}, {3, true}, {4, true}, {0, true}} {
+	}{{0, false}, {1, true}, {2, true}, {3, true}, {4, true}, {5, true}, {6, true}, {0, true}} {
 		n, changed, err := e.Svc.SetNodeLevel(ctx, 0, "Winstead", st.level, false)
 		if err != nil || n.Level != st.level || changed != st.changed {
 			t.Errorf("SetNodeLevel(%d) = %+v, changed %v, %v; want changed %v", st.level, n, changed, err, st.changed)
@@ -209,8 +209,8 @@ func TestSetNodeLevelBounds(t *testing.T) {
 	if _, _, err := e.Svc.SetNodeLevel(ctx, 0, "", 1, false); !errors.Is(err, citynode.ErrInvalid) {
 		t.Errorf("no node: %v", err)
 	}
-	// 0->0 sent nothing; 0->1->2->3->4->0 are five changes
-	for i := 1; i <= 5; i++ {
+	// 0->0 sent nothing; 0->1->2->3->4->5->6->0 are seven changes
+	for i := 1; i <= 7; i++ {
 		select {
 		case ev := <-w.Events():
 			if ev.Seq != uint64(i) || ev.Node == nil || ev.Node.Cause != citynode.CauseSetLevel {

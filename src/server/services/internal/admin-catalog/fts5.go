@@ -49,11 +49,17 @@ type indexedDoc struct {
 }
 
 type Catalog struct {
-	mu      sync.RWMutex
-	docs    []indexedDoc
-	byGUID  map[string]int
-	docFreq map[string]int
-	avgDL   float64
+	mu         sync.RWMutex
+	docs       []indexedDoc
+	byGUID     map[string]int
+	docFreq    map[string]int
+	avgDL      float64
+	db         *sql.DB
+	contentDir string
+	items      []ItemEntry
+	npcs       []NpcEntry
+	places     []PlaceEntry
+	loadedDB   bool
 }
 
 func NewCatalog() *Catalog {

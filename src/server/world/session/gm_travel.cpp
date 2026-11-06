@@ -738,6 +738,25 @@ GmNpcResult GmTravel::move_npc(uint64_t id, double x, double y, double z, bool h
     return out;
 }
 
+GmSpawnNpcResult GmTravel::spawn_npc(const GmSpawnNpcRequest& req, const std::string& by) {
+    const PlayerWorld::SpawnNpcParams params{log_text(req.npc), log_text(req.place), req.x, req.y, req.z, req.has_z, req.yaw_degrees, req.level};
+    const auto r = world_.spawn_npc(params, by);
+    GmSpawnNpcResult out;
+    out.status = r.status == PlayerWorld::StationStatus::Ok ? GmStatus::Ok :
+                 (r.status == PlayerWorld::StationStatus::NotFound ? GmStatus::NotFound :
+                  (r.status == PlayerWorld::StationStatus::Invalid ? GmStatus::InvalidArgument : GmStatus::FailedPrecondition));
+    out.message = r.message;
+    out.id = r.id;
+    out.npc = r.npc;
+    out.display_name = r.display_name;
+    out.asset_guid = r.asset_guid;
+    out.level = r.level;
+    out.position = {r.x, r.y, r.z};
+    out.yaw_degrees = r.yaw_degrees;
+    out.place = r.place;
+    return out;
+}
+
 size_t GmTravel::teleport_characters(const std::string& names, double x, double y, double z, const std::string& by, Clock::time_point now) {
     size_t moved = 0;
     std::string token;

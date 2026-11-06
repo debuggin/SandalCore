@@ -1,4 +1,7 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import React from "react";
+import { nodeLevelToPlugTier } from "../state/worldStreamStore";
 
 export type GmCommandDomain =
   | "Session/Travel"
@@ -35,6 +38,124 @@ export type GmCommandName =
   | "DumpEntityState";
 
 export type GmRole = "GM_OBSERVER" | "GM_OPERATOR" | "GM_ARCHITECT";
+export type ItemRarity = "Common" | "Uncommon" | "Rare" | "Heroic" | "Epic" | "Legendary";
+
+export const ITEM_RARITIES: readonly ItemRarity[] = Object.freeze([
+  "Common",
+  "Uncommon",
+  "Rare",
+  "Heroic",
+  "Epic",
+  "Legendary",
+]);
+
+export interface TeleportToPlayerCommand {
+  readonly command: "teleport_player";
+  readonly character: string;
+  readonly target_player: string;
+}
+
+export interface TeleportToPlaceCommand {
+  readonly command: "teleport_player";
+  readonly character: string;
+  readonly place: string;
+}
+
+export interface TeleportToCoordsCommand {
+  readonly command: "teleport_player";
+  readonly character: string;
+  readonly x_cm: number;
+  readonly y_cm: number;
+  readonly z_cm: number;
+}
+
+export type TeleportPlayerCommandPayload =
+  | TeleportToPlayerCommand
+  | TeleportToPlaceCommand
+  | TeleportToCoordsCommand;
+
+export interface TeleportPlayerInput {
+  readonly character: string;
+  readonly target_player?: string;
+  readonly place?: string;
+  readonly x_cm?: number;
+  readonly y_cm?: number;
+  readonly z_cm?: number;
+}
+
+export interface GiveMoneyCommand {
+  readonly command: "give_money";
+  readonly character: string;
+  readonly gold: number;
+  readonly silver: number;
+  readonly copper: number;
+}
+
+export interface GrantItemCommand {
+  readonly command: "grant_item";
+  readonly character: string;
+  readonly item: string;
+  readonly count: number;
+  readonly rarity: ItemRarity;
+}
+
+export interface SpawnNpcCommandInput {
+  readonly npc: string;
+  readonly level?: number;
+  readonly place?: string;
+  readonly x_cm?: number;
+  readonly y_cm?: number;
+  readonly z_cm?: number;
+}
+
+export interface SpawnNpcCommand {
+  readonly command: "spawn_npc";
+  readonly npc: string;
+  readonly place: string;
+  readonly x_cm: number;
+  readonly y_cm: number;
+  readonly z_cm: number;
+  readonly level: number;
+}
+
+export interface SetNodeLevelCommand {
+  readonly command: "set_node_level";
+  readonly node: string;
+  readonly level: number;
+  readonly plug_tier: number;
+}
+
+export type GmActionCommandPayload =
+  | TeleportPlayerCommandPayload
+  | GiveMoneyCommand
+  | GrantItemCommand
+  | SpawnNpcCommand
+  | SetNodeLevelCommand;
+
+export interface PaginatedQueryParams {
+  readonly q?: string;
+  readonly limit?: number;
+  readonly offset?: number;
+  readonly extra?: Readonly<Record<string, string | number>>;
+}
+
+export interface PaginatedListEnvelope<T> {
+  readonly items: readonly T[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+  readonly has_more: boolean;
+  readonly next_cursor: string | null;
+}
+
+export interface Rfc9457ProblemDetails {
+  readonly type: string;
+  readonly title: string;
+  readonly status: number;
+  readonly detail: string;
+  readonly instance?: string;
+  readonly code?: string;
+}
 
 export interface GmCommandDefinition {
   readonly name: GmCommandName;
@@ -140,15 +261,270 @@ export const GM_COMMAND_CATALOG: readonly GmCommandDefinition[] = Object.freeze(
   { name: "DumpEntityState", domain: "Diagnostics", minRole: "GM_OBSERVER", description: "Snapshot authoritative entity replication state", keywords: ["inspect", "debug"] },
 ]);
 
-export function validateGmCommandRbac(role: GmRole, command: GmCommandName): boolean {
-  const def = GM_COMMAND_CATALOG.find((item) => item.name === command);
-  if (!def) {
-    return false;
-  }
-  return ROLE_RANK[role] >= ROLE_RANK[def.minRole];
+function requireNonEmpty(value: string, fieldName: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) throw new RangeError(`${fieldName} is required`);
+  return trimmed;
 }
 
-// Formats an RFC 9562 UUIDv7 string deterministically from caller-supplied epoch ms and monotonic counter.
+function requireFinite(value: number, fieldName: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new RangeError(`${fieldName} must be a finite number`);
+  }
+  return value;
+}
+
+export function buildTeleportToPlayerCommand(character: string, targetPlayer: string): TeleportToPlayerCommand {
+  return {
+    command: "teleport_player",
+    character: requireNonEmpty(character, "character"),
+    target_player: requireNonEmpty(targetPlayer, "target_player"),
+  };
+}
+
+export function buildTeleportToPlaceCommand(character: string, place: string): TeleportToPlaceCommand {
+  return {
+    command: "teleport_player",
+    character: requireNonEmpty(character, "character"),
+    place: requireNonEmpty(place, "place"),
+  };
+}
+
+export function buildTeleportToCoordsCommand(character: string, xCm: number, yCm: number, zCm = 0): TeleportToCoordsCommand {
+  return {
+    command: "teleport_player",
+    character: requireNonEmpty(character, "character"),
+    x_cm: requireFinite(xCm, "x_cm"),
+    y_cm: requireFinite(yCm, "y_cm"),
+    z_cm: requireFinite(zCm, "z_cm"),
+  };
+}
+
+export function buildTeleportPlayerCommand(input: TeleportPlayerInput): TeleportPlayerCommandPayload {
+  const character = requireNonEmpty(input.character, "character");
+  if (input.target_player && input.target_player.trim().length > 0) {
+    return buildTeleportToPlayerCommand(character, input.target_player);
+  }
+  if (input.place && input.place.trim().length > 0) {
+    return buildTeleportToPlaceCommand(character, input.place);
+  }
+  return buildTeleportToCoordsCommand(
+    character,
+    requireFinite(input.x_cm ?? Number.NaN, "x_cm"),
+    requireFinite(input.y_cm ?? Number.NaN, "y_cm"),
+    input.z_cm ?? 0,
+  );
+}
+
+export function buildGiveMoneyCommand(character: string, gold: number, silver = 0, copper = 0): GiveMoneyCommand {
+  const g = Math.max(0, Math.trunc(requireFinite(gold, "gold")));
+  const s = Math.max(0, Math.trunc(requireFinite(silver, "silver")));
+  const c = Math.max(0, Math.trunc(requireFinite(copper, "copper")));
+  if (g + s + c <= 0) throw new RangeError("Total currency granted must be greater than zero");
+  return { command: "give_money", character: requireNonEmpty(character, "character"), gold: g, silver: s, copper: c };
+}
+
+export function buildGrantItemCommand(character: string, item: string, count = 1, rarity: ItemRarity = "Common"): GrantItemCommand {
+  const cleanCount = Math.max(1, Math.min(100, Math.trunc(requireFinite(count, "count"))));
+  return {
+    command: "grant_item",
+    character: requireNonEmpty(character, "character"),
+    item: requireNonEmpty(item, "item"),
+    count: cleanCount,
+    rarity,
+  };
+}
+
+export function buildSpawnNpcCommand(input: SpawnNpcCommandInput): SpawnNpcCommand {
+  const npc = requireNonEmpty(input.npc, "npc");
+  const place = (input.place ?? "").trim();
+  const xCm = input.x_cm !== undefined ? requireFinite(input.x_cm, "x_cm") : 0;
+  const yCm = input.y_cm !== undefined ? requireFinite(input.y_cm, "y_cm") : 0;
+  const zCm = input.z_cm !== undefined ? requireFinite(input.z_cm, "z_cm") : 0;
+  if (place.length === 0 && input.x_cm === undefined && input.y_cm === undefined) {
+    throw new RangeError("spawn_npc requires either a place or (x_cm, y_cm) coordinates");
+  }
+  const cleanLevel = Math.max(1, Math.min(50, Math.trunc(requireFinite(input.level ?? 1, "level"))));
+  return { command: "spawn_npc", npc, place, x_cm: xCm, y_cm: yCm, z_cm: zCm, level: cleanLevel };
+}
+
+export function buildSetNodeLevelCommand(node: string, level: number): SetNodeLevelCommand {
+  const cleanNode = requireNonEmpty(node, "node");
+  const cleanLevel = Math.max(0, Math.min(6, Math.trunc(requireFinite(level, "level"))));
+  return { command: "set_node_level", node: cleanNode, level: cleanLevel, plug_tier: nodeLevelToPlugTier(cleanLevel) };
+}
+
+export function buildPaginatedQueryUrl(basePath: string, params: PaginatedQueryParams = {}): string {
+  const parts: string[] = [];
+  if (params.q !== undefined && params.q.trim().length > 0) {
+    parts.push(`q=${encodeURIComponent(params.q.trim())}`);
+  }
+  if (params.limit !== undefined && Number.isFinite(params.limit)) {
+    parts.push(`limit=${Math.max(1, Math.min(500, Math.trunc(params.limit)))}`);
+  }
+  if (params.offset !== undefined && Number.isFinite(params.offset)) {
+    parts.push(`offset=${Math.max(0, Math.trunc(params.offset))}`);
+  }
+  if (params.extra) {
+    for (const [k, v] of Object.entries(params.extra)) {
+      parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`);
+    }
+  }
+  return parts.length > 0 ? `${basePath}?${parts.join("&")}` : basePath;
+}
+
+export function normalizePaginatedEnvelope<T>(
+  raw: unknown,
+  fallbackKeys: readonly string[] = ["players", "places", "npcs", "containers", "lines"],
+  defaultLimit = 25,
+  defaultOffset = 0,
+): PaginatedListEnvelope<T> {
+  const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  let items: readonly T[] = Array.isArray(obj.items) ? (obj.items as readonly T[]) : [];
+  if (items.length === 0) {
+    for (const key of fallbackKeys) {
+      if (Array.isArray(obj[key])) {
+        items = obj[key] as readonly T[];
+        break;
+      }
+    }
+  }
+  const limit = typeof obj.limit === "number" && Number.isFinite(obj.limit) ? obj.limit : defaultLimit;
+  const offset = typeof obj.offset === "number" && Number.isFinite(obj.offset) ? obj.offset : defaultOffset;
+  const total =
+    typeof obj.total === "number" && Number.isFinite(obj.total)
+      ? obj.total
+      : typeof obj.count === "number" && Number.isFinite(obj.count)
+        ? obj.count
+        : offset + items.length;
+  const hasMore = typeof obj.has_more === "boolean" ? obj.has_more : offset + items.length < total;
+  const nextCursor =
+    typeof obj.next_cursor === "string" && obj.next_cursor.length > 0
+      ? obj.next_cursor
+      : hasMore
+        ? String(offset + limit)
+        : null;
+  return { items, total, limit, offset, has_more: hasMore, next_cursor: nextCursor };
+}
+
+export function parseRfc9457Problem(status: number, raw: unknown): Rfc9457ProblemDetails {
+  const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const title = typeof obj.title === "string" && obj.title.trim().length > 0 ? obj.title.trim() : `HTTP ${status}`;
+  const detail =
+    typeof obj.detail === "string" && obj.detail.trim().length > 0
+      ? obj.detail.trim()
+      : typeof obj.error === "string" && obj.error.trim().length > 0
+        ? obj.error.trim()
+        : typeof obj.message === "string" && obj.message.trim().length > 0
+          ? obj.message.trim()
+          : `Request failed with status ${status}`;
+  return {
+    type: typeof obj.type === "string" ? obj.type : "about:blank",
+    title,
+    status: typeof obj.status === "number" ? obj.status : status,
+    detail,
+    instance: typeof obj.instance === "string" ? obj.instance : undefined,
+    code: typeof obj.code === "string" ? obj.code : undefined,
+  };
+}
+
+export const TRANSIENT_HTTP_STATUSES: readonly number[] = Object.freeze([502, 503, 504]);
+export const MAX_TRANSIENT_RETRIES = 2;
+
+export interface TransientRetryOptions {
+  readonly maxRetries?: number;
+  readonly baseDelayMs?: number;
+  readonly fetchImpl?: typeof fetch;
+  readonly correlationId?: string;
+}
+
+export function computeBackoffWithJitterMs(attempt: number, baseDelayMs = 25, jitterSeed = 0.5): number {
+  const cleanAttempt = Math.max(0, Math.min(6, Math.trunc(attempt)));
+  const expMs = Math.max(1, baseDelayMs) * Math.pow(2, cleanAttempt);
+  const clampedSeed = Math.max(0, Math.min(1, jitterSeed));
+  return Math.round(expMs * (0.75 + 0.5 * clampedSeed));
+}
+
+export async function fetchWithTransientRetry(
+  url: string,
+  init: RequestInit = {},
+  options: TransientRetryOptions = {},
+): Promise<Response> {
+  const maxRetries = options.maxRetries ?? MAX_TRANSIENT_RETRIES;
+  const baseDelayMs = options.baseDelayMs ?? 15;
+  const fetchFn = options.fetchImpl ?? fetch;
+  const correlationId =
+    options.correlationId ?? formatDeterministicUuidV7(Date.now(), Math.floor(Math.random() * 4096));
+  const baseHeaders: Record<string, string> = {
+    Accept: "application/json",
+    "X-Correlation-ID": correlationId,
+    ...(init.body !== undefined ? { "Content-Type": "application/json; charset=utf-8" } : {}),
+    ...((init.headers as Record<string, string> | undefined) ?? {}),
+  };
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      const response = await fetchFn(url, { ...init, headers: baseHeaders });
+      if (!TRANSIENT_HTTP_STATUSES.includes(response.status) || attempt === maxRetries) {
+        return response;
+      }
+    } catch (err) {
+      lastError = err;
+      if (attempt === maxRetries) throw err;
+    }
+    const waitMs = computeBackoffWithJitterMs(attempt, baseDelayMs, (attempt + 1) * 0.3);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+  throw lastError ?? new Error(`Transient retry exhausted for ${url}`);
+}
+
+export async function sendGmCommand(
+  payload: GmActionCommandPayload,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{
+  readonly ok: boolean;
+  readonly message: string;
+  readonly correlationId: string;
+  readonly idempotencyKey: string;
+  readonly problem?: Rfc9457ProblemDetails;
+}> {
+  const seq = Math.floor(Math.random() * 4096);
+  const idemKey = formatDeterministicUuidV7(Date.now(), seq);
+  const correlationId = formatDeterministicUuidV7(Date.now(), seq + 1);
+  const res = await fetchWithTransientRetry(
+    "/api/v1/gm/commands",
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Correlation-ID": correlationId,
+        "Idempotency-Key": idemKey,
+        "X-Idempotency-Key": idemKey,
+      },
+      body: JSON.stringify(payload),
+    },
+    { fetchImpl, correlationId, baseDelayMs: 5 },
+  );
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    const problem = parseRfc9457Problem(res.status, data);
+    return { ok: false, message: `${problem.title}: ${problem.detail}`, correlationId, idempotencyKey: idemKey, problem };
+  }
+  const msg =
+    typeof data.message === "string"
+      ? data.message
+      : typeof data.status === "string"
+        ? data.status
+        : `${payload.command} executed`;
+  return { ok: true, message: msg, correlationId, idempotencyKey: idemKey };
+}
+
+export function validateGmCommandRbac(role: GmRole, command: GmCommandName): boolean {
+  const def = GM_COMMAND_CATALOG.find((item) => item.name === command);
+  return def ? ROLE_RANK[role] >= ROLE_RANK[def.minRole] : false;
+}
+
 export function formatDeterministicUuidV7(timestampMs: number, sequence: number, nodeSeed = 0x53414e44): string {
   if (!Number.isFinite(timestampMs) || timestampMs < 0 || !Number.isFinite(sequence) || sequence < 0) {
     throw new RangeError("UUIDv7 timestampMs and sequence must be non-negative finite numbers");
@@ -165,23 +541,13 @@ export function formatDeterministicUuidV7(timestampMs: number, sequence: number,
 export function computeFuzzyScore(query: string, candidate: string): number {
   const cleanQuery = query.trim().toLowerCase();
   const cleanTarget = candidate.toLowerCase();
-  if (cleanQuery.length === 0) {
-    return 1;
-  }
-  if (cleanTarget === cleanQuery) {
-    return 100;
-  }
-  if (cleanTarget.startsWith(cleanQuery)) {
-    return 85;
-  }
-  if (cleanTarget.includes(cleanQuery)) {
-    return 65;
-  }
+  if (cleanQuery.length === 0) return 1;
+  if (cleanTarget === cleanQuery) return 100;
+  if (cleanTarget.startsWith(cleanQuery)) return 85;
+  if (cleanTarget.includes(cleanQuery)) return 65;
   let qIdx = 0;
   for (let i = 0; i < cleanTarget.length && qIdx < cleanQuery.length; i += 1) {
-    if (cleanTarget[i] === cleanQuery[qIdx]) {
-      qIdx += 1;
-    }
+    if (cleanTarget[i] === cleanQuery[qIdx]) qIdx += 1;
   }
   return qIdx === cleanQuery.length ? 40 : 0;
 }
@@ -193,23 +559,34 @@ export function filterGmCommandPalette(
 ): readonly GmPaletteOption[] {
   const results: GmPaletteOption[] = [];
   for (const cmd of GM_COMMAND_CATALOG) {
-    if (domainFilter && cmd.domain !== domainFilter) {
-      continue;
-    }
-    const searchable = `${cmd.name} ${cmd.domain} ${cmd.description} ${cmd.keywords.join(" ")}`;
-    const score = computeFuzzyScore(query, searchable);
+    if (domainFilter && cmd.domain !== domainFilter) continue;
+    const score = computeFuzzyScore(query, `${cmd.name} ${cmd.domain} ${cmd.description} ${cmd.keywords.join(" ")}`);
     if (score > 0) {
-      results.push({ id: `cmd:${cmd.name}`, command: cmd.name, domain: cmd.domain, minRole: cmd.minRole, label: `${cmd.name} — ${cmd.description}`, score, catalogItemId: null });
+      results.push({
+        id: `cmd:${cmd.name}`,
+        command: cmd.name,
+        domain: cmd.domain,
+        minRole: cmd.minRole,
+        label: `${cmd.name} - ${cmd.description}`,
+        score,
+        catalogItemId: null,
+      });
     }
   }
   for (const item of catalogItems) {
     const def = GM_COMMAND_CATALOG.find((c) => c.name === item.command);
-    if (!def || (domainFilter && def.domain !== domainFilter)) {
-      continue;
-    }
+    if (!def || (domainFilter && def.domain !== domainFilter)) continue;
     const score = computeFuzzyScore(query, `${item.label} ${item.id} ${item.category} ${item.command}`);
     if (score > 0) {
-      results.push({ id: `cat:${item.id}`, command: item.command, domain: def.domain, minRole: def.minRole, label: `${item.command}: ${item.label} (${item.id})`, score: score + 5, catalogItemId: item.id });
+      results.push({
+        id: `cat:${item.id}`,
+        command: item.command,
+        domain: def.domain,
+        minRole: def.minRole,
+        label: `${item.command}: ${item.label} (${item.id})`,
+        score: score + 5,
+        catalogItemId: item.id,
+      });
     }
   }
   return results.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
@@ -217,9 +594,7 @@ export function filterGmCommandPalette(
 
 export function buildGmCommandRequest(input: GmCommandBuildInput): GmCommandEnvelope {
   const def = GM_COMMAND_CATALOG.find((c) => c.name === input.command);
-  if (!def) {
-    throw new RangeError(`Unknown GM command: ${input.command}`);
-  }
+  if (!def) throw new RangeError(`Unknown GM command: ${input.command}`);
   if (!validateGmCommandRbac(input.role, input.command)) {
     throw new Error(`Role ${input.role} is not authorized for ${input.command} (requires ${def.minRole})`);
   }
@@ -227,15 +602,23 @@ export function buildGmCommandRequest(input: GmCommandBuildInput): GmCommandEnve
   return {
     endpoint: "/api/v1/gm/command",
     method: "POST",
-    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey, "X-Idempotency-Key": idempotencyKey },
-    body: { command_type: input.command, domain: def.domain, actor_role: input.role, target_guid: input.targetGuid ?? null, payload: input.payload ?? {} },
+    headers: {
+      "Content-Type": "application/json",
+      "Idempotency-Key": idempotencyKey,
+      "X-Idempotency-Key": idempotencyKey,
+    },
+    body: {
+      command_type: input.command,
+      domain: def.domain,
+      actor_role: input.role,
+      target_guid: input.targetGuid ?? null,
+      payload: input.payload ?? {},
+    },
   };
 }
 
 export function GmCommandPalette(props: GmCommandPaletteProps): React.ReactElement | null {
-  if (!props.isOpen) {
-    return null;
-  }
+  if (!props.isOpen) return null;
   const options = filterGmCommandPalette(props.query, props.catalogItems ?? []);
   const activeIdx = Math.min(Math.max(0, props.activeIndex ?? 0), Math.max(0, options.length - 1));
   return (
@@ -256,10 +639,16 @@ export function GmCommandPalette(props: GmCommandPaletteProps): React.ReactEleme
           data-testid="gm-command-palette-input"
           value={props.query}
           onChange={(e) => props.onQueryChange?.(e.currentTarget.value)}
-          placeholder="Type a GM command or catalog entity (Cmd+K)..."
+          placeholder="Type a GM command or catalog entity..."
           style={{ width: "100%", minHeight: "34px", padding: "6px 10px", borderRadius: "6px", border: "1px solid #30363D", backgroundColor: "#161B22", color: "#F0F6FC", fontSize: "13px" }}
         />
-        <ul id="gm-command-palette-listbox" role="listbox" aria-label="Filtered GM commands" data-testid="gm-command-palette-results" style={{ maxHeight: "260px", overflowY: "auto", margin: "8px 0 0 0", padding: 0, listStyle: "none" }}>
+        <ul
+          id="gm-command-palette-listbox"
+          role="listbox"
+          aria-label="Filtered GM commands"
+          data-testid="gm-command-palette-results"
+          style={{ maxHeight: "260px", overflowY: "auto", margin: "8px 0 0 0", padding: 0, listStyle: "none" }}
+        >
           {options.map((opt, idx) => (
             <li
               key={opt.id}

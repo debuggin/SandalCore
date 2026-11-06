@@ -31,51 +31,51 @@ func TestGatewaySeedDefaultZonesAndRouteForwardPacket(t *testing.T) {
 	if err := seedDefaultZones(router); err != nil {
 		t.Fatalf("seedDefaultZones() error = %v", err)
 	}
-	gw, err := newGateway(reg, router, "mesh-gateway-test")
+	gateway, err := newGateway(reg, router, "mesh-gateway-test")
 	if err != nil {
 		t.Fatalf("newGateway() error = %v", err)
 	}
 
 	raw := buildFramedMeshPacket(1, 2, 1, []byte{0xDE, 0xAD, 0xBE, 0xEF})
 
-	hdr, nextZone, payload, err := gw.RouteForwardPacket(1, -50000.0, 0.0, raw)
+	hdr, nextZone, payload, err := gateway.RouteForwardPacket(1, -50000.0, 0.0, raw)
 	if err != nil || nextZone != 1 || hdr.TargetZoneID != 2 || !bytes.Equal(payload, []byte{0xDE, 0xAD, 0xBE, 0xEF}) {
 		t.Fatalf("interior RouteForwardPacket = (%+v, %d, %x, %v)", hdr, nextZone, payload, err)
 	}
 
-	_, hZone, _, err := gw.RouteForwardPacket(1, 15000.0, 0.0, raw)
+	_, hZone, _, err := gateway.RouteForwardPacket(1, 15000.0, 0.0, raw)
 	if err != nil || hZone != 1 {
 		t.Fatalf("hysteresis RouteForwardPacket = (zone=%d, err=%v), want (1, nil)", hZone, err)
 	}
 
-	_, crossZone, crossPayload, err := gw.RouteForwardPacket(1, 25000.0, 0.0, raw)
+	_, crossZone, crossPayload, err := gateway.RouteForwardPacket(1, 25000.0, 0.0, raw)
 	if err != nil || crossZone != 2 || !bytes.Equal(crossPayload, []byte{0xDE, 0xAD, 0xBE, 0xEF}) {
 		t.Fatalf("cross-border RouteForwardPacket = (zone=%d, payload=%x, err=%v)", crossZone, crossPayload, err)
 	}
 
-	if _, _, _, err := gw.RouteForwardPacket(99, -500000.0, 0.0, raw); !errors.Is(err, mesh.ErrUnknownZone) {
+	if _, _, _, err := gateway.RouteForwardPacket(99, -500000.0, 0.0, raw); !errors.Is(err, mesh.ErrUnknownZone) {
 		t.Fatalf("unmapped zone RouteForwardPacket = %v, want ErrUnknownZone", err)
 	}
 }
 
 func TestGatewayRouteForwardPacketValidationErrors(t *testing.T) {
-	gw, err := newGateway(nil, nil, "mesh-gateway-auto")
-	if err != nil || len(gw.router.Zones()) != 2 {
-		t.Fatalf("newGateway(nil, nil) = (%v, zones=%d), want (nil, 2)", err, len(gw.router.Zones()))
+	gateway, err := newGateway(nil, nil, "mesh-gateway-auto")
+	if err != nil || len(gateway.router.Zones()) != 2 {
+		t.Fatalf("newGateway(nil, nil) = (%v, zones=%d), want (nil, 2)", err, len(gateway.router.Zones()))
 	}
 
-	if _, _, _, err := gw.RouteForwardPacket(1, -50000.0, 0.0, []byte{1, 2, 3}); !errors.Is(err, mesh.ErrTruncatedMeshHeader) {
+	if _, _, _, err := gateway.RouteForwardPacket(1, -50000.0, 0.0, []byte{1, 2, 3}); !errors.Is(err, mesh.ErrTruncatedMeshHeader) {
 		t.Fatalf("truncated packet error = %v, want ErrTruncatedMeshHeader", err)
 	}
 	stalePkt := buildFramedMeshPacket(1, 2, 0, []byte{0x01})
-	if _, _, _, err := gw.RouteForwardPacket(1, -50000.0, 0.0, stalePkt); !errors.Is(err, mesh.ErrInvalid) {
+	if _, _, _, err := gateway.RouteForwardPacket(1, -50000.0, 0.0, stalePkt); !errors.Is(err, mesh.ErrInvalid) {
 		t.Fatalf("epoch 0 packet error = %v, want ErrInvalid", err)
 	}
-	if _, err := gw.router.PromoteZoneAuthority(2, 2, "127.0.0.1:7778", 3); err != nil {
+	if _, err := gateway.router.PromoteZoneAuthority(2, 2, "127.0.0.1:7778", 3); err != nil {
 		t.Fatalf("PromoteZoneAuthority = %v", err)
 	}
 	epoch1Pkt := buildFramedMeshPacket(1, 2, 1, []byte{0x02})
-	if _, _, _, err := gw.RouteForwardPacket(1, 25000.0, 0.0, epoch1Pkt); !errors.Is(err, mesh.ErrStaleAuthorityEpoch) {
+	if _, _, _, err := gateway.RouteForwardPacket(1, 25000.0, 0.0, epoch1Pkt); !errors.Is(err, mesh.ErrStaleAuthorityEpoch) {
 		t.Fatalf("stale epoch packet error = %v, want ErrStaleAuthorityEpoch", err)
 	}
 }
@@ -92,11 +92,11 @@ func TestGatewayHealthProbesAndStaticWorldCheck(t *testing.T) {
 	if err := seedDefaultZones(router); err != nil {
 		t.Fatalf("seedDefaultZones error = %v", err)
 	}
-	gw, err := newGateway(reg, router, "mesh-gateway-probe")
+	gateway, err := newGateway(reg, router, "mesh-gateway-probe")
 	if err != nil {
 		t.Fatalf("newGateway error = %v", err)
 	}
-	h := gw.Handler()
+	h := gateway.Handler()
 
 	for _, path := range []string{"/livez", "/readyz", "/healthz", "/metrics"} {
 		rec := httptest.NewRecorder()
@@ -106,7 +106,7 @@ func TestGatewayHealthProbesAndStaticWorldCheck(t *testing.T) {
 		}
 	}
 
-	gw.readiness.SetReady(false, true)
+	gateway.readiness.SetReady(false, true)
 	for _, path := range []string{"/readyz", "/healthz"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))

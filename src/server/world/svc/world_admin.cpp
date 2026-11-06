@@ -448,6 +448,40 @@ struct WorldAdminServer::Service final : adminv1::WorldAdminService::Service {
         return grpc::Status::OK;
     }
 
+    grpc::Status SpawnNpc(grpc::ServerContext* ctx, const adminv1::SpawnNpcRequest* req, adminv1::SpawnNpcResponse* resp) override {
+        if (auto s = authorize(ctx, "SpawnNpc"); !s.ok()) return s;
+        GmSpawnNpcRequest r;
+        r.npc = req->npc();
+        r.level = req->level();
+        r.yaw_degrees = req->yaw_degrees();
+        switch (req->target_case()) {
+            case adminv1::SpawnNpcRequest::kPlace:
+                r.place = req->place();
+                if (r.place.empty()) return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "the place is empty");
+                break;
+            case adminv1::SpawnNpcRequest::kPoint:
+                r.x = req->point().x();
+                r.y = req->point().y();
+                r.z = req->point().z();
+                r.has_z = req->point().has_z();
+                break;
+            case adminv1::SpawnNpcRequest::TARGET_NOT_SET:
+                return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "give a place or a point");
+        }
+        const std::string by = "the admin API (" + ctx->peer() + ")";
+        GmSpawnNpcResult out;
+        if (auto s = on_net_thread([&] { out = owner.travel_.spawn_npc(r, by); }); !s.ok()) return s;
+        if (out.status != GmStatus::Ok) return grpc::Status(code_of(out.status), out.message);
+        resp->set_id(out.id);
+        resp->set_npc(out.npc);
+        resp->set_display_name(out.display_name);
+        resp->set_asset_guid(out.asset_guid);
+        resp->set_level(out.level);
+        put(resp->mutable_position(), out.position);
+        resp->set_place(out.place);
+        return grpc::Status::OK;
+    }
+
     grpc::Status RemoveStation(grpc::ServerContext* ctx, const adminv1::RemoveStationRequest* req, adminv1::RemoveStationResponse* resp) override {
         if (auto s = authorize(ctx, "RemoveStation"); !s.ok()) return s;
         const std::string by = "the admin API (" + ctx->peer() + ")";
@@ -516,6 +550,32 @@ bool ValidateAndClampGmTeleportRequest(
     const GmTeleportRequest& request, GmTeleportRequest* out, std::string* error, const TravelSafetyBounds& bounds) {
     if (request.character.empty()) {
         if (error) *error = "the character is empty";
+        return false;
+    }
+    if (!request.place.empty()) {
+        if (out) *out = request;
+        return true;
+    }
+    const float z_in = request.has_z ? static_cast<float>(request.z) : 0.0f;
+    const TravelTargetValidation check = ValidateAndClampTravelTarget(
+        static_cast<float>(request.x), static_cast<float>(request.y), z_in, bounds);
+    if (!check.valid) {
+        if (error) *error = "coordinates are out of world safety bounds";
+        return false;
+    }
+    if (out) {
+        *out = request;
+        out->x = static_cast<double>(check.clamped_x);
+        out->y = static_cast<double>(check.clamped_y);
+        if (request.has_z) out->z = static_cast<double>(check.clamped_z);
+    }
+    return true;
+}
+
+bool ValidateAndClampGmSpawnNpcRequest(
+    const GmSpawnNpcRequest& request, GmSpawnNpcRequest* out, std::string* error, const TravelSafetyBounds& bounds) {
+    if (request.npc.empty()) {
+        if (error) *error = "the npc is empty";
         return false;
     }
     if (!request.place.empty()) {

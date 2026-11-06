@@ -375,12 +375,16 @@ services:
         SERVICE_NAME: mesh-gateway
         SERVICE_HTTP_PORT: ${MESH_GATEWAY_HTTP_PORT:-8082}
     image: sandal-mesh-gateway:local
+    user: "65532:0"
+    group_add:
+      - "0"
     command:
       - "-http=:${MESH_GATEWAY_HTTP_PORT:-8082}"
       - "-mesh=${MESH_GRPC_ADDR:-mesh:50054}"
       - "-citynode=${CITYNODE_GRPC_ADDR:-citynode:50056}"
       - "-quest=${QUEST_GRPC_ADDR:-quest:50057}"
       - "-world-admin=${WORLD_ADMIN_GRPC_ADDR:-world:50061}"
+      - "-catalog-db=/content/content.db"
     environment:
       AOC_ENV: ${AOC_ENV:-production}
       AOC_ALLOW_INSECURE_DB: "1"
@@ -398,12 +402,14 @@ services:
       WORLD_ADMIN_GRPC_ADDR: ${WORLD_ADMIN_GRPC_ADDR:-world:50061}
       AOC_WORLD_STREAM_ADDR: ${WORLD_STREAM_GRPC_ADDR:-world:50062}
       AOC_CONTENT_DB: /content/content.db
+      AOC_PMTILES_PATH: /content/verra.pmtiles
       AOC_JWT_SECRET: ${AOC_JWT_SECRET:?AOC_JWT_SECRET must be set in deploy/.env}
       DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in deploy/.env}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
       AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in deploy/.env}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
     volumes:
       - ${AOC_DIST_CONTENT_DIR:-./content}:/content:ro
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       postgres:
         condition: service_healthy

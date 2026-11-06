@@ -87,6 +87,8 @@ service WorldAdminService {
   // Puts a living creature at a point at once. It stands there, and its leash and its walk home are centred on the point from now on, so a fight leashes it back to the point and not
   // to where it came from. Its spawn point, where it is made again after a death, stays its own. With no z the creature stands on the ground under the point.
   rpc MoveNpc(MoveNpcRequest) returns (MoveNpcResponse);
+  // Spawns a runtime NPC by asset GUID, record name, or Blueprint leaf at a named place or point.
+  rpc SpawnNpc(SpawnNpcRequest) returns (SpawnNpcResponse);
 }
 
 message Position {
@@ -363,6 +365,26 @@ message MoveNpcResponse {
   Position position = 3; // where it stands now
   string result = 4;
   Position from = 5;     // where it stood
+}
+
+message SpawnNpcRequest {
+  string npc = 1;
+  oneof target {
+    string place = 2;
+    Point point = 3;
+  }
+  int32 level = 4;
+  float yaw_degrees = 5;
+}
+
+message SpawnNpcResponse {
+  uint64 id = 1;
+  string npc = 2;
+  string display_name = 3;
+  int64 asset_guid = 4;
+  int32 level = 5;
+  Position position = 6;
+  string place = 7;
 }
 
 // ---- the world stream ---------------------------------------------------------------------------------------------------------------------

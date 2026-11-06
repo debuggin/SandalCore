@@ -612,6 +612,27 @@ static void test_admin_api_errors_and_speed(Harness &h, Admin &a) {
     CHECK(!a.directory_off_thread, "(no call touched the sessions off the network thread)");
 }
 
+static void test_admin_api_spawn_npc(Admin &a) {
+    auto call_spawn = [&](bool auth, const char *npc, const char *place, bool point) {
+        grpc::ClientContext ctx;
+        if (auth) Admin::authorize(ctx, kToken);
+        adminv1::SpawnNpcRequest rq;
+        if (npc) rq.set_npc(npc);
+        rq.set_level(25);
+        rq.set_yaw_degrees(90.0f);
+        if (place) rq.set_place(place);
+        if (point) { rq.mutable_point()->set_x(1000.0); rq.mutable_point()->set_y(2000.0); rq.mutable_point()->set_z(1100.0); rq.mutable_point()->set_has_z(true); }
+        adminv1::SpawnNpcResponse rs;
+        return a.via_net_thread([&] { return a.stub->SpawnNpc(&ctx, rq, &rs); });
+    };
+    CHECK(call_spawn(false, "Wolf", "joeva", false).error_code() == grpc::StatusCode::UNAUTHENTICATED, "SpawnNpc with no token is refused (Unauthenticated)");
+    CHECK(call_spawn(true, "Wolf", nullptr, false).error_code() == grpc::StatusCode::INVALID_ARGUMENT, "SpawnNpc with no target: InvalidArgument");
+    CHECK(call_spawn(true, "", "joeva", false).error_code() == grpc::StatusCode::INVALID_ARGUMENT, "SpawnNpc with empty npc: InvalidArgument");
+    const grpc::Status s = call_spawn(true, "Wolf", nullptr, true);
+    CHECK(s.error_code() == grpc::StatusCode::FAILED_PRECONDITION && s.error_message().find("area population") != std::string::npos,
+          "SpawnNpc without loaded area population returns FailedPrecondition on network thread");
+}
+
 static void test_admin_api() {
     std::printf("the admin API: the service token, the queue, the network thread\n");
     Harness h(cyb_on_the_ground(), on_the_ground);
@@ -621,6 +642,7 @@ static void test_admin_api() {
     test_admin_api_auth_refusals(h, a, start);
     test_admin_api_list_and_teleport(h, a);
     test_admin_api_errors_and_speed(h, a);
+    test_admin_api_spawn_npc(a);
 }
 
 static void test_admin_queue() {
@@ -700,6 +722,15 @@ static void test_travel_coordinate_safety_and_clamp() {
     req.x = 2000000.0;
     CHECK(!svc::ValidateAndClampGmTeleportRequest(req, &sanitized, &err) && !err.empty(),
           "ValidateAndClampGmTeleportRequest rejects out-of-world teleport request");
+
+    GmSpawnNpcRequest spawn_req{"", "joeva", 0.0, 0.0, 0.0, false, 15, 45.0f}, spawn_sanitized{};
+    CHECK(!svc::ValidateAndClampGmSpawnNpcRequest(spawn_req, &spawn_sanitized, &err) && err == "the npc is empty", "ValidateAndClampGmSpawnNpcRequest rejects empty npc");
+    spawn_req.npc = "AlphaWolf";
+    CHECK(svc::ValidateAndClampGmSpawnNpcRequest(spawn_req, &spawn_sanitized, &err) && spawn_sanitized.place == "joeva" && spawn_sanitized.level == 15, "ValidateAndClampGmSpawnNpcRequest accepts named place target");
+    spawn_req = GmSpawnNpcRequest{"AlphaWolf", "", 300.0, -400.0, -15000.0, true, 15, 45.0f};
+    CHECK(svc::ValidateAndClampGmSpawnNpcRequest(spawn_req, &spawn_sanitized, &err) && near_to(spawn_sanitized.z, -9999.5), "ValidateAndClampGmSpawnNpcRequest clamps sub-terrain z for point target");
+    spawn_req.x = 2000000.0;
+    CHECK(!svc::ValidateAndClampGmSpawnNpcRequest(spawn_req, &spawn_sanitized, &err), "ValidateAndClampGmSpawnNpcRequest rejects out-of-world point target");
 }
 
 static void test_command_bus_and_admin_dispatch() {

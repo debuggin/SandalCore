@@ -44,7 +44,7 @@
 .PARAMETER GameRoot
   The game's "Game" folder (the one that holds AOCClient.exe and AOC\). Default: GAME_ROOT, src\config\paths.json, Steam's libraries, the usual folders.
 .PARAMETER Only
-  Run only these steps: tools, config, curves, names, database, region, headers, fixtures, navbuild, roads, townfloors, townlayouts, npcabilities, navmesh.
+  Run only these steps: tools, config, curves, names, database, region, headers, fixtures, navbuild, roads, townfloors, townlayouts, pmtiles, npcabilities, navmesh.
 .PARAMETER Skip
   Leave these steps out (for example -Skip fixtures when you do not build the tests).
 .PARAMETER Force
@@ -474,19 +474,20 @@ function Get-Id([string]$step) {
     if ($ids.ContainsKey($step)) { return $ids[$step] }
     $usmap = Get-FileSha $usmapSrc
     if ($step -eq 'navmesh') { return Get-TextHash ("navmesh $gameId $usmap " + (Get-CodeMapc) + (Get-Id 'navbuild') + (Get-Id 'townfloors') + (Get-NavmeshInputs)) }
-    $v = switch ($step) {
-        'config'   { Get-TextHash ("config $gameId $usmap " + (Get-CodeMapc)) }
-        'curves'   { Get-TextHash ("curves $gameId $usmap " + (Get-CodeMapc)) }
-        'names'    { Get-TextHash ("names $gameId $usmap " + (Get-CodeMapc) + (Get-CodeItemNames) + ($StringTables -join ';')) }
-        'database' { Get-TextHash ("database $gameId $usmap " + (Get-CodeContentc) + (Get-Id 'config') + (Get-Id 'curves') + (Get-Id 'names')) }
-        'region'   { Get-TextHash ("region $gameId $usmap " + (Get-CodeMapc) + (Get-CodeGens) + (Get-Id 'database')) }
-        'headers'  { Get-TextHash ("headers " + (Get-CodeGens) + (Get-Id 'config') + (Get-Id 'region')) }
-        'fixtures' { Get-TextHash ("fixtures " + (Get-CodeGens) + (Get-CodeContentc) + (Get-Id 'database')) }
-        'navbuild' { Get-TextHash ("navbuild " + (Get-CodeNav)) }
-        'roads'    { Get-TextHash ("roads $gameId $usmap " + (Get-CodeMapc) + (Get-CodeContentc) + (Get-Id 'region')) }
-        'townfloors' { Get-TextHash ("townfloors $gameId $usmap " + (Get-CodeMapc)) }
-        'townlayouts' { Get-TextHash ("townlayouts $gameId $usmap " + (Get-CodeMapc) + (Get-CodeLayouts) + (Get-Id 'database')) }
-        'npcabilities' { Get-TextHash ("npcabilities $gameId $usmap " + (Get-CodeMapc) + (Get-CodeNpcAbilities) + ($NpcFolders -join ';') + ($NpcAnimEndFolders -join ';') + ($NpcSensesFolders -join ';') + (Get-Id 'database')) }
+    if ($step -in @('config', 'curves', 'townfloors', 'pmtiles')) {
+        $v = Get-TextHash ("$step $gameId $usmap " + (Get-CodeMapc))
+    } else {
+        $v = switch ($step) {
+            'names'    { Get-TextHash ("names $gameId $usmap " + (Get-CodeMapc) + (Get-CodeItemNames) + ($StringTables -join ';')) }
+            'database' { Get-TextHash ("database $gameId $usmap " + (Get-CodeContentc) + (Get-Id 'config') + (Get-Id 'curves') + (Get-Id 'names')) }
+            'region'   { Get-TextHash ("region $gameId $usmap " + (Get-CodeMapc) + (Get-CodeGens) + (Get-Id 'database')) }
+            'headers'  { Get-TextHash ("headers " + (Get-CodeGens) + (Get-Id 'config') + (Get-Id 'region')) }
+            'fixtures' { Get-TextHash ("fixtures " + (Get-CodeGens) + (Get-CodeContentc) + (Get-Id 'database')) }
+            'navbuild' { Get-TextHash ("navbuild " + (Get-CodeNav)) }
+            'roads'    { Get-TextHash ("roads $gameId $usmap " + (Get-CodeMapc) + (Get-CodeContentc) + (Get-Id 'region')) }
+            'townlayouts' { Get-TextHash ("townlayouts $gameId $usmap " + (Get-CodeMapc) + (Get-CodeLayouts) + (Get-Id 'database')) }
+            'npcabilities' { Get-TextHash ("npcabilities $gameId $usmap " + (Get-CodeMapc) + (Get-CodeNpcAbilities) + ($NpcFolders -join ';') + ($NpcAnimEndFolders -join ';') + ($NpcSensesFolders -join ';') + (Get-Id 'database')) }
+        }
     }
     $ids[$step] = $v
     return $v
@@ -611,6 +612,16 @@ $steps = @(
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\schemagen\gen_town_layouts.ps1'), '--content-db', (Join-Path $outDir 'content.db'), '--out', (Join-Path $outDir 'town_layout_items.tsv')) 'gen_town_layouts'
         Invoke-Checked $dotnet @($mapcDll, 'town-layouts', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir, '--min-free-gb', '8') 'mapc_town_layouts'
     } },
+    @{ Name = 'pmtiles'; Title = 'Build the Verra world map pyramid and 130 node plug tier tiles into verra.pmtiles (mapc)'; Outputs = @('dist\content\verra.pmtiles'); Run = {
+        $latestCs = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'src\tools\mapc') -Filter '*.cs' -File | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+        if (-not (Test-Path -LiteralPath $mapcDll) -or ($null -ne $latestCs -and $latestCs.LastWriteTimeUtc -gt (Get-Item -LiteralPath $mapcDll).LastWriteTimeUtc)) {
+            $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'; $env:DOTNET_NOLOGO = '1'
+            Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\mapc'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build_mapc'
+            $script:mapcDll = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'mapc')
+        }
+        Assert-Files @((Resolve-DotnetToolRelPath 'mapc')) 'run the tools step first'
+        Invoke-Checked $dotnet @($mapcDll, 'pmtiles', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_pmtiles'
+    } },
     @{ Name = 'npcabilities'; Title = 'Read the creature Blueprints and animation montages that give the creatures their attacks, what every creature notices and how far it follows, and the humanoid Blueprints and records that dress and name the people (src/tools/npcabilities; about two minutes)'; Outputs = @('dist\content\npc_abilities.tsv', 'dist\content\npc_montages.tsv', 'dist\content\npc_targeting.tsv', 'dist\content\npc_senses.tsv', 'dist\content\npc_aggro_curves.tsv', 'dist\content\npc_looks.tsv', 'dist\content\npc_appearances.tsv', 'dist\content\npc_names.tsv', 'dist\content\npc_trees.tsv'); Run = {
         Assert-Files @((Resolve-DotnetToolRelPath 'npcabilities'), 'dist\content\content.db') 'run the tools and database steps first'
         $npcArgs = @($npcAbilitiesDll, 'read', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir)
@@ -716,6 +727,13 @@ Remove-Item -Force -ErrorAction SilentlyContinue $lockFile
 $total.Stop()
 if ($Only.Count -eq 0 -and $Skip.Count -eq 0 -and (Test-Path -LiteralPath $outDir -PathType Container)) {
     [System.IO.File]::WriteAllText((Join-Path $outDir 'aoc.usmap.extracted.sha256'), "$(Get-FileSha $usmapSrc)`n", [System.Text.UTF8Encoding]::new($false))
+}
+$srcPmtiles = Join-Path $outDir 'verra.pmtiles'
+$deployContentDir = Join-Path $repoRoot 'deploy\content'
+if ((Test-Path -LiteralPath $srcPmtiles -PathType Leaf) -and (Test-Path -LiteralPath $deployContentDir -PathType Container)) {
+    $dstPmtiles = Join-Path $deployContentDir 'verra.pmtiles'
+    if (Test-Path -LiteralPath $dstPmtiles -PathType Leaf) { Remove-Item -LiteralPath $dstPmtiles -Force }
+    try { $null = New-Item -ItemType HardLink -Path $dstPmtiles -Target $srcPmtiles -ErrorAction Stop } catch { Copy-Item -LiteralPath $srcPmtiles -Destination $dstPmtiles -Force }
 }
 
 Say ''

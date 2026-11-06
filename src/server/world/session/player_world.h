@@ -164,6 +164,28 @@ public:
     StationResult place_station(const std::string& node, const std::string& plot, const std::string& station, const std::string& by);
     StationResult remove_station(const std::string& node, const std::string& plot, const std::string& by);
     size_t        placed_station_count() const { return placed_stations_.size(); }
+
+    struct SpawnNpcParams {
+        std::string npc;
+        std::string place;
+        double      x = 0, y = 0, z = 0;
+        bool        has_z = false;
+        float       yaw_degrees = 0;
+        int         level = 0;
+    };
+    struct SpawnNpcResult {
+        StationStatus status = StationStatus::Ok;
+        std::string   message;
+        uint64_t      id = 0;
+        std::string   npc;
+        std::string   display_name;
+        int64_t       asset_guid = 0;
+        int           level = 0;
+        double        x = 0, y = 0, z = 0;
+        float         yaw_degrees = 0;
+        std::string   place;
+    };
+    SpawnNpcResult spawn_npc(const SpawnNpcParams& req, const std::string& by);
     void                        set_gm_garden(bool on) { gm_garden_ = on; }
     bool                        gm_garden_requested() const { return gm_garden_; }
     void                        place_gm_garden();

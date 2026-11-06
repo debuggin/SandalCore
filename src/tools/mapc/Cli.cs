@@ -116,8 +116,8 @@ public static class Cli
             switch (o.Cmd)
             {
                 case "help": case "build": case "extract": o.Cmd = "check"; break;   // the E1 gate: rebuild all three in a scratch folder and compare
-                case "check": case "mount-speeds": case "roads": case "artisan-curves": case "town-floors": case "town-layouts": break;   // these compare themselves
-                default: throw new ArgumentException("--check goes with build, mount-speeds, artisan-curves, roads, town-floors or town-layouts (or alone: the E1 check), not with " + o.Cmd);
+                case "check": case "mount-speeds": case "roads": case "artisan-curves": case "town-floors": case "town-layouts": case "pmtiles": break;   // these compare themselves
+                default: throw new ArgumentException("--check goes with build, mount-speeds, artisan-curves, roads, town-floors, town-layouts or pmtiles (or alone: the E1 check), not with " + o.Cmd);
             }
         }
         // review B I7: E1's circle is not the default area any more; its build must not land in (or be compared with) the Riverlands' files in dist/content
@@ -177,11 +177,12 @@ public static class Cli
                 case "roads": return RoadsCommand(o);
                 case "town-floors": return TownFloorsCommand(o);
                 case "town-layouts": return TownLayoutsCommand(o);
+                case "pmtiles": return PmTilesCommand(o);
                 case "merge-geometry": return MergeGeometryCommand(o);
                 case "bp": { var game = new Game(o.Paks, o.Usmap); Inspect.Bp(game, o.Rest[0], o.Rest.Count > 1 ? o.Rest[1] : null); return 0; }
                 case "inspect": { var game = new Game(o.Paks, o.Usmap); Inspect.Run(game, new[] { "inspect" }.Concat(o.Rest).ToArray()); return 0; }
                 default:
-                    Console.WriteLine("mapc extract | build | --check | probe-cells | export-config | export-zoi | mount-speeds [--check] | artisan-curves [--check] | roads [--check] | town-floors [--check] | town-layouts [--check] | merge-geometry BASE LAYER OUT | probe KEY.tsv | inspect NAME...   [--out-dir D --paks D --usmap F --navbuild EXE --region FILE | --center X,Y --radius CM  --margin CM --threads N --batches M --heap-gb G --min-free-gb G --work-dir D --stop-after N]");
+                    Console.WriteLine("mapc extract | build | --check | probe-cells | export-config | export-zoi | mount-speeds [--check] | artisan-curves [--check] | roads [--check] | town-floors [--check] | town-layouts [--check] | pmtiles [--check] | merge-geometry BASE LAYER OUT | probe KEY.tsv | inspect NAME...   [--out-dir D --paks D --usmap F --navbuild EXE --region FILE | --center X,Y --radius CM  --margin CM --threads N --batches M --heap-gb G --min-free-gb G --work-dir D --stop-after N]");
                     return o.Cmd == "help" ? 0 : 2;
             }
         }
@@ -326,6 +327,31 @@ public static class Cli
         File.WriteAllBytes(tmp, bytes);
         File.Move(tmp, file, true);
         Log($"wrote {file} ({bytes.Length} bytes)");
+        return 0;
+    }
+
+    static int PmTilesCommand(Opt o)
+    {
+        void Log(string m) => Console.WriteLine(m);
+        Directory.CreateDirectory(o.OutDir);
+        string file = Path.Combine(o.OutDir, MapTiles.FileName);
+        string tmp = file + ".tmp";
+        var game = new Game(o.Paks, o.Usmap);
+        long freshLen = MapTiles.BuildToFile(game, tmp, Log);
+        if (o.CheckFlag)
+        {
+            try
+            {
+                if (!File.Exists(file)) { Log($"{MapTiles.FileName}: missing in {o.OutDir}"); return 1; }
+                long haveLen = new FileInfo(file).Length;
+                bool same = SameBytes(file, tmp);
+                Log(same ? $"{MapTiles.FileName}: identical ({haveLen} bytes)" : $"{MapTiles.FileName}: DIFFERS (file {haveLen} bytes, fresh {freshLen})");
+                return same ? 0 : 1;
+            }
+            finally { try { if (File.Exists(tmp)) File.Delete(tmp); } catch { } }
+        }
+        File.Move(tmp, file, true);
+        Log($"wrote {file} ({freshLen} bytes)");
         return 0;
     }
 
@@ -526,10 +552,12 @@ public static class Cli
         int threads = o.Threads > 0 ? o.Threads : Math.Max(2, Environment.ProcessorCount / 2);
         psi.ArgumentList.Add("--threads"); psi.ArgumentList.Add(threads.ToString());
         using var p = Process.Start(psi) ?? throw new InvalidOperationException("cannot start " + o.Navbuild);
-        var err = p.StandardError.ReadToEndAsync();
+        var err = new StringBuilder();
+        p.ErrorDataReceived += (_, ev) => { if (ev.Data != null) err.AppendLine(ev.Data); };
+        p.BeginErrorReadLine();
         Console.Write(p.StandardOutput.ReadToEnd());
         p.WaitForExit();
-        var e = err.Result;
+        var e = err.ToString();
         if (e.Length > 0) Console.Error.Write(e);
         return p.ExitCode;
     }
@@ -601,10 +629,12 @@ public static class Cli
             var psi = new ProcessStartInfo(o.Navbuild) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
             psi.ArgumentList.Add("--compare"); psi.ArgumentList.Add(have); psi.ArgumentList.Add(fresh);
             using var p = Process.Start(psi) ?? throw new InvalidOperationException("cannot start " + o.Navbuild);
-            var err = p.StandardError.ReadToEndAsync();
+            var err = new StringBuilder();
+            p.ErrorDataReceived += (_, ev) => { if (ev.Data != null) err.AppendLine(ev.Data); };
+            p.BeginErrorReadLine();
             Console.Write(p.StandardOutput.ReadToEnd());
             p.WaitForExit();
-            if (err.Result.Length > 0) Console.Error.Write(err.Result);
+            if (err.Length > 0) Console.Error.Write(err.ToString());
             return p.ExitCode == 0;
         }
         var a = new FileInfo(have); var b = new FileInfo(fresh);

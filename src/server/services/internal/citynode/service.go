@@ -278,7 +278,7 @@ func (s *Service) getNode(ctx context.Context, q queryer, info Info) (Node, erro
 	return s.toNode(info, r), nil
 }
 
-// SetNodeLevel sets a node's level, 0 to MaxNodeLevel. It touches nothing else: not the XP, not the vassal link.
+// SetNodeLevel sets a node's level, 0 to LevelMetropolis. It touches nothing else: not the XP, not the vassal link.
 // disableVassalship is the client's GM flag bDisableVassalshipSystem; Nodes 1 has no vassal rules to switch off, so it only
 // travels with the change. Setting the level a node already has changes nothing and sends no event (changed is false).
 func (s *Service) SetNodeLevel(ctx context.Context, guid int64, name string, level int, disableVassalship bool) (n Node, changed bool, err error) {
@@ -286,8 +286,8 @@ func (s *Service) SetNodeLevel(ctx context.Context, guid int64, name string, lev
 	if err != nil {
 		return Node{}, false, err
 	}
-	if err := ValidateLevel(level); err != nil {
-		return Node{}, false, err
+	if level < LevelWilderness || level > LevelMetropolis {
+		return Node{}, false, fmt.Errorf("%w: level %d is outside 0..%d (%s..%s)", ErrInvalid, level, LevelMetropolis, LevelName(LevelWilderness), LevelName(LevelMetropolis))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

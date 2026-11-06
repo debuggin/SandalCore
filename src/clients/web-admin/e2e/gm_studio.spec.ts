@@ -10,8 +10,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (specifier === "react") {
-      return { url: "data:text/javascript,export default {};", shortCircuit: true };
+    if (
+      specifier === "react" ||
+      specifier === "react-dom/client" ||
+      specifier === "react/jsx-runtime"
+    ) {
+      return {
+        url: "data:text/javascript,export const useState = (v) => [typeof v === 'function' ? v() : v, () => {}]; export const useEffect = () => {}; export const useMemo = (fn) => fn(); export const useCallback = (fn) => fn; export const useRef = (v) => ({ current: v }); export const createRoot = () => ({ render: () => {} }); export default { useState, useEffect, useMemo, useCallback, useRef, StrictMode: 'div' };",
+        shortCircuit: true,
+      };
     }
     if (specifier.startsWith(".") && context.parentURL?.startsWith("file:")) {
       const baseDir = dirname(fileURLToPath(context.parentURL));
@@ -27,214 +34,223 @@ registerHooks({
   load(url, context, nextLoad) {
     if (url.endsWith(".tsx")) {
       const raw = readFileSync(fileURLToPath(url), "utf8");
-      const stripped = raw.replace(
-        /return\s*\(\s*<([A-Za-z]+)[\s\S]*?<\/\1>\s*\);/g,
-        "return null as any;"
-      );
-      return nextLoad(url, { ...context, format: "module-typescript", source: stripped });
+      const stripped = raw
+        .replace(
+          /return\s*\(\s*<([A-Za-z0-9_]+)[\s\S]*?<\/\1>\s*\);/g,
+          "return null as any;",
+        )
+        .replace(
+          /return\s*\(\s*<[A-Za-z0-9_]+[\s\S]*?\/>\s*\);/g,
+          "return null as any;",
+        )
+        .replace(/return\s+<([A-Za-z0-9_]+)[^>]*\/>;/g, "return null as any;");
+      return nextLoad(url, {
+        ...context,
+        format: "module-typescript",
+        source: stripped,
+      });
     }
     return nextLoad(url, context);
   },
 });
 
-async function step1SpatialMapPmTilesAndEntitySelection(): Promise<void> {
+async function step1ThreeTabShellAndClutterRemoval(): Promise<void> {
+  const mainMod = await import("../src/main.tsx");
+  assert.equal(mainMod.ADMIN_TABS.length, 3);
+  assert.deepEqual(
+    mainMod.ADMIN_TABS.map((t: { id: string; label: string }) => ({
+      id: t.id,
+      label: t.label,
+    })),
+    [
+      { id: "map", label: "World Map" },
+      { id: "players-spawner", label: "Players & Spawner" },
+      { id: "logs-containers", label: "Logs & Container Analytics" },
+    ],
+  );
+
+  const webAdminRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  assert.equal(
+    existsSync(resolve(webAdminRoot, "src/re/ReInspector.tsx")),
+    false,
+  );
+  assert.equal(
+    existsSync(resolve(webAdminRoot, "src/components/HotfixEditor.tsx")),
+    false,
+  );
+  assert.equal(
+    existsSync(resolve(webAdminRoot, "src/components/AuditRollback.tsx")),
+    false,
+  );
+}
+
+async function step2WorldMapTilesNodePlugsAndLayerMaskPolling(): Promise<void> {
   const mapMod = await import("../src/map/VerraMapCanvas.tsx");
   const storeMod = await import("../src/state/worldStreamStore.ts");
-  const inspectorMod = await import("../src/components/EntityInspector.tsx");
 
-  assert.equal(mapMod.DEFAULT_VERRA_PMTILES_URL, "pmtiles:///tiles/verra.pmtiles");
-  let registeredScheme = "";
-  const unregister = mapMod.registerPmtilesProtocol(
-    (scheme) => {
-      registeredScheme = scheme;
-    },
-    () => {
-      registeredScheme = "removed";
-    }
-  );
-  assert.equal(registeredScheme, "pmtiles");
-  unregister();
-  assert.equal(registeredScheme, "removed");
-
+  assert.equal(mapMod.DEFAULT_VERRA_PMTILES_URL, "/api/v1/world/pmtiles");
   const [lng, lat] = storeMod.verraUnrealToLngLat(128000.5, -64000.25);
   const roundTrip = storeMod.lngLatToVerraUnreal(lng, lat, 512.0);
   assert.ok(Math.abs(roundTrip.xCm - 128000.5) < 1e-6);
   assert.ok(Math.abs(roundTrip.yCm - -64000.25) < 1e-6);
 
-  const entities = new Map([
-    ["player-1", { guid: "player-1", kind: "player" as const, name: "Cyb", xCm: 100, yCm: 200, zCm: 0, yawDeg: 90 }],
-    ["spawn-1", { guid: "spawn-1", kind: "spawn_group" as const, name: "Goblin Camp", xCm: 300, yCm: 400, zCm: 0, yawDeg: 0 }],
-  ]);
-  const baseLayers = { players: true, npcs: true, spawns: true, navmesh: true, voronoiBorders: true };
-  const lodZ1 = mapMod.buildVerraDeckOverlayLayers({
-    entities,
-    selectedEntityGuid: "player-1",
-    layers: baseLayers,
-    camera: { longitude: 0, latitude: 0, zoom: 1.5, pitch: 0, bearing: 0, mode: "2d" },
-    voronoiZones: [],
-    navmeshSegments: [],
-    lastSeq: 1,
-  });
-  const lodZ4 = mapMod.buildVerraDeckOverlayLayers({
-    entities,
-    selectedEntityGuid: "player-1",
-    layers: baseLayers,
-    camera: { longitude: 0, latitude: 0, zoom: 2.2, pitch: 0, bearing: 0, mode: "2d" },
-    voronoiZones: [],
-    navmeshSegments: [],
-    lastSeq: 2,
-  });
-  const lodZ6 = mapMod.buildVerraDeckOverlayLayers({
-    entities,
-    selectedEntityGuid: "player-1",
-    layers: baseLayers,
-    camera: { longitude: 0, latitude: 0, zoom: 6.0, pitch: 45, bearing: 0, mode: "3d" },
-    voronoiZones: [],
-    navmeshSegments: [],
-    lastSeq: 3,
-  });
-  assert.equal(lodZ1[2].data.length, 1);
-  assert.equal(lodZ1[3].visible, false);
-  assert.equal(lodZ4[2].data.length, 2);
-  assert.equal(lodZ4[3].visible, false);
-  assert.equal(lodZ6[2].data.length, 2);
-  assert.equal(lodZ6[3].visible, true);
+  // Verify high-res tiles across full zoom range (0..10)
+  for (const zoom of [0.0, 2.0, 5.0, 7.0, 10.0]) {
+    const tiles = storeMod.computeVisibleBaseTiles(
+      storeMod.DEFAULT_VERRA_MAP_META,
+      -777664,
+      522023,
+      zoom,
+      { width: 1024, height: 768 },
+    );
+    assert.ok(tiles.length > 0);
+    assert.ok(tiles.every((t) => t.z === 6 || t.z === 7));
+  }
 
-  const inspectorModel = inspectorMod.buildEntityInspectorModel({
-    entity: {
-      ...(entities.get("player-1") ?? { guid: "player-1", kind: "player" as const, name: "Cyb", xCm: 100, yCm: 200, zCm: 0, yawDeg: 90 }),
-      hotfixOverlays: [
-        { target_table: "world_hotfix_overlays", record_guid: "player-1", field_path: "max_hp", old_value: 1000, new_value: 1500 },
-      ],
-    },
-    viewState: "populated",
-  });
-  assert.equal(inspectorModel.viewState, "populated");
-  assert.equal(inspectorModel.hotfixDiffs.length, 1);
-  assert.equal(inspectorModel.hotfixDiffs[0].diffSummary, "1000 -> 1500");
-}
-
-async function step2GmCommandPaletteAndContextMenu(): Promise<void> {
-  const paletteMod = await import("../src/components/GmCommandPalette.tsx");
-  const ctxMod = await import("../src/components/WorldContextMenu.tsx");
-
-  const results = paletteMod.filterGmCommandPalette("Teleport");
-  assert.ok(results.length >= 1);
-  assert.equal(results[0].command, "Teleport");
-
-  assert.equal(paletteMod.validateGmCommandRbac("GM_OBSERVER", "Teleport"), false);
-  assert.equal(paletteMod.validateGmCommandRbac("GM_OPERATOR", "SpawnNpc"), true);
-  assert.equal(paletteMod.validateGmCommandRbac("GM_OPERATOR", "TriggerSiege"), false);
-  assert.equal(paletteMod.validateGmCommandRbac("GM_ARCHITECT", "TriggerSiege"), true);
-
-  const tp = ctxMod.buildGroundSnappedTeleportPayload({ xCm: 14500.25, yCm: -8200.5, zCm: 0 }, "entity:player:77");
-  assert.equal(tp.has_z, false);
-  assert.equal(tp.capsule_half_height_cm, 96.0);
-
-  const move = ctxMod.buildMoveNpcPayload("entity:npc:42", { xCm: 1000, yCm: 2000, zCm: 300 });
-  assert.equal(move.update_spawn_anchor, true);
-
-  const los = ctxMod.buildRaycastLosPayload(
-    { xCm: 0, yCm: 0, zCm: 100 },
-    { xCm: 1000, yCm: 0, zCm: 100 },
-    { hit_t: 0.42, occluded: true, material_mask: 0x0040010d }
-  );
-  assert.equal(los.occluded, true);
-  assert.ok(los.hit_t >= 0 && los.hit_t <= 1);
-}
-
-async function step3HotfixSqlDryRunDdlRejectionAndApply(): Promise<void> {
-  const hotfixMod = await import("../src/components/HotfixEditor.tsx");
-
-  assert.equal(hotfixMod.validateClientHotfixSql("DROP TABLE world_hotfix_overlays;").valid, false);
-  assert.equal(hotfixMod.validateClientHotfixSql("ALTER TABLE spawns ADD COLUMN x INT;").valid, false);
-  assert.equal(hotfixMod.validateClientHotfixSql("PRAGMA journal_mode=WAL;").valid, false);
-  assert.equal(hotfixMod.validateClientHotfixSql("DELETE FROM accounts;").valid, false);
-
-  const validSql =
-    "UPDATE world_hotfix_overlays SET payload_json = '{\"hp\":2500}' WHERE overlay_key = 'npc:wolf_alpha';";
-  const check = hotfixMod.validateClientHotfixSql(validSql);
-  assert.equal(check.valid, true);
-  assert.equal(check.targetTable, "world_hotfix_overlays");
-
-  const preview = hotfixMod.buildHotfixDryRunPreview({
-    sql: validSql,
-    operatorRole: "GM_ARCHITECT",
-    snapshotEpoch: 4,
-    existingValue: "{\"hp\":1800}",
-    sequence: 10,
-  });
-  assert.equal(preview.valid, true);
-  assert.equal(preview.viewState, "populated");
-  assert.equal(preview.canApply, true);
-  assert.ok(preview.explainPlan.length >= 3);
-  assert.equal(preview.rowDiffs[0].oldValue, "{\"hp\":1800}");
-  assert.equal(preview.rowDiffs[0].newValue, "{\"hp\":2500}");
-  assert.ok(preview.generatedUndoSql.includes("UPDATE world_hotfix_overlays"));
-
-  const applyEnvelope = hotfixMod.buildHotfixHttpRequest("apply", {
-    sql: validSql,
-    expectedUndoSql: preview.generatedUndoSql,
-    idempotencyKey: preview.idempotencyKey,
-  });
-  assert.equal(applyEnvelope.url, "/api/v1/gm/hotfix/apply");
-  assert.equal(applyEnvelope.headers["Idempotency-Key"], preview.idempotencyKey);
-  assert.equal(applyEnvelope.headers["X-Idempotency-Key"], preview.idempotencyKey);
-}
-
-async function step4AuditLogInspectionAndOneClickRollback(): Promise<void> {
-  const auditMod = await import("../src/components/AuditRollback.tsx");
-
-  const sampleEntry = {
-    auditId: "audit-000001",
-    actorSub: "gm.architect",
-    actorRole: "GM_ARCHITECT",
-    commandDomain: "HOTFIX_SQL",
-    actionName: "HOTFIX_APPLY",
-    targetEntityId: "world_hotfix_overlays:npc:wolf_alpha",
-    undoSql: "UPDATE world_hotfix_overlays SET payload_json = '{\"hp\":1800}' WHERE overlay_key = 'npc:wolf_alpha';",
-    rolledBack: false,
-    timestampIso: "2026-11-03T21:00:00Z",
-    snapshotEpoch: 5,
+  // Verify layer toggles update ?layer_mask= and ?layers= and pause polling when all OFF
+  const fullLayers = {
+    players: true,
+    npcs: true,
+    monsters: true,
+    resource_nodes: true,
+    mounts: true,
+    loot_piles: true,
+    pois: true,
   };
-
-  assert.equal(auditMod.resolveAuditViewState({ entries: [], isLoading: true }), "loading");
-  assert.equal(auditMod.resolveAuditViewState({ entries: [] }), "empty");
-  assert.equal(auditMod.resolveAuditViewState({ entries: [], errorMessage: "Stream error" }), "error");
-  assert.equal(auditMod.resolveAuditViewState({ entries: [sampleEntry], isDegraded: true }), "degraded");
-  assert.equal(auditMod.resolveAuditViewState({ entries: [sampleEntry] }), "populated");
-
-  assert.equal(auditMod.canRollbackAuditEntry(sampleEntry, "GM_OBSERVER"), false);
-  assert.equal(auditMod.canRollbackAuditEntry(sampleEntry, "GM_OPERATOR"), false);
-  assert.throws(() => auditMod.buildAuditRollbackRequest(sampleEntry, "GM_OPERATOR"));
-
-  assert.equal(auditMod.canRollbackAuditEntry(sampleEntry, "GM_ARCHITECT"), true);
-  const req = auditMod.buildAuditRollbackRequest(sampleEntry, "GM_ARCHITECT");
-  assert.equal(req.url, "/api/v1/gm/audit/rollback");
-  assert.ok(req.headers["Idempotency-Key"].length === 36);
-
-  const nextEntries = auditMod.applyOptimisticAuditRollback(
-    [sampleEntry],
-    "audit-000001",
-    "audit-000002",
-    6
+  assert.equal(storeMod.computeStreamLayerMask(fullLayers), 127);
+  assert.equal(
+    storeMod.buildWorldStatePollUrl(fullLayers),
+    "/api/v1/world/state?layer_mask=127&layers=players,npcs,monsters,resource_nodes,mounts,loot_piles,pois",
   );
-  assert.equal(nextEntries.length, 2);
-  assert.equal(nextEntries[0].auditId, "audit-000002");
-  assert.equal(nextEntries[0].snapshotEpoch, 6);
-  assert.equal(nextEntries[1].rolledBack, true);
-  assert.equal(auditMod.canRollbackAuditEntry(nextEntries[1], "GM_ARCHITECT"), false);
-  assert.throws(() =>
-    auditMod.applyOptimisticAuditRollback(nextEntries, "audit-000001", "audit-000003", 7)
+
+  const withoutMonstersAndPois = {
+    ...fullLayers,
+    monsters: false,
+    pois: false,
+  };
+  assert.equal(
+    storeMod.computeStreamLayerMask(withoutMonstersAndPois),
+    storeMod.STREAM_LAYER_ALL,
+  );
+  assert.equal(storeMod.shouldFetchPoisCatalog(withoutMonstersAndPois), false);
+  assert.equal(
+    storeMod.buildWorldStatePollUrl(withoutMonstersAndPois),
+    "/api/v1/world/state?layer_mask=31&layers=players,npcs,resource_nodes,mounts,loot_piles",
+  );
+
+  const allOff = {
+    players: false,
+    npcs: false,
+    monsters: false,
+    resource_nodes: false,
+    mounts: false,
+    loot_piles: false,
+    pois: false,
+  };
+  assert.equal(storeMod.computeStreamLayerMask(allOff), 0);
+  assert.equal(storeMod.shouldPollWorldState(allOff), false);
+  assert.equal(storeMod.buildWorldStatePollUrl(allOff), null);
+}
+
+async function step3PlayersAndSpawnerGmActions(): Promise<void> {
+  const paletteMod = await import("../src/components/GmCommandPalette.tsx");
+  const tab2Mod = await import("../src/components/PlayersAndSpawnerTab.tsx");
+
+  assert.equal(typeof tab2Mod.PlayersAndSpawnerTab, "function");
+  assert.deepEqual(paletteMod.ITEM_RARITIES, [
+    "Common",
+    "Uncommon",
+    "Rare",
+    "Heroic",
+    "Epic",
+    "Legendary",
+  ]);
+
+  const tpCmd = paletteMod.buildTeleportPlayerCommand({
+    character: "Cyb",
+    target_player: "Hatemost",
+  });
+  assert.equal(tpCmd.command, "teleport_player");
+  assert.equal("target_player" in tpCmd ? tpCmd.target_player : "", "Hatemost");
+
+  const grantCmd = paletteMod.buildGrantItemCommand(
+    "Cyb",
+    "60000000123",
+    3,
+    "Epic",
+  );
+  assert.equal(grantCmd.command, "grant_item");
+  assert.equal(grantCmd.count, 3);
+  assert.equal(grantCmd.rarity, "Epic");
+}
+
+async function step4LogsAndElevenContainerAnalytics(): Promise<void> {
+  const paletteMod = await import("../src/components/GmCommandPalette.tsx");
+  const tab3Mod = await import("../src/components/LogsAndContainersTab.tsx");
+
+  assert.equal(typeof tab3Mod.LogsAndContainersTab, "function");
+  assert.equal(tab3Mod.CANONICAL_SANDAL_CONTAINERS.length, 11);
+  assert.equal(
+    tab3Mod.CANONICAL_SANDAL_CONTAINERS.includes("aoc-tether" as never),
+    false,
+  );
+  assert.equal(
+    tab3Mod.CANONICAL_SANDAL_CONTAINERS.includes("aoc-world"),
+    true,
+  );
+  assert.equal(
+    tab3Mod.CANONICAL_SANDAL_CONTAINERS.includes("aoc-mesh-gateway"),
+    true,
+  );
+
+  const normalized = tab3Mod.normalizeContainersScrapeResponse({
+    world_status: { players_online: 4, npcs_total: 12450 },
+    gateway_telemetry: {
+      requests_total: 250,
+      errors_total: 1,
+      cache_hits_total: 180,
+      cache_misses_total: 70,
+      transient_retries_total: 2,
+    },
+    containers: [
+      {
+        name: "aoc-world",
+        state: "running",
+        status: "Up 15 minutes",
+        cpu_pct: 14.5,
+        mem_mb: 1840.2,
+        mem_limit_mb: 8192,
+        rx_bytes: 1048576,
+        tx_bytes: 2097152,
+      },
+    ],
+  });
+  assert.equal(normalized.world_status.players_online, 4);
+  assert.equal(normalized.world_status.npcs_total, 12450);
+  assert.equal(normalized.gateway_telemetry.requests_total, 250);
+  assert.equal(normalized.gateway_telemetry.transient_retries_total, 2);
+  assert.equal(normalized.containers.length, 11);
+
+  const logsUrl = paletteMod.buildPaginatedQueryUrl("/api/v1/gm/logs", {
+    q: "NPC looks",
+    limit: 100,
+    offset: 0,
+    extra: { container: "aoc-world", tail: 200 },
+  });
+  assert.equal(
+    logsUrl,
+    "/api/v1/gm/logs?q=NPC%20looks&limit=100&offset=0&container=aoc-world&tail=200",
   );
 }
 
 async function main(): Promise<void> {
-  await step1SpatialMapPmTilesAndEntitySelection();
-  await step2GmCommandPaletteAndContextMenu();
-  await step3HotfixSqlDryRunDdlRejectionAndApply();
-  await step4AuditLogInspectionAndOneClickRollback();
-  console.log("[PASS] gm_studio.spec.ts: all 4 E2E GM Studio workflow steps verified");
+  await step1ThreeTabShellAndClutterRemoval();
+  await step2WorldMapTilesNodePlugsAndLayerMaskPolling();
+  await step3PlayersAndSpawnerGmActions();
+  await step4LogsAndElevenContainerAnalytics();
+  console.log(
+    "[PASS] gm_studio.spec.ts: all 4 E2E GM Studio workflow steps verified",
+  );
 }
 
 await main();

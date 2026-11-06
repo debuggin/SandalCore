@@ -17,12 +17,12 @@ import (
 	"syscall"
 	"time"
 
-	"aocrop/services/internal/admincatalog"
-	"aocrop/services/internal/admingw"
+	admincatalog "aocrop/services/internal/admin-catalog"
+	admingateway "aocrop/services/internal/admin-gateway"
 	"aocrop/services/internal/config"
 	"aocrop/services/internal/mesh"
 	"aocrop/services/internal/telemetry"
-	"aocrop/services/internal/worldstream"
+	worldstream "aocrop/services/internal/world-stream"
 	pkgtelemetry "aocrop/services/pkg/telemetry"
 )
 
@@ -31,7 +31,7 @@ type Gateway struct {
 	router    *mesh.ZoneRouter
 	readiness *pkgtelemetry.ReadinessGate
 	coalescer *worldstream.Coalescer
-	admin     *admingw.Server
+	admin     *admingateway.Server
 }
 
 func newGateway(reg *mesh.Registry, router *mesh.ZoneRouter, serverID string) (*Gateway, error) {
@@ -49,11 +49,23 @@ func newGateway(reg *mesh.Registry, router *mesh.ZoneRouter, serverID string) (*
 	gate := pkgtelemetry.NewReadinessGate(serverID, 60)
 	gate.SetReady(true, true)
 	catalog := admincatalog.NewDefaultCatalog()
+	if dbPath := resolveCatalogDBPath(); dbPath != "" {
+		if loaded, err := admincatalog.NewCatalogFromContentDB(dbPath); err == nil {
+			catalog = loaded
+		} else {
+			slog.Warn("mesh-gateway failed to load content.db catalog, falling back to default", "path", dbPath, "err", err)
+		}
+	}
 	coalescer := worldstream.NewCoalescer(worldstream.DefaultTickInterval)
-	admin := admingw.NewRouter(admingw.Config{
-		Catalog:    catalog,
-		Coalescer:  coalescer,
-		RoleTokens: loadRoleTokens(),
+	admin := admingateway.NewRouter(admingateway.Config{
+		Catalog:         catalog,
+		Coalescer:       coalescer,
+		RoleTokens:      loadRoleTokens(),
+		PmTilesPath:     firstEnv("AOC_PMTILES_PATH", "SANDAL_PMTILES_PATH"),
+		WorldAdminAddr:  firstEnvDefault("world:50061", "AOC_WORLD_ADMIN_ADDR", "SANDAL_WORLD_ADMIN_ADDR"),
+		WorldStreamAddr: firstEnvDefault("world:50062", "AOC_WORLD_STREAM_ADDR", "SANDAL_WORLD_STREAM_ADDR"),
+		CityNodeAddr:    firstEnvDefault("citynode:50056", "AOC_CITYNODE_GRPC_ADDR", "SANDAL_CITYNODE_GRPC_ADDR"),
+		ServiceToken:    resolveServiceToken(),
 	})
 	return &Gateway{
 		registry:  reg,
@@ -64,16 +76,75 @@ func newGateway(reg *mesh.Registry, router *mesh.ZoneRouter, serverID string) (*
 	}, nil
 }
 
-func loadRoleTokens() map[string]admingw.Role {
-	tokens := admingw.DefaultRoleTokens()
-	if v := strings.TrimSpace(os.Getenv("AOC_GM_OBSERVER_TOKEN")); v != "" {
-		tokens[v] = admingw.RoleObserver
+func resolveCatalogDBPath() string {
+	for i, arg := range os.Args {
+		if strings.HasPrefix(arg, "-catalog-db=") {
+			return strings.TrimSpace(strings.TrimPrefix(arg, "-catalog-db="))
+		}
+		if arg == "-catalog-db" && i+1 < len(os.Args) {
+			return strings.TrimSpace(os.Args[i+1])
+		}
 	}
-	if v := strings.TrimSpace(os.Getenv("AOC_GM_OPERATOR_TOKEN")); v != "" {
-		tokens[v] = admingw.RoleOperator
+	for _, cand := range []string{
+		os.Getenv("AOC_CONTENT_DB"),
+		os.Getenv("SANDAL_CONTENT_DB"),
+		"/content/content.db",
+		"dist/content/content.db",
+		"deploy/content/content.db",
+	} {
+		if c := strings.TrimSpace(cand); c != "" {
+			if st, err := os.Stat(c); err == nil && !st.IsDir() {
+				return c
+			}
+		}
 	}
-	if v := strings.TrimSpace(os.Getenv("AOC_GM_ARCHITECT_TOKEN")); v != "" {
-		tokens[v] = admingw.RoleArchitect
+	return ""
+}
+
+func resolveServiceToken() string {
+	if tok := firstEnv("AOC_SERVICE_TOKEN", "SANDAL_SERVICE_TOKEN"); tok != "" {
+		return tok
+	}
+	if file := firstEnv("AOC_SERVICE_TOKEN_FILE", "SANDAL_SERVICE_TOKEN_FILE"); file != "" {
+		if b, err := os.ReadFile(file); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
+}
+
+func firstEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func firstEnvDefault(def string, keys ...string) string {
+	if v := firstEnv(keys...); v != "" {
+		return v
+	}
+	return def
+}
+
+func loadRoleTokens() map[string]admingateway.Role {
+	tokens := admingateway.DefaultRoleTokens()
+	for _, k := range []string{"AOC_GM_OBSERVER_TOKEN", "AOC_ADMIN_GATEWAY_OBSERVER_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			tokens[v] = admingateway.RoleObserver
+		}
+	}
+	for _, k := range []string{"AOC_GM_OPERATOR_TOKEN", "AOC_ADMIN_GATEWAY_OPERATOR_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			tokens[v] = admingateway.RoleOperator
+		}
+	}
+	for _, k := range []string{"AOC_GM_ARCHITECT_TOKEN", "AOC_ADMIN_GATEWAY_ARCHITECT_TOKEN"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			tokens[v] = admingateway.RoleArchitect
+		}
 	}
 	return tokens
 }
@@ -182,7 +253,7 @@ func runWithContext(ctx context.Context, probeAddr string) error {
 	}
 	reg := mesh.NewRegistry(nil, cfg.MeshHeartbeatTTL, cfg.MeshStaticWorld)
 	router := mesh.NewZoneRouter(mesh.DefaultBoundaryHysteresisCm)
-	gw, err := newGateway(reg, router, "mesh-gateway")
+	gateway, err := newGateway(reg, router, "mesh-gateway")
 	if err != nil {
 		return err
 	}
@@ -190,10 +261,10 @@ func runWithContext(ctx context.Context, probeAddr string) error {
 	if err != nil {
 		return err
 	}
-	if gw.coalescer != nil {
-		go gw.coalescer.Run(ctx)
+	if gateway.coalescer != nil {
+		go gateway.coalescer.Run(ctx)
 	}
-	httpSrv := telemetry.NewCleartextHTTPServer(probeAddr, gw.Handler())
+	httpSrv := telemetry.NewCleartextHTTPServer(probeAddr, gateway.Handler())
 	errc := make(chan error, 1)
 	go func() {
 		if serveErr := httpSrv.Serve(lis); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
@@ -208,9 +279,9 @@ func runWithContext(ctx context.Context, probeAddr string) error {
 	case err = <-errc:
 		return err
 	}
-	_, drainErr := gw.readiness.DrainGracefully(context.Background(), 5*time.Second, func(dctx context.Context) error {
-		if gw.admin != nil {
-			gw.admin.SetReady(false)
+	_, drainErr := gateway.readiness.DrainGracefully(context.Background(), 5*time.Second, func(dctx context.Context) error {
+		if gateway.admin != nil {
+			gateway.admin.SetReady(false)
 		}
 		return httpSrv.Shutdown(dctx)
 	})

@@ -135,6 +135,66 @@ npc::NpcMotionSetup make_respawn_motion_setup(const world::WorldActor& a, const 
     return setup;
 }
 
+bool contains_nocase(const std::string& haystack, const std::string& needle) {
+    if (needle.empty() || needle.size() > haystack.size()) return false;
+    return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(),
+                       [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); }) != haystack.end();
+}
+
+const content::NpcAssetRow* first_instance_asset(const content::PopulationData& pop, const content::NpcInstanceRow& inst, const spawns::TemplateSource& templates) {
+    const content::NpcAssetRow* fallback = nullptr;
+    for (const int64_t set_guid : inst.asset_sets) {
+        const auto st = pop.asset_sets.find(set_guid);
+        if (st == pop.asset_sets.end()) continue;
+        for (const auto& [asset_guid, weight] : st->second) {
+            (void)weight;
+            const auto at = pop.assets.find(asset_guid);
+            if (at == pop.assets.end()) continue;
+            if (!fallback) fallback = &at->second;
+            if (templates.find(at->second, nullptr, nullptr, &inst)) return &at->second;
+        }
+    }
+    return fallback;
+}
+
+const content::NpcAssetRow* resolve_spawn_npc_asset(const content::PopulationData& pop, const spawns::TemplateSource& templates,
+                                                    const std::string& query, const content::NpcInstanceRow*& out_inst) {
+    out_inst = nullptr;
+    char* end = nullptr;
+    if (const long long parsed = std::strtoll(query.c_str(), &end, 10); end && end != query.c_str() && *end == '\0' && parsed != 0) {
+        if (const auto it = pop.assets.find(static_cast<int64_t>(parsed)); it != pop.assets.end()) return &it->second;
+        if (const auto it = pop.instances.find(static_cast<int64_t>(parsed)); it != pop.instances.end()) {
+            out_inst = &it->second;
+            return first_instance_asset(pop, it->second, templates);
+        }
+    }
+    const content::NpcAssetRow* fallback = nullptr;
+    for (const auto& [guid, a] : pop.assets) {
+        (void)guid;
+        if (same_text(a.name, query) || same_text(spawns::blueprint_leaf(a.archetype_path), query) || same_text(spawns::blueprint_leaf(a.asset_ref), query)) {
+            if (!fallback) fallback = &a;
+            if (templates.find(a)) return &a;
+        }
+    }
+    for (const auto& [guid, inst] : pop.instances) {
+        (void)guid;
+        if (!same_text(inst.name, query)) continue;
+        if (const content::NpcAssetRow* a = first_instance_asset(pop, inst, templates)) {
+            out_inst = &inst;
+            if (templates.find(*a, nullptr, nullptr, &inst)) return a;
+            if (!fallback) fallback = a;
+        }
+    }
+    for (const auto& [guid, a] : pop.assets) {
+        (void)guid;
+        if (contains_nocase(a.name, query) || contains_nocase(spawns::blueprint_leaf(a.archetype_path), query)) {
+            if (!fallback) fallback = &a;
+            if (!a.dev_only && templates.find(a)) return &a;
+        }
+    }
+    return fallback;
+}
+
 }  // namespace
 
 void PlayerWorld::load_area_quests_and_props() {
@@ -658,6 +718,75 @@ uint64_t PlayerWorld::respawn_npc(uint32_t spawn_ref, double now) {
     const world::WorldActor* a = registry_.find(id);
     npcs_->add(id, make_respawn_motion_setup(*a, *area_report_, motion_, speeds()));
     return id;
+}
+
+PlayerWorld::SpawnNpcResult PlayerWorld::spawn_npc(const SpawnNpcParams& req, const std::string& by) {
+    SpawnNpcResult r;
+    const auto fail = [&](StationStatus s, std::string m) {
+        r.status = s;
+        r.message = std::move(m);
+        spdlog::info("[npc] {}: spawn {}: refused: {}", by, req.npc, r.message);
+        return r;
+    };
+    if (req.npc.empty()) return fail(StationStatus::Invalid, "an NPC name or GUID is required");
+    if (!area_report_ || !area_report_->data || !captured_ || !generic_) return fail(StationStatus::Refused, "the area population is not loaded");
+    double x = req.x, y = req.y, z = req.z;
+    const float yaw = std::isfinite(req.yaw_degrees) ? req.yaw_degrees : 0.0f;
+    if (req.place.empty() && (!std::isfinite(x) || !std::isfinite(y) || (req.has_z && !std::isfinite(z)))) return fail(StationStatus::Invalid, "the point is not a finite number");
+
+    const spawns::TemplateSource templates{&*captured_, &*generic_, looks_.get()};
+    const content::NpcInstanceRow* inst = nullptr;
+    const content::NpcAssetRow* asset = resolve_spawn_npc_asset(*area_report_->data, templates, req.npc, inst);
+    if (!asset) return fail(StationStatus::NotFound, "no NPC in content.db matches \"" + req.npc + "\"");
+
+    bool is_generic = false;
+    spawns::Verdict verdict = spawns::Verdict::NoPath;
+    const spawns::OpenTemplate* open = templates.find(*asset, &is_generic, &verdict, inst);
+    if (!open) return fail(StationStatus::Refused, "NPC \"" + asset->name + "\" has no spawnable visual template (" + std::string(spawns::verdict_name(verdict)) + ")");
+
+    const double half_h = motion_.get(asset->archetype_path).half_height;
+    if (!req.place.empty()) {
+        const world::Places all_places = places();
+        const world::Place* p = all_places.find(req.place);
+        if (!p) return fail(StationStatus::NotFound, "no place named \"" + req.place + "\" (worldctl places lists them)");
+        x = p->x;
+        y = p->y;
+        r.place = p->name;
+        if (const auto town = town_ground_at(x, y)) z = town->z + half_h;
+        else if (const auto gz = ground_at(x, y)) z = *gz + half_h;
+        else z = p->z;
+    } else if (!req.has_z) {
+        if (const auto town = town_ground_at(x, y)) z = town->z + half_h;
+        else if (const auto gz = ground_at(x, y)) z = *gz + half_h;
+        else return fail(StationStatus::Invalid, "the server has no ground at (" + std::to_string(static_cast<long long>(std::llround(x))) + ", " +
+                                                 std::to_string(static_cast<long long>(std::llround(y))) + ") cm: give z");
+    }
+
+    const int level = std::clamp(req.level > 0 ? req.level : (inst && inst->level_min > 0 ? inst->level_min : 1), 1, 50);
+    spawns::DataSpawn ds{x, y, z, yaw, level, asset, inst, open, is_generic, false, 0, 0, looks_.get(), 0, 0,
+                         spawns::point_hash(asset->guid, static_cast<int64_t>(x), static_cast<int64_t>(y), static_cast<int64_t>(++respawns_made_)), 0};
+    std::string make_err;
+    auto w = spawns::make_data_actor(ds, [this] { return guids_.next(); }, server_id_, world_clock_, nullptr, make_err, objects_ ? &*objects_ : nullptr);
+    if (!w) return fail(StationStatus::Refused, "the NPC could not be made: " + make_err);
+    w->npc.source = world::Source::Runtime;
+    w->npc.spawn_ref = 0;
+    const uint64_t id = w->id;
+    if (!registry_.add(std::move(*w))) return fail(StationStatus::Refused, "the registry refused the NPC actor");
+    on_node_person_spawned(id, inst, nullptr, world::CityNodeInfo{}, 0);
+
+    const world::WorldActor* made = registry_.find(id);
+    r.id = id;
+    r.npc = asset->name;
+    r.display_name = made && !made->npc.name.empty() ? made->npc.name : spawns::blueprint_leaf(asset->archetype_path);
+    r.asset_guid = asset->guid;
+    r.level = level;
+    r.x = made ? made->x : x;
+    r.y = made ? made->y : y;
+    r.z = made ? made->z : z;
+    r.yaw_degrees = yaw;
+    spdlog::info("[npc] {}: spawned {} ({}, actor {}, asset {}, level {}) at ({:.0f}, {:.0f}, {:.0f})",
+                 by, r.npc, r.display_name, id, r.asset_guid, level, r.x, r.y, r.z);
+    return r;
 }
 
 }}  // namespace aoc::worldd

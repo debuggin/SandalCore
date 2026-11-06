@@ -106,6 +106,10 @@ private:
     const GmTeleportRequest& request, GmTeleportRequest* out, std::string* error = nullptr,
     const TravelSafetyBounds& bounds = {});
 
+[[nodiscard]] bool ValidateAndClampGmSpawnNpcRequest(
+    const GmSpawnNpcRequest& request, GmSpawnNpcRequest* out, std::string* error = nullptr,
+    const TravelSafetyBounds& bounds = {});
+
 [[nodiscard]] bool SubmitAndDrainHotfixReload(
     CommandBus& bus, AdminQueue& queue, const ReloadContentHotfixesCommand& cmd,
     std::chrono::milliseconds timeout, uint64_t* applied_version = nullptr);

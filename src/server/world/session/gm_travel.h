@@ -215,6 +215,28 @@ struct GmNpcResult {
     double      respawn_in_seconds = 0;  // a kill or a despawn: until its spawn point makes it again (0: it does not)
 };
 
+struct GmSpawnNpcRequest {
+    std::string npc;
+    std::string place;
+    double      x = 0, y = 0, z = 0;
+    bool        has_z = false;
+    int32_t     level = 0;
+    float       yaw_degrees = 0;
+};
+
+struct GmSpawnNpcResult {
+    GmStatus    status = GmStatus::Ok;
+    std::string message;
+    uint64_t    id = 0;
+    std::string npc;
+    std::string display_name;
+    int64_t     asset_guid = 0;
+    int32_t     level = 0;
+    GmPosition  position;
+    float       yaw_degrees = 0;
+    std::string place;
+};
+
 /// The GM travel tools on the network thread.  `directory` lists the players of the world (Endpoint::players), `now` is the Endpoint's clock.
 class GmTravel : public GmPort {
 public:
@@ -265,6 +287,8 @@ public:
     GmNpcResult despawn_npc(uint64_t id, const std::string& by);
     /// Puts a living creature at (x, y) at once, on the ground there (or at `z` when `has_z`); its leash and its walk home are centred on the point from then on; its spawn point stays.
     GmNpcResult move_npc(uint64_t id, double x, double y, double z, bool has_z, const std::string& by);
+    /// Spawns a runtime NPC by asset GUID, record name, or Blueprint leaf at a named place or point.
+    GmSpawnNpcResult spawn_npc(const GmSpawnNpcRequest& request, const std::string& by);
 
     size_t teleport_characters(const std::string& names, double x, double y, double z, const std::string& by, Clock::time_point now) override;
 
