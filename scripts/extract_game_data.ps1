@@ -714,6 +714,9 @@ try {
 }
 Remove-Item -Force -ErrorAction SilentlyContinue $lockFile
 $total.Stop()
+if ($Only.Count -eq 0 -and $Skip.Count -eq 0 -and (Test-Path -LiteralPath $outDir -PathType Container)) {
+    [System.IO.File]::WriteAllText((Join-Path $outDir 'aoc.usmap.extracted.sha256'), "$(Get-FileSha $usmapSrc)`n", [System.Text.UTF8Encoding]::new($false))
+}
 
 Say ''
 if ($ran -eq 0) {

@@ -398,25 +398,15 @@ function Confirm-SandalWslConfig {
 function Test-SandalDockerDaemonReady {
     [CmdletBinding()]
     param([scriptblock]$CommandRunner = $null)
-    if ($env:DOCKER_HOST -eq 'tcp://[::1]:2375') {
-        $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
-        Set-SandalUserDockerHost -Endpoint 'tcp://127.0.0.1:2375' -CommandRunner $CommandRunner
-    }
-    if ($null -eq $CommandRunner -and $IsWindows -and ($env:DOCKER_HOST -like '*:2375' -or [string]::IsNullOrWhiteSpace($env:DOCKER_HOST))) {
-        Start-SandalIpv6DockerBridge -CommandRunner $CommandRunner
-    }
-    if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) {
-        return @{ Ready = $true; Mode = 'current'; Endpoint = [string]$env:DOCKER_HOST }
-    }
+    if ($env:DOCKER_HOST -eq 'tcp://[::1]:2375') { $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'; Set-SandalUserDockerHost -Endpoint 'tcp://127.0.0.1:2375' -CommandRunner $CommandRunner }
+    if ($null -eq $CommandRunner -and $IsWindows -and ($env:DOCKER_HOST -like '*:2375' -or [string]::IsNullOrWhiteSpace($env:DOCKER_HOST))) { Start-SandalIpv6DockerBridge -CommandRunner $CommandRunner }
+    if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) { return @{ Ready = $true; Mode = 'current'; Endpoint = [string]$env:DOCKER_HOST } }
     $hasDesktopPipe = $IsWindows -and (($null -ne (Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue)) -or [System.IO.File]::Exists('\\.\pipe\docker_engine') -or [System.IO.File]::Exists('\\.\pipe\dockerDesktopLinuxEngine'))
     if ($null -eq $CommandRunner -and $hasDesktopPipe -and $env:DOCKER_HOST -in @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
-        $pipeOk = ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('--host', 'npipe:////./pipe/docker_engine', 'info')) -eq 0) -or
-                  ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('--context', 'desktop-linux', 'info')) -eq 0)
+        $pipeOk = ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('--host', 'npipe:////./pipe/docker_engine', 'info')) -eq 0) -or ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('--context', 'desktop-linux', 'info')) -eq 0)
         if ($pipeOk) {
             Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
-            if ([Environment]::GetEnvironmentVariable('DOCKER_HOST', 'User') -in @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) {
-                [Environment]::SetEnvironmentVariable('DOCKER_HOST', $null, 'User')
-            }
+            if ([Environment]::GetEnvironmentVariable('DOCKER_HOST', 'User') -in @('tcp://[::1]:2375', 'tcp://127.0.0.1:2375')) { [Environment]::SetEnvironmentVariable('DOCKER_HOST', $null, 'User') }
             Write-Host 'INFO: Detected active Docker Desktop daemon; cleared stale TCP DOCKER_HOST and using Docker Desktop.'
             return @{ Ready = $true; Mode = 'docker-desktop'; Endpoint = 'npipe:////./pipe/docker_engine' }
         }
@@ -431,16 +421,10 @@ function Start-SandalDockerDesktopIfInstalled {
     $desktopExe = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
     if (-not (Test-Path -LiteralPath $desktopExe -PathType Leaf)) { return $false }
     $isRunning = $null -ne (Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue)
-    if (-not $isRunning -and $env:SANDAL_PREFER_DOCKER_DESKTOP -ne '1') {
-        Write-Host 'INFO: Docker Desktop is installed (not running); bootstrapping WSL2 Docker Engine...'
-        return $false
-    }
+    if (-not $isRunning -and $env:SANDAL_PREFER_DOCKER_DESKTOP -ne '1') { Write-Host 'INFO: Docker Desktop is installed (not running); bootstrapping WSL2 Docker Engine...'; return $false }
     if (-not $isRunning) { Start-Process -FilePath $desktopExe | Out-Null }
     for ($i = 0; $i -lt 15; $i++) {
-        if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('--host', 'npipe:////./pipe/docker_engine', 'info')) -eq 0) {
-            Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue
-            return $true
-        }
+        if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('--host', 'npipe:////./pipe/docker_engine', 'info')) -eq 0) { Remove-Item Env:\DOCKER_HOST -ErrorAction SilentlyContinue; return $true }
         Start-Sleep -Seconds 1
     }
     return $false
@@ -448,17 +432,13 @@ function Start-SandalDockerDesktopIfInstalled {
 
 function Wait-SandalWslTcpDockerReady {
     param([int]$MaxAttempts = 8, [int]$DelayMs = 500, [scriptblock]$CommandRunner = $null)
-    if ($MaxAttempts -gt 1) {
-        Write-SandalStep -Step 'Docker' -Message "Waiting for WSL2 Docker TCP endpoint (:2375) (up to $MaxAttempts attempts)..." -Quiet:($null -ne $CommandRunner)
-    }
+    if ($MaxAttempts -gt 1) { Write-SandalStep -Step 'Docker' -Message "Waiting for WSL2 Docker TCP endpoint (:2375) (up to $MaxAttempts attempts)..." -Quiet:($null -ne $CommandRunner) }
     for ($i = 0; $i -lt $MaxAttempts; $i++) {
         $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
         if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info') -CommandRunner $CommandRunner) -eq 0) { return $true }
         if ($null -eq $CommandRunner) {
-            $env:DOCKER_HOST = 'tcp://[::1]:2375'
-            if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info')) -eq 0) { return $true }
-            $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'
-            Start-Sleep -Milliseconds $DelayMs
+            $env:DOCKER_HOST = 'tcp://[::1]:2375'; if ((Invoke-SandalDaemonCommand -FilePath 'docker' -ArgumentList @('info')) -eq 0) { return $true }
+            $env:DOCKER_HOST = 'tcp://127.0.0.1:2375'; Start-Sleep -Milliseconds $DelayMs
         }
     }
     return $false
@@ -867,29 +847,50 @@ function Sync-SandalUsmapOverride {
     return $synced
 }
 
+function Test-SandalUsmapExtractionCurrent {
+    param([string]$RepoRoot = '')
+    $root = if ($RepoRoot) { $RepoRoot } else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
+    $usmapSrc = Resolve-SandalUsmapPath -RepoRoot $root
+    if (-not (Test-Path -LiteralPath $usmapSrc -PathType Leaf)) { return $true }
+    $currentSha = (Get-FileHash -LiteralPath $usmapSrc -Algorithm SHA256).Hash.ToLowerInvariant()
+    $stampPath = Join-Path $root 'dist\content\aoc.usmap.extracted.sha256'
+    return ((Test-Path -LiteralPath $stampPath -PathType Leaf) -and ([System.IO.File]::ReadAllText($stampPath).Trim() -ieq $currentSha))
+}
+
 function Ensure-SandalGameData {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$RepoRoot, [string]$GameRoot = '', [switch]$CheckOnly)
     $contentDb = Join-Path $RepoRoot 'dist\content\content.db'
     Write-SandalStep -Step 'GameData' -Message "Checking game data database ($contentDb)..."
+    $usmapCurrent = Test-SandalUsmapExtractionCurrent -RepoRoot $RepoRoot
     $null = Sync-SandalUsmapOverride -RepoRoot $RepoRoot
+    $extractScript = Join-Path $RepoRoot 'scripts\extract_game_data.ps1'
+    $extractArgs = if (-not [string]::IsNullOrWhiteSpace($GameRoot)) { @('-GameRoot', $GameRoot) } else { @() }
+    $extracted = $false; $synced = $false
+    if ((-not $usmapCurrent) -and -not $CheckOnly -and (Test-Path -LiteralPath $extractScript -PathType Leaf)) {
+        $usmapSrc = Resolve-SandalUsmapPath -RepoRoot $RepoRoot
+        Write-SandalStep -Step 'GameData' -Message "Active .usmap changed ($usmapSrc); re-running incremental game data extraction..."
+        & $extractScript @extractArgs
+        if ($LASTEXITCODE -ne 0) { throw "Game data extraction failed (exit code $LASTEXITCODE)." }
+        if (Test-Path -LiteralPath $usmapSrc -PathType Leaf) { [System.IO.File]::WriteAllText((Join-Path $RepoRoot 'dist\content\aoc.usmap.extracted.sha256'), "$((Get-FileHash -LiteralPath $usmapSrc -Algorithm SHA256).Hash.ToLowerInvariant())`n", [System.Text.UTF8Encoding]::new($false)) }
+        $extracted = $true
+    }
     $res = Ensure-SandalContentDbCurrent -RepoRoot $RepoRoot -GameRoot $GameRoot -CheckOnly:$CheckOnly
-    $extracted = [bool]$res.Rebuilt; $synced = [bool]$res.SyncedDeploy
+    $extracted = $extracted -or [bool]$res.Rebuilt; $synced = [bool]$res.SyncedDeploy
     $distComplete = ($res.Ready -and (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot))
-    if (-not $distComplete -and -not $CheckOnly) {
-        $extractScript = Join-Path $RepoRoot 'scripts\extract_game_data.ps1'
-        if (Test-Path -LiteralPath $extractScript -PathType Leaf) {
-            $extractArgs = if (-not [string]::IsNullOrWhiteSpace($GameRoot)) { @('-GameRoot', $GameRoot) } else { @() }
-            Write-SandalStep -Step 'GameData' -Message 'Extracting missing runtime game data files into dist/content/...'
-            & $extractScript @extractArgs
-            if ($LASTEXITCODE -ne 0) { throw "Game data extraction failed (exit code $LASTEXITCODE)." }
-            $extracted = $true; $null = Sync-SandalDeployStage -RepoRoot $RepoRoot; $synced = $true
-            $distComplete = ($res.Ready -and (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot))
-        }
-    } elseif ($distComplete -and -not $CheckOnly -and -not (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot -ContentRelPath 'deploy\content')) {
+    if (-not $distComplete -and -not $CheckOnly -and -not $extracted -and (Test-Path -LiteralPath $extractScript -PathType Leaf)) {
+        Write-SandalStep -Step 'GameData' -Message 'Extracting missing runtime game data files into dist/content/...'
+        & $extractScript @extractArgs
+        if ($LASTEXITCODE -ne 0) { throw "Game data extraction failed (exit code $LASTEXITCODE)." }
+        $usmapSrc = Resolve-SandalUsmapPath -RepoRoot $RepoRoot
+        if (Test-Path -LiteralPath $usmapSrc -PathType Leaf) { [System.IO.File]::WriteAllText((Join-Path $RepoRoot 'dist\content\aoc.usmap.extracted.sha256'), "$((Get-FileHash -LiteralPath $usmapSrc -Algorithm SHA256).Hash.ToLowerInvariant())`n", [System.Text.UTF8Encoding]::new($false)) }
+        $null = Ensure-SandalContentDbIndexes -RepoRoot $RepoRoot; $extracted = $true
+        $distComplete = ($res.Ready -and (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot))
+    }
+    if (-not $CheckOnly -and ($extracted -or ($distComplete -and -not (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot -ContentRelPath 'deploy\content')))) {
         $null = Sync-SandalDeployStage -RepoRoot $RepoRoot; $synced = $true
     }
     return [pscustomobject]@{ Ready = $distComplete; Extracted = $extracted; SyncedDeploy = $synced; Version = $res.Version; ContentDb = $res.ContentDb }
 }
 
-Export-ModuleMember -Function @('Write-SandalStep', 'New-SandalCsprngSecret', 'Get-SandalEnvMap', 'Set-SandalSecretAcl', 'Initialize-SandalEnv', 'Sync-SandalDistStage', 'Sync-SandalDeployStage', 'Test-SandalDockerDaemonReady', 'Start-SandalDockerDesktopIfInstalled', 'Set-SandalWslComposeMountEnv', 'Start-SandalWslKeepAlive', 'Start-SandalIpv6DockerBridge', 'Install-SandalPowerShellDockerAutoWake', 'Complete-SandalWslDockerDaemonSetup', 'Ensure-SandalDockerDaemon', 'Test-SandalContentDbCurrent', 'Ensure-SandalContentDbIndexes', 'Ensure-SandalContentDbCurrent', 'Restart-SandalContentDbContainers', 'Test-SandalRuntimeGameDataComplete', 'Resolve-SandalUsmapPath', 'Sync-SandalUsmapOverride', 'Ensure-SandalGameData')
+Export-ModuleMember -Function @('Write-SandalStep', 'New-SandalCsprngSecret', 'Get-SandalEnvMap', 'Set-SandalSecretAcl', 'Initialize-SandalEnv', 'Sync-SandalDistStage', 'Sync-SandalDeployStage', 'Test-SandalDockerDaemonReady', 'Start-SandalDockerDesktopIfInstalled', 'Set-SandalWslComposeMountEnv', 'Start-SandalWslKeepAlive', 'Start-SandalIpv6DockerBridge', 'Install-SandalPowerShellDockerAutoWake', 'Complete-SandalWslDockerDaemonSetup', 'Ensure-SandalDockerDaemon', 'Test-SandalContentDbCurrent', 'Ensure-SandalContentDbIndexes', 'Ensure-SandalContentDbCurrent', 'Restart-SandalContentDbContainers', 'Test-SandalRuntimeGameDataComplete', 'Resolve-SandalUsmapPath', 'Sync-SandalUsmapOverride', 'Test-SandalUsmapExtractionCurrent', 'Ensure-SandalGameData')

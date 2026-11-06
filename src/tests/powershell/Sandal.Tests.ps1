@@ -344,4 +344,54 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
             }
         }
     }
+
+    Context '.aoc/usmap Override Resolution & SHA-256 Extraction Stamp Verification' {
+        It 'verifies Resolve-SandalUsmapPath, Sync-SandalUsmapOverride hardlink protection, and Test-SandalUsmapExtractionCurrent SHA-256 stamp matching' {
+            $tmpRepo = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-usmap-' + [guid]::NewGuid().ToString('N'))
+            $prevUsmapPath = if (Test-Path Env:\SANDAL_USMAP_PATH) { $env:SANDAL_USMAP_PATH } else { $null }
+            $prevOverrideDir = if (Test-Path Env:\SANDAL_USMAP_OVERRIDE_DIR) { $env:SANDAL_USMAP_OVERRIDE_DIR } else { $null }
+            try {
+                foreach ($rel in @('src\config\layouts', 'dist\content', 'deploy\content', 'override_usmap')) {
+                    $null = New-Item -ItemType Directory -Path (Join-Path $tmpRepo $rel) -Force
+                }
+                $repoUsmap = Join-Path $tmpRepo 'src\config\layouts\aoc.usmap'
+                $distUsmap = Join-Path $tmpRepo 'dist\content\aoc.usmap'
+                $deployUsmap = Join-Path $tmpRepo 'deploy\content\aoc.usmap'
+                $overrideDir = Join-Path $tmpRepo 'override_usmap'
+                $overrideUsmap = Join-Path $overrideDir 'aoc.usmap'
+                $stampPath = Join-Path $tmpRepo 'dist\content\aoc.usmap.extracted.sha256'
+
+                [System.IO.File]::WriteAllText($repoUsmap, 'base-repo-usmap-payload')
+                try { $null = New-Item -ItemType HardLink -Path $distUsmap -Target $repoUsmap -ErrorAction Stop } catch { Copy-Item -LiteralPath $repoUsmap -Destination $distUsmap -Force }
+                [System.IO.File]::WriteAllText($overrideUsmap, 'custom-override-usmap-payload-5282010')
+
+                Remove-Item Env:\SANDAL_USMAP_PATH -ErrorAction SilentlyContinue
+                $env:SANDAL_USMAP_OVERRIDE_DIR = $overrideDir
+
+                $resolved = Resolve-SandalUsmapPath -RepoRoot $tmpRepo
+                $resolved | Should -Be $overrideUsmap
+
+                (Test-SandalUsmapExtractionCurrent -RepoRoot $tmpRepo) | Should -BeFalse
+
+                [System.IO.File]::WriteAllText($stampPath, "0000000000000000000000000000000000000000000000000000000000000000`n")
+                (Test-SandalUsmapExtractionCurrent -RepoRoot $tmpRepo) | Should -BeFalse
+
+                $synced = Sync-SandalUsmapOverride -RepoRoot $tmpRepo
+                $synced | Should -BeTrue
+                [System.IO.File]::ReadAllText($repoUsmap) | Should -Be 'base-repo-usmap-payload'
+                [System.IO.File]::ReadAllText($distUsmap) | Should -Be 'custom-override-usmap-payload-5282010'
+                [System.IO.File]::ReadAllText($deployUsmap) | Should -Be 'custom-override-usmap-payload-5282010'
+
+                $expectedSha = (Get-FileHash -LiteralPath $overrideUsmap -Algorithm SHA256).Hash.ToLowerInvariant()
+                [System.IO.File]::WriteAllText($stampPath, "$expectedSha`n")
+                (Test-SandalUsmapExtractionCurrent -RepoRoot $tmpRepo) | Should -BeTrue
+            } finally {
+                if ($null -eq $prevUsmapPath) { Remove-Item Env:\SANDAL_USMAP_PATH -ErrorAction SilentlyContinue } else { $env:SANDAL_USMAP_PATH = $prevUsmapPath }
+                if ($null -eq $prevOverrideDir) { Remove-Item Env:\SANDAL_USMAP_OVERRIDE_DIR -ErrorAction SilentlyContinue } else { $env:SANDAL_USMAP_OVERRIDE_DIR = $prevOverrideDir }
+                if (Test-Path -LiteralPath $tmpRepo) {
+                    Remove-Item -LiteralPath $tmpRepo -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
 }
