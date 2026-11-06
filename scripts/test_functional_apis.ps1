@@ -30,6 +30,14 @@ function Assert-SandalCertsAndContentReady {
             throw "Required certificate or Riverlands content path is missing: $p"
         }
     }
+    if (Get-Command Test-SandalRuntimeGameDataComplete -ErrorAction SilentlyContinue) {
+        if (-not (Test-SandalRuntimeGameDataComplete -RepoRoot $RootDir)) {
+            throw 'dist/content is missing one or more of the 25 required runtime game-data artifacts (Test-SandalRuntimeGameDataComplete returned false).'
+        }
+        if (-not (Test-SandalRuntimeGameDataComplete -RepoRoot $RootDir -ContentRelPath 'deploy\content')) {
+            throw 'deploy/content is missing one or more of the 25 required runtime game-data artifacts (Test-SandalRuntimeGameDataComplete returned false).'
+        }
+    }
     $srvCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem((Get-Content -LiteralPath $srvPem -Raw))
     $cn = $srvCert.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
     if ($cn -eq 'sandalcore-gateway') {
@@ -60,6 +68,45 @@ function Start-SandalComposeStackIfNeeded {
     & docker compose -f (Join-Path $RootDir 'deploy\compose.yml') --env-file (Join-Path $RootDir 'deploy\.env') up -d --wait --remove-orphans *> $null
 }
 
+function Assert-WorldStartupSubsystemsLoaded {
+    $bootLogs = ''
+    for ($attempt = 0; $attempt -lt 45; $attempt++) {
+        $allLogs = (& docker logs aoc-world 2>&1) -join "`n"
+        $boots = [regex]::Matches($allLogs, '(?m)^.*\[content\] /app/content/content\.db: contentc version.*$')
+        $bootLogs = if ($boots.Count -gt 0) { $allLogs.Substring($boots[$boots.Count - 1].Index) } else { $allLogs }
+        if ($bootLogs -match 'foliage.*on: \d+ instances|did not open|refuses every login|no such column') { break }
+        Start-Sleep -Seconds 2
+    }
+    $forbiddenPatterns = @(
+        'did not open|refuses every login|no such column',
+        'no Blueprint table',
+        'no npc_motion\.tsv(?!\s+0\b)',
+        '\[error\]\s*\[nav\]\s*no ground',
+        'no town platforms',
+        'harvesting is off',
+        'no mob attack animations',
+        'no mob senses',
+        '(?i)(sqlite|content\.db).*error'
+    )
+    foreach ($pat in $forbiddenPatterns) {
+        if ($bootLogs -match $pat) {
+            throw "aoc-world startup logs matched forbidden missing-table/error pattern '$pat'."
+        }
+    }
+    $requiredPatterns = @(
+        'Blueprint table .*: \d+ pawn Blueprints',
+        'mob attack animations: \d+ Blueprints',
+        'ground .*area_nav\.bin: \d+ terrain grids',
+        '\d+ NPCs on the ground',
+        'foliage.*on: \d+ instances'
+    )
+    foreach ($req in $requiredPatterns) {
+        if ($bootLogs -notmatch $req) {
+            throw "aoc-world startup logs missing required subsystem confirmation '$req'."
+        }
+    }
+}
+
 function Assert-SandalDockerStackHealthy {
     param([string]$RootDir)
     $envModule = Join-Path $RootDir 'scripts\lib\Env.psm1'
@@ -87,10 +134,7 @@ function Assert-SandalDockerStackHealthy {
         }
         $statuses[$name] = $st.Trim()
     }
-    $worldLogs = (& docker logs --tail 50 aoc-world 2>&1) -join "`n"
-    if ($worldLogs -match 'did not open|refuses every login|no such column') {
-        throw "aoc-world startup logs indicate content.db open/schema failure:`n$worldLogs"
-    }
+    Assert-WorldStartupSubsystemsLoaded
     return [pscustomobject]@{
         ContainerCount = $expected.Count
         TetherPresent  = $false

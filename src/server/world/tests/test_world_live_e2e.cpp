@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 
+#include "aoc/worldadmin/v1/worldadmin.grpc.pb.h"
 #include "capture_packets.h"
 #include "fake_client.h"
 #include "net/udp_socket.h"
@@ -20,17 +21,18 @@
 #include "protocol/wire/packet_reader.h"
 #include "protocol/wire/ue5_primitives.h"
 
+#include <grpcpp/grpcpp.h>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 namespace conn = aoc::protocol::conn;
@@ -54,31 +56,23 @@ constexpr int64_t kTypeSkillRank = 6064628725236039698ll;
 constexpr int64_t kTypeSkillTree = 6064628725236039697ll;
 constexpr int64_t kTypeLevelingTypeDef = 6064628934189875200ll;
 constexpr int64_t kSprintAbility = 6064631641648332884ll;
+constexpr int64_t kScepterCombo = 6064631845843960261ll;
 constexpr int64_t kPetFollowCmd = 6064630881966096959ll;
 
 struct LiveConfig {
-    std::string host = "127.0.0.1";
+    std::string host = "127.0.0.1", char_id, ticket, usmap_path = "/app/content/aoc.usmap";
     uint16_t port = 7777;
-    std::string char_id;
-    std::string ticket;
-    std::string usmap_path = "/app/content/aoc.usmap";
-    int timeout_ms = 8000;
-    int hold_ms = 0;
+    int timeout_ms = 8000, hold_ms = 0;
 };
 
 struct ExportRecord {
-    FIntrepidNetworkGUID guid{};
+    FIntrepidNetworkGUID guid{}, outer{};
     uint8_t flags = 0;
-    FIntrepidNetworkGUID outer{};
     std::string path;
     uint32_t checksum = 0;
 };
 
-struct ExportCursor {
-    const uint8_t* data = nullptr;
-    size_t len = 0;
-    size_t pos = 0;
-};
+struct ExportCursor { const uint8_t* data = nullptr; size_t len = 0, pos = 0; };
 
 struct LiveSession {
     LiveConfig cfg;
@@ -88,18 +82,15 @@ struct LiveSession {
     std::optional<fake::Client> client;
     std::vector<fake::Received> rx_packets;
     std::vector<fake::Delivered> delivered;
-    std::array<double, 3> spawn{0.0, 0.0, 1100.0};
-    FIntrepidNetworkGUID pc_guid{};
-    FIntrepidNetworkGUID pawn_guid{};
-    FIntrepidNetworkGUID ability_guid{};
-    FIntrepidNetworkGUID backpack_guid{};
-    FIntrepidNetworkGUID equipment_guid{};
-    int32_t scroll_slot = 0;
-    int32_t scroll_qty = 1;
+    std::array<double, 3> spawn{0.0, 0.0, 1100.0}, goblin_pos{0.0, 0.0, 0.0};
+    FIntrepidNetworkGUID pc_guid{}, pawn_guid{}, ability_guid{}, backpack_guid{}, equipment_guid{}, goblin_guid{};
+    uint64_t goblin_id = 0;
+    std::string goblin_name;
+    uint32_t world_npcs = 0;
+    size_t replicated_npc_channels = 0, storage_payloads = 0, actionbar_payloads = 0;
+    int32_t scroll_slot = 0, scroll_qty = 1;
     repl::GuidValue scroll_guid{};
     bool has_scroll = false;
-    size_t storage_payloads = 0;
-    size_t actionbar_payloads = 0;
     float move_ts = 0.0f;
 };
 
@@ -236,6 +227,17 @@ void inspect_storage_and_bar_rpcs(LiveSession& s, const fake::Delivered& d) {
     }
 }
 
+FIntrepidNetworkGUID parse_spawn_actor_guid(const BunchWriter& w) {
+    wire::PacketReader r(w.data(), w.byte_size(), w.bit_pos());
+    FIntrepidNetworkGUID g{};
+    const uint64_t lo = r.read_uint32();
+    const uint64_t hi = r.read_uint32();
+    g.ObjectId = lo | (hi << 32);
+    g.ServerId = r.read_uint32();
+    g.Randomizer = r.read_uint32();
+    return g;
+}
+
 size_t pump_udp(LiveSession& s, int wait_ms, bool send_acks = true) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
     size_t got_packets = 0;
@@ -251,6 +253,11 @@ size_t pump_udp(LiveSession& s, int wait_ms, bool send_acks = true) {
                 std::vector<uint8_t> pkt(buf, buf + *cur);
                 fake::Received rx = s.client->receive(pkt);
                 for (const fake::Delivered& d : rx.delivered) {
+                    if (d.channel >= 7 && d.open) {
+                        ++s.replicated_npc_channels;
+                        const FIntrepidNetworkGUID g = parse_spawn_actor_guid(d.content);
+                        if (g.ObjectId == s.goblin_id) s.goblin_guid = g;
+                    }
                     scan_delivered_exports(s, d);
                     inspect_storage_and_bar_rpcs(s, d);
                     s.delivered.push_back(d);
@@ -273,17 +280,6 @@ bool send_bunches(LiveSession& s, std::vector<fake::Bunch> bunches) {
     if (!s.client) return false;
     const auto pkt = s.client->packet(std::move(bunches));
     return s.sock->send(s.peer, pkt.data(), pkt.size());
-}
-
-FIntrepidNetworkGUID parse_spawn_actor_guid(const BunchWriter& w) {
-    wire::PacketReader r(w.data(), w.byte_size(), w.bit_pos());
-    FIntrepidNetworkGUID g{};
-    const uint64_t lo = r.read_uint32();
-    const uint64_t hi = r.read_uint32();
-    g.ObjectId = lo | (hi << 32);
-    g.ServerId = r.read_uint32();
-    g.Randomizer = r.read_uint32();
-    return g;
 }
 
 bool run_stage1_handshake(LiveSession& s) {
@@ -447,6 +443,80 @@ BunchWriter encode_pawn_move(float ts, double x, double y, double z) {
     return out;
 }
 
+void attach_service_auth(grpc::ClientContext& ctx) {
+    const char* env_tok = std::getenv("AOC_SERVICE_TOKEN");
+    const std::string tok = (env_tok && *env_tok) ? env_tok : "dev-local-service-token-32bytes!";
+    ctx.AddMetadata("authorization", "Bearer " + tok);
+    ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(4));
+}
+
+bool discover_live_goblin(LiveSession& s) {
+    auto stub = aoc::worldadmin::v1::WorldStreamService::NewStub(
+        grpc::CreateChannel("127.0.0.1:50057", grpc::InsecureChannelCredentials()));
+    grpc::ClientContext st_ctx;
+    attach_service_auth(st_ctx);
+    aoc::worldadmin::v1::GetStatusResponse st_resp;
+    if (!stub->GetStatus(&st_ctx, {}, &st_resp).ok() || st_resp.stats().npcs() <= 10000) {
+        std::fprintf(stderr, "[FAIL] Stage 5: WorldStream GetStatus npcs=%u (expected >10000)\n", st_resp.stats().npcs());
+        return false;
+    }
+    s.world_npcs = st_resp.stats().npcs();
+    grpc::ClientContext sr_ctx;
+    attach_service_auth(sr_ctx);
+    aoc::worldadmin::v1::SearchRequest sr_req;
+    sr_req.set_query("Goblin");
+    sr_req.set_limit(50);
+    aoc::worldadmin::v1::SearchResponse sr_resp;
+    if (!stub->Search(&sr_ctx, sr_req, &sr_resp).ok() || sr_resp.results().empty()) {
+        std::fprintf(stderr, "[FAIL] Stage 5: WorldStream Search('Goblin') returned 0 results\n");
+        return false;
+    }
+    double best_dist = 1e18;
+    for (const auto& r : sr_resp.results()) {
+        if (r.entity().kind() != aoc::worldadmin::v1::ENTITY_KIND_NPC ||
+            (r.entity().state() & aoc::worldadmin::v1::ENTITY_STATE_DEAD) != 0) continue;
+        const double d = std::hypot(r.entity().x_cm() - s.spawn[0], r.entity().y_cm() - s.spawn[1]);
+        if (d < best_dist) {
+            best_dist = d;
+            s.goblin_id = r.entity().id();
+            s.goblin_name = r.name();
+            s.goblin_pos = {static_cast<double>(r.entity().x_cm()), static_cast<double>(r.entity().y_cm()),
+                            static_cast<double>(r.entity().z_cm())};
+        }
+    }
+    return s.goblin_id != 0;
+}
+
+bool teleport_to_goblin(LiveSession& s) {
+    auto stub = aoc::worldadmin::v1::WorldAdminService::NewStub(
+        grpc::CreateChannel("127.0.0.1:50061", grpc::InsecureChannelCredentials()));
+    const std::string want_id = strip_hyphens_lower(s.cfg.char_id);
+    std::string char_name;
+    grpc::ClientContext lp_ctx;
+    attach_service_auth(lp_ctx);
+    aoc::worldadmin::v1::ListPlayersResponse lp_resp;
+    if (!stub->ListPlayers(&lp_ctx, {}, &lp_resp).ok() || lp_resp.players().empty()) return false;
+    for (const auto& p : lp_resp.players()) {
+        if (strip_hyphens_lower(p.character_id()) == want_id) char_name = p.name();
+    }
+    if (char_name.empty()) char_name = lp_resp.players(0).name();
+    for (int attempt = 0; attempt < 4 && s.goblin_guid.ObjectId == 0; ++attempt) {
+        grpc::ClientContext tp_ctx;
+        attach_service_auth(tp_ctx);
+        aoc::worldadmin::v1::TeleportRequest req;
+        req.set_character(char_name);
+        auto* pt = req.mutable_point();
+        pt->set_x(s.goblin_pos[0] + 100.0);
+        pt->set_y(s.goblin_pos[1]);
+        pt->set_z(s.goblin_pos[2]);
+        pt->set_has_z(true);
+        aoc::worldadmin::v1::TeleportResponse resp;
+        if (!stub->Teleport(&tp_ctx, req, &resp).ok()) return false;
+        pump_udp(s, 350);
+    }
+    return s.goblin_guid.ObjectId == s.goblin_id && s.replicated_npc_channels > 0;
+}
+
 bool run_stage5_movement(LiveSession& s) {
     for (int step = 1; step <= 3; ++step) {
         s.move_ts += 0.2f;
@@ -454,17 +524,13 @@ bool run_stage5_movement(LiveSession& s) {
         send_bunches(s, {s.client->actor(5, mv, false)});
         pump_udp(s, 120);
     }
-    const schema::ClassSchema& pc = class_named("AoCPlayerControllerBP_C");
-    repl::RpcParams tp;
-    if (const schema::RpcSchema* rpc = pc.rpc("ServerTeleportXYZ")) {
-        repl::set_rpc_param(*rpc, tp, "X", repl::Value::i64(static_cast<int64_t>(s.spawn[0] + 120.0)));
-        repl::set_rpc_param(*rpc, tp, "Y", repl::Value::i64(static_cast<int64_t>(s.spawn[1])));
-        repl::set_rpc_param(*rpc, tp, "Z", repl::Value::i64(static_cast<int64_t>(s.spawn[2])));
-        repl::set_rpc_param(*rpc, tp, "OptionalRadius", repl::Value::f32(0.0f));
+    if (!discover_live_goblin(s) || !teleport_to_goblin(s)) {
+        std::fprintf(stderr, "[FAIL] Stage 5: Goblin discovery/teleport or ch>=7 actor replication failed (goblin=%llu)\n",
+                     static_cast<unsigned long long>(s.goblin_id));
+        return false;
     }
-    send_bunches(s, {s.client->actor(3, build_actor_rpc(pc, "ServerTeleportXYZ", tp), true)});
-    pump_udp(s, 250);
-    std::printf("  [ok ] Stage 5: ServerMovePacked (3 steps) & ServerTeleportXYZ acknowledged\n");
+    std::printf("  [ok ] Stage 5: ServerMovePacked (3 steps) & Goblin teleport complete (world_npcs=%u goblin=%llu '%s' npc_ch=%zu)\n",
+                s.world_npcs, static_cast<unsigned long long>(s.goblin_id), s.goblin_name.c_str(), s.replicated_npc_channels);
     return true;
 }
 
@@ -531,26 +597,57 @@ bool run_stage7_talents_actionbar(LiveSession& s) {
     return true;
 }
 
+bool inspect_goblin_combat(const LiveSession& s) {
+    auto stub = aoc::worldadmin::v1::WorldStreamService::NewStub(
+        grpc::CreateChannel("127.0.0.1:50057", grpc::InsecureChannelCredentials()));
+    grpc::ClientContext ctx;
+    attach_service_auth(ctx);
+    aoc::worldadmin::v1::InspectRequest req;
+    req.set_id(s.goblin_id);
+    aoc::worldadmin::v1::InspectResponse resp;
+    if (!stub->Inspect(&ctx, req, &resp).ok() || !resp.has_actor()) {
+        std::fprintf(stderr, "[FAIL] Stage 8: WorldStream Inspect(%llu) failed\n", static_cast<unsigned long long>(s.goblin_id));
+        return false;
+    }
+    const auto& act = resp.actor();
+    if (act.max_health() <= 0.0 || act.archetype().find("Goblin") == std::string::npos) {
+        std::fprintf(stderr, "[FAIL] Stage 8: invalid Goblin telemetry (archetype='%s' max_hp=%.1f)\n",
+                     act.archetype().c_str(), act.max_health());
+        return false;
+    }
+    std::printf("  [ok ] Stage 8: Goblin targeted & combat abilities triggered (id=%llu archetype='%s' hp=%.0f/%.0f ai='%s')\n",
+                static_cast<unsigned long long>(s.goblin_id), act.archetype().c_str(),
+                act.combatant() ? act.health() : act.max_health(), act.max_health(), act.ai_state().c_str());
+    return true;
+}
+
 bool run_stage8_combat_abilities(LiveSession& s) {
     const schema::ClassSchema& pawn = class_named("PlayerPawn_C");
     const schema::ClassSchema& ab_cls = class_named("UAoCAbilityComponent");
-    send_bunches(s, {s.client->actor(5, build_actor_rpc(pawn, "ServerSetActiveTarget", {}), true)});
-
-    repl::RpcParams trig;
-    if (const schema::RpcSchema* rpc = ab_cls.rpc("ServerTriggerAbility")) {
-        repl::set_rpc_param(*rpc, trig, "AbilityGuid", repl::Value::i64(kSprintAbility));
-        repl::set_rpc_param(*rpc, trig, "ClientInstanceId", repl::Value::i64(1));
-        repl::set_rpc_param(*rpc, trig, "InputVector", repl::Value(repl::Vec2d{1.0, 0.0}));
-        repl::set_rpc_param(*rpc, trig, "ItemData.Slot", repl::Value::i64(-1));
-        repl::set_rpc_param(*rpc, trig, "ItemData.ItemInstance", repl::Value(repl::ItemInstance{}));
-        repl::set_rpc_param(*rpc, trig, "ItemData.Location", repl::Value::u64(24));
+    repl::RpcParams target_params;
+    if (const schema::RpcSchema* rpc = pawn.rpc("ServerSetActiveTarget")) {
+        repl::set_rpc_param(*rpc, target_params, "Slot", repl::Value::u64(1));
+        repl::set_rpc_param(*rpc, target_params, "InActiveTarget", repl::Value(s.goblin_guid));
     }
-    send_bunches(s, {s.client->actor(5, build_subobject_rpc(ab_cls, s.ability_guid, "ServerTriggerAbility", trig), true)});
-    pump_udp(s, 150);
+    send_bunches(s, {s.client->actor(5, build_actor_rpc(pawn, "ServerSetActiveTarget", target_params), true)});
+
+    if (const schema::RpcSchema* rpc = ab_cls.rpc("ServerTriggerAbility")) {
+        for (int i = 0; i < 2; ++i) {
+            repl::RpcParams trig;
+            repl::set_rpc_param(*rpc, trig, "AbilityGuid", repl::Value::i64(i == 0 ? kScepterCombo : kSprintAbility));
+            repl::set_rpc_param(*rpc, trig, "ClientInstanceId", repl::Value::i64(i + 1));
+            repl::set_rpc_param(*rpc, trig, "InputVector", repl::Value(repl::Vec2d{1.0, 0.0}));
+            repl::set_rpc_param(*rpc, trig, "ItemData.Slot", repl::Value::i64(-1));
+            repl::set_rpc_param(*rpc, trig, "ItemData.ItemInstance", repl::Value(repl::ItemInstance{}));
+            repl::set_rpc_param(*rpc, trig, "ItemData.Location", repl::Value::u64(24));
+            send_bunches(s, {s.client->actor(5, build_subobject_rpc(ab_cls, s.ability_guid, "ServerTriggerAbility", trig), true)});
+            pump_udp(s, 150);
+        }
+    }
 
     repl::RpcParams cancel;
     if (const schema::RpcSchema* rpc = ab_cls.rpc("ServerNotifyHeldAbilityCancelled")) {
-        repl::set_rpc_param(*rpc, cancel, "ClientInstanceId", repl::Value::i64(1));
+        repl::set_rpc_param(*rpc, cancel, "ClientInstanceId", repl::Value::i64(2));
         repl::set_rpc_param(*rpc, cancel, "CancelledTime", repl::Value::f32(0.1f));
         repl::set_rpc_param(*rpc, cancel, "CancelSectionIndex", repl::Value::i64(-1));
     }
@@ -563,8 +660,7 @@ bool run_stage8_combat_abilities(LiveSession& s) {
         s.client->actor(5, build_actor_rpc(pawn, "ServerSendPetCommand", pet), true),
     });
     pump_udp(s, 200);
-    std::printf("  [ok ] Stage 8: ServerSetActiveTarget, ServerTriggerAbility & ServerSendPetCommand processed\n");
-    return true;
+    return inspect_goblin_combat(s);
 }
 
 bool run_stage9_world_interactions(LiveSession& s) {

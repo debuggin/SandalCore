@@ -36,7 +36,7 @@
 // A mounted player is dismounted first. A <place> is matched as nodectl matches a node: the record name (Verra_RVR_Joeva), the same
 // without Verra_, or the display name (Joeva); case, spaces and punctuation do not count.
 //
-// Every command takes --addr (default $AOC_WORLD_ADMIN_ADDR or 127.0.0.1:50056) and --token-file (default $AOC_SERVICE_TOKEN_FILE,
+// Every command takes --addr (default $AOC_WORLD_ADMIN_ADDR or 127.0.0.1:50055) and --token-file (default $AOC_SERVICE_TOKEN_FILE,
 // else service.token beside worldctl.exe, else dist/services/service.token). Exit status: 0 done, 1 world refused or could not be
 // reached, 2 the command line is wrong.
 package main
@@ -212,7 +212,7 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	fs := flag.NewFlagSet("worldctl "+cmd, flag.ContinueOnError)
 	fs.SetOutput(errw)
 	cfg := config.Load()
-	addr := fs.String("addr", cfg.WorldAdminAddr, "world's admin API address")
+	addr := fs.String("addr", defaultWorldAdminAddr(cfg.WorldAdminAddr), "world's admin API address")
 	tokenFile := fs.String("token-file", defaultTokenFile(cfg.ServiceTokenFile), "the service token file")
 	if err := fs.Parse(rest); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -243,6 +243,18 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func defaultWorldAdminAddr(cfgAddr string) string {
+	for _, k := range []string{"AOC_WORLD_ADMIN_ADDR", "SANDAL_WORLD_ADMIN_ADDR", "AOC_WORLD_ADMIN_GRPC_ADDR", "WORLD_ADMIN_GRPC_ADDR", "WORLDD_ADMIN_GRPC_ADDR"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	if cfgAddr != "" && cfgAddr != "127.0.0.1:50056" {
+		return cfgAddr
+	}
+	return "127.0.0.1:50055"
 }
 
 // defaultTokenFile is $AOC_SERVICE_TOKEN_FILE; else service.token beside worldctl.exe (scripts\services.ps1 builds both into

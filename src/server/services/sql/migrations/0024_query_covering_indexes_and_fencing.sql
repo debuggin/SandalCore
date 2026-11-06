@@ -22,45 +22,23 @@ CREATE INDEX IF NOT EXISTS idx_world_servers_heartbeat_server_id
     ON world_servers (last_heartbeat DESC, server_id DESC)
     INCLUDE (address);
 
-DO $$
-BEGIN
-    CREATE INDEX IF NOT EXISTS idx_character_items_char_order_id
-        ON character_items (character_id, bag_slot_type, equip_slot, inventory_y, inventory_x, id);
-EXCEPTION
-    WHEN undefined_column THEN
-        EXECUTE format(
-            'CREATE %s IF NOT EXISTS idx_character_items_char_order_id ON character_items (character_id, container, slot)',
-            'INDEX'
-        );
-END
-$$;
+CREATE INDEX IF NOT EXISTS idx_character_items_char_order_id
+    ON character_items (character_id, container, slot);
 
-DO $$
-BEGIN
-    CREATE INDEX IF NOT EXISTS idx_character_resource_items_char_order_id
-        ON character_resource_items (character_id, bag_slot_type, equip_slot, inventory_y, inventory_x, id);
-EXCEPTION
-    WHEN undefined_column THEN
-        EXECUTE format(
-            'CREATE %s IF NOT EXISTS idx_character_resource_items_char_order_id ON character_resource_items (character_id, container, slot)',
-            'INDEX'
-        );
-END
-$$;
+CREATE INDEX IF NOT EXISTS idx_character_items_char_bag_slot_cover
+    ON character_items (character_id, container, slot)
+    INCLUDE (item_record_id, instance_guid, quantity, quality, durability);
 
-DO $$
-BEGIN
-    CREATE INDEX IF NOT EXISTS idx_character_skill_ranks_tree
-        ON character_skill_ranks (character_id, tree_id, skill_guid)
-        INCLUDE (rank);
-EXCEPTION
-    WHEN undefined_column THEN
-        EXECUTE format(
-            'CREATE %s IF NOT EXISTS idx_character_skill_ranks_tree ON character_skill_ranks (character_id, tree_guid, ord) INCLUDE (rank_guid)',
-            'INDEX'
-        );
-END
-$$;
+CREATE INDEX IF NOT EXISTS idx_character_resource_items_char_order_id
+    ON character_resource_items (character_id, container, slot);
+
+CREATE INDEX IF NOT EXISTS idx_character_skill_ranks_tree
+    ON character_skill_ranks (character_id, tree_guid, ord)
+    INCLUDE (rank_guid);
+
+CREATE INDEX IF NOT EXISTS idx_character_talents_char_tree_cover
+    ON character_skill_ranks (character_id, tree_guid, ord)
+    INCLUDE (rank_guid);
 
 CREATE INDEX IF NOT EXISTS idx_character_known_recipes_taught
     ON character_known_recipes (character_id, taught_at, recipe_guid);

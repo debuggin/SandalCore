@@ -75,28 +75,30 @@ static_resources:
                           route:
                             cluster: gateway_http
                             timeout: 15s
-                        # /api/v1/catalog/* -> gateway_http (gateway:8081)
+                        # /api/v1/catalog/* -> mesh_gateway_http (mesh-gateway:8082)
                         - match:
                             prefix: "/api/v1/catalog/"
                           route:
-                            cluster: gateway_http
-                            timeout: 15s
+                            cluster: mesh_gateway_http
+                            timeout: 30s
                         - match:
                             prefix: "/api/v1/catalog"
                           route:
-                            cluster: gateway_http
-                            timeout: 15s
-                        # /api/v1/world/* -> gateway_http (gateway:8081)
+                            cluster: mesh_gateway_http
+                            timeout: 30s
+                        # /api/v1/world/* -> mesh_gateway_http (mesh-gateway:8082)
                         - match:
                             prefix: "/api/v1/world/"
                           route:
-                            cluster: gateway_http
-                            timeout: 15s
+                            cluster: mesh_gateway_http
+                            timeout: 0s
+                            upgrade_configs:
+                              - upgrade_type: "websocket"
                         - match:
                             prefix: "/api/v1/world"
                           route:
-                            cluster: gateway_http
-                            timeout: 15s
+                            cluster: mesh_gateway_http
+                            timeout: 30s
                         # /api/v1/gm/* -> mesh_gateway_http (mesh-gateway:8082)
                         - match:
                             prefix: "/api/v1/gm/"

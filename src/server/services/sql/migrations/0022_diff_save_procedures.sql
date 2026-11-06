@@ -1,85 +1,77 @@
 -- SPDX-License-Identifier: AGPL-3.0-only
 -- Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 -- GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
+--
+-- Direct covering indexes on 0001..0021 domain columns (replacing legacy drafts:
+-- CREATE INDEX IF NOT EXISTS idx_character_items_covering_equip ON character_items (character_id, equip_slot) INCLUDE (item_guid, charges, durability, condition_state);
+-- CREATE INDEX IF NOT EXISTS idx_character_resource_items_covering ON character_resource_items (character_id, bag_slot_type) INCLUDE (item_guid, charges, inventory_x, inventory_y);
+-- CREATE INDEX IF NOT EXISTS idx_character_quest_commands_covering ON character_quest_commands (character_id, quest_guid) INCLUDE (command_guid, current_progress, "UpdateCounter");
+-- ).
 
 CREATE SCHEMA IF NOT EXISTS "character";
 CREATE SCHEMA IF NOT EXISTS characters;
 
-DO $$
-BEGIN
-    CREATE INDEX IF NOT EXISTS idx_character_items_covering_equip ON character_items (character_id, equip_slot) INCLUDE (item_guid, charges, durability, condition_state);
-EXCEPTION
-    WHEN undefined_column THEN
-        EXECUTE format(
-            'CREATE %s IF NOT EXISTS idx_character_items_covering_equip ON character_items (character_id, container, slot) INCLUDE (item_record_id, instance_guid, quantity, quality, durability)',
-            'INDEX'
-        );
-END
-$$;
+CREATE INDEX IF NOT EXISTS idx_character_items_covering_equip
+    ON character_items (character_id, container, slot)
+    INCLUDE (item_record_id, instance_guid, quantity, quality, durability);
 
-DO $$
-BEGIN
-    CREATE INDEX IF NOT EXISTS idx_character_resource_items_covering ON character_resource_items (character_id, bag_slot_type) INCLUDE (item_guid, charges, inventory_x, inventory_y);
-EXCEPTION
-    WHEN undefined_column THEN
-        EXECUTE format(
-            'CREATE %s IF NOT EXISTS idx_character_resource_items_covering ON character_resource_items (character_id, container, slot) INCLUDE (item_record_id, instance_guid, quantity, quality)',
-            'INDEX'
-        );
-END
-$$;
+CREATE INDEX IF NOT EXISTS idx_character_items_char_bag_slot_cover
+    ON character_items (character_id, container, slot)
+    INCLUDE (item_record_id, instance_guid, quantity, quality, durability);
 
-DO $$
-BEGIN
-    CREATE INDEX IF NOT EXISTS idx_character_quest_commands_covering ON character_quest_commands (character_id, quest_guid) INCLUDE (command_guid, current_progress, "UpdateCounter");
-EXCEPTION
-    WHEN undefined_column THEN
-        EXECUTE format(
-            'CREATE %s IF NOT EXISTS idx_character_quest_commands_covering ON character_quest_commands (character_id, id) INCLUDE (kind, quest, name, value)',
-            'INDEX'
-        );
-END
-$$;
+CREATE INDEX IF NOT EXISTS idx_character_resource_items_covering
+    ON character_resource_items (character_id, container, slot)
+    INCLUDE (item_record_id, instance_guid, quantity, quality);
+
+CREATE INDEX IF NOT EXISTS idx_character_quest_commands_covering
+    ON character_quest_commands (character_id, id)
+    INCLUDE (kind, quest, name, value);
+
+CREATE INDEX IF NOT EXISTS idx_character_talents_char_tree_cover
+    ON character_skill_ranks (character_id, tree_guid, ord)
+    INCLUDE (rank_guid);
+
+CREATE TABLE IF NOT EXISTS characters.character_save_fencing (
+    character_id  TEXT        PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+    fencing_token BIGINT      NOT NULL DEFAULT 0,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 DO $$
 DECLARE
     src_schema TEXT := current_schema();
 BEGIN
-    BEGIN
-        CREATE TABLE IF NOT EXISTS characters.character_save_fencing (
-            character_id  BIGINT      PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
-            fencing_token BIGINT      NOT NULL DEFAULT 0,
-            updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-    EXCEPTION
-        WHEN datatype_mismatch THEN
-            EXECUTE format(
-                'CREATE %s IF NOT EXISTS characters.character_save_fencing (character_id BIGINT PRIMARY KEY, fencing_token BIGINT NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())',
-                'TABLE'
-            );
-    END;
-
     DELETE FROM characters.character_save_fencing;
 
-    BEGIN
-        ALTER TABLE characters.character_save_fencing
-            DROP CONSTRAINT IF EXISTS character_save_fencing_character_id_fkey;
-        EXECUTE format(
-            'ALTER TABLE characters.character_save_fencing ADD CONSTRAINT character_save_fencing_character_id_fkey FOREIGN KEY (character_id) REFERENCES %I.characters (id) ON DELETE CASCADE',
-            src_schema
-        );
-    EXCEPTION
-        WHEN datatype_mismatch THEN
-            NULL;
-    END;
+    ALTER TABLE characters.character_save_fencing
+        DROP CONSTRAINT IF EXISTS character_save_fencing_character_id_fkey;
+
+    DROP VIEW IF EXISTS "character".character_save_fencing;
+
+    ALTER TABLE IF EXISTS characters.character_save_fencing
+        ALTER COLUMN character_id TYPE TEXT USING character_id::text;
+
+    EXECUTE format(
+        'ALTER TABLE characters.character_save_fencing ADD CONSTRAINT character_save_fencing_character_id_fkey FOREIGN KEY (character_id) REFERENCES %I.characters (id) ON DELETE CASCADE',
+        src_schema
+    );
 END
 $$;
 
 CREATE OR REPLACE VIEW "character".character_save_fencing AS
     SELECT * FROM characters.character_save_fencing;
 
+DROP FUNCTION IF EXISTS "character".fn_check_and_advance_fencing_token(BIGINT, BIGINT);
+DROP FUNCTION IF EXISTS characters.fn_check_and_advance_fencing_token(BIGINT, BIGINT);
+DROP FUNCTION IF EXISTS "character".sp_diff_save_character_items(BIGINT, BIGINT, BIGINT[], BIGINT[], BIGINT[], INT[], INT[], INT[], INT[]);
+DROP FUNCTION IF EXISTS characters.sp_diff_save_character_items(BIGINT, BIGINT, BIGINT[], BIGINT[], BIGINT[], INT[], INT[], INT[], INT[]);
+DROP FUNCTION IF EXISTS "character".sp_diff_save_character_quests(BIGINT, BIGINT, BIGINT[], BIGINT[], INT[], INT[], BIGINT[], TIMESTAMPTZ[], BIGINT[], TEXT[], TEXT[], BIGINT[], BIGINT[], INT[], INT[]);
+DROP FUNCTION IF EXISTS characters.sp_diff_save_character_quests(BIGINT, BIGINT, BIGINT[], BIGINT[], INT[], INT[], BIGINT[], TIMESTAMPTZ[], BIGINT[], TEXT[], TEXT[], BIGINT[], BIGINT[], INT[], INT[]);
+DROP FUNCTION IF EXISTS "character".sp_diff_save_character_wallet_and_progress(BIGINT, BIGINT, INT[], BIGINT[], INT[], BIGINT[], INT[], INT[], INT[], BIGINT[]);
+DROP FUNCTION IF EXISTS characters.sp_diff_save_character_wallet_and_progress(BIGINT, BIGINT, INT[], BIGINT[], INT[], BIGINT[], INT[], INT[], INT[], BIGINT[]);
+
 CREATE OR REPLACE FUNCTION characters.fn_check_and_advance_fencing_token(
-    p_character_id  BIGINT,
+    p_character_id  TEXT,
     p_fencing_token BIGINT
 ) RETURNS VOID
 LANGUAGE plpgsql
@@ -119,7 +111,7 @@ END;
 $$;
 
 CREATE OR REPLACE FUNCTION "character".fn_check_and_advance_fencing_token(
-    p_character_id  BIGINT,
+    p_character_id  TEXT,
     p_fencing_token BIGINT
 ) RETURNS VOID
 LANGUAGE plpgsql
@@ -130,83 +122,107 @@ END;
 $$;
 
 CREATE OR REPLACE FUNCTION characters.sp_diff_save_character_items(
-    p_character_id     BIGINT,
-    p_fencing_token    BIGINT,
-    p_deleted_ids      BIGINT[],
-    p_item_ids         BIGINT[],
-    p_item_guids       BIGINT[],
-    p_equip_slots      INT[],
-    p_charges          INT[],
-    p_durabilities     INT[],
-    p_condition_states INT[]
+    p_character_id      TEXT,
+    p_fencing_token     BIGINT,
+    p_deleted_guids     TEXT[],
+    p_containers        TEXT[],
+    p_slots             INT[],
+    p_item_record_ids   BIGINT[],
+    p_instance_guids    TEXT[],
+    p_quantities        INT[],
+    p_qualities         INT[],
+    p_durabilities      REAL[],
+    p_persisted_healths REAL[] DEFAULT NULL,
+    p_persisted_manas   REAL[] DEFAULT NULL,
+    p_lock_expirations  BIGINT[] DEFAULT NULL
 ) RETURNS VOID
 LANGUAGE plpgsql
 AS $$
 BEGIN
     PERFORM characters.fn_check_and_advance_fencing_token(p_character_id, p_fencing_token);
 
-    IF p_deleted_ids IS NOT NULL AND cardinality(p_deleted_ids) > 0 THEN
-        DELETE FROM characters.character_items
+    IF p_deleted_guids IS NOT NULL AND cardinality(p_deleted_guids) > 0 THEN
+        DELETE FROM character_items
          WHERE character_id = p_character_id
-           AND id = ANY(p_deleted_ids);
+           AND instance_guid = ANY(p_deleted_guids);
     END IF;
 
-    IF p_item_ids IS NOT NULL AND cardinality(p_item_ids) > 0 THEN
-        INSERT INTO characters.character_items (
-            id,
+    IF p_containers IS NOT NULL AND cardinality(p_containers) > 0 THEN
+        INSERT INTO character_items (
             character_id,
-            item_guid,
-            equip_slot,
-            charges,
+            container,
+            slot,
+            item_record_id,
+            instance_guid,
+            quantity,
+            quality,
             durability,
-            condition_state,
-            updated_at
+            persisted_health,
+            persisted_mana,
+            lock_expiration
         )
         SELECT
-            u.item_id,
             p_character_id,
-            u.item_guid,
-            u.equip_slot,
-            u.charges,
+            u.container,
+            u.slot,
+            u.item_record_id,
+            u.instance_guid,
+            u.quantity,
+            u.quality,
             u.durability,
-            u.condition_state,
-            NOW()
+            u.persisted_health,
+            u.persisted_mana,
+            COALESCE(u.lock_expiration, 0)
         FROM unnest(
-            p_item_ids,
-            p_item_guids,
-            p_equip_slots,
-            p_charges,
+            p_containers,
+            p_slots,
+            p_item_record_ids,
+            p_instance_guids,
+            p_quantities,
+            p_qualities,
             p_durabilities,
-            p_condition_states
+            COALESCE(p_persisted_healths, array_fill(NULL::real, ARRAY[cardinality(p_containers)])),
+            COALESCE(p_persisted_manas, array_fill(NULL::real, ARRAY[cardinality(p_containers)])),
+            COALESCE(p_lock_expirations, array_fill(0::bigint, ARRAY[cardinality(p_containers)]))
         ) AS u(
-            item_id,
-            item_guid,
-            equip_slot,
-            charges,
+            container,
+            slot,
+            item_record_id,
+            instance_guid,
+            quantity,
+            quality,
             durability,
-            condition_state
+            persisted_health,
+            persisted_mana,
+            lock_expiration
         )
-        ON CONFLICT (id) DO UPDATE
-            SET item_guid       = EXCLUDED.item_guid,
-                equip_slot      = EXCLUDED.equip_slot,
-                charges         = EXCLUDED.charges,
-                durability      = EXCLUDED.durability,
-                condition_state = EXCLUDED.condition_state,
-                updated_at      = NOW();
+        ON CONFLICT (character_id, container, slot) DO UPDATE
+            SET item_record_id   = EXCLUDED.item_record_id,
+                instance_guid    = EXCLUDED.instance_guid,
+                quantity         = EXCLUDED.quantity,
+                quality          = EXCLUDED.quality,
+                durability       = EXCLUDED.durability,
+                persisted_health = EXCLUDED.persisted_health,
+                persisted_mana   = EXCLUDED.persisted_mana,
+                lock_expiration  = EXCLUDED.lock_expiration;
     END IF;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION "character".sp_diff_save_character_items(
-    p_character_id     BIGINT,
-    p_fencing_token    BIGINT,
-    p_deleted_ids      BIGINT[],
-    p_item_ids         BIGINT[],
-    p_item_guids       BIGINT[],
-    p_equip_slots      INT[],
-    p_charges          INT[],
-    p_durabilities     INT[],
-    p_condition_states INT[]
+    p_character_id      TEXT,
+    p_fencing_token     BIGINT,
+    p_deleted_guids     TEXT[],
+    p_containers        TEXT[],
+    p_slots             INT[],
+    p_item_record_ids   BIGINT[],
+    p_instance_guids    TEXT[],
+    p_quantities        INT[],
+    p_qualities         INT[],
+    p_durabilities      REAL[],
+    p_persisted_healths REAL[] DEFAULT NULL,
+    p_persisted_manas   REAL[] DEFAULT NULL,
+    p_lock_expirations  BIGINT[] DEFAULT NULL
 ) RETURNS VOID
 LANGUAGE plpgsql
 AS $$
@@ -214,33 +230,42 @@ BEGIN
     PERFORM characters.sp_diff_save_character_items(
         p_character_id,
         p_fencing_token,
-        p_deleted_ids,
-        p_item_ids,
-        p_item_guids,
-        p_equip_slots,
-        p_charges,
+        p_deleted_guids,
+        p_containers,
+        p_slots,
+        p_item_record_ids,
+        p_instance_guids,
+        p_quantities,
+        p_qualities,
         p_durabilities,
-        p_condition_states
+        p_persisted_healths,
+        p_persisted_manas,
+        p_lock_expirations
     );
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION characters.sp_diff_save_character_quests(
-    p_character_id          BIGINT,
-    p_fencing_token         BIGINT,
-    p_deleted_quest_guids   BIGINT[],
-    p_quest_guids           BIGINT[],
-    p_quest_states          INT[],
-    p_quest_steps           INT[],
-    p_completed_quest_guids BIGINT[],
-    p_completed_timestamps  TIMESTAMPTZ[],
-    p_var_quest_guids       BIGINT[],
-    p_var_names             TEXT[],
-    p_var_values            TEXT[],
-    p_cmd_quest_guids       BIGINT[],
-    p_command_guids         BIGINT[],
-    p_cmd_progress          INT[],
-    p_cmd_update_counters   INT[]
+    p_character_id        TEXT,
+    p_fencing_token       BIGINT,
+    p_deleted_quest_guids TEXT[],
+    p_instance_guids      TEXT[],
+    p_record_ids          BIGINT[],
+    p_statuses            SMALLINT[],
+    p_start_times         DOUBLE PRECISION[],
+    p_source_guids        BIGINT[],
+    p_positions           INT[],
+    p_objectives          JSONB[],
+    p_completed_records   BIGINT[],
+    p_completions         INT[],
+    p_var_names           TEXT[],
+    p_var_values          BIGINT[],
+    p_deleted_ids         BIGINT[] DEFAULT NULL,
+    p_cmd_ids             BIGINT[] DEFAULT NULL,
+    p_cmd_kinds           TEXT[] DEFAULT NULL,
+    p_cmd_quests          TEXT[] DEFAULT NULL,
+    p_cmd_names           TEXT[] DEFAULT NULL,
+    p_cmd_values          BIGINT[] DEFAULT NULL
 ) RETURNS VOID
 LANGUAGE plpgsql
 AS $$
@@ -248,121 +273,156 @@ BEGIN
     PERFORM characters.fn_check_and_advance_fencing_token(p_character_id, p_fencing_token);
 
     IF p_deleted_quest_guids IS NOT NULL AND cardinality(p_deleted_quest_guids) > 0 THEN
-        DELETE FROM characters.character_quests
+        DELETE FROM character_quests
          WHERE character_id = p_character_id
-           AND quest_guid = ANY(p_deleted_quest_guids);
+           AND instance_guid = ANY(p_deleted_quest_guids);
     END IF;
 
-    IF p_quest_guids IS NOT NULL AND cardinality(p_quest_guids) > 0 THEN
-        INSERT INTO characters.character_quests (
+    IF p_instance_guids IS NOT NULL AND cardinality(p_instance_guids) > 0 THEN
+        INSERT INTO character_quests (
             character_id,
-            quest_guid,
-            quest_state,
-            quest_step,
-            updated_at
+            instance_guid,
+            record_id,
+            status,
+            start_time,
+            source_guid,
+            position,
+            objectives
         )
         SELECT
             p_character_id,
-            q.quest_guid,
-            q.quest_state,
-            q.quest_step,
-            NOW()
-        FROM unnest(p_quest_guids, p_quest_states, p_quest_steps)
-            AS q(quest_guid, quest_state, quest_step)
-        ON CONFLICT (character_id, quest_guid) DO UPDATE
-            SET quest_state = EXCLUDED.quest_state,
-                quest_step  = EXCLUDED.quest_step,
-                updated_at  = NOW();
+            q.instance_guid,
+            q.record_id,
+            q.status,
+            q.start_time,
+            q.source_guid,
+            q.position,
+            COALESCE(q.objectives, '[]'::jsonb)
+        FROM unnest(
+            p_instance_guids,
+            p_record_ids,
+            p_statuses,
+            p_start_times,
+            p_source_guids,
+            p_positions,
+            p_objectives
+        ) AS q(
+            instance_guid,
+            record_id,
+            status,
+            start_time,
+            source_guid,
+            position,
+            objectives
+        )
+        ON CONFLICT (character_id, instance_guid) DO UPDATE
+            SET record_id   = EXCLUDED.record_id,
+                status      = EXCLUDED.status,
+                start_time  = EXCLUDED.start_time,
+                source_guid = EXCLUDED.source_guid,
+                position    = EXCLUDED.position,
+                objectives  = EXCLUDED.objectives;
     END IF;
 
-    IF p_completed_quest_guids IS NOT NULL AND cardinality(p_completed_quest_guids) > 0 THEN
-        INSERT INTO characters.character_quests_completed (
+    IF p_completed_records IS NOT NULL AND cardinality(p_completed_records) > 0 THEN
+        INSERT INTO character_quests_completed (
             character_id,
-            quest_guid,
-            completed_at
+            record_id,
+            completions
         )
         SELECT
             p_character_id,
-            c.quest_guid,
-            c.completed_at
-        FROM unnest(p_completed_quest_guids, p_completed_timestamps)
-            AS c(quest_guid, completed_at)
-        ON CONFLICT (character_id, quest_guid) DO UPDATE
-            SET completed_at = EXCLUDED.completed_at;
+            c.record_id,
+            c.completions
+        FROM unnest(p_completed_records, p_completions)
+            AS c(record_id, completions)
+        ON CONFLICT (character_id, record_id) DO UPDATE
+            SET completions = EXCLUDED.completions;
     END IF;
 
-    IF p_var_quest_guids IS NOT NULL AND cardinality(p_var_quest_guids) > 0 THEN
-        INSERT INTO characters.character_quest_variables (
+    IF p_var_names IS NOT NULL AND cardinality(p_var_names) > 0 THEN
+        INSERT INTO character_quest_variables (
             character_id,
-            quest_guid,
-            var_name,
-            var_value,
-            updated_at
+            name,
+            value
         )
         SELECT
             p_character_id,
-            v.quest_guid,
-            v.var_name,
-            v.var_value,
-            NOW()
-        FROM unnest(p_var_quest_guids, p_var_names, p_var_values)
-            AS v(quest_guid, var_name, var_value)
-        ON CONFLICT (character_id, quest_guid, var_name) DO UPDATE
-            SET var_value  = EXCLUDED.var_value,
-                updated_at = NOW();
+            v.name,
+            v.value
+        FROM unnest(p_var_names, p_var_values)
+            AS v(name, value)
+        ON CONFLICT (character_id, name) DO UPDATE
+            SET value = EXCLUDED.value;
     END IF;
 
-    IF p_cmd_quest_guids IS NOT NULL AND cardinality(p_cmd_quest_guids) > 0 THEN
-        INSERT INTO characters.character_quest_commands (
+    IF p_deleted_ids IS NOT NULL AND cardinality(p_deleted_ids) > 0 THEN
+        DELETE FROM character_quest_commands
+         WHERE character_id = p_character_id
+           AND id = ANY(p_deleted_ids);
+    END IF;
+
+    IF p_cmd_ids IS NOT NULL AND cardinality(p_cmd_ids) > 0 THEN
+        INSERT INTO character_quest_commands (
+            id,
             character_id,
-            quest_guid,
-            command_guid,
-            current_progress,
-            "UpdateCounter",
-            updated_at
+            kind,
+            quest,
+            name,
+            value,
+            created_at
         )
         SELECT
+            cmd.id,
             p_character_id,
-            cmd.quest_guid,
-            cmd.command_guid,
-            cmd.current_progress,
-            cmd.update_counter,
+            cmd.kind,
+            COALESCE(cmd.quest, ''),
+            COALESCE(cmd.name, ''),
+            COALESCE(cmd.value, 0),
             NOW()
         FROM unnest(
-            p_cmd_quest_guids,
-            p_command_guids,
-            p_cmd_progress,
-            p_cmd_update_counters
+            p_cmd_ids,
+            p_cmd_kinds,
+            p_cmd_quests,
+            p_cmd_names,
+            p_cmd_values
         ) AS cmd(
-            quest_guid,
-            command_guid,
-            current_progress,
-            update_counter
+            id,
+            kind,
+            quest,
+            name,
+            value
         )
-        ON CONFLICT (character_id, quest_guid, command_guid) DO UPDATE
-            SET current_progress = EXCLUDED.current_progress,
-                "UpdateCounter"  = EXCLUDED."UpdateCounter",
-                updated_at       = NOW();
+        ON CONFLICT (id) DO UPDATE
+            SET kind  = EXCLUDED.kind,
+                quest = EXCLUDED.quest,
+                name  = EXCLUDED.name,
+                value = EXCLUDED.value;
     END IF;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION "character".sp_diff_save_character_quests(
-    p_character_id          BIGINT,
-    p_fencing_token         BIGINT,
-    p_deleted_quest_guids   BIGINT[],
-    p_quest_guids           BIGINT[],
-    p_quest_states          INT[],
-    p_quest_steps           INT[],
-    p_completed_quest_guids BIGINT[],
-    p_completed_timestamps  TIMESTAMPTZ[],
-    p_var_quest_guids       BIGINT[],
-    p_var_names             TEXT[],
-    p_var_values            TEXT[],
-    p_cmd_quest_guids       BIGINT[],
-    p_command_guids         BIGINT[],
-    p_cmd_progress          INT[],
-    p_cmd_update_counters   INT[]
+    p_character_id        TEXT,
+    p_fencing_token       BIGINT,
+    p_deleted_quest_guids TEXT[],
+    p_instance_guids      TEXT[],
+    p_record_ids          BIGINT[],
+    p_statuses            SMALLINT[],
+    p_start_times         DOUBLE PRECISION[],
+    p_source_guids        BIGINT[],
+    p_positions           INT[],
+    p_objectives          JSONB[],
+    p_completed_records   BIGINT[],
+    p_completions         INT[],
+    p_var_names           TEXT[],
+    p_var_values          BIGINT[],
+    p_deleted_ids         BIGINT[] DEFAULT NULL,
+    p_cmd_ids             BIGINT[] DEFAULT NULL,
+    p_cmd_kinds           TEXT[] DEFAULT NULL,
+    p_cmd_quests          TEXT[] DEFAULT NULL,
+    p_cmd_names           TEXT[] DEFAULT NULL,
+    p_cmd_values          BIGINT[] DEFAULT NULL
 ) RETURNS VOID
 LANGUAGE plpgsql
 AS $$
@@ -371,115 +431,125 @@ BEGIN
         p_character_id,
         p_fencing_token,
         p_deleted_quest_guids,
-        p_quest_guids,
-        p_quest_states,
-        p_quest_steps,
-        p_completed_quest_guids,
-        p_completed_timestamps,
-        p_var_quest_guids,
+        p_instance_guids,
+        p_record_ids,
+        p_statuses,
+        p_start_times,
+        p_source_guids,
+        p_positions,
+        p_objectives,
+        p_completed_records,
+        p_completions,
         p_var_names,
         p_var_values,
-        p_cmd_quest_guids,
-        p_command_guids,
-        p_cmd_progress,
-        p_cmd_update_counters
+        p_deleted_ids,
+        p_cmd_ids,
+        p_cmd_kinds,
+        p_cmd_quests,
+        p_cmd_names,
+        p_cmd_values
     );
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION characters.sp_diff_save_character_wallet_and_progress(
-    p_character_id      BIGINT,
-    p_fencing_token     BIGINT,
-    p_currency_ids      INT[],
-    p_currency_amounts  BIGINT[],
-    p_xp_types          INT[],
-    p_xp_amounts        BIGINT[],
-    p_xp_levels         INT[],
-    p_profession_ids    INT[],
-    p_profession_levels INT[],
-    p_profession_xp     BIGINT[]
+    p_character_id        TEXT,
+    p_fencing_token       BIGINT,
+    p_currency_guids      BIGINT[],
+    p_currency_amounts    BIGINT[],
+    p_leveling_type_guids BIGINT[],
+    p_xp_amounts          BIGINT[],
+    p_xp_debts            BIGINT[],
+    p_profession_guids    BIGINT[],
+    p_certification_tiers SMALLINT[],
+    p_profession_levels   SMALLINT[],
+    p_profession_xp       BIGINT[]
 ) RETURNS VOID
 LANGUAGE plpgsql
 AS $$
 BEGIN
     PERFORM characters.fn_check_and_advance_fencing_token(p_character_id, p_fencing_token);
 
-    IF p_currency_ids IS NOT NULL AND cardinality(p_currency_ids) > 0 THEN
-        INSERT INTO characters.character_wallet (
+    IF p_currency_guids IS NOT NULL AND cardinality(p_currency_guids) > 0 THEN
+        INSERT INTO character_wallet (
             character_id,
-            currency_id,
+            currency_guid,
             amount,
             updated_at
         )
         SELECT
             p_character_id,
-            w.currency_id,
+            w.currency_guid,
             w.amount,
             NOW()
-        FROM unnest(p_currency_ids, p_currency_amounts)
-            AS w(currency_id, amount)
-        ON CONFLICT (character_id, currency_id) DO UPDATE
+        FROM unnest(p_currency_guids, p_currency_amounts)
+            AS w(currency_guid, amount)
+        ON CONFLICT (character_id, currency_guid) DO UPDATE
             SET amount     = EXCLUDED.amount,
                 updated_at = NOW();
     END IF;
 
-    IF p_xp_types IS NOT NULL AND cardinality(p_xp_types) > 0 THEN
-        INSERT INTO characters.character_experience (
+    IF p_leveling_type_guids IS NOT NULL AND cardinality(p_leveling_type_guids) > 0 THEN
+        INSERT INTO character_experience (
             character_id,
-            xp_type,
-            experience,
-            level,
+            leveling_type_guid,
+            xp,
+            debt,
             updated_at
         )
         SELECT
             p_character_id,
-            x.xp_type,
-            x.experience,
-            x.level,
+            x.leveling_type_guid,
+            x.xp,
+            COALESCE(x.debt, 0),
             NOW()
-        FROM unnest(p_xp_types, p_xp_amounts, p_xp_levels)
-            AS x(xp_type, experience, level)
-        ON CONFLICT (character_id, xp_type) DO UPDATE
-            SET experience = EXCLUDED.experience,
-                level      = EXCLUDED.level,
+        FROM unnest(p_leveling_type_guids, p_xp_amounts, p_xp_debts)
+            AS x(leveling_type_guid, xp, debt)
+        ON CONFLICT (character_id, leveling_type_guid) DO UPDATE
+            SET xp         = EXCLUDED.xp,
+                debt       = EXCLUDED.debt,
                 updated_at = NOW();
     END IF;
 
-    IF p_profession_ids IS NOT NULL AND cardinality(p_profession_ids) > 0 THEN
-        INSERT INTO characters.character_professions (
+    IF p_profession_guids IS NOT NULL AND cardinality(p_profession_guids) > 0 THEN
+        INSERT INTO character_professions (
             character_id,
-            profession_id,
-            skill_level,
-            skill_xp,
+            profession_guid,
+            certification_tier,
+            level,
+            xp,
             updated_at
         )
         SELECT
             p_character_id,
-            pr.profession_id,
-            pr.skill_level,
-            pr.skill_xp,
+            pr.profession_guid,
+            pr.certification_tier,
+            pr.level,
+            pr.xp,
             NOW()
-        FROM unnest(p_profession_ids, p_profession_levels, p_profession_xp)
-            AS pr(profession_id, skill_level, skill_xp)
-        ON CONFLICT (character_id, profession_id) DO UPDATE
-            SET skill_level = EXCLUDED.skill_level,
-                skill_xp    = EXCLUDED.skill_xp,
-                updated_at  = NOW();
+        FROM unnest(p_profession_guids, p_certification_tiers, p_profession_levels, p_profession_xp)
+            AS pr(profession_guid, certification_tier, level, xp)
+        ON CONFLICT (character_id, profession_guid) DO UPDATE
+            SET certification_tier = EXCLUDED.certification_tier,
+                level              = EXCLUDED.level,
+                xp                 = EXCLUDED.xp,
+                updated_at         = NOW();
     END IF;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION "character".sp_diff_save_character_wallet_and_progress(
-    p_character_id      BIGINT,
-    p_fencing_token     BIGINT,
-    p_currency_ids      INT[],
-    p_currency_amounts  BIGINT[],
-    p_xp_types          INT[],
-    p_xp_amounts        BIGINT[],
-    p_xp_levels         INT[],
-    p_profession_ids    INT[],
-    p_profession_levels INT[],
-    p_profession_xp     BIGINT[]
+    p_character_id        TEXT,
+    p_fencing_token       BIGINT,
+    p_currency_guids      BIGINT[],
+    p_currency_amounts    BIGINT[],
+    p_leveling_type_guids BIGINT[],
+    p_xp_amounts          BIGINT[],
+    p_xp_debts            BIGINT[],
+    p_profession_guids    BIGINT[],
+    p_certification_tiers SMALLINT[],
+    p_profession_levels   SMALLINT[],
+    p_profession_xp       BIGINT[]
 ) RETURNS VOID
 LANGUAGE plpgsql
 AS $$
@@ -487,12 +557,13 @@ BEGIN
     PERFORM characters.sp_diff_save_character_wallet_and_progress(
         p_character_id,
         p_fencing_token,
-        p_currency_ids,
+        p_currency_guids,
         p_currency_amounts,
-        p_xp_types,
+        p_leveling_type_guids,
         p_xp_amounts,
-        p_xp_levels,
-        p_profession_ids,
+        p_xp_debts,
+        p_profession_guids,
+        p_certification_tiers,
         p_profession_levels,
         p_profession_xp
     );
@@ -506,14 +577,14 @@ BEGIN
         TO sandal_char, sandal_admin;
 
     GRANT EXECUTE ON FUNCTION
-        characters.fn_check_and_advance_fencing_token(BIGINT, BIGINT),
-        "character".fn_check_and_advance_fencing_token(BIGINT, BIGINT),
-        characters.sp_diff_save_character_items(BIGINT, BIGINT, BIGINT[], BIGINT[], BIGINT[], INT[], INT[], INT[], INT[]),
-        "character".sp_diff_save_character_items(BIGINT, BIGINT, BIGINT[], BIGINT[], BIGINT[], INT[], INT[], INT[], INT[]),
-        characters.sp_diff_save_character_quests(BIGINT, BIGINT, BIGINT[], BIGINT[], INT[], INT[], BIGINT[], TIMESTAMPTZ[], BIGINT[], TEXT[], TEXT[], BIGINT[], BIGINT[], INT[], INT[]),
-        "character".sp_diff_save_character_quests(BIGINT, BIGINT, BIGINT[], BIGINT[], INT[], INT[], BIGINT[], TIMESTAMPTZ[], BIGINT[], TEXT[], TEXT[], BIGINT[], BIGINT[], INT[], INT[]),
-        characters.sp_diff_save_character_wallet_and_progress(BIGINT, BIGINT, INT[], BIGINT[], INT[], BIGINT[], INT[], INT[], INT[], BIGINT[]),
-        "character".sp_diff_save_character_wallet_and_progress(BIGINT, BIGINT, INT[], BIGINT[], INT[], BIGINT[], INT[], INT[], INT[], BIGINT[])
+        characters.fn_check_and_advance_fencing_token(TEXT, BIGINT),
+        "character".fn_check_and_advance_fencing_token(TEXT, BIGINT),
+        characters.sp_diff_save_character_items(TEXT, BIGINT, TEXT[], TEXT[], INT[], BIGINT[], TEXT[], INT[], INT[], REAL[], REAL[], REAL[], BIGINT[]),
+        "character".sp_diff_save_character_items(TEXT, BIGINT, TEXT[], TEXT[], INT[], BIGINT[], TEXT[], INT[], INT[], REAL[], REAL[], REAL[], BIGINT[]),
+        characters.sp_diff_save_character_quests(TEXT, BIGINT, TEXT[], TEXT[], BIGINT[], SMALLINT[], DOUBLE PRECISION[], BIGINT[], INT[], JSONB[], BIGINT[], INT[], TEXT[], BIGINT[], BIGINT[], BIGINT[], TEXT[], TEXT[], TEXT[], BIGINT[]),
+        "character".sp_diff_save_character_quests(TEXT, BIGINT, TEXT[], TEXT[], BIGINT[], SMALLINT[], DOUBLE PRECISION[], BIGINT[], INT[], JSONB[], BIGINT[], INT[], TEXT[], BIGINT[], BIGINT[], BIGINT[], TEXT[], TEXT[], TEXT[], BIGINT[]),
+        characters.sp_diff_save_character_wallet_and_progress(TEXT, BIGINT, BIGINT[], BIGINT[], BIGINT[], BIGINT[], BIGINT[], BIGINT[], SMALLINT[], SMALLINT[], BIGINT[]),
+        "character".sp_diff_save_character_wallet_and_progress(TEXT, BIGINT, BIGINT[], BIGINT[], BIGINT[], BIGINT[], BIGINT[], BIGINT[], SMALLINT[], SMALLINT[], BIGINT[])
         TO sandal_char, sandal_admin;
 EXCEPTION
     WHEN undefined_object OR insufficient_privilege THEN

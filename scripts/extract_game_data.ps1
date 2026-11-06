@@ -571,7 +571,11 @@ $steps = @(
     } },
     @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++ navigation mesh builder)'; Outputs = @("dist\Release\aoc_navbuild$exeExt"); Run = {
         Assert-Files @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\spawns\region_data.h', 'build\gen\world\spawns\garden_defs.h') 'run the earlier steps first'
-        Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'scripts\build.ps1'), '-Target', 'aoc_navbuild', '-Jobs', "$Jobs") 'build_navbuild'
+        if (-not (Test-Path -LiteralPath $navbuild -PathType Leaf)) {
+            Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'scripts\build.ps1'), '-Target', 'aoc_navbuild', '-Jobs', "$Jobs") 'build_navbuild'
+        } else {
+            Say "    Reusing pre-built $navbuild" 'DarkGray'
+        }
     } },
     @{ Name = 'roads'; Title = 'Read the road splines of the Riverlands (mapc) and resolve them (contentc)'; Outputs = @('dist\content\roads_raw.tsv', 'dist\content\roads.tsv', 'dist\content\roads_levels.tsv'); Run = {
         Assert-Files @('dist\content\content.db', 'build\gen\nav\region_rects.tsv', "dist\tools\contentc$exeExt", (Resolve-DotnetToolRelPath 'mapc')) 'run the earlier steps first'
@@ -608,11 +612,21 @@ $steps = @(
     } },
     @{ Name = 'navmesh'; Title = 'Read the map and build the navigation mesh, the NPC motion table and the foliage (mapc; the longest step)'; Outputs = @('dist\content\npc_motion.tsv', 'dist\content\region_foliage.tsv', 'dist\content\area_geom.bin', 'dist\content\area_nav.bin'); Run = {
         Assert-Files @('build\gen\nav\region_rects.tsv', "dist\Release\aoc_navbuild$exeExt", (Resolve-DotnetToolRelPath 'mapc'), 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'
-        $savedHeap = $env:DOTNET_GCHeapHardLimit
-        if (-not $env:DOTNET_GCHeapHardLimit) { $env:DOTNET_GCHeapHardLimit = '0x100000000' }     # the NPC Blueprint pass peaks at 7.7 GB without this limit and at 4.0 GB with it, in the same time; the map read's child programs set their own
-        try {
-            Invoke-Checked $dotnet @($mapcDll, 'build', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir, '--navbuild', $navbuild, '--threads', "$NavThreads") 'mapc_build'
-        } finally { $env:DOTNET_GCHeapHardLimit = $savedHeap }
+        $geomPath = Join-Path $outDir 'area_geom.bin'
+        $motionPath = Join-Path $outDir 'npc_motion.tsv'
+        $foliagePath = Join-Path $outDir 'region_foliage.tsv'
+        $navPath = Join-Path $outDir 'area_nav.bin'
+        if (-not $Force -and (Test-Path -LiteralPath $geomPath -PathType Leaf) -and (Test-Path -LiteralPath $motionPath -PathType Leaf) -and (Test-Path -LiteralPath $foliagePath -PathType Leaf)) {
+            Say "    Reusing extracted $geomPath, $motionPath, $foliagePath; running aoc_navbuild directly" 'DarkGray'
+            $threads = if ($NavThreads -gt 0) { $NavThreads } else { [Math]::Max(2, [int]([Environment]::ProcessorCount / 2)) }
+            Invoke-Checked $navbuild @('--geometry', $geomPath, '--out', $navPath, '--town-floors', (Join-Path $outDir 'town_platforms.bin'), '--content', (Join-Path $outDir 'content.db'), '--threads', "$threads") 'aoc_navbuild'
+        } else {
+            $savedHeap = $env:DOTNET_GCHeapHardLimit
+            if (-not $env:DOTNET_GCHeapHardLimit) { $env:DOTNET_GCHeapHardLimit = '0x100000000' }     # the NPC Blueprint pass peaks at 7.7 GB without this limit and at 4.0 GB with it, in the same time; the map read's child programs set their own
+            try {
+                Invoke-Checked $dotnet @($mapcDll, 'build', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir, '--navbuild', $navbuild, '--threads', "$NavThreads") 'mapc_build'
+            } finally { $env:DOTNET_GCHeapHardLimit = $savedHeap }
+        }
     } }
 )
 

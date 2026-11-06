@@ -142,11 +142,11 @@ struct NavSettings {
     float cell_height = 10.f;
     float agent_radius = 35.f;
     float agent_height = 144.f;
-    float agent_max_climb = 100.f;
+    float agent_max_climb = 45.f;
     float agent_max_slope = 52.f;
     float tile_size = 4000.f;
-    int32_t max_tiles = 16384;
-    int32_t max_polys = 256;
+    int32_t max_tiles = 4096;
+    int32_t max_polys = 1024;
     float origin[3] = {0, 0, 0};
 };
 

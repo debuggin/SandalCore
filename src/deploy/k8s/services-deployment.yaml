@@ -9,6 +9,8 @@ metadata:
     app.kubernetes.io/part-of: sandalcore
 data:
   AOC_ENV: "production"
+  AOC_GATEWAY_HTTP_BIND_ADDR: ":8000"
+  AOC_MESH_GATEWAY_HTTP_BIND_ADDR: ":8082"
   AOC_DB_MAX_CONNS: "16"
   AOC_DB_MIN_CONNS: "2"
   AOC_DB_MAX_CONN_LIFETIME: "30m"

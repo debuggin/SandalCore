@@ -28,12 +28,16 @@ public sealed class Region
             var g = Path.Combine(d.FullName, "build", "gen", "nav", FileName);
             if (File.Exists(g)) return g;
         }
+        var src = Path.Combine("src", "tools", "mapc", FileName);
+        if (File.Exists(src)) return src;
         var a = Path.Combine("tools", "mapc", FileName);
         if (File.Exists(a)) return a;
         var b = Path.Combine(AppContext.BaseDirectory, FileName);
         if (File.Exists(b)) return b;
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d != null; d = d.Parent)
         {
+            var s = Path.Combine(d.FullName, "src", "tools", "mapc", FileName);
+            if (File.Exists(s)) return s;
             var c = Path.Combine(d.FullName, "tools", "mapc", FileName);
             if (File.Exists(c)) return c;
         }

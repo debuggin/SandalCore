@@ -190,7 +190,7 @@ func TestLiveDiffSaveRBACAuditAndIdempotency(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	accountID := seedLiveTestAccount(t, ctx, pool)
-	verifyLiveFencingTokenGuard(t, ctx, pool)
+	verifyLiveFencingTokenGuard(t, ctx, pool, accountID)
 	verifyLiveRBACHierarchy(t, ctx, pool, accountID)
 	auditID := verifyLiveGMAuditLogImmutability(t, ctx, pool, accountID)
 	verifyLiveIdempotencyLedger(t, ctx, pool, accountID, auditID)
@@ -208,31 +208,39 @@ func seedLiveTestAccount(t *testing.T, ctx context.Context, pool *pgxpool.Pool) 
 	return accountID
 }
 
-func verifyLiveFencingTokenGuard(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+func verifyLiveFencingTokenGuard(t *testing.T, ctx context.Context, pool *pgxpool.Pool, accountID int64) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, "DELETE FROM characters.character_save_fencing WHERE character_id = 101"); err != nil {
-		t.Fatalf("reset fencing token for 101: %v", err)
+	const charID = "00000000000000000000000000000101"
+	_, err := pool.Exec(ctx, `
+		INSERT INTO characters (id, account_id, name, archetype_id, class_name, race, gender, class_id)
+		VALUES ($1, $2, 'FencingGuardChar', 1, 'Fighter', 1, 1, 1)
+		ON CONFLICT (id) DO NOTHING`, charID, accountID)
+	if err != nil {
+		t.Fatalf("seed character %s: %v", charID, err)
 	}
-	if _, err := pool.Exec(ctx, "SELECT characters.fn_check_and_advance_fencing_token(101, 10)"); err != nil {
+	if _, err := pool.Exec(ctx, "DELETE FROM characters.character_save_fencing WHERE character_id = $1", charID); err != nil {
+		t.Fatalf("reset fencing token for %s: %v", charID, err)
+	}
+	if _, err := pool.Exec(ctx, "SELECT characters.fn_check_and_advance_fencing_token($1, 10)", charID); err != nil {
 		t.Fatalf("advance fencing token to 10: %v", err)
 	}
-	if _, err := pool.Exec(ctx, "SELECT characters.fn_check_and_advance_fencing_token(101, 12)"); err != nil {
+	if _, err := pool.Exec(ctx, "SELECT characters.fn_check_and_advance_fencing_token($1, 12)", charID); err != nil {
 		t.Fatalf("advance fencing token to 12: %v", err)
 	}
-	_, err := pool.Exec(ctx, "SELECT characters.fn_check_and_advance_fencing_token(101, 11)")
+	_, err = pool.Exec(ctx, "SELECT characters.fn_check_and_advance_fencing_token($1, 11)", charID)
 	assertPGErrorCode(t, "stale fencing token", err, "55000")
 
 	for _, callSQL := range []string{
-		"SELECT characters.sp_diff_save_character_items(101, 13, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
-		"SELECT characters.sp_diff_save_character_quests(101, 14, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
-		"SELECT characters.sp_diff_save_character_wallet_and_progress(101, 15, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+		"SELECT characters.sp_diff_save_character_items($1, 13, ARRAY[]::TEXT[], ARRAY['Backpack']::TEXT[], ARRAY[0]::INT[], ARRAY[1001]::BIGINT[], ARRAY['00000000000000000000000000000102']::TEXT[], ARRAY[1]::INT[], ARRAY[1]::INT[], ARRAY[100.0]::REAL[])",
+		"SELECT characters.sp_diff_save_character_quests($1, 14, ARRAY[]::TEXT[], ARRAY['00000000000000000000000000000103']::TEXT[], ARRAY[2001]::BIGINT[], ARRAY[1]::SMALLINT[], ARRAY[1000.0]::DOUBLE PRECISION[], ARRAY[0]::BIGINT[], ARRAY[0]::INT[], ARRAY['[]'::JSONB]::JSONB[], ARRAY[3001]::BIGINT[], ARRAY[1]::INT[], ARRAY['var_a']::TEXT[], ARRAY[42]::BIGINT[])",
+		"SELECT characters.sp_diff_save_character_wallet_and_progress($1, 15, ARRAY[1]::BIGINT[], ARRAY[500]::BIGINT[], ARRAY[10]::BIGINT[], ARRAY[1250]::BIGINT[], ARRAY[0]::BIGINT[], ARRAY[20]::BIGINT[], ARRAY[1]::SMALLINT[], ARRAY[5]::SMALLINT[], ARRAY[300]::BIGINT[])",
 	} {
-		if _, callErr := pool.Exec(ctx, callSQL); callErr != nil {
+		if _, callErr := pool.Exec(ctx, callSQL, charID); callErr != nil {
 			t.Fatalf("diff-save call %q: %v", callSQL, callErr)
 		}
 	}
 	_, staleItemErr := pool.Exec(ctx,
-		"SELECT characters.sp_diff_save_character_items(101, 14, NULL, NULL, NULL, NULL, NULL, NULL, NULL)")
+		"SELECT characters.sp_diff_save_character_items($1, 14, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)", charID)
 	assertPGErrorCode(t, "stale diff-save items fencing token", staleItemErr, "55000")
 }
 

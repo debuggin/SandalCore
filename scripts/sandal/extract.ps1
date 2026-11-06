@@ -106,10 +106,45 @@ function Get-ExtractNavInputSalt {
     return @{}
 }
 
+function Test-ExistingExtractedGameData {
+    param([string]$RootPath, [string]$GraphStage = '')
+    $outDir = Join-Path $RootPath 'dist/content'
+    if (-not (Test-Path -LiteralPath $outDir -PathType Container)) { return $false }
+    $stageMap = @{
+        'config'       = @('client_config/DefaultCombat.ini', 'client_config/DefaultAoCRecordConstants.ini', 'aoc.usmap')
+        'curves'       = @('artisan_curves.tsv', 'mount_speeds.tsv', 'mount_riders.tsv')
+        'names'        = @('item_names.tsv')
+        'database'     = @('content.db')
+        'roads'        = @('roads_raw.tsv', 'roads.tsv', 'roads_levels.tsv')
+        'townfloors'   = @('town_platforms.bin')
+        'townlayouts'  = @('town_layout_items.tsv', 'town_layouts.bin')
+        'npcabilities' = @('npc_abilities.tsv', 'npc_montages.tsv', 'npc_targeting.tsv', 'npc_senses.tsv', 'npc_aggro_curves.tsv', 'npc_looks.tsv', 'npc_appearances.tsv', 'npc_names.tsv', 'npc_trees.tsv')
+        'navmesh'      = @('npc_motion.tsv', 'region_foliage.tsv', 'area_geom.bin', 'area_nav.bin')
+        'region'       = @()
+    }
+    $allFiles = @('content.db', 'aoc.usmap', 'artisan_curves.tsv', 'mount_speeds.tsv', 'mount_riders.tsv', 'item_names.tsv', 'roads.tsv', 'roads_levels.tsv', 'town_platforms.bin', 'town_layout_items.tsv', 'town_layouts.bin', 'npc_abilities.tsv', 'npc_montages.tsv', 'npc_targeting.tsv', 'npc_senses.tsv', 'npc_aggro_curves.tsv', 'npc_looks.tsv', 'npc_appearances.tsv', 'npc_names.tsv', 'npc_trees.tsv', 'npc_motion.tsv', 'region_foliage.tsv', 'area_geom.bin', 'area_nav.bin', 'client_config/DefaultCombat.ini')
+    $stageFiles = if ($stageMap.ContainsKey($GraphStage)) { $stageMap[$GraphStage] } else { $allFiles }
+    foreach ($rel in $stageFiles) {
+        $p = Join-Path $outDir $rel
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf) -or (Get-Item -LiteralPath $p).Length -le 0) { return $false }
+    }
+    if ($GraphStage -in @('region', '')) {
+        $zoiDir = Join-Path $outDir 'zoi_chunks'
+        if (-not (Test-Path -LiteralPath $zoiDir -PathType Container)) { return $false }
+        if ($null -eq (Get-ChildItem -LiteralPath $zoiDir -Recurse -Filter '*.uasset' -File -ErrorAction SilentlyContinue | Select-Object -First 1)) { return $false }
+    }
+    return $true
+}
+
 function Test-ExtractStageReady {
     param([string]$StageName, [string]$GraphStage, [string]$RootPath)
     if (($StageName -eq 'extract-db' -or $GraphStage -eq 'database') -and (Get-Command Test-SandalContentDbCurrent -ErrorAction SilentlyContinue)) {
         if (-not (Test-SandalContentDbCurrent -RepoRoot $RootPath).Current) {
+            return $false
+        }
+    }
+    if ($GraphStage -in @('config', 'curves', 'names', 'database', 'region', 'roads', 'townfloors', 'townlayouts', 'npcabilities', 'navmesh')) {
+        if (-not (Test-ExistingExtractedGameData -RootPath $RootPath -GraphStage $GraphStage)) {
             return $false
         }
     }
@@ -172,6 +207,9 @@ function Invoke-ExtractStagePipeline {
             }
             if (Get-Command Ensure-SandalContentDbCurrent -ErrorAction SilentlyContinue) {
                 $null = Ensure-SandalContentDbCurrent -RepoRoot $RootPath -GameRoot $Options.PakDir -CheckOnly
+            }
+            if (Get-Command Sync-SandalDeployStage -ErrorAction SilentlyContinue) {
+                $null = Sync-SandalDeployStage -RepoRoot $RootPath
             }
         }
     }

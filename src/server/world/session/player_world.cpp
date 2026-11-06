@@ -264,18 +264,27 @@ bool PlayerWorld::load_blueprints(const std::string& motion_path, std::string& e
         error = "the area is loaded already";
         return false;
     }
-    npc::MotionTable table;
-    if (!table.load(motion_path, error)) return false;
-    motion_ = std::move(table);
-    motion_loaded_ = true;
-    looks_dir_ = std::filesystem::path(motion_path).parent_path().string();
-    spdlog::info("[nav] Blueprint table {}: {} pawn Blueprints", motion_path, motion_.size());
+    const std::filesystem::path dir = std::filesystem::path(motion_path).parent_path();
+    if (!dir.empty() && std::filesystem::exists(dir / "npc_looks.tsv")) {
+        looks_dir_ = dir.string();
+    } else if (std::filesystem::exists(std::filesystem::path("dist/content") / "npc_looks.tsv")) {
+        looks_dir_ = "dist/content";
+    } else if (std::filesystem::exists(std::filesystem::path("content") / "npc_looks.tsv")) {
+        looks_dir_ = "content";
+    } else {
+        looks_dir_ = dir.string();
+    }
     std::string tree_error;
     if (!npc::load_standing_archetypes((std::filesystem::path(looks_dir_) / "npc_trees.tsv").string(), &standing_archetypes_, tree_error)) {
         spdlog::warn("[nav] no state tree table ({}): every NPC moves as its population instance says, even those whose tree cannot (run the extractor's npcabilities step)", tree_error);
     } else {
         spdlog::info("[nav] state tree table: {} Blueprints whose tree has no task to wander or patrol with (their NPCs stand at their post)", standing_archetypes_.size());
     }
+    npc::MotionTable table;
+    if (!table.load(motion_path, error)) return false;
+    motion_ = std::move(table);
+    motion_loaded_ = true;
+    spdlog::info("[nav] Blueprint table {}: {} pawn Blueprints", motion_path, motion_.size());
     return true;
 }
 

@@ -43,25 +43,18 @@ function Set-SandalSecretAcl {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
         $null = & icacls $LiteralPath /inheritance:r /grant:r "${identity}:(F)" 2>&1
         if ($LASTEXITCODE -ne 0) { throw "Failed to apply restrictive ACL on '$LiteralPath' (icacls exit $LASTEXITCODE)." }
-    } else {
-        $null = & chmod 0600 $LiteralPath
-    }
+    } else { $null = & chmod 0600 $LiteralPath }
     return [pscustomobject]@{ Path = $LiteralPath; Mode = '0600'; InheritanceDisabled = $true }
 }
 
 function Get-SandalLocalOverlayMap {
     param([string]$TemplatePath, [string]$EnvPath)
-    $candidates = [System.Collections.Generic.List[string]]::new()
-    if ($TemplatePath) {
-        $tplParent = Split-Path -Parent $TemplatePath
-        if ($tplParent) { $candidates.Add((Join-Path $tplParent 'sandal.local.env')) }
-    }
-    if ($EnvPath) {
-        $envParent = Split-Path -Parent $EnvPath
-        if ($envParent) { $candidates.Add((Join-Path $envParent 'sandal.local.env')) }
-    }
-    foreach ($cand in $candidates) {
-        if (Test-Path -LiteralPath $cand -PathType Leaf) { return (Get-SandalEnvMap -EnvPath $cand) }
+    foreach ($p in @($TemplatePath, $EnvPath)) {
+        if (-not $p) { continue }
+        $parent = Split-Path -Parent $p
+        if ($parent -and (Test-Path -LiteralPath (Join-Path $parent 'sandal.local.env') -PathType Leaf)) {
+            return (Get-SandalEnvMap -EnvPath (Join-Path $parent 'sandal.local.env'))
+        }
     }
     return [ordered]@{}
 }
@@ -139,9 +132,7 @@ function Merge-SandalLocalJsonOverlay {
         $tplObj = Get-Content -LiteralPath $TemplateJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $dstObj = Get-Content -LiteralPath $TargetJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($null -ne $tplObj -and $null -ne $dstObj -and $tplObj -isnot [System.Array] -and $dstObj -isnot [System.Array]) {
-            foreach ($prop in $dstObj.PSObject.Properties) {
-                $tplObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
-            }
+            foreach ($prop in $dstObj.PSObject.Properties) { $tplObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force }
             [System.IO.File]::WriteAllText($TargetJsonPath, (($tplObj | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
         }
     }
@@ -150,8 +141,7 @@ function Merge-SandalLocalJsonOverlay {
     $localObj = Get-Content -LiteralPath $LocalJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($null -eq $baseObj -or $null -eq $localObj -or $baseObj -is [System.Array]) { return }
     foreach ($prop in $localObj.PSObject.Properties) {
-        if ($prop.Name -ieq 'secret') { continue }
-        $baseObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
+        if ($prop.Name -ine 'secret') { $baseObj | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force }
     }
     [System.IO.File]::WriteAllText($TargetJsonPath, (($baseObj | ConvertTo-Json -Depth 10) + "`n"), [System.Text.UTF8Encoding]::new($false))
 }
@@ -163,27 +153,20 @@ function Copy-SandalConfigStage {
     foreach ($item in @(Get-ChildItem -LiteralPath $SourceDir -Recurse -File)) {
         if ($item.Name -like '*.local.json' -or $item.Name -eq 'local.json' -or $item.Name -like '*.local.env' -or $item.Name -like '*.example' -or $item.Extension -ieq '.md') { continue }
         $rel = [System.IO.Path]::GetRelativePath($SourceDir, $item.FullName)
-        $target = Join-Path $DestDir $rel
-        $parent = Split-Path -Parent $target
+        $target = Join-Path $DestDir $rel; $parent = Split-Path -Parent $target
         if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
         if ($item.Extension -ieq '.json') {
-            $localFile = Join-Path $item.DirectoryName "$($item.BaseName).local.json"
-            Merge-SandalLocalJsonOverlay -TemplateJsonPath $item.FullName -TargetJsonPath $target -LocalJsonPath $localFile
+            Merge-SandalLocalJsonOverlay -TemplateJsonPath $item.FullName -TargetJsonPath $target -LocalJsonPath (Join-Path $item.DirectoryName "$($item.BaseName).local.json")
         } elseif (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
             Copy-Item -LiteralPath $item.FullName -Destination $target -Force
         }
     }
     $srcProfiles = Join-Path $SourceDir 'profiles'
     if (Test-Path -LiteralPath $srcProfiles -PathType Container) {
-        $dstProfiles = Join-Path $DestDir 'profiles'
-        $null = New-Item -ItemType Directory -Path $dstProfiles -Force
+        $dstProfiles = Join-Path $DestDir 'profiles'; $null = New-Item -ItemType Directory -Path $dstProfiles -Force
         foreach ($ex in @(Get-ChildItem -LiteralPath $srcProfiles -Filter '*.env.example' -File)) {
-            $envName = $ex.Name -replace '\.example$', ''
-            $dstEnv = Join-Path $dstProfiles $envName
-            $srcEnv = Join-Path $srcProfiles $envName
-            if (-not (Test-Path -LiteralPath $srcEnv -PathType Leaf) -and -not (Test-Path -LiteralPath $dstEnv -PathType Leaf)) {
-                Copy-Item -LiteralPath $ex.FullName -Destination $dstEnv -Force
-            }
+            $envName = $ex.Name -replace '\.example$', ''; $dstEnv = Join-Path $dstProfiles $envName; $srcEnv = Join-Path $srcProfiles $envName
+            if (-not (Test-Path -LiteralPath $srcEnv -PathType Leaf) -and -not (Test-Path -LiteralPath $dstEnv -PathType Leaf)) { Copy-Item -LiteralPath $ex.FullName -Destination $dstEnv -Force }
         }
     }
 }
@@ -192,9 +175,7 @@ function Copy-SandalSqlFiles {
     param([string]$SourceDir, [string]$DestDir)
     $null = New-Item -ItemType Directory -Path $DestDir -Force
     if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) { return }
-    foreach ($sql in @(Get-ChildItem -LiteralPath $SourceDir -Filter '*.sql' -File)) {
-        Copy-Item -LiteralPath $sql.FullName -Destination (Join-Path $DestDir $sql.Name) -Force
-    }
+    foreach ($sql in @(Get-ChildItem -LiteralPath $SourceDir -Filter '*.sql' -File)) { Copy-Item -LiteralPath $sql.FullName -Destination (Join-Path $DestDir $sql.Name) -Force }
 }
 
 function Write-SandalDistServerScripts {
@@ -252,8 +233,7 @@ function Write-SandalLauncherScripts {
 
 function Sync-SandalLauncherStage {
     param([string]$RepoRoot, [string]$DistDir, [string]$Config)
-    $configDir = Join-Path $DistDir $Config
-    $launcherDir = Join-Path $DistDir 'launcher'
+    $configDir = Join-Path $DistDir $Config; $launcherDir = Join-Path $DistDir 'launcher'
     foreach ($d in @($launcherDir, $configDir)) {
         if (Test-Path -LiteralPath $d -PathType Container) { Get-ChildItem -LiteralPath $d -Filter '*.pdb' -Recurse -File -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
     }
@@ -264,15 +244,13 @@ function Sync-SandalLauncherStage {
     if (-not $srcPrimary) { return }
     $null = New-Item -ItemType Directory -Path $launcherDir, $configDir -Force
     $destPrimary = Join-Path $launcherDir (Split-Path -Leaf $srcPrimary)
-    $srcItem = Get-Item -LiteralPath $srcPrimary
-    $destItem = Get-Item -LiteralPath $destPrimary -ErrorAction SilentlyContinue
+    $srcItem = Get-Item -LiteralPath $srcPrimary; $destItem = Get-Item -LiteralPath $destPrimary -ErrorAction SilentlyContinue
     if ($null -eq $destItem -or $srcItem.LastWriteTimeUtc -gt $destItem.LastWriteTimeUtc -or $srcItem.Length -ne $destItem.Length) {
         foreach ($f in @(Get-ChildItem -LiteralPath $buildOut -Recurse -File -Force)) {
             if ($f.Extension -in @('.pdb', '.xml') -or $f.Name -like '*.deps.json') { continue }
             $rel = [System.IO.Path]::GetRelativePath($buildOut, $f.FullName)
             foreach ($destRoot in @($launcherDir, $configDir)) {
-                $destFile = Join-Path $destRoot $rel
-                $destParent = Split-Path -Parent $destFile
+                $destFile = Join-Path $destRoot $rel; $destParent = Split-Path -Parent $destFile
                 if ($destParent -and -not (Test-Path -LiteralPath $destParent)) { $null = New-Item -ItemType Directory -Path $destParent -Force }
                 Copy-Item -LiteralPath $f.FullName -Destination $destFile -Force
             }
@@ -302,9 +280,7 @@ function Sync-SandalDistStage {
     $goMod = Join-Path $RepoRoot 'src\server\services\go.mod'
     if (Test-Path -LiteralPath $goMod -PathType Leaf) {
         $goVer = if ([System.IO.File]::ReadAllText($goMod) -match '(?m)^go\s+([0-9.]+)') { $Matches[1] } else { '1.27.0' }
-        $goWork = Join-Path $distDir 'go.work'
-        [System.IO.File]::WriteAllText($goWork, "go $goVer`nuse ../src/server/services`n", [System.Text.UTF8Encoding]::new($false))
-        $env:GOWORK = $goWork
+        $goWork = Join-Path $distDir 'go.work'; [System.IO.File]::WriteAllText($goWork, "go $goVer`nuse ../src/server/services`n", [System.Text.UTF8Encoding]::new($false)); $env:GOWORK = $goWork
     }
     Sync-SandalLauncherStage -RepoRoot $RepoRoot -DistDir $distDir -Config $Config
     Write-SandalLauncherScripts -DistDir $distDir
@@ -316,17 +292,13 @@ function Sync-SandalDeployContentSubdirs {
     foreach ($subName in @('zoi_chunks', 'client_config')) {
         $subSrc = Join-Path $DistContent $subName
         if (-not (Test-Path -LiteralPath $subSrc -PathType Container)) { continue }
-        $subDst = Join-Path $DeployContent $subName
-        $null = New-Item -ItemType Directory -Path $subDst -Force
+        $subDst = Join-Path $DeployContent $subName; $null = New-Item -ItemType Directory -Path $subDst -Force
         foreach ($f in @(Get-ChildItem -LiteralPath $subSrc -Recurse -File -Force)) {
-            $rel = [System.IO.Path]::GetRelativePath($subSrc, $f.FullName)
-            $dst = Join-Path $subDst $rel
-            $parent = Split-Path -Parent $dst
+            $rel = [System.IO.Path]::GetRelativePath($subSrc, $f.FullName); $dst = Join-Path $subDst $rel; $parent = Split-Path -Parent $dst
             if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
             if ((Test-Path -LiteralPath $dst -PathType Leaf) -and ((Get-Item -LiteralPath $dst).Length -eq $f.Length)) { continue }
             if (Test-Path -LiteralPath $dst -PathType Leaf) { Remove-Item -LiteralPath $dst -Force }
-            try { $null = New-Item -ItemType HardLink -Path $dst -Target $f.FullName -ErrorAction Stop }
-            catch { Copy-Item -LiteralPath $f.FullName -Destination $dst -Force }
+            try { $null = New-Item -ItemType HardLink -Path $dst -Target $f.FullName -ErrorAction Stop } catch { Copy-Item -LiteralPath $f.FullName -Destination $dst -Force }
         }
     }
 }
@@ -334,31 +306,24 @@ function Sync-SandalDeployContentSubdirs {
 function Sync-SandalDeployRuntimeDirs {
     param([Parameter(Mandatory)][string]$RepoRoot, [Parameter(Mandatory)][string]$DeployDir)
     $distDir = Join-Path $RepoRoot 'dist'
-    foreach ($sub in @('content', 'certs', 'nav', 'config')) {
-        $null = New-Item -ItemType Directory -Path (Join-Path $DeployDir $sub) -Force
-    }
+    foreach ($sub in @('content', 'certs', 'nav', 'config')) { $null = New-Item -ItemType Directory -Path (Join-Path $DeployDir $sub) -Force }
     Copy-SandalConfigStage -SourceDir (Join-Path $RepoRoot 'src\config') -DestDir (Join-Path $DeployDir 'config')
     foreach ($sub in @('certs', 'nav')) {
         $srcSub = Join-Path $distDir $sub
         if (-not (Test-Path -LiteralPath $srcSub -PathType Container)) { continue }
         foreach ($f in @(Get-ChildItem -LiteralPath $srcSub -Recurse -File -Force)) {
-            $rel = [System.IO.Path]::GetRelativePath($srcSub, $f.FullName)
-            $dst = Join-Path $DeployDir $sub $rel
-            $parent = Split-Path -Parent $dst
+            $rel = [System.IO.Path]::GetRelativePath($srcSub, $f.FullName); $dst = Join-Path $DeployDir $sub $rel; $parent = Split-Path -Parent $dst
             if ($parent -and -not (Test-Path -LiteralPath $parent)) { $null = New-Item -ItemType Directory -Path $parent -Force }
             Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
         }
     }
-    $distContent = Join-Path $distDir 'content'
-    $deployContent = Join-Path $DeployDir 'content'
+    $distContent = Join-Path $distDir 'content'; $deployContent = Join-Path $DeployDir 'content'
     if (-not (Test-Path -LiteralPath $distContent -PathType Container)) { return }
     foreach ($f in @(Get-ChildItem -LiteralPath $distContent -File -Force | Where-Object { $_.Extension -in @('.tsv', '.usmap', '.db', '.bin', '.json', '.sql') })) {
-        $dst = Join-Path $deployContent $f.Name
-        $dstItem = Get-Item -LiteralPath $dst -ErrorAction SilentlyContinue
+        $dst = Join-Path $deployContent $f.Name; $dstItem = Get-Item -LiteralPath $dst -ErrorAction SilentlyContinue
         if ($null -ne $dstItem -and $dstItem.Length -eq $f.Length -and $dstItem.LastWriteTimeUtc -ge $f.LastWriteTimeUtc) { continue }
         if ($null -ne $dstItem) { Remove-Item -LiteralPath $dst -Force }
-        try { $null = New-Item -ItemType HardLink -Path $dst -Target $f.FullName -ErrorAction Stop }
-        catch { Copy-Item -LiteralPath $f.FullName -Destination $dst -Force }
+        try { $null = New-Item -ItemType HardLink -Path $dst -Target $f.FullName -ErrorAction Stop } catch { Copy-Item -LiteralPath $f.FullName -Destination $dst -Force }
     }
     Sync-SandalDeployContentSubdirs -DistContent $distContent -DeployContent $deployContent
 }
@@ -885,13 +850,50 @@ function Ensure-SandalContentDbCurrent {
     return [pscustomobject]@{ Ready = $after.Current; Rebuilt = $rebuilt; SyncedDeploy = $syncedAfter; Version = $after.ExpectedVersion; ContentDb = $after.ContentDb }
 }
 
+function Test-SandalRuntimeGameDataComplete {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$RepoRoot, [string]$ContentRelPath = 'dist\content')
+    $outDir = Join-Path $RepoRoot $ContentRelPath
+    if (-not (Test-Path -LiteralPath $outDir -PathType Container)) { return $false }
+    $reqFiles = @(
+        'content.db', 'aoc.usmap', 'artisan_curves.tsv', 'mount_speeds.tsv', 'mount_riders.tsv', 'item_names.tsv',
+        'roads.tsv', 'roads_levels.tsv', 'town_platforms.bin', 'town_layout_items.tsv', 'town_layouts.bin',
+        'npc_abilities.tsv', 'npc_montages.tsv', 'npc_targeting.tsv', 'npc_senses.tsv', 'npc_aggro_curves.tsv',
+        'npc_looks.tsv', 'npc_appearances.tsv', 'npc_names.tsv', 'npc_trees.tsv',
+        'npc_motion.tsv', 'region_foliage.tsv', 'area_geom.bin', 'area_nav.bin', 'client_config\DefaultCombat.ini'
+    )
+    foreach ($rel in $reqFiles) {
+        $p = Join-Path $outDir $rel
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf) -or (Get-Item -LiteralPath $p).Length -le 0) { return $false }
+    }
+    $zoiDir = Join-Path $outDir 'zoi_chunks'
+    if (-not (Test-Path -LiteralPath $zoiDir -PathType Container)) { return $false }
+    return ($null -ne (Get-ChildItem -LiteralPath $zoiDir -Recurse -Filter '*.uasset' -File -ErrorAction SilentlyContinue | Select-Object -First 1))
+}
+
 function Ensure-SandalGameData {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$RepoRoot, [string]$GameRoot = '', [switch]$CheckOnly)
     $contentDb = Join-Path $RepoRoot 'dist\content\content.db'
     Write-SandalStep -Step 'GameData' -Message "Checking game data database ($contentDb)..."
     $res = Ensure-SandalContentDbCurrent -RepoRoot $RepoRoot -GameRoot $GameRoot -CheckOnly:$CheckOnly
-    return [pscustomobject]@{ Ready = $res.Ready; Extracted = $res.Rebuilt; SyncedDeploy = $res.SyncedDeploy; Version = $res.Version; ContentDb = $res.ContentDb }
+    $extracted = [bool]$res.Rebuilt; $synced = [bool]$res.SyncedDeploy
+    $distComplete = ($res.Ready -and (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot))
+    if (-not $distComplete -and -not $CheckOnly) {
+        $extractScript = Join-Path $RepoRoot 'scripts\extract_game_data.ps1'
+        if (Test-Path -LiteralPath $extractScript -PathType Leaf) {
+            $extractArgs = if (-not [string]::IsNullOrWhiteSpace($GameRoot)) { @('-GameRoot', $GameRoot) } else { @() }
+            Write-SandalStep -Step 'GameData' -Message 'Extracting missing runtime game data files into dist/content/...'
+            & $extractScript @extractArgs
+            if ($LASTEXITCODE -ne 0) { throw "Game data extraction failed (exit code $LASTEXITCODE)." }
+            $extracted = $true
+            $null = Sync-SandalDeployStage -RepoRoot $RepoRoot; $synced = $true
+            $distComplete = ($res.Ready -and (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot))
+        }
+    } elseif ($distComplete -and -not $CheckOnly -and -not (Test-SandalRuntimeGameDataComplete -RepoRoot $RepoRoot -ContentRelPath 'deploy\content')) {
+        $null = Sync-SandalDeployStage -RepoRoot $RepoRoot; $synced = $true
+    }
+    return [pscustomobject]@{ Ready = $distComplete; Extracted = $extracted; SyncedDeploy = $synced; Version = $res.Version; ContentDb = $res.ContentDb }
 }
 
-Export-ModuleMember -Function @('Write-SandalStep', 'New-SandalCsprngSecret', 'Get-SandalEnvMap', 'Set-SandalSecretAcl', 'Initialize-SandalEnv', 'Sync-SandalDistStage', 'Sync-SandalDeployStage', 'Test-SandalDockerDaemonReady', 'Start-SandalDockerDesktopIfInstalled', 'Set-SandalWslComposeMountEnv', 'Start-SandalWslKeepAlive', 'Start-SandalIpv6DockerBridge', 'Install-SandalPowerShellDockerAutoWake', 'Complete-SandalWslDockerDaemonSetup', 'Ensure-SandalDockerDaemon', 'Test-SandalContentDbCurrent', 'Ensure-SandalContentDbCurrent', 'Restart-SandalContentDbContainers', 'Ensure-SandalGameData')
+Export-ModuleMember -Function @('Write-SandalStep', 'New-SandalCsprngSecret', 'Get-SandalEnvMap', 'Set-SandalSecretAcl', 'Initialize-SandalEnv', 'Sync-SandalDistStage', 'Sync-SandalDeployStage', 'Test-SandalDockerDaemonReady', 'Start-SandalDockerDesktopIfInstalled', 'Set-SandalWslComposeMountEnv', 'Start-SandalWslKeepAlive', 'Start-SandalIpv6DockerBridge', 'Install-SandalPowerShellDockerAutoWake', 'Complete-SandalWslDockerDaemonSetup', 'Ensure-SandalDockerDaemon', 'Test-SandalContentDbCurrent', 'Ensure-SandalContentDbCurrent', 'Restart-SandalContentDbContainers', 'Test-SandalRuntimeGameDataComplete', 'Ensure-SandalGameData')

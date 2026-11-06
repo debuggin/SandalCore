@@ -57,7 +57,6 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
         -DCMAKE_BUILD_TYPE=Release \
         -DAOC_BUILD_TESTS=OFF \
         -DAOC_PROTO_GEN_DIR=/workspace/build/gen/proto \
-        -DAOC_PROTO_GEN_DIR=/workspace/build/gen/cpp/aocproto \
         -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/workspace/build/bin && \
     cmake --build build/linux --target world test_world_live_e2e --parallel && \
     mkdir -p /workspace/build/bin && \

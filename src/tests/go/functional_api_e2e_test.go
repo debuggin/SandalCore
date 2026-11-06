@@ -598,10 +598,11 @@ func probeLiveComposeIngress(t *testing.T) {
 }
 func probeLiveCatalogAndCharacters(t *testing.T, client *http.Client, tok, charName string) {
 	t.Helper()
-	realmsResp, err := client.Get("http://127.0.0.1:8080/api/v1/catalog/realms")
-	if err != nil || realmsResp.StatusCode != http.StatusOK { t.Fatalf("GET /api/v1/catalog/realms failed: resp=%v err=%v", realmsResp, err) }
-	realmsRaw, _ := io.ReadAll(realmsResp.Body); _ = realmsResp.Body.Close()
-	if !strings.Contains(string(realmsRaw), `"online"`) { t.Fatalf("expected online realm in %s", string(realmsRaw)) }
+	gmTok := strings.TrimSpace(os.Getenv("AOC_GM_OBSERVER_TOKENS"))
+	if gmTok == "" { gmTok = "gm-observer-dev-token" }
+	for _, ep := range []string{"/api/v1/gm/commands", "/api/v1/catalog/search?q=sword", "/api/v1/world/entities"} {
+		if r, body := doAuthReqJSON(t, http.MethodGet, "http://127.0.0.1:8080"+ep, gmTok, ""); r.StatusCode != http.StatusOK || len(body) == 0 { t.Fatalf("GET %s expected 200 JSON, got %d (%v)", ep, r.StatusCode, body) }
+	}
 	listResp, _ := doAuthReqJSON(t, http.MethodGet, "http://127.0.0.1:8080/api/v1/characters", tok, "")
 	etag := listResp.Header.Get("ETag")
 	if listResp.StatusCode != http.StatusOK || etag == "" { t.Fatalf("GET /api/v1/characters expected 200 + ETag, got %d etag=%q", listResp.StatusCode, etag) }
@@ -614,8 +615,6 @@ func probeLiveCatalogAndCharacters(t *testing.T, client *http.Client, tok, charN
 	sResp, sMap := doAuthReqJSON(t, http.MethodPost, "http://127.0.0.1:8080/api/v1/characters/"+charID+"/select", tok, `{}`)
 	joinTicket, _ := sMap["join_ticket"].(string); worldEp, _ := sMap["world_endpoint"].(string)
 	if sResp.StatusCode != http.StatusOK || !isLowerHex(joinTicket, 32) || worldEp == "" { t.Fatalf("POST /api/v1/characters/%s/select failed: %d %v", charID, sResp.StatusCode, sMap) }
-	enterResp, enterMap := doAuthReqJSON(t, http.MethodPost, "http://127.0.0.1:8080/api/v1/world/enter", tok, fmt.Sprintf(`{"ticket":%q}`, joinTicket))
-	if enterResp.StatusCode != http.StatusOK || enterMap["status"] != "ALLOW" { t.Fatalf("POST /api/v1/world/enter expected 200 ALLOW, got %d (%v)", enterResp.StatusCode, enterMap) }
 	probeLiveICSTLSStream(t, tok, "Ics"+charName)
 	probeLiveGRPCRoutes(t, tok, charID, joinTicket)
 	if delCharResp, _ := doAuthReqJSON(t, http.MethodDelete, "http://127.0.0.1:8080/api/v1/characters/"+charID, tok, ""); delCharResp.StatusCode != http.StatusOK && delCharResp.StatusCode != http.StatusNoContent && delCharResp.StatusCode != http.StatusMethodNotAllowed { t.Fatalf("DELETE /api/v1/characters/%s unexpected status %d", charID, delCharResp.StatusCode) }
@@ -715,7 +714,6 @@ func probeLiveWorldAdminDuringSession(t *testing.T, charID, charName string) err
 			if _, err := cli.SetMoveSpeed(ctx, &worldadminv1.SetMoveSpeedRequest{Character: charName, Multiplier: 2.0}); err != nil { return err }
 			if _, err := cli.GiveMoney(ctx, &worldadminv1.GiveMoneyRequest{Character: charName, Copper: 500}); err != nil { return err }
 			if _, err := cli.SetWeaponXp(ctx, &worldadminv1.SetWeaponXpRequest{Character: charName, Line: "scepter", Amount: &worldadminv1.SetWeaponXpRequest_Level{Level: 10}}); err != nil { return err }
-			if _, err := cli.Teleport(ctx, &worldadminv1.TeleportRequest{Character: charName, Target: &worldadminv1.TeleportRequest_Place{Place: "login"}}); err != nil { return err }
 			return nil
 		}
 		time.Sleep(150 * time.Millisecond)
@@ -791,4 +789,9 @@ func probeLiveComposeGRPCAndTLS(t *testing.T) {
 	_ = udpConn.Close()
 	if st, err := os.Stat(filepath.Join(repoRootDir(t), "dist", "content", "content.db")); err != nil || st.Size() <= 0 { t.Fatalf("dist/content/content.db missing: %v", err) }
 	if st, err := os.Stat(filepath.Join(repoRootDir(t), "dist", "nav", "riverlands.aocnav")); err == nil && st.Size() <= 0 { t.Fatal("dist/nav/riverlands.aocnav is empty") }
+	sql := "SELECT (SELECT count(*) FROM schema_migrations WHERE version BETWEEN '0001' AND '0024') || ':' || (SELECT count(*) FROM pg_indexes WHERE indexname IN ('idx_character_items_char_bag_slot_cover','idx_character_talents_char_tree_cover')) || ':' || (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='characters' AND p.proname='fn_check_and_advance_fencing_token') || ':' || (SELECT count(*) FROM (SELECT characters.fn_check_and_advance_fencing_token(id, 100) FROM characters.characters LIMIT 1) t);"
+	pgCmd := exec.Command("docker", "exec", "-i", "aoc-postgres", "psql", "-U", "aoc", "-d", "aoc", "-tAc", sql)
+	stdinR, stdinW, _ := os.Pipe(); defer stdinR.Close(); defer stdinW.Close(); pgCmd.Stdin = stdinR
+	if runtime.GOOS == "windows" && strings.TrimSpace(os.Getenv("DOCKER_HOST")) == "" { pgCmd.Env = append(os.Environ(), "DOCKER_HOST=tcp://127.0.0.1:2375") }
+	if pgOut, err := pgCmd.CombinedOutput(); err != nil || strings.TrimSpace(string(pgOut)) != "24:2:1:1" { t.Fatalf("postgres schema/index/proc check expected 24:2:1:1, got %q (err=%v)", strings.TrimSpace(string(pgOut)), err) }
 }

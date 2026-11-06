@@ -397,8 +397,13 @@ services:
       AOC_WORLD_ADMIN_ADDR: ${WORLD_ADMIN_GRPC_ADDR:-world:50061}
       WORLD_ADMIN_GRPC_ADDR: ${WORLD_ADMIN_GRPC_ADDR:-world:50061}
       AOC_WORLD_STREAM_ADDR: ${WORLD_STREAM_GRPC_ADDR:-world:50062}
-      DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
-      AOC_DATABASE_URL: postgres://${POSTGRES_USER:-aoc}:${POSTGRES_PASSWORD:-CHANGE_ME}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+      AOC_CONTENT_DB: /content/content.db
+      AOC_JWT_SECRET: ${AOC_JWT_SECRET:-dev-only-jwt-secret-not-for-prod-use-0000}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+      AOC_DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aoc}?sslmode=disable
+    volumes:
+      - ${AOC_DIST_CONTENT_DIR:-./content}:/content:ro
+      - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
     depends_on:
       postgres:
         condition: service_healthy

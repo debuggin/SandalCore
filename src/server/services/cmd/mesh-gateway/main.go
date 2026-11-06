@@ -17,9 +17,12 @@ import (
 	"syscall"
 	"time"
 
+	"aocrop/services/internal/admincatalog"
+	"aocrop/services/internal/admingw"
 	"aocrop/services/internal/config"
 	"aocrop/services/internal/mesh"
 	"aocrop/services/internal/telemetry"
+	"aocrop/services/internal/worldstream"
 	pkgtelemetry "aocrop/services/pkg/telemetry"
 )
 
@@ -27,6 +30,8 @@ type Gateway struct {
 	registry  *mesh.Registry
 	router    *mesh.ZoneRouter
 	readiness *pkgtelemetry.ReadinessGate
+	coalescer *worldstream.Coalescer
+	admin     *admingw.Server
 }
 
 func newGateway(reg *mesh.Registry, router *mesh.ZoneRouter, serverID string) (*Gateway, error) {
@@ -43,11 +48,34 @@ func newGateway(reg *mesh.Registry, router *mesh.ZoneRouter, serverID string) (*
 	}
 	gate := pkgtelemetry.NewReadinessGate(serverID, 60)
 	gate.SetReady(true, true)
+	catalog := admincatalog.NewDefaultCatalog()
+	coalescer := worldstream.NewCoalescer(worldstream.DefaultTickInterval)
+	admin := admingw.NewRouter(admingw.Config{
+		Catalog:    catalog,
+		Coalescer:  coalescer,
+		RoleTokens: loadRoleTokens(),
+	})
 	return &Gateway{
 		registry:  reg,
 		router:    router,
 		readiness: gate,
+		coalescer: coalescer,
+		admin:     admin,
 	}, nil
+}
+
+func loadRoleTokens() map[string]admingw.Role {
+	tokens := admingw.DefaultRoleTokens()
+	if v := strings.TrimSpace(os.Getenv("AOC_GM_OBSERVER_TOKEN")); v != "" {
+		tokens[v] = admingw.RoleObserver
+	}
+	if v := strings.TrimSpace(os.Getenv("AOC_GM_OPERATOR_TOKEN")); v != "" {
+		tokens[v] = admingw.RoleOperator
+	}
+	if v := strings.TrimSpace(os.Getenv("AOC_GM_ARCHITECT_TOKEN")); v != "" {
+		tokens[v] = admingw.RoleArchitect
+	}
+	return tokens
 }
 
 func seedDefaultZones(router *mesh.ZoneRouter) error {
@@ -84,7 +112,15 @@ func seedDefaultZones(router *mesh.ZoneRouter) error {
 }
 
 func (g *Gateway) Handler() http.Handler {
-	return telemetry.ETagMiddleware(g.readiness.Handler())
+	probes := telemetry.ETagMiddleware(g.readiness.Handler())
+	mux := http.NewServeMux()
+	for _, p := range []string{"/livez", "/readyz", "/healthz", "/metrics"} {
+		mux.Handle(p, probes)
+	}
+	if g.admin != nil {
+		mux.Handle("/api/", g.admin)
+	}
+	return mux
 }
 
 func (g *Gateway) RouteForwardPacket(
@@ -154,6 +190,9 @@ func runWithContext(ctx context.Context, probeAddr string) error {
 	if err != nil {
 		return err
 	}
+	if gw.coalescer != nil {
+		go gw.coalescer.Run(ctx)
+	}
 	httpSrv := telemetry.NewCleartextHTTPServer(probeAddr, gw.Handler())
 	errc := make(chan error, 1)
 	go func() {
@@ -170,6 +209,9 @@ func runWithContext(ctx context.Context, probeAddr string) error {
 		return err
 	}
 	_, drainErr := gw.readiness.DrainGracefully(context.Background(), 5*time.Second, func(dctx context.Context) error {
+		if gw.admin != nil {
+			gw.admin.SetReady(false)
+		}
 		return httpSrv.Shutdown(dctx)
 	})
 	if err != nil {

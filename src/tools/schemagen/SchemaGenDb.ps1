@@ -10,15 +10,20 @@ function Resolve-SqliteBinDir {
     [CmdletBinding()]
     param()
     $candidates = @(
-        (Join-Path $script:RepoRoot 'build\dotnet\bin\AocExtractor\Release\net8.0')
-        (Join-Path $script:RepoRoot 'build\dotnet\bin\AocExtractor\Debug\net8.0')
-        (Join-Path $script:RepoRoot 'src\tools\aoc-extractor\bin\Release\net8.0')
-        (Join-Path $script:RepoRoot 'src\tools\aoc-extractor\bin\Debug\net8.0')
+        (Join-Path $script:RepoRoot 'build\dotnet\bin\AocExtractor\Release\net10.0')
+        (Join-Path $script:RepoRoot 'build\dotnet\bin\AocExtractor\Debug\net10.0')
+        (Join-Path $script:RepoRoot 'src\tools\aoc-extractor\bin\Release\net10.0')
+        (Join-Path $script:RepoRoot 'src\tools\aoc-extractor\bin\Debug\net10.0')
     )
     foreach ($dir in $candidates) {
         if (Test-Path -LiteralPath (Join-Path $dir 'Microsoft.Data.Sqlite.dll')) {
             return $dir
         }
+    }
+    $binRoot = Join-Path $script:RepoRoot 'build\dotnet\bin'
+    if (Test-Path -LiteralPath $binRoot -PathType Container) {
+        $found = Get-ChildItem -Path $binRoot -Recurse -Filter 'Microsoft.Data.Sqlite.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $found) { return $found.DirectoryName }
     }
     return $null
 }
@@ -26,23 +31,18 @@ function Resolve-SqliteBinDir {
 function Initialize-SchemaGenSqliteFromNuGet {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$NugetRoot)
-    $coreDir = Get-ChildItem -LiteralPath (Join-Path $NugetRoot 'microsoft.data.sqlite.core') -Filter '8.0.*' -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending | Select-Object -First 1
-    if ($null -eq $coreDir) { return $false }
-    $ProviderDlls = @(
-        'sqliteraw.bundle_e_sqlite3\2.1.6\lib\net6.0\SQLitePCLRaw.Batteries_v2.dll'
-        'sqlitepclraw.core\2.1.6\lib\netstandard2.0\SQLitePCLRaw.core.dll'
-        'sqlitepclraw.provider.e_sqlite3\2.1.6\lib\net6.0-windows7.0\SQLitePCLRaw.provider.e_sqlite3.dll'
-    )
-    foreach ($rel in $ProviderDlls) {
-        $full = Join-Path $NugetRoot $rel
-        if (Test-Path -LiteralPath $full) { [void][System.Reflection.Assembly]::LoadFrom($full) }
-    }
-    $native = Join-Path $NugetRoot 'sqlitepclraw.lib.e_sqlite3\2.1.6\runtimes\win-x64\native\e_sqlite3.dll'
-    if (Test-Path -LiteralPath $native) { [void][System.Runtime.InteropServices.NativeLibrary]::Load($native) }
-    $sqliteDll = Join-Path $coreDir.FullName 'lib\net8.0\Microsoft.Data.Sqlite.dll'
-    if (Test-Path -LiteralPath $sqliteDll) {
-        [void][System.Reflection.Assembly]::LoadFrom($sqliteDll)
+    $rid = if ($IsWindows) { 'win-x64' } elseif ($IsLinux) { 'linux-x64' } else { 'osx-x64' }
+    $nativePkg = Get-ChildItem -Path (Join-Path $NugetRoot 'sqlitepclraw.lib.e_sqlite3') -Recurse -Filter '*e_sqlite3*' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match $rid } | Select-Object -Last 1
+    $corePkg = Get-ChildItem -Path (Join-Path $NugetRoot 'sqlitepclraw.core') -Recurse -Filter 'SQLitePCLRaw.core.dll' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'net10\.0|net9\.0|net8\.0|netstandard2\.0' } | Select-Object -Last 1
+    $provPkg = Get-ChildItem -Path (Join-Path $NugetRoot 'sqlitepclraw.provider.e_sqlite3') -Recurse -Filter 'SQLitePCLRaw.provider.e_sqlite3.dll' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'net10\.0|net9\.0|net8\.0|net6\.0|netstandard2\.0' } | Select-Object -Last 1
+    $batPkg = Get-ChildItem -Path (Join-Path $NugetRoot 'sqlitepclraw.bundle_e_sqlite3') -Recurse -Filter 'SQLitePCLRaw.batteries_v2.dll' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'net10\.0|net9\.0|net8\.0|net6\.0|netstandard2\.0' } | Select-Object -Last 1
+    $mdsPkg = Get-ChildItem -Path (Join-Path $NugetRoot 'microsoft.data.sqlite.core') -Recurse -Filter 'Microsoft.Data.Sqlite.dll' -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'net10\.0|net9\.0|net8\.0|netstandard2\.0' } | Select-Object -Last 1
+    if ($nativePkg -and $corePkg -and $provPkg -and $batPkg -and $mdsPkg) {
+        [void][System.Runtime.InteropServices.NativeLibrary]::Load($nativePkg.FullName)
+        foreach ($dll in @($corePkg.FullName, $provPkg.FullName, $batPkg.FullName, $mdsPkg.FullName)) {
+            [void][System.Reflection.Assembly]::LoadFrom($dll)
+        }
+        [SQLitePCL.Batteries_V2]::Init()
         return $true
     }
     return $false
@@ -62,6 +62,7 @@ function Initialize-SchemaGenSqlite {
             $p = Join-Path $binDir $dll
             if (Test-Path -LiteralPath $p) { [void][System.Reflection.Assembly]::LoadFrom($p) }
         }
+        [SQLitePCL.Batteries_V2]::Init()
         $script:SqliteLoaded = $true
         return
     }
