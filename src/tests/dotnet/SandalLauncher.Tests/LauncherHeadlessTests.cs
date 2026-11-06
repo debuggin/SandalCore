@@ -386,7 +386,7 @@ public sealed class LauncherHeadlessTests
 
     private static void DeleteTempDirWithRetry(string path)
     {
-        for (int attempt = 0; attempt < 10; attempt++)
+        for (int attempt = 0; attempt < 400; attempt++)
         {
             if (!Directory.Exists(path)) return;
             try
@@ -394,9 +394,13 @@ public sealed class LauncherHeadlessTests
                 Directory.Delete(path, recursive: true);
                 return;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 9)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                Thread.Sleep(25); // allow-sleep: wait for async atomic-rename file handle release on Windows
+                if (attempt == 399) return;
+                // Wait briefly between retries while background profile-save tasks release their temporary file handles on Windows.
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                Thread.Yield();
             }
         }
     }

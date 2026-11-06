@@ -165,7 +165,7 @@ namespace SandalLauncher
             }
             if (flag is "--version" or "-v")
             {
-                Console.Out.WriteLine("SandalLauncher 0.1.0 (Avalonia 11.2.3 / .NET 8.0)");
+                Console.Out.WriteLine("SandalLauncher 0.1.0 (Avalonia 11.3.22 / .NET 10.0)");
                 exitCode = 0;
                 return true;
             }
@@ -368,7 +368,7 @@ namespace SandalLauncher.ViewModels
             AdminHttpsAddr = $"Admin TLS: {cfg.AdminHttpsAddr}";
             EosModeSummary = cfg.ClientUseEos ? "EOS Enabled (Retail Auth)" : "EOS Bypassed (Local Sandbox)";
             ConfigSourceSummary = cfg.ConfigFileLoaded ? $"{cfg.ConfigFilePath} (Loaded)" : $"{cfg.ConfigFilePath} (Defaults)";
-            LaunchCommandLinePreview = $"AOCClient.exe -GatewayAddr={cfg.GatewayHttpAddr} -IcsAddr={cfg.GatewayIcsAddr} -NoEOS={!cfg.ClientUseEos}";
+            LaunchCommandLinePreview = $"AOCClient-Win64-Shipping.exe -LauncherTetherPort=19021 -GatewayAddr={cfg.GatewayHttpAddr} -IcsAddr={cfg.GatewayIcsAddr} -UseEOS={(cfg.ClientUseEos ? "true" : "false")} -NoEAC";
             DiagnosticsReportText = $"Pak Directory: {ClientPakDir} | Config Source: {ConfigSourceSummary} | Monotonic seq_id: #{_lastSeqId}";
             EditGatewayHttpAddr = cfg.GatewayHttpAddr;
             EditClientPakDir = cfg.ClientPakDir;

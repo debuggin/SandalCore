@@ -600,7 +600,7 @@ void load_living_area_and_gathering(PlayerWorld& players, WorldCliOptions& o, ui
         if (o.no_npc_movement) {
             spdlog::info("[nav] --no-npc-movement: the NPCs stand where the data puts them");
         } else if (std::string ground_error; !players.load_ground(o.area_nav_path, o.npc_motion_path, ground_error)) {
-            spdlog::error("[nav] no ground, the NPCs stand where the data puts them and do not move: {} (build it: dotnet tools/mapc/bin/Release/net8.0/mapc.dll build)", ground_error);
+            spdlog::error("[nav] no ground, the NPCs stand where the data puts them and do not move: {} (build it: dotnet build/dotnet/bin/mapc/Release/net10.0/mapc.dll build)", ground_error);
         }
     }
     if (players.area_report() && players.gm_garden_requested() && !players.garden_report()) players.place_gm_garden();
