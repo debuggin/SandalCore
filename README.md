@@ -13,24 +13,26 @@ An independent, open-source server emulator compatible with the Ashes of Creatio
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): 16-phase milestone status, achieved features, and remaining work.
 - [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md): Current gameplay limitations, server constraints, and workarounds.
 - [`docs/PATCH_NOTES.md`](docs/PATCH_NOTES.md): Dated changelog of features and fixes.
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md): Configuration files, environment variables, and host overrides.
 - [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md): Branch conventions, clean-room guidelines, and test requirements.
 - [`docs/SECURITY.md`](docs/SECURITY.md): Private vulnerability reporting policy.
 - [`docs/reference/wire-specs/README.md`](docs/reference/wire-specs/README.md): Protocol and binary format wire specifications.
 
 ---
 
-## Architecture & 4 Setup Flows
+## Architecture: CLI Lifecycle & 3 Runtime Topologies
 
-SandalCore supports four execution and deployment topologies, orchestrated through [`sandal.ps1`](sandal.ps1) and staged into [`dist/`](src/config/) and [`deploy/`](src/deploy/):
+SandalCore separates its unified **CLI & Script Orchestration Pipeline** from its **3 Runtime Topologies**, staged into [`dist/`](src/config/) and [`deploy/`](src/deploy/):
 
-1. **Setup 1 — Scripts & Orchestration Lifecycle Flow (`start.bat`, `build.bat`, `stop.bat` -> `sandal.ps1`)**
-2. **Setup 2 — Docker Compose 11-Container Flow (Default Production-Like Local Stack in [`src/deploy/compose.yml`](src/deploy/compose.yml))**
-3. **Setup 3 — Windows / Linux Native Host-Process Flow ([`src/config/profiles/local-dev.env.example`](src/config/profiles/local-dev.env.example), [`scripts/services.ps1`](scripts/services.ps1), [`scripts/launch_world.ps1`](scripts/launch_world.ps1), [`scripts/launch_all.ps1`](scripts/launch_all.ps1))**
-4. **Setup 4 — Kubernetes Cluster Flow ([`src/deploy/k8s/`](src/deploy/k8s/), [`src/config/profiles/prod-mesh.env.example`](src/config/profiles/prod-mesh.env.example))**
+- **CLI & Script Orchestration Pipeline (`start.bat`, `build.bat`, `stop.bat` -> [`sandal.ps1`](sandal.ps1))**: The root batch wrappers and `sandal.ps1` subcommands automate game-data extraction, TLS certificate provisioning, `dist/` & `deploy/` staging, and starting the default Docker Compose runtime together with `SandalLauncher.exe`.
+- **The 3 Runtime Topologies**:
+  1. **Runtime Topology 1 — WSL2 Docker Compose 11-Container Stack (Default Local Runtime in [`src/deploy/compose.yml`](src/deploy/compose.yml))**: Started automatically by `start.bat` (`pwsh -File sandal.ps1 run`) together with `SandalLauncher.exe` on Windows, or headless without the launcher via `pwsh -File sandal.ps1 up`.
+  2. **Runtime Topology 2 — Windows / Linux Native Host-Process Runtime ([`src/config/profiles/local-dev.env.example`](src/config/profiles/local-dev.env.example), [`scripts/services.ps1`](scripts/services.ps1), [`scripts/launch_world.ps1`](scripts/launch_world.ps1), [`scripts/launch_all.ps1`](scripts/launch_all.ps1))**: Bare-metal Go and C++ host processes running directly on `127.0.0.1` loopback without application containers.
+  3. **Runtime Topology 3 — Kubernetes Cluster Runtime ([`src/deploy/k8s/`](src/deploy/k8s/), [`src/config/profiles/prod-mesh.env.example`](src/config/profiles/prod-mesh.env.example))**: Multi-node Kubernetes cluster deployment (`StatefulSet`, `Deployment`, `HPA`, `PDB`, and zero-trust `NetworkPolicy`).
 
-### Setup 1: Scripts & Orchestration Lifecycle Flow (`start.bat`, `build.bat`, `stop.bat` -> `sandal.ps1`)
+### CLI & Script Orchestration Pipeline (`start.bat`, `build.bat`, `stop.bat` -> `sandal.ps1`)
 
-The root Windows wrappers (`start.bat`, `build.bat`, `stop.bat`) invoke [`scripts/ensure_pwsh.bat`](scripts/ensure_pwsh.bat) (which verifies PowerShell 7 `pwsh >= 7.2`) and dispatch into [`sandal.ps1`](sandal.ps1) subcommands under [`scripts/sandal/`](scripts/sandal/).
+The root Windows wrappers (`start.bat`, `build.bat`, `stop.bat`) invoke [`scripts/ensure_pwsh.bat`](scripts/ensure_pwsh.bat) (which verifies PowerShell 7 `pwsh >= 7.2`) and dispatch into [`sandal.ps1`](sandal.ps1) subcommands under [`scripts/sandal/`](scripts/sandal/). `start.bat` (`pwsh -File sandal.ps1 run`) is the one-click desktop entry point that executes this pipeline and brings up **Runtime Topology 1 (WSL2 Docker Compose 11-Container Stack)** below together with `SandalLauncher.exe` (while `pwsh -File sandal.ps1 up` starts the same 11-container Docker Compose stack headless without opening the desktop launcher).
 
 ```mermaid
 flowchart LR
@@ -90,9 +92,9 @@ flowchart LR
 | `doctor` / `status` | `doctor.ps1` / `sandal.ps1` | `-DryRun`, `-Json`, `-NoColor` | Audits host toolchain prerequisites (`pwsh`, `dotnet`, `docker`, `go`, `cmake`), local ports, and stage SHA-256 stamps |
 | `install-wsl-docker` | `Install-WslDocker.ps1` | `-DryRun`, `-Json`, `-NoColor` | Provisions native WSL2 Docker Engine and non-destructively sets `.wslconfig` `instanceIdleTimeout=-1` / `vmIdleTimeout=-1` |
 
-### Setup 2: Docker Compose 11-Container Flow (Default Production-Like Local Stack)
+### Runtime Topology 1: WSL2 Docker Compose 11-Container Stack (Default Local Runtime)
 
-By default, SandalCore runs an 11-container Linux server stack inside WSL2 Docker ([`src/deploy/compose.yml`](src/deploy/compose.yml) and [`src/deploy/envoy/envoy.yaml`](src/deploy/envoy/envoy.yaml)) paired with the Windows desktop launcher **`SandalLauncher`** (`dist\launcher\SandalLauncher.exe` / `dist\launch_launcher.bat`), which serves the client session token in-memory over UDP `19021` via `LocalTetherListener`. All C++ (`world`) and Go (`gateway`, `auth`, `character`, `citynode`, `quest`, `mesh`, `mesh-gateway`) server binaries compile inside multi-stage Linux Docker containers ([`src/deploy/docker/cpp.Dockerfile`](src/deploy/docker/cpp.Dockerfile) and [`src/deploy/docker/go.Dockerfile`](src/deploy/docker/go.Dockerfile)), while `world` serves authoritative 30 Hz UDP replication directly to the Ashes of Creation client.
+This is the default runtime started by `start.bat` (`pwsh -File sandal.ps1 run`) or headless via `pwsh -File sandal.ps1 up`: an 11-container Linux server stack inside WSL2 Docker ([`src/deploy/compose.yml`](src/deploy/compose.yml) and [`src/deploy/envoy/envoy.yaml`](src/deploy/envoy/envoy.yaml)) paired with the Windows desktop launcher **`SandalLauncher`** (`dist\launcher\SandalLauncher.exe` / `dist\launch_launcher.bat`), which serves the client session token in-memory over UDP `19021` via `LocalTetherListener`. All C++ (`world`) and Go (`gateway`, `auth`, `character`, `citynode`, `quest`, `mesh`, `mesh-gateway`) server binaries compile inside multi-stage Linux Docker containers ([`src/deploy/docker/cpp.Dockerfile`](src/deploy/docker/cpp.Dockerfile) and [`src/deploy/docker/go.Dockerfile`](src/deploy/docker/go.Dockerfile)), while `world` serves authoritative 30 Hz UDP replication directly to the Ashes of Creation client.
 
 ```mermaid
 flowchart LR
@@ -164,7 +166,21 @@ flowchart LR
 | 10 | `world` (`aoc-world`) | C++23 | Host `127.0.0.1:7777/udp` (and `:50055 -> :50061/tcp` WorldAdmin via Envoy `:9090`) / Container `:7777/udp`, `:50061` WorldAdmin gRPC, `:50062` WorldStream gRPC | Authoritative 30 Hz world simulation, replication, combat, NPC AI, and navmesh runtime |
 | 11 | `postgres` (`aoc-postgres`) | PostgreSQL 17 | Host `127.0.0.1:5432` (when published) / Container `:5432` on `data_net` | Relational database isolated on `data_net` |
 
-### Setup 3: Windows / Linux Native Host-Process Flow (`src/config/profiles/local-dev.env.example`, `scripts/services.ps1`, `scripts/launch_world.ps1`, `scripts/launch_all.ps1`)
+- **Commands (How to Run)**:
+  - **Desktop (11 containers + `SandalLauncher.exe`)**:
+    ```powershell
+    .\start.bat                                    # One-click: verify/extract content.db, sync certs, start 11 containers, and open SandalLauncher.exe
+    pwsh -File sandal.ps1 run                      # Equivalent via sandal.ps1 CLI
+    .\stop.bat                                     # Stop launcher/client and bring down the 11-container stack (or: pwsh -File sandal.ps1 down)
+    ```
+  - **Headless Server (11 containers only, without opening `SandalLauncher.exe`)**:
+    ```powershell
+    pwsh -File sandal.ps1 run -NoLauncher          # Run full 6-step pipeline (extract/certs/stage/up) without opening the desktop launcher
+    pwsh -File sandal.ps1 up -Detach               # Start the staged 11-container stack and wait for healthchecks
+    docker compose -f deploy/compose.yml --env-file deploy/.env up -d --build --wait   # Direct Docker Compose execution against staged deploy/
+    ```
+
+### Runtime Topology 2: Windows / Linux Native Host-Process Runtime (`src/config/profiles/local-dev.env.example`, `scripts/services.ps1`, `scripts/launch_world.ps1`, `scripts/launch_all.ps1`)
 
 For bare-metal debugging without running the Go and C++ services inside containers, SandalCore supports a native host-process workflow configured via [`src/config/profiles/local-dev.env.example`](src/config/profiles/local-dev.env.example) and orchestrated by [`scripts/services.ps1`](scripts/services.ps1), [`scripts/launch_world.ps1`](scripts/launch_world.ps1), [`scripts/launch_all.ps1`](scripts/launch_all.ps1), and the staged `dist/start_server.ps1` / `dist/stop_server.ps1` scripts.
 
@@ -205,7 +221,7 @@ flowchart TD
     launcher_proc -->|"UDP :7777"| world_proc
 ```
 
-- **Commands**:
+- **Commands (How to Run)**:
   ```powershell
   pwsh -File scripts/services.ps1 -Action up      # Start PostgreSQL container and wait for healthy
   pwsh -File scripts/services.ps1 -Action build   # Build Go services & CLI tools into dist/services/
@@ -216,7 +232,7 @@ flowchart TD
   ```
 - **Native Loopback Ports (`src/config/profiles/local-dev.env.example`) vs. Container Ports**: On bare metal without Envoy port-multiplexing, each daemon binds a distinct loopback port (`gateway` HTTP `127.0.0.1:8080`, ICS `127.0.0.1:8444`, gRPC `127.0.0.1:50050`; `auth` HTTP `127.0.0.1:8081`, gRPC `127.0.0.1:50051`; `character` `127.0.0.1:50052`; `mesh` `127.0.0.1:50054`; `citynode` `127.0.0.1:50055`; `world` UDP `127.0.0.1:7777`, WorldAdmin gRPC `127.0.0.1:50056`; `quest` `127.0.0.1:50058`; `admin` HTTP `127.0.0.1:8090`, HTTPS `127.0.0.1:8443`).
 
-### Setup 4: Kubernetes Cluster Flow (`src/deploy/k8s/`, `src/config/profiles/prod-mesh.env.example`)
+### Runtime Topology 3: Kubernetes Cluster Runtime (`src/deploy/k8s/`, `src/config/profiles/prod-mesh.env.example`)
 
 For multi-node production clusters, [`src/deploy/k8s/`](src/deploy/k8s/) and [`src/config/profiles/prod-mesh.env.example`](src/config/profiles/prod-mesh.env.example) provide hardened Kubernetes manifests in the `sandal` namespace with non-root security contexts (`65532:65532`), read-only root filesystems, topology spread constraints, and zero-trust `NetworkPolicy` isolation.
 
@@ -256,6 +272,15 @@ flowchart TD
 - **[`src/deploy/k8s/services-deployment.yaml`](src/deploy/k8s/services-deployment.yaml)**: Defines `Deployment`, `Service`, `PodDisruptionBudget`, and `HorizontalPodAutoscaler` resources for the stateless control-plane services (`gateway`, `auth`, `character`, `citynode`, `quest`, `mesh`, `mesh-gateway`, `web-admin`) consuming `sandal-prod-config` (`ConfigMap`) and `sandal-prod-secrets` (`Secret`).
 - **[`src/deploy/k8s/world-statefulset.yaml`](src/deploy/k8s/world-statefulset.yaml)**: Defines the headless `world` `Service` (`clusterIP: None`), `world` `StatefulSet` (`udp-game :7777`, `udp-mesh :7778`, `grpc-admin :50056`, `grpc-zone :50057`, `http-probe :9091`), `world-pdb` `PodDisruptionBudget`, `sandal-navmesh-ro` read-only navmesh mount, and 20 Gi `world-state` `volumeClaimTemplates`.
 - **[`src/deploy/k8s/network-policies.yaml`](src/deploy/k8s/network-policies.yaml)**: Establishes a namespace-wide `default-deny-all` policy (Ingress + Egress) and explicit least-privilege rules (`allow-world-zone-authority`, `allow-gateway-control-plane`, `allow-mesh-gateway-datapath`, `allow-admin-console`, `allow-postgres-and-redis-backends`).
+- **Commands (How to Run)**:
+  ```powershell
+  kubectl create namespace sandal --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n sandal create configmap sandal-prod-config --from-env-file=src/config/profiles/prod-mesh.env.example --dry-run=client -o yaml | kubectl apply -f -
+  kubectl apply -f src/deploy/k8s/network-policies.yaml
+  kubectl apply -f src/deploy/k8s/services-deployment.yaml
+  kubectl apply -f src/deploy/k8s/world-statefulset.yaml
+  kubectl -n sandal rollout status statefulset/world
+  ```
 
 ---
 
