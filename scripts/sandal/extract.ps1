@@ -206,10 +206,16 @@ function Invoke-ExtractStagePipeline {
                 throw "extract_game_data.ps1 failed with exit code $LASTEXITCODE."
             }
             if (Get-Command Ensure-SandalContentDbCurrent -ErrorAction SilentlyContinue) {
-                $null = Ensure-SandalContentDbCurrent -RepoRoot $RootPath -GameRoot $Options.PakDir -CheckOnly
+                $null = Ensure-SandalContentDbCurrent -RepoRoot $RootPath -GameRoot $Options.PakDir
+            }
+            if (Get-Command Sync-SandalDistStage -ErrorAction SilentlyContinue) {
+                $null = Sync-SandalDistStage -RepoRoot $RootPath -Config 'Release'
             }
             if (Get-Command Sync-SandalDeployStage -ErrorAction SilentlyContinue) {
                 $null = Sync-SandalDeployStage -RepoRoot $RootPath
+            }
+            if (Get-Command Restart-SandalContentDbContainers -ErrorAction SilentlyContinue) {
+                $null = Restart-SandalContentDbContainers
             }
         }
     }

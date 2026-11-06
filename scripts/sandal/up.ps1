@@ -78,12 +78,12 @@ function Get-SandalStaleComposeServices {
     $goServices = @('auth', 'character', 'citynode', 'quest', 'mesh', 'gateway', 'mesh-gateway', 'web-admin')
     if ($ForceBuild) { return @('world') + $goServices }
     $stale = [System.Collections.Generic.List[string]]::new()
-    $cppNewest = Get-NewestSourceWriteUtc -RootPath $RootPath -RelPaths @('src\server\world', 'src\libs', 'src\server\proto', 'src\deploy\docker\cpp.Dockerfile')
+    $cppNewest = Get-NewestSourceWriteUtc -RootPath $RootPath -RelPaths @('src\server\world', 'src\libs', 'src\server\proto', 'src\deploy\docker\cpp.Dockerfile', 'build\gen\world')
     $worldCreated = Get-DockerCreatedUtc -Target 'aoc-world'
     $imgCreated = Get-DockerCreatedUtc -Target 'sandal-cpp:local'
     if ($imgCreated -gt $worldCreated) { $worldCreated = $imgCreated }
     if ($worldCreated -eq [datetime]::MinValue -or $cppNewest -gt $worldCreated) { $stale.Add('world') }
-    $goNewest = Get-NewestSourceWriteUtc -RootPath $RootPath -RelPaths @('src\server\services', 'src\server\proto', 'src\deploy\docker\go.Dockerfile')
+    $goNewest = Get-NewestSourceWriteUtc -RootPath $RootPath -RelPaths @('src\server\services', 'src\server\proto', 'src\deploy\docker\go.Dockerfile', 'build\gen\go')
     foreach ($svc in $goServices) {
         $cTime = Get-DockerCreatedUtc -Target "aoc-$svc"
         if ($cTime -eq [datetime]::MinValue -or $goNewest -gt $cTime) { $stale.Add($svc) }
