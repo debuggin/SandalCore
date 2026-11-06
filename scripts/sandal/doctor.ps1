@@ -82,11 +82,11 @@ function Get-DoctorPortChecks {
     }
     $runningContainers = Get-DoctorRunningContainers -DryRunMode $DryRunMode
     $specs = @(
-        @{ Port = 5432;  Protocol = 'TCP'; Service = 'postgres';      Container = 'aoc-postgres' },
-        @{ Port = 8080;  Protocol = 'TCP'; Service = 'gateway-http';  Container = 'aoc-gateway' },
-        @{ Port = 8443;  Protocol = 'TCP'; Service = 'ingress-https'; Container = 'aoc-ingress-proxy' },
-        @{ Port = 9090;  Protocol = 'TCP'; Service = 'ingress-grpc';  Container = 'aoc-ingress-proxy' },
-        @{ Port = 50061; Protocol = 'TCP'; Service = 'ics-tls';       Container = 'aoc-gateway' }
+        @{ Port = 8080;  Protocol = 'TCP'; Service = 'ingress-http'; Container = 'aoc-ingress-proxy' },
+        @{ Port = 9090;  Protocol = 'TCP'; Service = 'ingress-grpc'; Container = 'aoc-ingress-proxy' },
+        @{ Port = 50061; Protocol = 'TCP'; Service = 'ics-tls';      Container = 'aoc-ingress-proxy' },
+        @{ Port = 7777;  Protocol = 'UDP'; Service = 'world-udp';    Container = 'aoc-world' },
+        @{ Port = 50055; Protocol = 'TCP'; Service = 'world-admin';  Container = 'aoc-world' }
     )
     $results = [System.Collections.Generic.List[object]]::new()
     foreach ($spec in $specs) {

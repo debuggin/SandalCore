@@ -139,6 +139,32 @@ function Invoke-DotNetPkiGeneration {
     }
 }
 
+function Restore-LetsEncryptCertPair {
+    param([string]$TargetDir)
+    $userHome = if ($HOME) { $HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { '' }
+    if (-not $userHome) { return }
+    $leRoot = Join-Path $userHome '.letsencrypt'
+    if (-not (Test-Path -LiteralPath $leRoot -PathType Container)) { return }
+    $serverPem = Join-Path $TargetDir 'server.pem'
+    $serverKey = Join-Path $TargetDir 'server.key'
+    $directPem = Join-Path $leRoot 'server.pem'
+    $directKey = Join-Path $leRoot 'server.key'
+    if ((Test-Path -LiteralPath $directPem -PathType Leaf) -and (Test-Path -LiteralPath $directKey -PathType Leaf)) {
+        if (-not (Test-Path -LiteralPath $serverPem -PathType Leaf)) { Copy-Item -LiteralPath $directPem -Destination $serverPem -Force }
+        if (-not (Test-Path -LiteralPath $serverKey -PathType Leaf)) { Copy-Item -LiteralPath $directKey -Destination $serverKey -Force }
+        return
+    }
+    foreach ($sub in @(Get-ChildItem -LiteralPath $leRoot -Directory -Recurse -ErrorAction SilentlyContinue)) {
+        $fc = Join-Path $sub.FullName 'fullchain.pem'
+        $pk = Join-Path $sub.FullName 'privkey.pem'
+        if ((Test-Path -LiteralPath $fc -PathType Leaf) -and (Test-Path -LiteralPath $pk -PathType Leaf)) {
+            if (-not (Test-Path -LiteralPath $serverPem -PathType Leaf)) { Copy-Item -LiteralPath $fc -Destination $serverPem -Force }
+            if (-not (Test-Path -LiteralPath $serverKey -PathType Leaf)) { Copy-Item -LiteralPath $pk -Destination $serverKey -Force }
+            return
+        }
+    }
+}
+
 function Ensure-ServerCertPairFiles {
     param([string]$TargetDir, [string]$FallbackCertsDir)
     if (-not (Test-Path -LiteralPath $TargetDir)) {
@@ -158,6 +184,9 @@ function Ensure-ServerCertPairFiles {
                 Copy-Item -LiteralPath $src -Destination $dst -Force
             }
         }
+    }
+    if (-not ((Test-Path -LiteralPath $serverPem -PathType Leaf) -and (Test-Path -LiteralPath $serverKey -PathType Leaf))) {
+        Restore-LetsEncryptCertPair -TargetDir $TargetDir
     }
     $hasPair = (Test-Path -LiteralPath $serverPem -PathType Leaf) -and (Test-Path -LiteralPath $serverKey -PathType Leaf)
     if (-not $hasPair) {

@@ -481,6 +481,7 @@ services:
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:-dev-local-service-token-32bytes!}
     ports:
       - "127.0.0.1:${WORLD_UDP_PORT:-7777}:7777/udp"
+      - "127.0.0.1:${WORLD_ADMIN_HOST_PORT:-50055}:50061/tcp"
     volumes:
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/content:ro
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
