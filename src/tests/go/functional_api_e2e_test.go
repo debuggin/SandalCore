@@ -2,7 +2,7 @@ package go_test
 
 import (
 	"bytes"; "context"; "crypto/hmac"; "crypto/rand"; "crypto/sha256"; "crypto/subtle"; "crypto/tls"; "crypto/x509"
-	"encoding/binary"; "encoding/hex"; "encoding/json"; "errors"; "fmt"; "io"; "math"
+	"encoding/binary"; "encoding/hex"; "encoding/json"; "errors"; "fmt"; "io"; "math"; "math/big"
 	"net"; "net/http"; "net/http/httptest"; "os"; "os/exec"; "path/filepath"; "runtime"; "strings"; "sync"; "testing"; "time"
 
 	authv1 "aocrop/services/gen/aoc/auth/v1"; characterv1 "aocrop/services/gen/aoc/character/v1"; citynodev1 "aocrop/services/gen/aoc/citynode/v1"
@@ -24,11 +24,37 @@ func readRepoFile(t *testing.T, relPath string) string {
 	if err != nil { t.Fatalf("failed to read %s: %v", relPath, err) }
 	return string(raw)
 }
+var loadEffPassphraseWords = sync.OnceValue(func() []string {
+	wlPath := filepath.Join("build", "wordlist.txt")
+	if wd, err := os.Getwd(); err == nil {
+		for dir, i := wd, 0; i <= 8 && dir != ""; i++ {
+			cand := filepath.Join(dir, "build", "wordlist.txt")
+			if _, e1 := os.Stat(cand); e1 == nil { wlPath = cand; break }
+			if _, e2 := os.Stat(filepath.Join(dir, "AGENTS.md")); e2 == nil { wlPath = cand; break }
+			if parent := filepath.Dir(dir); parent != dir { dir = parent } else { break }
+		}
+	}
+	parseEff := func(raw []byte) (out []string) {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if f := strings.Fields(strings.TrimSpace(line)); len(f) > 0 { out = append(out, strings.ToLower(f[len(f)-1])) }
+		}
+		return out
+	}
+	if raw, err := os.ReadFile(wlPath); err == nil { if words := parseEff(raw); len(words) >= 7776 { return words } }
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Get("https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt")
+	if err != nil { panic(err) }
+	defer resp.Body.Close(); body, _ := io.ReadAll(resp.Body); words := parseEff(body)
+	_ = os.MkdirAll(filepath.Dir(wlPath), 0o755); _ = os.WriteFile(wlPath, []byte(strings.Join(words, "\n")+"\n"), 0o644)
+	return words
+})
+func generateUniqueTestPassphrase() string {
+	words, picked := loadEffPassphraseWords(), make([]string, 6)
+	for i := 0; i < 6; i++ { n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(words)))); picked[i] = words[n.Int64()] }
+	return strings.Join(picked, "-")
+}
 func isLowerHex(s string, wantLen int) bool {
 	if len(s) != wantLen { return false }
-	for i := 0; i < len(s); i++ {
-		if (s[i] < '0' || s[i] > '9') && (s[i] < 'a' || s[i] > 'f') { return false }
-	}
+	for i := 0; i < len(s); i++ { if (s[i] < '0' || s[i] > '9') && (s[i] < 'a' || s[i] > 'f') { return false } }
 	return true
 }
 type authSession struct { AccountID int64; Username string; ExpiresAt time.Time }
@@ -41,49 +67,35 @@ func newAuthFlowHarness(serviceToken string, nowFn func() time.Time) *authFlowHa
 }
 func (a *authFlowHarness) checkServiceToken(authHeader string) error {
 	const prefix = "Bearer "
-	if len(authHeader) <= len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) || subtle.ConstantTimeCompare([]byte(authHeader[len(prefix):]), []byte(a.serviceToken)) != 1 {
-		return errors.New("unauthenticated: missing or invalid bearer service token")
-	}
+	if len(authHeader) <= len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) || subtle.ConstantTimeCompare([]byte(authHeader[len(prefix):]), []byte(a.serviceToken)) != 1 { return errors.New("unauthenticated: missing or invalid bearer service token") }
 	return nil
 }
 func (a *authFlowHarness) issueSessionToken(accountID int64, username string) string {
-	var nonce [16]byte
-	_, _ = rand.Read(nonce[:])
-	mac := hmac.New(sha256.New, a.hmacSecret)
-	_, _ = fmt.Fprintf(mac, "%d:%s:%x", accountID, username, nonce[:])
+	var nonce [16]byte; _, _ = rand.Read(nonce[:])
+	mac := hmac.New(sha256.New, a.hmacSecret); _, _ = fmt.Fprintf(mac, "%d:%s:%x", accountID, username, nonce[:])
 	return hex.EncodeToString(nonce[:]) + hex.EncodeToString(mac.Sum(nil)[:16])
 }
 func (a *authFlowHarness) validateSessionToken(authHeader, token string) (authSession, error) {
 	if err := a.checkServiceToken(authHeader); err != nil || !isLowerHex(token, 64) { return authSession{}, errors.New("unauthenticated: invalid service or session token") }
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.Lock(); defer a.mu.Unlock()
 	sess, ok := a.sessions[token]
-	if !ok || !a.now().Before(sess.ExpiresAt) {
-		delete(a.sessions, token)
-		return authSession{}, errors.New("unauthenticated: unknown, tampered, or expired session token")
-	}
+	if !ok || !a.now().Before(sess.ExpiresAt) { delete(a.sessions, token); return authSession{}, errors.New("unauthenticated: unknown, tampered, or expired session token") }
 	return sess, nil
 }
 func decodeStrictCredentials(r *http.Request) (string, string, error) {
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete { return "", "", errors.New("method not allowed") }
 	var creds struct{ Username, Password string }
-	dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
-	dec.DisallowUnknownFields()
+	dec := json.NewDecoder(io.LimitReader(r.Body, 4096)); dec.DisallowUnknownFields()
 	if err := dec.Decode(&creds); err != nil { return "", "", err }
-	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) || len(creds.Username) < 3 || len(creds.Username) > 32 || len(creds.Password) < 8 {
-		return "", "", errors.New("trailing data or invalid username/password bounds")
-	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) || len(creds.Username) < 3 || len(creds.Username) > 32 || len(creds.Password) < 8 { return "", "", errors.New("trailing data or invalid username/password bounds") }
 	return creds.Username, creds.Password, nil
 }
 func (a *authFlowHarness) registerHTTP(w http.ResponseWriter, r *http.Request) {
 	user, pass, err := decodeStrictCredentials(r)
 	if err != nil { http.Error(w, err.Error(), http.StatusBadRequest); return }
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.Lock(); defer a.mu.Unlock()
 	if _, exists := a.users[user]; exists { http.Error(w, "username already taken", http.StatusConflict); return }
-	a.nextID++
-	id := a.nextID
-	a.users[user], a.userIDs[user] = pass, id
+	a.nextID++; id := a.nextID; a.users[user], a.userIDs[user] = pass, id
 	tok := a.issueSessionToken(id, user)
 	a.sessions[tok] = authSession{AccountID: id, Username: user, ExpiresAt: a.now().Add(15 * time.Minute)}
 	w.Header().Set("Content-Type", "application/json"); w.WriteHeader(http.StatusCreated)
@@ -92,11 +104,9 @@ func (a *authFlowHarness) registerHTTP(w http.ResponseWriter, r *http.Request) {
 func (a *authFlowHarness) loginHTTP(w http.ResponseWriter, r *http.Request) {
 	user, pass, err := decodeStrictCredentials(r)
 	if err != nil { http.Error(w, err.Error(), http.StatusBadRequest); return }
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.mu.Lock(); defer a.mu.Unlock()
 	if wantPass, ok := a.users[user]; !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(wantPass)) != 1 { http.Error(w, "invalid credentials", http.StatusUnauthorized); return }
-	id := a.userIDs[user]
-	tok := a.issueSessionToken(id, user)
+	id := a.userIDs[user]; tok := a.issueSessionToken(id, user)
 	a.sessions[tok] = authSession{AccountID: id, Username: user, ExpiresAt: a.now().Add(15 * time.Minute)}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"account_id": id, "username": user, "token": tok, "access_token": tok})
@@ -104,10 +114,8 @@ func (a *authFlowHarness) loginHTTP(w http.ResponseWriter, r *http.Request) {
 func (a *authFlowHarness) deleteAccountHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete && r.Method != http.MethodPost { http.Error(w, "method not allowed", http.StatusMethodNotAllowed); return }
 	bearer := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer"))
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	var targetUser string
-	var targetID int64
+	a.mu.Lock(); defer a.mu.Unlock()
+	var targetUser string; var targetID int64
 	if sess, ok := a.sessions[bearer]; ok && a.now().Before(sess.ExpiresAt) {
 		targetUser, targetID = sess.Username, sess.AccountID
 	} else if user, pass, err := decodeStrictCredentials(r); err == nil {
@@ -115,9 +123,7 @@ func (a *authFlowHarness) deleteAccountHTTP(w http.ResponseWriter, r *http.Reque
 	}
 	if targetUser == "" { http.Error(w, "invalid credentials or token", http.StatusUnauthorized); return }
 	delete(a.users, targetUser); delete(a.userIDs, targetUser); delete(a.charsByAccount, targetID)
-	for k, s := range a.sessions {
-		if s.AccountID == targetID || s.Username == targetUser { delete(a.sessions, k) }
-	}
+	for k, s := range a.sessions { if s.AccountID == targetID || s.Username == targetUser { delete(a.sessions, k) } }
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"deleted": true, "status": "deleted"})
 }
@@ -129,9 +135,7 @@ func doAuthReqJSON(t *testing.T, method, url, bearer, body string) (*http.Respon
 	if bearer != "" { req.Header.Set("Authorization", "Bearer "+bearer) }
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 	if err != nil { t.Fatalf("%s %s failed: %v", method, url, err) }
-	defer resp.Body.Close()
-	var payload map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&payload)
+	defer resp.Body.Close(); var payload map[string]any; _ = json.NewDecoder(resp.Body).Decode(&payload)
 	return resp, payload
 }
 func postAuthJSON(t *testing.T, url, body string) (*http.Response, map[string]any) { return doAuthReqJSON(t, http.MethodPost, url, "", body) }
@@ -149,19 +153,15 @@ func TestFlow1_AuthAndTokenSecurityE2E(t *testing.T) {
 	mux.HandleFunc("/api/v1/auth/register", harness.registerHTTP); mux.HandleFunc("/api/v1/auth/login", harness.loginHTTP); mux.HandleFunc("/api/v1/auth/account", harness.deleteAccountHTTP)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	resp, regBody := postAuthJSON(t, srv.URL+"/api/v1/auth/register", `{"username":"aelindra","password":"correct-horse-battery"}`)
+	aelPass := generateUniqueTestPassphrase()
+	aelCreds := fmt.Sprintf(`{"username":"aelindra","password":%q}`, aelPass)
+	resp, regBody := postAuthJSON(t, srv.URL+"/api/v1/auth/register", aelCreds)
 	tok, _ := regBody["token"].(string)
 	if resp.StatusCode != http.StatusCreated || !isLowerHex(tok, 64) { t.Fatalf("expected 201 Created and 64-hex token, got %d / %q", resp.StatusCode, tok) }
-	if sess, err := harness.validateSessionToken("Bearer "+svcTok, tok); err != nil || sess.Username != "aelindra" || sess.AccountID != 1001 {
-		t.Fatalf("ValidateToken positive flow failed: sess=%+v err=%v", sess, err)
-	}
+	if sess, err := harness.validateSessionToken("Bearer "+svcTok, tok); err != nil || sess.Username != "aelindra" || sess.AccountID != 1001 { t.Fatalf("ValidateToken positive flow failed: sess=%+v err=%v", sess, err) }
 	verifyFlow1NegativeCases(t, srv.URL, harness, svcTok, tok, &clockNow)
-	if delResp, delBody := doAuthReqJSON(t, http.MethodDelete, srv.URL+"/api/v1/auth/account", "", `{"username":"aelindra","password":"correct-horse-battery"}`); delResp.StatusCode != http.StatusOK || delBody["deleted"] != true {
-		t.Fatalf("expected 200 OK deleting temporary account aelindra, got %d (%v)", delResp.StatusCode, delBody)
-	}
-	if loginAfterDel, _ := postAuthJSON(t, srv.URL+"/api/v1/auth/login", `{"username":"aelindra","password":"correct-horse-battery"}`); loginAfterDel.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 Unauthorized after account deletion, got %d", loginAfterDel.StatusCode)
-	}
+	if delResp, delBody := doAuthReqJSON(t, http.MethodDelete, srv.URL+"/api/v1/auth/account", "", aelCreds); delResp.StatusCode != http.StatusOK || delBody["deleted"] != true { t.Fatalf("expected 200 OK deleting temporary account aelindra, got %d (%v)", delResp.StatusCode, delBody) }
+	if loginAfterDel, _ := postAuthJSON(t, srv.URL+"/api/v1/auth/login", aelCreds); loginAfterDel.StatusCode != http.StatusUnauthorized { t.Fatalf("expected 401 Unauthorized after account deletion, got %d", loginAfterDel.StatusCode) }
 }
 func verifyFlow1NegativeCases(t *testing.T, baseURL string, h *authFlowHarness, svcTok, validTok string, clockNow *time.Time) {
 	t.Helper()
@@ -172,7 +172,8 @@ func verifyFlow1NegativeCases(t *testing.T, baseURL string, h *authFlowHarness, 
 	}
 	*clockNow = clockNow.Add(16 * time.Minute)
 	if _, err := h.validateSessionToken("Bearer "+svcTok, validTok); err == nil { t.Fatal("expected expired session token to be rejected") }
-	for _, badBody := range []string{`{"username":"aelindra","password":"correct-horse-battery"}`, `{"username":"ae","password":"correct-horse-battery"}`, `{"username":"aelindra","password":"short"}`, `{"username":"aelindra","password":"correct-horse-battery","role":"admin"}`, `{"username":"aelindra","password":"correct-horse-battery"}{"extra":1}`} {
+	negPass := generateUniqueTestPassphrase()
+	for _, badBody := range []string{fmt.Sprintf(`{"username":"aelindra","password":%q}`, negPass), fmt.Sprintf(`{"username":"ae","password":%q}`, negPass), `{"username":"aelindra","password":"short"}`, fmt.Sprintf(`{"username":"aelindra","password":%q,"role":"admin"}`, negPass), fmt.Sprintf(`{"username":"aelindra","password":%q}{"extra":1}`, negPass)} {
 		if resp, _ := postAuthJSON(t, baseURL+"/api/v1/auth/register", badBody); resp.StatusCode < 400 { t.Fatalf("expected HTTP >= 400 for negative payload %s, got %d", badBody, resp.StatusCode) }
 	}
 }
@@ -528,8 +529,9 @@ func TestFlow6_ETagH2CCharacterSelectAndEphemeralAccountDeletionE2E(t *testing.T
 }
 func verifyEphemeralCharacterSelectAndDeleteFlow(t *testing.T, baseURL string) {
 	t.Helper()
-	_, _ = postAuthJSON(t, baseURL+"/api/v1/auth/register", `{"username":"ephem_hero","password":"correct-horse-battery"}`)
-	loginResp, loginMap := postAuthJSON(t, baseURL+"/api/v1/auth/login", `{"username":"ephem_hero","password":"correct-horse-battery"}`)
+	ephemCreds := fmt.Sprintf(`{"username":"ephem_hero","password":%q}`, generateUniqueTestPassphrase())
+	_, _ = postAuthJSON(t, baseURL+"/api/v1/auth/register", ephemCreds)
+	loginResp, loginMap := postAuthJSON(t, baseURL+"/api/v1/auth/login", ephemCreds)
 	tok := extractLiveToken(loginMap)
 	if loginResp.StatusCode != http.StatusOK || tok == "" { t.Fatalf("ephemeral login failed: %d %v", loginResp.StatusCode, loginMap) }
 	cResp, cMap := doAuthReqJSON(t, http.MethodPost, baseURL+"/api/v1/characters", tok, `{"name":"Kaelen","class_id":1,"race_id":1}`)
@@ -541,14 +543,10 @@ func verifyEphemeralCharacterSelectAndDeleteFlow(t *testing.T, baseURL string) {
 	eResp, eMap := doAuthReqJSON(t, http.MethodPost, baseURL+"/api/v1/world/enter", tok, fmt.Sprintf(`{"join_ticket":%q}`, joinTicket))
 	if eResp.StatusCode != http.StatusOK || eMap["status"] != "ALLOW" { t.Fatalf("world/enter failed: %d %v", eResp.StatusCode, eMap) }
 	if delChar, _ := doAuthReqJSON(t, http.MethodDelete, baseURL+"/api/v1/characters/"+charID, tok, ""); delChar.StatusCode != http.StatusOK { t.Fatalf("DELETE /api/v1/characters/%s failed: %d", charID, delChar.StatusCode) }
-	dResp, dMap := doAuthReqJSON(t, http.MethodDelete, baseURL+"/api/v1/auth/account", tok, `{"username":"ephem_hero","password":"correct-horse-battery"}`)
+	dResp, dMap := doAuthReqJSON(t, http.MethodDelete, baseURL+"/api/v1/auth/account", tok, ephemCreds)
 	if dResp.StatusCode != http.StatusOK || dMap["deleted"] != true { t.Fatalf("DELETE /api/v1/auth/account failed: %d %v", dResp.StatusCode, dMap) }
-	if reLogin, _ := postAuthJSON(t, baseURL+"/api/v1/auth/login", `{"username":"ephem_hero","password":"correct-horse-battery"}`); reLogin.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 Unauthorized after deleting ephemeral account, got %d", reLogin.StatusCode)
-	}
-	if chAfter, _ := doAuthReqJSON(t, http.MethodGet, baseURL+"/api/v1/characters", tok, ""); chAfter.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 Unauthorized on /api/v1/characters with deleted account token, got %d", chAfter.StatusCode)
-	}
+	if reLogin, _ := postAuthJSON(t, baseURL+"/api/v1/auth/login", ephemCreds); reLogin.StatusCode != http.StatusUnauthorized { t.Fatalf("expected 401 Unauthorized after deleting ephemeral account, got %d", reLogin.StatusCode) }
+	if chAfter, _ := doAuthReqJSON(t, http.MethodGet, baseURL+"/api/v1/characters", tok, ""); chAfter.StatusCode != http.StatusUnauthorized { t.Fatalf("expected 401 Unauthorized on /api/v1/characters with deleted account token, got %d", chAfter.StatusCode) }
 }
 var (
 	liveComposeOnce   sync.Once
@@ -569,20 +567,17 @@ func extractLiveToken(payload map[string]any) string {
 func probeLiveComposeIngress(t *testing.T) {
 	t.Helper()
 	composeYaml := readRepoFile(t, "src/deploy/compose.yml")
-	if strings.Count(composeYaml, "container_name: aoc-") != 11 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") {
-		t.Fatal("compose.yml must declare container_name: aoc-* on all 11 services, exclude aoc-tether, and not expose :5432 or :9901 to host")
-	}
+	if strings.Count(composeYaml, "container_name: aoc-") != 11 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") { t.Fatal("compose.yml must declare container_name: aoc-* on all 11 services, exclude aoc-tether, and not expose :5432 or :9901 to host") }
 	client := &http.Client{Timeout: 5 * time.Second}
 	for _, u := range []string{"http://127.0.0.1:8080/healthz", "http://127.0.0.1:8080/"} {
 		resp, err := client.Get(u)
 		if err != nil || resp.StatusCode != http.StatusOK { t.Fatalf("GET %s failed: resp=%v err=%v", u, resp, err) }
 		_ = resp.Body.Close()
 	}
-	var nonce [4]byte
-	_, _ = rand.Read(nonce[:])
+	var nonce [4]byte; _, _ = rand.Read(nonce[:])
 	sfx, alpha := hex.EncodeToString(nonce[:]), make([]byte, len(nonce))
 	for i, b := range nonce { alpha[i] = 'a' + (b % 26) }
-	user, email, pass, charName := "e2e_"+sfx, "e2e_"+sfx+"@sandalcore.local", "SandalE2E_"+sfx+"!", "Kael"+string(alpha)
+	user, email, pass, charName := "e2e_"+sfx, "e2e_"+sfx+"@sandalcore.local", generateUniqueTestPassphrase(), "Kael"+string(alpha)
 	regBody := fmt.Sprintf(`{"username":%q,"email":%q,"password":%q}`, user, email, pass)
 	regResp, regMap := postAuthJSON(t, "http://127.0.0.1:8080/api/v1/auth/register", regBody)
 	if (regResp.StatusCode != http.StatusOK && regResp.StatusCode != http.StatusCreated) || extractLiveToken(regMap) == "" { t.Fatalf("register expected 200/201 with token, got %d (%v)", regResp.StatusCode, regMap) }

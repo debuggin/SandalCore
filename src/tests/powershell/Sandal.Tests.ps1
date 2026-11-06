@@ -197,7 +197,7 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                 [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\server\services\sql\migrations\001_schema.sql'), 'SELECT 1;')
                 [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\hotfixes\002_seed.sql'), 'SELECT 2;')
                 [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\deploy\compose.yml'), 'name: sandalcore')
-                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\sandal.env.example'), "AOC_ENV=dev`nPOSTGRES_PASSWORD=CHANGE_ME")
+                [System.IO.File]::WriteAllText((Join-Path $tmpRepo 'src\config\sandal.env.example'), "AOC_ENV=dev`nPOSTGRES_PASSWORD=CHANGE_ME`nAOC_DATABASE_URL=postgres://aoc:aoc@postgres:5432/aoc?sslmode=disable")
 
                 $null = Sync-SandalDistStage -RepoRoot $tmpRepo -Config 'Release'
                 $deployStage = Sync-SandalDeployStage -RepoRoot $tmpRepo
@@ -255,10 +255,27 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                     throw 'Expected 0 .env file in repo root'
                 }
                 $envMap = Get-SandalEnvMap -EnvPath $deployStage.EnvPath
-                foreach ($key in @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY')) {
-                    if ($envMap[$key] -notmatch '^[0-9a-f]{64}$') {
-                        throw "Expected 64-hex CSPRNG secret for $key in deploy/.env, got '$($envMap[$key])'"
+                foreach ($key in @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY', 'NATS_PASSWORD', 'AOC_NATS_TOKEN')) {
+                    if ($envMap[$key] -notmatch '^[a-zA-Z0-9_-]{12,128}$' -or $envMap[$key] -match '^(?:CHANGE_ME|aoc|dev-local-service-token)') {
+                        throw "Expected valid non-default secret matching ^[a-zA-Z0-9_-]{12,128}$ for $key in deploy/.env, got '$($envMap[$key])'"
                     }
+                }
+                if ($envMap['AOC_DATABASE_URL'] -ne "postgres://aoc:$($envMap['POSTGRES_PASSWORD'])@postgres:5432/aoc?sslmode=disable") {
+                    throw "Expected AOC_DATABASE_URL to embed generated POSTGRES_PASSWORD, got '$($envMap['AOC_DATABASE_URL'])'"
+                }
+                $initialPgPass = $envMap['POSTGRES_PASSWORD']
+                $null = Initialize-SandalEnv -EnvPath $deployStage.EnvPath -ExamplePath (Join-Path $tmpRepo 'src\config\sandal.env.example')
+                $preservedMap = Get-SandalEnvMap -EnvPath $deployStage.EnvPath
+                if ($preservedMap['POSTGRES_PASSWORD'] -ne $initialPgPass) {
+                    throw "Expected Initialize-SandalEnv without -Force to preserve '$initialPgPass', got '$($preservedMap['POSTGRES_PASSWORD'])'"
+                }
+                $null = Initialize-SandalEnv -EnvPath $deployStage.EnvPath -ExamplePath (Join-Path $tmpRepo 'src\config\sandal.env.example') -Force
+                $rotatedMap = Get-SandalEnvMap -EnvPath $deployStage.EnvPath
+                if ($rotatedMap['POSTGRES_PASSWORD'] -eq $initialPgPass -or $rotatedMap['POSTGRES_PASSWORD'] -notmatch '^[a-zA-Z0-9_-]{12,128}$') {
+                    throw "Expected Initialize-SandalEnv -Force to rotate POSTGRES_PASSWORD to a new valid secret, got '$($rotatedMap['POSTGRES_PASSWORD'])'"
+                }
+                if ($rotatedMap['AOC_DATABASE_URL'] -ne "postgres://aoc:$($rotatedMap['POSTGRES_PASSWORD'])@postgres:5432/aoc?sslmode=disable") {
+                    throw "Expected AOC_DATABASE_URL to update to rotated POSTGRES_PASSWORD, got '$($rotatedMap['AOC_DATABASE_URL'])'"
                 }
             } finally {
                 if (Test-Path -LiteralPath $tmpRepo) {

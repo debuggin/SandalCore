@@ -152,7 +152,12 @@ public sealed class EphemeralCredentialAndCliTests
         Assert.StartsWith("tmp_", opts.Username, StringComparison.Ordinal);
         Assert.Equal(12, opts.Username.Length);
         Assert.EndsWith("@sandalcore.local", opts.Email, StringComparison.Ordinal);
-        Assert.StartsWith("Tmp!", opts.Password, StringComparison.Ordinal);
+        Assert.Matches("^[a-zA-Z0-9_-]{12,128}$", opts.Password);
+        string pass1 = LauncherCliOptions.GenerateStrongPassword();
+        string pass2 = LauncherCliOptions.GenerateStrongPassword();
+        Assert.Matches("^[a-zA-Z0-9_-]{12,128}$", pass1);
+        Assert.Matches("^[a-zA-Z0-9_-]{12,128}$", pass2);
+        Assert.NotEqual(pass1, pass2);
         Assert.Equal(LauncherCliOptions.DefaultHeroName, opts.SelectCharacter);
         Assert.Null(opts.AutomationPort);
         Assert.Equal(LauncherCliOptions.DefaultTimeoutSeconds, opts.TimeoutSec);

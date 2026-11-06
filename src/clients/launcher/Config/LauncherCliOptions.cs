@@ -3,6 +3,7 @@ global using SandalLauncher.Config;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json.Serialization;
 
@@ -65,8 +66,85 @@ public sealed record LauncherCliOptions
     public static string GenerateTempUsername() =>
         $"tmp_{Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant()}";
 
-    public static string GenerateStrongPassword() =>
-        $"Tmp!{Convert.ToHexString(RandomNumberGenerator.GetBytes(12))}a9";
+    private const string EffLargeWordlistUrl = "https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt";
+    private const int EffLargeWordlistCount = 7776;
+    private static readonly string[] PassphraseWords = LoadPassphraseWords();
+
+    private static string ResolveWordlistPath()
+    {
+        foreach (string start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            string? dir = start;
+            for (int depth = 0; depth <= 8 && !string.IsNullOrEmpty(dir); depth++)
+            {
+                string candidate = Path.Combine(dir, "build", "wordlist.txt");
+                if (File.Exists(candidate)) return candidate;
+                if (File.Exists(Path.Combine(dir, "AGENTS.md")) || Directory.Exists(Path.Combine(dir, "build")))
+                    return candidate;
+                dir = Directory.GetParent(dir)?.FullName;
+            }
+        }
+        return Path.Combine("build", "wordlist.txt");
+    }
+
+    private static List<string> ParseEffWords(IEnumerable<string> lines)
+    {
+        var parsed = new List<string>(EffLargeWordlistCount);
+        foreach (string raw in lines)
+        {
+            string trimmed = raw.Trim();
+            if (trimmed.Length == 0) continue;
+            int sep = trimmed.LastIndexOfAny(['\t', ' ']);
+            string w = (sep >= 0 ? trimmed[(sep + 1)..] : trimmed).ToLowerInvariant();
+            if (w.Length > 0 && IsLowerEffWord(w))
+                parsed.Add(w);
+        }
+        return parsed;
+    }
+
+    private static string[] LoadPassphraseWords()
+    {
+        string path = ResolveWordlistPath();
+        if (File.Exists(path))
+        {
+            List<string> cached = ParseEffWords(File.ReadLines(path));
+            if (cached.Count >= EffLargeWordlistCount) return [.. cached];
+        }
+        using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, EffLargeWordlistUrl);
+        using var resp = http.Send(req);
+        resp.EnsureSuccessStatusCode();
+        using var reader = new StreamReader(resp.Content.ReadAsStream());
+        string body = reader.ReadToEnd();
+        List<string> fetched = ParseEffWords(body.Split('\n'));
+        if (fetched.Count < EffLargeWordlistCount)
+            throw new InvalidOperationException($"EFF wordlist returned {fetched.Count} words (expected >= {EffLargeWordlistCount}).");
+        string? dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        File.WriteAllLines(path, fetched);
+        return [.. fetched];
+    }
+
+    private static bool IsLowerEffWord(string word)
+    {
+        for (int i = 0; i < word.Length; i++)
+        {
+            char c = word[i];
+            if (c is not ((>= 'a' and <= 'z') or '-')) return false;
+        }
+        return true;
+    }
+
+    public static string GenerateStrongPassword()
+    {
+        string[] words = PassphraseWords;
+        string[] picked = new string[6];
+        for (int i = 0; i < 6; i++)
+        {
+            picked[i] = words[RandomNumberGenerator.GetInt32(words.Length)];
+        }
+        return string.Join('-', picked);
+    }
 
     public static string GetUsageText() =>
         "Usage: SandalLauncher [options]\n" +

@@ -107,6 +107,9 @@ if (-not $opts.DryRun) {
         if ($LASTEXITCODE -ne 0) {
             throw "docker compose down failed with exit code $LASTEXITCODE."
         }
+        if ($opts.Volumes -and (Test-Path -LiteralPath $envFile -PathType Leaf)) {
+            Remove-Item -LiteralPath $envFile -Force
+        }
     } finally {
         Pop-Location
     }
