@@ -1,65 +1,78 @@
-# SandalLauncher Desktop Client & Host Tether (`src/clients/launcher`)
+# SandalLauncher
 
-**Primary Diataxis Quadrant**: `Technical Reference` (`DOC-01`)
-**Related Guides**: [Root Architecture Overview](../../../README.md) | [UI Style Guide & Design System](../../../docs/UI_STYLE_GUIDE.md) | [Configuration Reference](../../../docs/CONFIGURATION.md) | [Go Control-Plane Services Reference](../../server/services/README.md)
+**Related Guides**: [Root Overview](../../../README.md) | [Configuration Reference](../../../docs/CONFIGURATION.md) | [UI Style Guide](../../../docs/UI_STYLE_GUIDE.md) | [Gateway Service](../../server/services/cmd/gateway/README.md) | [Character Service](../../server/services/cmd/character/README.md)
 
-`src/clients/launcher` (`SandalLauncher`) is the cross-platform `.NET 10` (`net10.0`) and Avalonia 11.2 MVVM desktop launcher (`dist/launcher/SandalLauncher.exe`). Running `start.bat` (`sandal.ps1 up`) automatically creates a root `SandalLauncher.lnk` Windows shortcut pointing to `dist/launcher/SandalLauncher.exe` for one-click launch from the repository root. It handles HTTP authentication against `aoc-gateway` (`:8080`), runs the in-process Windows host UDP ARQ Tether responder (`LocalTetherListener` on `127.0.0.1:19021/udp`), discovers local *Ashes of Creation* installations across Steam libraries, and launches `AOCClient-Win64-Shipping.exe` with the exact network and certificate parameters required to connect to the SandalCore stack.
-
----
-
-## 1. Source Architecture & Key Components
-
-| File / Class | Responsibility |
-|:---|:---|
-| [`Program.cs`](Program.cs) | Entry point supporting both interactive Avalonia desktop GUI mode and headless CLI automation (`--headless`, `--email`, `--password`, `--register`, `--launch`). |
-| [`ViewModels/MainWindowViewModel.cs`](ViewModels/MainWindowViewModel.cs) | MVVM state machine managing single-card glassmorphic login over 3 randomized Verra background themes, ephemeral `Temp Account` creation/cleanup, server health probes, and launch orchestration. |
-| [`Services/LocalTetherListener.cs`](Services/LocalTetherListener.cs) | In-process UDP ARQ server bound to `127.0.0.1:19021/udp` on the Windows host that completes the `AskWindow` / `TellWindow` (`0x04`) and `LoginTicket` (`0x01` -> `0x02`) handshake with `AOCClient-Win64-Shipping.exe`. |
-| [`Services/GatewayAuthService.cs`](Services/GatewayAuthService.cs) | HTTP client communicating with `aoc-gateway` (`:8080`) for `/v1/auth/register`, `/v1/auth/login`, `/v1/auth/temp-cleanup`, and `/v1/tether/ticket`. |
-| [`Services/GameInstallLocator.cs`](Services/GameInstallLocator.cs) | Automatic game binary locator scanning `AOC_GAME_PATH`, Windows Registry keys, and multi-drive Steam `libraryfolders.vdf` manifests for `AOCClient-Win64-Shipping.exe`. |
-| [`Services/SandalConfigLoader.cs`](Services/SandalConfigLoader.cs) | Loads root `.env` / `deploy/.env` settings, inspects `dist/certs/server.pem` for wildcard SANs (`*.<domain>`), and maps `localhost` / `127.0.0.1` to `local.<domain>` when a wildcard certificate is present. |
+`SandalLauncher` (`src/clients/launcher`) is the desktop game launcher for Windows. It signs in to `aoc-gateway`, runs the local UDP launcher tether on `127.0.0.1:19021`, locates your installed Ashes of Creation client, and launches `AOCClient-Win64-Shipping.exe`.
 
 ---
 
-## 2. Core Protocol & Lifecycle Contracts
+## Key Features
 
-### 1. In-Process Windows Host UDP Tether (`127.0.0.1:19021/udp`)
+- **Account Sign-In and Registration**: Authenticates with `aoc-gateway` (`:8080`) using `/v1/auth/login` and `/v1/auth/register`.
+- **One-Click Temporary Accounts**: Clicking **Temp Account** creates a disposable test account (`TMP <Word1><Word2><Word3>`) and signs in immediately for quick testing.
+- **Automatic Client Discovery**: Finds `AOCClient-Win64-Shipping.exe` through `AOC_GAME_PATH` in `.env`, the Windows Registry, Steam's `libraryfolders.vdf` across all local drives, or a manual folder picker.
+- **In-Process UDP Tether (`127.0.0.1:19021/udp`)**: `LocalTetherListener` runs inside the launcher process on Windows to answer the UE5 client's local `AskWindow` (`0x04`) and `RequestTicket` (`0x01`) UDP packets.
+- **Native In-Game Character Creation**: When an account has no characters yet, the launcher starts the client directly into the native `:50061` ICS TLS 1.3 character creation screen without creating stub characters ahead of time.
+- **Wildcard Certificate Host Resolution**: When `dist/certs/server.pem` carries a wildcard SAN (`*.<domain>`), `SandalConfigLoader.cs` maps `localhost` and `127.0.0.1` to `localhost.<domain>` so TLS validation succeeds automatically.
+- **Root Shortcut (`SandalLauncher.lnk`)**: Running `.\start.bat` (`.\sandal.ps1 up`) creates a `SandalLauncher.lnk` shortcut in the repository root pointing to `dist/launcher/SandalLauncher.exe`.
 
-`AOCClient-Win64-Shipping.exe` hardcodes its pre-login launcher tether check to `127.0.0.1` (Windows host loopback). Therefore, `LocalTetherListener` runs directly inside `SandalLauncher` on the Windows host (never inside a Linux Docker container):
+---
 
-- **ARQ `AskWindow` / `TellWindow` (`0x04`) Handshake**: When the UE5 client sends a reliable `AskWindow` frame (`HeaderFlags & 0x04`), `LocalTetherListener` echoes a `TellWindow` (`0x04`) response with `NextExpectedRecvSeq = (ushort)(_recvSeq + 1)` (`LocalTetherListener.cs`) so the client's `ReliableWindow` state machine advances cleanly to `Connected`.
-- **Ticket Delivery (`0x01` -> `0x02`)**: Once the ARQ window is established, `LocalTetherListener` replies to opcode `0x01` (`RequestTicket`) with opcode `0x02` (`TicketResponse`) carrying the UTF-8 session ticket issued by `aoc-gateway`.
+## Launch Flow
 
-### 2. Native In-Game Character Creation (`0` Pre-Launch Stub Characters)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as "Player"
+    participant Launcher as "SandalLauncher"
+    participant Tether as "LocalTetherListener (127.0.0.1:19021/udp)"
+    participant Gateway as "aoc-gateway (:8080 HTTP)"
+    participant ICS as "aoc-character (:50061 TLS 1.3)"
+    participant Client as "AOCClient-Win64-Shipping.exe"
 
-`SandalLauncher` never pre-creates stub characters before launching the game client. When an account has `0` characters in `aoc-postgres`, `AOCClient-Win64-Shipping.exe` connects over TLS 1.3 to `aoc-character` (`:50061` IntrepidLobbyService / ICS), receives an empty `CharacterList`, and enters the native UE5 in-game character creator (`CharacterCreate` RPC).
-
-### 3. Exact `AOCClient-Win64-Shipping.exe` Command-Line Arguments
-
-When the user clicks **Play** (or runs `--headless --launch`), `SandalLauncher` spawns `AOCClient-Win64-Shipping.exe` with the following exact arguments:
-
-```text
--LauncherTetherPort=19021 -GatewayAddr=<host:8080> -IcsAddr=<host:50061> -UseEOS=false -NoEAC
+    User->>Launcher: "Sign In or Click Temp Account"
+    Launcher->>Gateway: "POST /v1/auth/login"
+    Gateway-->>Launcher: "200 OK {session_ticket, account_id}"
+    User->>Launcher: "Click PLAY"
+    Launcher->>Tether: "Bind 127.0.0.1:19021/udp with session_ticket"
+    Launcher->>Client: "Start Process (-LauncherTetherPort=19021 -GatewayAddr=... -IcsAddr=...)"
+    Client->>Tether: "UDP AskWindow (0x04) & RequestTicket (0x01)"
+    Tether-->>Client: "UDP TellWindow (0x04) & TicketResponse (0x02)"
+    Client->>ICS: "TLS 1.3 :50061 RealmList -> CharacterCreate / CharacterList -> EnterWorld"
 ```
 
-Where `<host>` resolves to `127.0.0.1` by default, or `local.<domain>` when `dist/certs/server.pem` contains a wildcard SAN (`*.<domain>`).
+---
 
-### 4. Ephemeral `Temp Account` Lifecycle
+## Client Command-Line Arguments
 
-Clicking **Temp Account** in the launcher UI provisions a one-click disposable test account (`temp_<random>@sandal.local`) and caches its state in `deploy/.temp_accounts.json`. On the next launcher startup or exit, `GatewayAuthService` calls `/v1/auth/temp-cleanup` to purge expired temporary accounts and their characters from `aoc-postgres`.
+When you click **PLAY**, `GameProcessLauncher.cs` starts `AOCClient-Win64-Shipping.exe` with these arguments:
+
+```text
+-LauncherTetherPort=19021 -GatewayAddr=<host:8080> -IcsAddr=<host:50061> -AdjustForServerTime -dx12 -TraceConnect -Environment=Development -UseLocalPaks
+```
 
 ---
 
-## 3. Build, Shortcut & Test Commands
+## Source Files
 
-`SandalLauncher` compiles out-of-tree into `build/dotnet/` and publishes to `dist/launcher/SandalLauncher.exe`. Running `.\start.bat` (`.\sandal.ps1 up`) automatically creates a root `SandalLauncher.lnk` Windows shortcut pointing to `dist/launcher/SandalLauncher.exe` for one-click launch from the repository root:
+| File | Purpose |
+|:---|:---|
+| `SandalLauncher.csproj` | Project definition writing build outputs to `build/dotnet/`. |
+| `App.axaml` / `Views/MainWindow.axaml` | Glassmorphic desktop layout, gold and obsidian button styles, and sign-in/settings views. |
+| `ViewModels/MainWindowViewModel.cs` | View state for sign-in, temporary accounts, server status checks, and game process lifecycle. |
+| `Services/LocalTetherListener.cs` | Local UDP `127.0.0.1:19021` ARQ listener (`AskWindow` / `TellWindow` `0x04` and ticket delivery). |
+| `Services/ClientDiscoveryService.cs` | Locates the Ashes of Creation client via `.env`, Registry, or Steam `libraryfolders.vdf`. |
+| `Services/SandalConfigLoader.cs` | Reads root `.env` settings and resolves wildcard certificate hostnames (`localhost.<domain>`). |
+| `Services/GameProcessLauncher.cs` | Starts and monitors `AOCClient-Win64-Shipping.exe`. |
+
+---
+
+## Building and Testing
 
 ```powershell
-# Build & publish SandalLauncher via the unified orchestrator
-.\build.bat
+# Build and publish dist/launcher/SandalLauncher.exe
+.\sandal.ps1 build
 
-# Start the server stack, generate root SandalLauncher.lnk -> dist/launcher/SandalLauncher.exe, and launch
-.\start.bat
-
-# Run the xUnit + Avalonia.Headless.XUnit test suite directly
+# Run the launcher unit test suite (including headless UI and tether tests)
 dotnet test src/clients/launcher.Tests/SandalLauncher.Tests.csproj -c Release
 ```

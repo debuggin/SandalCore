@@ -205,7 +205,7 @@ func (s *Server) handleWorldState(w http.ResponseWriter, r *http.Request, _ Role
 	payload := map[string]any{
 		"schema_version": "1.0", "layer_mask": sel.LayerMask, "stream_layers": sel.StreamLayers, "layers": sel,
 		"layer_counts": map[string]int{"players": onlinePlayersCount, "npcs": len(npcs), "monsters": len(monsters), "resource_nodes": len(resourceNodes), "mounts": len(mounts), "loot_piles": len(lootPiles), "pois": len(pois), "city_nodes": len(nodes)},
-		"players": players, "workers": s.snapshotWorldWorkerStatuses(), "data_modes": s.resolveDataModes(), "service_tick_hz": worldstream.ServiceTickHz(),
+		"players":      players, "workers": s.snapshotWorldWorkerStatuses(), "data_modes": s.resolveDataModes(), "service_tick_hz": worldstream.ServiceTickHz(),
 		"entities": entities, "count": len(entities), "serverTimeMs": stateTimeMs,
 	}
 	s.enrichPayloadWithTimeAndCalendar(payload, s.now())
@@ -237,7 +237,7 @@ func (s *Server) resolveWorldNodesAndPois(ctx context.Context) ([]PmTilesNodeMet
 	liveLevels := s.fetchCityNodeLevels(ctx)
 	worldPlaces := s.fetchWorldPlaces(ctx)
 	nodes := s.buildMapMetaNodes(s.getPmTilesArchive(), liveLevels)
-	pois, _ := s.catalog.SearchPlacesFiltered(ctx, admincatalog.PlaceFilter{Limit: 10000, ExtraPlaces: worldPlaces, NodeLevels: liveLevels})
+	pois, _ := s.catalog.SearchPlacesFiltered(ctx, admincatalog.PlaceFilter{Limit: 0, ExtraPlaces: worldPlaces, NodeLevels: liveLevels})
 	s.metaCache.set(key, cachedWorldNodesAndPois{nodes: nodes, pois: pois}, 1500*time.Millisecond, now)
 	return nodes, pois
 }
@@ -302,10 +302,12 @@ func (s *Server) pullOneWorkerStream(ctx context.Context, w *WorldWorkerEndpoint
 		grpc.MaxCallRecvMsgSize(64*1024*1024),
 	)
 	if err != nil || stream == nil {
+		s.markWorkerTimeSyncedAt(w.WorkerID, time.Time{})
 		return
 	}
 	frame, err := stream.Recv()
 	if err != nil || frame == nil || frame.GetSnapshot() == nil {
+		s.markWorkerTimeSyncedAt(w.WorkerID, time.Time{})
 		return
 	}
 	scope, rawEnts := workerBatchScopeKey(w), frame.GetSnapshot().GetEntities()
@@ -317,7 +319,7 @@ func (s *Server) pullOneWorkerStream(ctx context.Context, w *WorldWorkerEndpoint
 		}
 		if snap.Kind == "resource_node" {
 			snap.Name, snap.ResourceType, snap.ResourceTypeCamel, snap.Quality = ent.GetName(), "", "", ""
-			enrichResourceNodeSnapshot(&snap, scope, ent.GetId())
+			enrichResourceNodeSnapshot(&snap)
 		}
 		if (ent.GetState()&uint32(worldadminv1.EntityState_ENTITY_STATE_DEAD)) != 0 || s.isEntityDespawned(snap.ID) {
 			continue
@@ -360,39 +362,53 @@ func protoEntityToSnapshot(ent *worldadminv1.Entity, nowMs int64) worldstream.En
 		Yaw: float64(ent.GetYaw()) * 360.0 / 256.0, HealthPct: hp, Level: int(ent.GetLevel()), State: state, UpdatedAt: nowMs,
 	}
 	if kind == "resource_node" {
-		enrichResourceNodeSnapshot(&snap, snap.Zone, ent.GetId())
+		enrichResourceNodeSnapshot(&snap)
 	} else if kind == "npc" || kind == "monster" {
 		enrichNpcSnapshot(&snap)
 	}
 	return snap
 }
 
-func enrichResourceNodeSnapshot(snap *worldstream.EntitySnapshot, scope string, rawID uint64) {
+func enrichResourceNodeSnapshot(snap *worldstream.EntitySnapshot) {
 	raw := strings.TrimSpace(snap.Name)
 	if lb, rb := strings.IndexByte(raw, '['), strings.LastIndexByte(raw, ']'); lb > 0 && rb > lb {
 		snap.Name = strings.TrimSpace(raw[:lb])
 		if parts := strings.SplitN(raw[lb+1:rb], "|", 2); len(parts) == 2 {
 			snap.ResourceType, snap.Quality = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		} else {
+			snap.ResourceType = strings.TrimSpace(raw[lb+1 : rb])
 		}
 	}
-	catName, catType, catQual, catLv := resolveRegionalGatherableDef(scope, rawID)
-	if snap.Name == "" || snap.Name == "GatherableActor" || strings.HasPrefix(strings.ToLower(snap.Name), "resource_node:") || strings.HasPrefix(strings.ToLower(snap.Name), "gatherable") {
-		snap.Name = catName
-	}
-	snap.ResourceType, snap.Quality = firstNonEmpty(snap.ResourceType, catType), firstNonEmpty(snap.Quality, catQual)
+	snap.ResourceType = firstNonEmpty(snap.ResourceType, snap.ResourceTypeCamel, inferResourceTypeFromName(snap.Name))
 	snap.ResourceTypeCamel = snap.ResourceType
-	if snap.Level <= 0 {
-		snap.Level = catLv
+}
+
+func inferResourceTypeFromName(name string) string {
+	low := strings.ToLower(strings.TrimSpace(name)) + " "
+	for _, kw := range []string{"metal_", "gem_", "ore", "vein", "rividium", "halcyonite", "lumadon", "wyrdstone", "resonite", "coveglass", "obsidian", "crystal", "geode", "ruby", "sapphire", "emerald", "copper", "iron", "zinc", "_tin", "tin ", "gold", "silver", "mythril", "cobalt", "diamond", "amethyst", "topaz", "quartz"} {
+		if strings.Contains(low, kw) {
+			return "Mining / Ore"
+		}
 	}
+	for _, kw := range []string{"stone_", "rock", "granite", "slate", "basalt", "limestone", "sandstone", "marble", "boulder", "deadcoral"} {
+		if strings.Contains(low, kw) {
+			return "Mining / Stone"
+		}
+	}
+	for _, kw := range []string{"plant_", "coral_", "herb", "flower", "daffodil", "moonbell", "snowdrop", "spiritbloom", "flax", "yarrow", "mushroom", "moss", "root", "berry", "banana"} {
+		if strings.Contains(low, kw) {
+			return "Herbalism / Plant"
+		}
+	}
+	return "Lumberjacking / Tree"
 }
 
 func enrichNpcSnapshot(snap *worldstream.EntitySnapshot) {
 	raw := strings.TrimSpace(snap.Name)
-	isHuntable := strings.EqualFold(snap.NpcSubkind, "huntable") || strings.EqualFold(snap.NpcSubkindCamel, "huntable")
+	isHuntable := strings.EqualFold(snap.NpcSubkind, "huntable") || strings.EqualFold(snap.NpcSubkindCamel, "huntable") || strings.HasPrefix(strings.ToLower(raw), "hunting_")
 	if lb, rb := strings.IndexByte(raw, '['), strings.LastIndexByte(raw, ']'); lb > 0 && rb > lb {
 		meta := raw[lb+1 : rb]
-		metaLower := strings.ToLower(meta)
-		if strings.Contains(metaLower, "hunting") || strings.Contains(metaLower, "husbandry") || isHuntable {
+		if strings.Contains(strings.ToLower(meta), "hunting") || isHuntable {
 			isHuntable = true
 			snap.Name = strings.TrimSpace(raw[:lb])
 			if parts := strings.SplitN(meta, "|", 2); len(parts) == 2 {
@@ -401,14 +417,11 @@ func enrichNpcSnapshot(snap *worldstream.EntitySnapshot) {
 				snap.ResourceType = strings.TrimSpace(meta)
 			}
 		}
-	} else if strings.Contains(strings.ToLower(raw), "hunting_") {
-		isHuntable = true
 	}
 	if isHuntable {
 		snap.NpcSubkind, snap.NpcSubkindCamel = "huntable", "huntable"
-		snap.ResourceType = firstNonEmpty(snap.ResourceType, snap.ResourceTypeCamel, "Hunting / Animal Husbandry")
+		snap.ResourceType = firstNonEmpty(snap.ResourceType, snap.ResourceTypeCamel, "Hunting")
 		snap.ResourceTypeCamel = snap.ResourceType
-		snap.Quality = firstNonEmpty(snap.Quality, "Common · Tier 1 (Novice)")
 	}
 }
 
@@ -420,38 +433,24 @@ func (s *Server) handleWorldPlayers(w http.ResponseWriter, r *http.Request, _ Ro
 	if !ok {
 		return
 	}
-	players := s.collectPlayers(r.Context())
-	onlineParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("online")))
-	qLower := strings.ToLower(params.Query)
+	players, onlineParam, qLower := s.collectPlayers(r.Context()), strings.ToLower(strings.TrimSpace(r.URL.Query().Get("online"))), strings.ToLower(params.Query)
 	filtered := make([]PlayerInfo, 0, len(players))
 	for _, p := range players {
-		if onlineParam == "true" && !p.Online {
-			continue
-		}
-		if onlineParam == "false" && p.Online {
-			continue
-		}
-		if qLower != "" && !matchesPlayerQuery(p, qLower) {
+		if (onlineParam == "true" && !p.Online) || (onlineParam == "false" && p.Online) || (qLower != "" && !matchesPlayerQuery(p, qLower)) {
 			continue
 		}
 		filtered = append(filtered, p)
 	}
 	sortPlayers(filtered, params.Sort)
-	total := len(filtered)
-	start := min(max(params.Offset, 0), total)
-	end := min(start+params.Limit, total)
-	paged := filtered[start:end]
+	total, start := len(filtered), min(max(params.Offset, 0), len(filtered))
+	paged := filtered[start:min(start+params.Limit, total)]
 	env, xPag := buildPaginatedEnvelope(r, paged, "players", total, params.Limit, params.Offset, params.Fields)
 	w.Header().Set("X-Pagination", xPag)
 	writeCachedJSONWithModTime(w, r, "private, no-cache", s.lastMutatedTime(), env)
 }
 
 func matchesPlayerQuery(p PlayerInfo, qLower string) bool {
-	return strings.Contains(strings.ToLower(p.Character), qLower) ||
-		strings.Contains(strings.ToLower(p.CharacterID), qLower) ||
-		strings.Contains(strings.ToLower(p.GUID), qLower) ||
-		strings.Contains(strings.ToLower(p.Account), qLower) ||
-		strings.Contains(strings.ToLower(p.Zone), qLower) ||
+	return strings.Contains(strings.ToLower(p.Character+"\x00"+p.CharacterID+"\x00"+p.GUID+"\x00"+p.Account+"\x00"+p.Zone), qLower) ||
 		strings.Contains(strconv.FormatUint(p.ID, 10), qLower)
 }
 
@@ -544,7 +543,7 @@ func (s *Server) collectNonPlayerLayers(
 		case "resource_node", "resource", "gatherable":
 			if sel.ResourceNodes {
 				snap.Kind = "resource_node"
-				snap.ResourceTypeCamel = firstNonEmpty(snap.ResourceTypeCamel, snap.ResourceType)
+				enrichResourceNodeSnapshot(&snap)
 				resourceNodes = append(resourceNodes, snap)
 			}
 		case "mount":

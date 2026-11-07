@@ -74,7 +74,7 @@ const multiSample = `[
   "archetype_id":17750,"race_id":3,"gender_id":1,"level":12,"create_info_hex":"0a01ff",
   "created_at_ms":1,"world_id":"w","race_name":"r","gender_name":"g"},
  {"character_id":"00000000000000000000000000000002","character_name":"Bravo","class_name":"Tank",
-  "archetype_id":17754,"race_id":7,"gender_id":2,"level":30,"create_info_hex":"","created_at_ms":2},
+  "archetype_id":17754,"race_id":7,"gender_id":2,"level":60,"create_info_hex":"","created_at_ms":2},
  {"character_id":"00000000000000000000000000000003","character_name":"Charlie","class_name":"Rogue",
   "archetype_id":17752,"race_id":9,"gender_id":1,"level":2,"create_info_hex":"DEADbeef"}
 ]`
@@ -88,7 +88,7 @@ func TestParseMapsEveryFieldOfEveryRecord(t *testing.T) {
 		{ID: "00000000000000000000000000000001", AccountID: 99, Name: "Alpha", ClassID: 8,
 			ArchetypeID: 17750, ClassName: "Mage", CreateInfo: []byte{0x0a, 0x01, 0xff}, Level: 12},
 		{ID: "00000000000000000000000000000002", AccountID: 99, Name: "Bravo", ClassID: 7,
-			ArchetypeID: 17754, ClassName: "Tank", CreateInfo: []byte{}, Level: 25}, // the file says 30: the game ends at 25
+			ArchetypeID: 17754, ClassName: "Tank", CreateInfo: []byte{}, Level: 50}, // the file says 60: the game ends at 50
 		{ID: "00000000000000000000000000000003", AccountID: 99, Name: "Charlie", ClassID: 5,
 			ArchetypeID: 17752, ClassName: "Rogue", CreateInfo: []byte{0xde, 0xad, 0xbe, 0xef}, Level: 2},
 	}

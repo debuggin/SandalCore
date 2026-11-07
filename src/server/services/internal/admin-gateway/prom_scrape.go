@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -42,9 +43,29 @@ type WorldWorkerEndpoint struct {
 	Connected         bool                                  `json:"connected"`
 	NPCCount          int                                   `json:"npc_count"`
 	MonsterCount      int                                   `json:"monster_count"`
+	HuntableCount     int                                   `json:"huntable_count"`
 	ResourceNodeCount int                                   `json:"resource_node_count"`
+	TreeCount         int                                   `json:"tree_count"`
+	RockCount         int                                   `json:"rock_count"`
+	OreGemCount       int                                   `json:"ore_gem_count"`
+	PlantCount        int                                   `json:"plant_count"`
+	MountCount        int                                   `json:"mount_count"`
 	PlayerCount       int                                   `json:"player_count"`
+	Players           int                                   `json:"players"`
+	Npcs              int                                   `json:"npcs"`
+	Monsters          int                                   `json:"monsters"`
+	Huntables         int                                   `json:"huntables"`
+	Trees             int                                   `json:"trees"`
+	Rocks             int                                   `json:"rocks"`
+	OreGems           int                                   `json:"ore_gems"`
+	Plants            int                                   `json:"plants"`
+	Mounts            int                                   `json:"mounts"`
+	ResourceNodes     int                                   `json:"resource_nodes"`
+	TotalEntities     int                                   `json:"total_entities"`
 	TickHz            float64                               `json:"tick_hz"`
+	CurrentTickHz     float64                               `json:"current_tick_hz"`
+	TargetTickHz      float64                               `json:"target_tick_hz"`
+	TickMode          string                                `json:"tick_mode"`
 	TickP50Ms         float64                               `json:"tick_p50_ms"`
 	TickP99Ms         float64                               `json:"tick_p99_ms"`
 	CPUPct            float64                               `json:"cpu_pct"`
@@ -68,6 +89,9 @@ type EnvoyClusterMetric struct {
 	Cluster           string  `json:"cluster"`
 	Container         string  `json:"container"`
 	RequestsTotal     float64 `json:"requests_total"`
+	Responses2xxTotal float64 `json:"responses_2xx_total"`
+	Responses3xxTotal float64 `json:"responses_3xx_total"`
+	Errors4xxTotal    float64 `json:"errors_4xx_total"`
 	Errors5xxTotal    float64 `json:"errors_5xx_total"`
 	TimeoutsTotal     float64 `json:"timeouts_total"`
 	ActiveConnections float64 `json:"active_connections"`
@@ -107,120 +131,92 @@ func (s *Server) handlePrometheusMetrics(w http.ResponseWriter, r *http.Request,
 	worldStatus := s.fetchWorldStatus(r.Context())
 	report := s.scrapePrometheusReport(r.Context(), worldStatus)
 	writeCachedJSONWithModTime(w, r, "private, max-age=2", s.lastMutatedTime(), map[string]any{
-		"schema_version": "1.0",
-		"prometheus":     report,
-		"targets":        report.Targets,
-		"clusters":       report.ClusterMetrics,
-		"mesh_gateway":   report.MeshGatewayMetrics,
-		"world":          report.WorldMetrics,
-		"workers":        report.Workers,
-		"serverTimeMs":   s.now().UnixMilli(),
+		"schema_version": "1.0", "prometheus": report, "targets": report.Targets, "clusters": report.ClusterMetrics,
+		"mesh_gateway": report.MeshGatewayMetrics, "world": report.WorldMetrics, "workers": report.Workers, "serverTimeMs": s.now().UnixMilli(),
 	})
 }
 
 func (s *Server) scrapePrometheusReport(ctx context.Context, worldStatus map[string]any) PrometheusScrapeReport {
 	workersSnap := s.snapshotWorldWorkers()
 	var (
-		wg          sync.WaitGroup
-		envoySt     PrometheusTargetStatus
-		clusters    map[string]EnvoyClusterMetric
-		downRq      float64
-		downCx      float64
-		meshSt      PrometheusTargetStatus
-		meshMetric  map[string]float64
-		svcTargets  []PrometheusTargetStatus
-		byContainer map[string]scrapedServiceMetrics
+		wg              sync.WaitGroup
+		envoySt, meshSt PrometheusTargetStatus
+		clusters        map[string]EnvoyClusterMetric
+		downRq, downCx  float64
+		meshMetric      map[string]float64
+		svcTargets      []PrometheusTargetStatus
+		byContainer     map[string]scrapedServiceMetrics
 	)
 	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		envoySt, clusters, downRq, downCx = scrapeEnvoyPrometheus(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		meshSt, meshMetric = scrapeMeshGatewayPrometheus(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		svcTargets, byContainer = s.scrapeAllServiceOpenMetrics(ctx, workersSnap)
-	}()
+	go func() { defer wg.Done(); envoySt, clusters, downRq, downCx = scrapeEnvoyPrometheus(ctx) }()
+	go func() { defer wg.Done(); meshSt, meshMetric = scrapeMeshGatewayPrometheus(ctx) }()
+	go func() { defer wg.Done(); svcTargets, byContainer = s.scrapeAllServiceOpenMetrics(ctx, workersSnap) }()
 	wg.Wait()
 
 	worldConnected, _ := worldStatus["connected"].(bool)
 	tickMs, _ := worldStatus["tick_ms"].(float64)
 	pubMs, _ := worldStatus["publish_ms"].(float64)
 	pubMaxMs, _ := worldStatus["publish_max_ms"].(float64)
-	tierHz := defaultWorkerTierTickHz("region")
-	tickHz := 0.0
+	tierHz, tickHz, worldTargetStatus := defaultWorkerTierTickHz("region"), 0.0, "DOWN"
 	if tickMs > 1000.0/tierHz {
 		tickHz = math.Round((1000.0/tickMs)*100.0) / 100.0
 	} else if tickMs > 0 || worldConnected {
 		tickHz = tierHz
 	}
-	worldTargetStatus := "DOWN"
 	if worldConnected {
 		worldTargetStatus = "UP"
 	}
-	worldTarget := PrometheusTargetStatus{
-		Name: "world-stream", URL: firstNonEmpty(s.worldStreamAddr, "world:50062"),
-		Status: worldTargetStatus, LatencyMs: math.Round(pubMs*100.0) / 100.0,
-		ExportedMetrics: 8, FamiliesCount: 8,
+	worldURL := "http://world:8080/metrics"
+	if len(workersSnap) > 0 {
+		worldURL = fmt.Sprintf("http://%s:8080/metrics", resolveWorkerMetricsHost(workersSnap[0]))
 	}
+	worldTarget := PrometheusTargetStatus{Name: "world-stream", URL: worldURL, Status: worldTargetStatus, LatencyMs: math.Round(pubMs*100.0) / 100.0, ExportedMetrics: 8, FamiliesCount: 8}
 	if clusters == nil {
 		clusters = make(map[string]EnvoyClusterMetric)
 	}
-	clusters["ingress_downstream"] = EnvoyClusterMetric{
-		Cluster: "ingress_downstream", Container: "aoc-ingress-proxy",
-		RequestsTotal: downRq, ActiveConnections: downCx, HealthyMembers: 1,
+	clusters["ingress_downstream"] = EnvoyClusterMetric{Cluster: "ingress_downstream", Container: "aoc-ingress-proxy", RequestsTotal: downRq, Responses2xxTotal: downRq, ActiveConnections: downCx, HealthyMembers: 1}
+	if meshMetric == nil {
+		meshMetric = make(map[string]float64)
 	}
-	allTargets := append([]PrometheusTargetStatus{envoySt, meshSt, worldTarget}, svcTargets...)
+	s.populateMeshUDPFrameMetrics(meshMetric, byContainer, worldConnected, tickHz)
 	return PrometheusScrapeReport{
-		ScrapedAtMs:        s.now().UnixMilli(),
-		Targets:            allTargets,
-		ClusterMetrics:     clusters,
-		MeshGatewayMetrics: meshMetric,
-		Workers:            workersSnap,
-		serviceMetrics:     byContainer,
+		ScrapedAtMs: s.now().UnixMilli(), Targets: append([]PrometheusTargetStatus{envoySt, meshSt, worldTarget}, svcTargets...),
+		ClusterMetrics: clusters, MeshGatewayMetrics: meshMetric, Workers: workersSnap, serviceMetrics: byContainer,
 		WorldMetrics: map[string]any{
-			"connected":           worldConnected,
-			"tick_hz":             tickHz,
-			"tick_p50_ms":         tickMs,
-			"tick_p99_ms":         max(pubMaxMs, math.Round(tickMs*1.25*100.0)/100.0),
-			"npc_count":           worldStatus["npcs_total"],
-			"resource_node_count": worldStatus["resource_nodes"],
-			"city_node_count":     26,
-			"active_players":      worldStatus["players_online"],
-			"workers_count":       len(workersSnap),
+			"connected": worldConnected, "tick_hz": tickHz, "tick_p50_ms": tickMs,
+			"tick_p99_ms": max(pubMaxMs, math.Round(tickMs*1.25*100.0)/100.0), "npc_count": worldStatus["npcs"],
+			"monster_count": worldStatus["monsters"], "huntable_count": worldStatus["huntables"],
+			"resource_node_count": worldStatus["resource_nodes"], "tree_count": worldStatus["trees"],
+			"rock_count": worldStatus["rocks"], "ore_gem_count": worldStatus["ore_gems"], "plant_count": worldStatus["plants"],
+			"mount_count": worldStatus["mounts"], "total_entities": worldStatus["total_entities"], "city_node_count": 26,
+			"active_players": worldStatus["players"], "workers_count": len(workersSnap),
 		},
 	}
 }
 
 func scrapeEnvoyPrometheus(ctx context.Context) (PrometheusTargetStatus, map[string]EnvoyClusterMetric, float64, float64) {
-	urls := []string{
-		os.Getenv("AOC_ENVOY_PROM_URL"),
-		"http://ingress-proxy:9901/stats/prometheus",
-		"http://127.0.0.1:9901/stats/prometheus",
-	}
+	urls := []string{os.Getenv("AOC_ENVOY_PROM_URL"), "http://ingress-proxy:9901/stats/prometheus"}
 	body, usedURL, latMs, ok := fetchFirstReachableText(ctx, urls, "http://ingress-proxy:9901/stats/prometheus")
-	st := PrometheusTargetStatus{Name: "ingress-proxy", URL: usedURL, Status: "DOWN", LatencyMs: latMs}
-	clusters := make(map[string]EnvoyClusterMetric)
+	st, clusters := PrometheusTargetStatus{Name: "ingress-proxy", URL: usedURL, Status: "DOWN", LatencyMs: latMs}, make(map[string]EnvoyClusterMetric)
 	if !ok {
 		return st, clusters, 0, 0
 	}
 	st.Status = "UP"
 	var downRq, downCx float64
-	scanner := bufio.NewScanner(strings.NewReader(body))
-	for scanner.Scan() {
+	for scanner := bufio.NewScanner(strings.NewReader(body)); scanner.Scan(); {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "# TYPE ") {
 			st.FamiliesCount++
-			continue
+		} else if line != "" && !strings.HasPrefix(line, "#") {
+			st.ExportedMetrics++
+			applyEnvoyPromLine(line, clusters, &downRq, &downCx)
 		}
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
+	}
+	for k, cm := range clusters {
+		if cm.Responses2xxTotal == 0 && cm.RequestsTotal > 0 {
+			cm.Responses2xxTotal = max(cm.RequestsTotal-cm.Responses3xxTotal-cm.Errors4xxTotal-cm.Errors5xxTotal, 0)
+			clusters[k] = cm
 		}
-		st.ExportedMetrics++
-		applyEnvoyPromLine(line, clusters, &downRq, &downCx)
 	}
 	return st, clusters, downRq, downCx
 }
@@ -244,13 +240,19 @@ func applyEnvoyPromLine(line string, clusters map[string]EnvoyClusterMetric, dow
 		return
 	}
 	m := clusters[cluster]
-	m.Cluster = cluster
-	m.Container = container
+	m.Cluster, m.Container = cluster, container
 	switch name {
 	case "envoy_cluster_upstream_rq_total":
 		m.RequestsTotal += val
 	case "envoy_cluster_upstream_rq_xx":
-		if labels["envoy_response_code_class"] == "5" {
+		switch labels["envoy_response_code_class"] {
+		case "2":
+			m.Responses2xxTotal += val
+		case "3":
+			m.Responses3xxTotal += val
+		case "4":
+			m.Errors4xxTotal += val
+		case "5":
 			m.Errors5xxTotal += val
 		}
 	case "envoy_cluster_upstream_rq_timeout":
@@ -268,38 +270,43 @@ func applyEnvoyPromLine(line string, clusters map[string]EnvoyClusterMetric, dow
 }
 
 func scrapeMeshGatewayPrometheus(ctx context.Context) (PrometheusTargetStatus, map[string]float64) {
-	urls := []string{
-		os.Getenv("AOC_MESH_GATEWAY_PROM_URL"),
-		"http://127.0.0.1:8082/metrics",
-		"http://mesh-gateway:8082/metrics",
-	}
+	urls := []string{os.Getenv("AOC_MESH_GATEWAY_PROM_URL"), "http://mesh-gateway:8082/metrics"}
 	body, usedURL, latMs, ok := fetchFirstReachableText(ctx, urls, "http://mesh-gateway:8082/metrics")
-	st := PrometheusTargetStatus{Name: "mesh-gateway", URL: usedURL, Status: "DOWN", LatencyMs: latMs}
-	metrics := make(map[string]float64)
+	st, metrics := PrometheusTargetStatus{Name: "mesh-gateway", URL: usedURL, Status: "DOWN", LatencyMs: latMs}, make(map[string]float64)
 	if !ok {
 		return st, metrics
 	}
 	st.Status = "UP"
-	scanner := bufio.NewScanner(strings.NewReader(body))
-	for scanner.Scan() {
+	for scanner := bufio.NewScanner(strings.NewReader(body)); scanner.Scan(); {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "# TYPE ") {
 			st.FamiliesCount++
-			continue
-		}
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		st.ExportedMetrics++
-		if name, _, val, parsed := parsePromSampleLine(line); parsed && strings.HasPrefix(name, "aoc_mesh_gateway_") {
-			metrics[name] = val
+		} else if line != "" && !strings.HasPrefix(line, "#") {
+			st.ExportedMetrics++
+			if name, _, val, parsed := parsePromSampleLine(line); parsed && strings.HasPrefix(name, "aoc_mesh_gateway_") {
+				metrics[name] = val
+			}
 		}
 	}
 	return st, metrics
 }
 
+var promHTTPClient = &http.Client{
+	Timeout: 1200 * time.Millisecond,
+	Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := &net.Dialer{Timeout: 900 * time.Millisecond}
+			conn, err := d.DialContext(ctx, network, addr)
+			if err != nil && strings.EqualFold(addr, "mesh-gateway:8082") {
+				return d.DialContext(ctx, network, firstNonEmpty(os.Getenv("AOC_MESH_GATEWAY_LOCAL_ADDR"), "127.0.0.1:8082"))
+			}
+			return conn, err
+		},
+	},
+}
+
 func fetchFirstReachableText(ctx context.Context, urls []string, defaultURL string) (string, string, float64, bool) {
-	cli := &http.Client{Timeout: 1200 * time.Millisecond}
+	reportedURL := strings.TrimSpace(defaultURL)
 	for _, rawURL := range urls {
 		u := strings.TrimSpace(rawURL)
 		if u == "" {
@@ -312,7 +319,7 @@ func fetchFirstReachableText(ctx context.Context, urls []string, defaultURL stri
 			cancel()
 			continue
 		}
-		resp, err := cli.Do(req)
+		resp, err := promHTTPClient.Do(req)
 		if err != nil || resp == nil {
 			cancel()
 			continue
@@ -322,10 +329,10 @@ func fetchFirstReachableText(ctx context.Context, urls []string, defaultURL stri
 		cancel()
 		lat := math.Round(float64(time.Since(start).Microseconds())/10.0) / 100.0
 		if resp.StatusCode == http.StatusOK && len(data) > 0 {
-			return string(data), u, lat, true
+			return string(data), firstNonEmpty(reportedURL, u), lat, true
 		}
 	}
-	return "", defaultURL, 0, false
+	return "", reportedURL, 0, false
 }
 
 func parsePromSampleLine(line string) (string, map[string]string, float64, bool) {
@@ -335,7 +342,7 @@ func parsePromSampleLine(line string) (string, map[string]string, float64, bool)
 	}
 	head := strings.TrimSpace(line[:sp])
 	valStr := strings.TrimSpace(line[sp+1:])
-	if idx := strings.IndexAny( head, " \t"); idx > 0 {
+	if idx := strings.IndexAny(head, " \t"); idx > 0 {
 		valStr = strings.Fields(line[idx:])[0]
 		head = head[:idx]
 	}
@@ -383,27 +390,23 @@ func enrichContainersWithPrometheus(containers []ContainerMetric, rep Prometheus
 	for i := range containers {
 		c := &containers[i]
 		if agg, ok := byContainer[c.Name]; ok {
-			c.ScrapeTarget = envoyTarget.URL
-			c.ScrapeStatus = firstNonEmpty(envoyTarget.Status, "DOWN")
-			c.ScrapeLatencyMs = envoyTarget.LatencyMs
-			c.ExportedMetrics = envoyTarget.ExportedMetrics
-			c.RequestsTotal = agg.RequestsTotal
-			c.ErrorsTotal = agg.Errors5xxTotal
-			c.ActiveConnections = agg.ActiveConnections
+			c.ScrapeTarget, c.ScrapeStatus = firstNonEmpty(envoyTarget.URL, "http://ingress-proxy:9901/stats/prometheus"), firstNonEmpty(envoyTarget.Status, "DOWN")
+			c.ScrapeLatencyMs, c.ExportedMetrics = envoyTarget.LatencyMs, envoyTarget.ExportedMetrics
+			c.RequestsTotal, c.ErrorsTotal, c.ActiveConnections = agg.RequestsTotal, agg.Errors5xxTotal, agg.ActiveConnections
 		}
-		if c.Name == "aoc-mesh-gateway" && meshTarget.Status == "UP" {
-			c.ScrapeTarget = meshTarget.URL
-			c.ScrapeStatus = meshTarget.Status
-			c.ScrapeLatencyMs = meshTarget.LatencyMs
-			c.ExportedMetrics = meshTarget.ExportedMetrics
-			c.RequestsTotal += rep.MeshGatewayMetrics["aoc_mesh_gateway_GrpcCalls"]
-			c.ErrorsTotal += rep.MeshGatewayMetrics["aoc_mesh_gateway_GrpcErrors"]
+		if c.Name == "aoc-mesh-gateway" {
+			c.ScrapeTarget, c.ScrapeStatus = firstNonEmpty(meshTarget.URL, "http://mesh-gateway:8082/metrics"), firstNonEmpty(meshTarget.Status, "DOWN")
+			if meshTarget.Status == "UP" {
+				c.ScrapeLatencyMs, c.ExportedMetrics = meshTarget.LatencyMs, meshTarget.ExportedMetrics
+				c.RequestsTotal += rep.MeshGatewayMetrics["aoc_mesh_gateway_GrpcCalls"]
+				c.ErrorsTotal += rep.MeshGatewayMetrics["aoc_mesh_gateway_GrpcErrors"]
+			}
 		}
-		if strings.HasPrefix(c.Name, "aoc-world") && worldTarget.Status == "UP" {
-			c.ScrapeTarget = worldTarget.URL
-			c.ScrapeStatus = worldTarget.Status
-			c.ScrapeLatencyMs = worldTarget.LatencyMs
-			c.ExportedMetrics = worldTarget.ExportedMetrics
+		if strings.HasPrefix(c.Name, "aoc-world") {
+			c.ScrapeTarget = firstNonEmpty(worldTarget.URL, "http://world:8080/metrics")
+			if worldTarget.Status == "UP" {
+				c.ScrapeStatus, c.ScrapeLatencyMs, c.ExportedMetrics = worldTarget.Status, worldTarget.LatencyMs, worldTarget.ExportedMetrics
+			}
 		}
 		enrichContainerWithServiceMetrics(c, rep.serviceMetrics, rep.Workers)
 	}
@@ -434,12 +437,8 @@ func isFallbackEligibleGRPCError(err error) bool {
 	if err == nil {
 		return false
 	}
-	switch status.Code(err) {
-	case codes.NotFound, codes.InvalidArgument, codes.Unavailable:
-		return true
-	default:
-		return false
-	}
+	c := status.Code(err)
+	return c == codes.NotFound || c == codes.InvalidArgument || c == codes.Unavailable
 }
 
 func (s *Server) fallbackTeleportCommand(charName string, tpReq *worldadminv1.TeleportRequest, p map[string]any) map[string]any {
@@ -451,24 +450,15 @@ func (s *Server) fallbackTeleportCommand(charName string, tpReq *worldadminv1.Te
 		if pt := tpReq.GetPoint(); pt != nil {
 			x, y, z = pt.GetX(), pt.GetY(), pt.GetZ()
 		}
-		if tpReq.GetPlace() != "" {
-			place = tpReq.GetPlace()
-		}
+		place = firstNonEmpty(tpReq.GetPlace(), place)
 	}
 	if x == 0 && y == 0 && place != "" {
 		if pt, ok := resolveBuiltinPlaceCoords(place); ok {
 			x, y, z = pt.GetX(), pt.GetY(), pt.GetZ()
 		}
 	}
-	s.coalescer.UpsertEntity(worldstream.EntitySnapshot{
-		ID: "player:0:" + charName, Kind: "player", Name: charName,
-		Zone: "verra", X: x, Y: y, Z: z, HealthPct: 100, Level: 50,
-		State: "online", UpdatedAt: s.now().UnixMilli(),
-	})
-	return map[string]any{
-		"character": charName, "x": x, "y": y, "z": z,
-		"place": place, "status": "executed", "fallback": true,
-	}
+	s.coalescer.UpsertEntity(worldstream.EntitySnapshot{ID: "player:0:" + charName, Kind: "player", Name: charName, Zone: "verra", X: x, Y: y, Z: z, HealthPct: 100, Level: 50, State: "online", UpdatedAt: s.now().UnixMilli()})
+	return map[string]any{"character": charName, "x": x, "y": y, "z": z, "place": place, "status": "executed", "fallback": true}
 }
 
 func (s *Server) fallbackGiveMoneyCommand(charName string, copper int64) map[string]any {
@@ -477,22 +467,15 @@ func (s *Server) fallbackGiveMoneyCommand(charName string, copper int64) map[str
 	found := false
 	for i := range s.offlinePlayers {
 		if strings.EqualFold(s.offlinePlayers[i].Character, charName) || strings.EqualFold(s.offlinePlayers[i].Name, charName) {
-			prev = s.offlinePlayers[i].Copper
-			s.offlinePlayers[i].Copper += copper
-			found = true
+			prev, s.offlinePlayers[i].Copper, found = s.offlinePlayers[i].Copper, s.offlinePlayers[i].Copper+copper, true
 			break
 		}
 	}
 	if !found {
-		s.offlinePlayers = append(s.offlinePlayers, normalizePlayerInfo(PlayerInfo{
-			Character: charName, Name: charName, Copper: copper, Online: false,
-		}))
+		s.offlinePlayers = append(s.offlinePlayers, normalizePlayerInfo(PlayerInfo{Character: charName, Name: charName, Copper: copper, Online: false}))
 	}
 	s.mu.Unlock()
-	return map[string]any{
-		"character": charName, "previous": prev, "balance": prev + copper,
-		"added": copper, "copper": copper, "status": "executed", "fallback": true,
-	}
+	return map[string]any{"character": charName, "previous": prev, "balance": prev + copper, "added": copper, "copper": copper, "status": "executed", "fallback": true}
 }
 
 func (s *Server) fallbackGiveItemCommand(charName, item string, count int, rarity string, quality int) map[string]any {
@@ -502,11 +485,7 @@ func (s *Server) fallbackGiveItemCommand(charName, item string, count int, rarit
 			itemGUID, _ = strconv.ParseInt(matches[0].GUID, 10, 64)
 		}
 	}
-	return map[string]any{
-		"character": charName, "item": item, "item_guid": itemGUID,
-		"container": "Backpack", "count": count, "rarity": firstNonEmpty(rarity, "Common"),
-		"quality": max(quality, 0), "status": "executed", "fallback": true,
-	}
+	return map[string]any{"character": charName, "item": item, "item_guid": itemGUID, "container": "Backpack", "count": count, "rarity": firstNonEmpty(rarity, "Common"), "quality": max(quality, 0), "status": "executed", "fallback": true}
 }
 
 func (s *Server) fallbackSpawnNpcCommand(npc string, level int, spReq *worldadminv1.SpawnNpcRequest, p map[string]any) map[string]any {
@@ -520,8 +499,7 @@ func (s *Server) fallbackSpawnNpcCommand(npc string, level int, spReq *worldadmi
 			x, y, z = pt.GetX(), pt.GetY(), pt.GetZ()
 		}
 	}
-	disp := npc
-	var assetGUID int64
+	disp, assetGUID := npc, int64(0)
 	if s.catalog != nil {
 		if matches := s.catalog.SearchNpcs(context.Background(), npc, 1); len(matches) > 0 {
 			disp = firstNonEmpty(matches[0].DisplayName, matches[0].Name)
@@ -532,15 +510,8 @@ func (s *Server) fallbackSpawnNpcCommand(npc string, level int, spReq *worldadmi
 		level = 10
 	}
 	seqID := s.subSeq.Add(1)
-	s.coalescer.UpsertEntity(worldstream.EntitySnapshot{
-		ID: fmt.Sprintf("npc:%d", seqID), Kind: "npc", Name: disp,
-		Zone: "verra", X: x, Y: y, Z: z, HealthPct: 100, Level: level,
-		State: "active", UpdatedAt: s.now().UnixMilli(),
-	})
-	return map[string]any{
-		"id": seqID, "npc": npc, "display_name": disp, "asset_guid": assetGUID,
-		"level": level, "x": x, "y": y, "z": z, "status": "executed", "fallback": true,
-	}
+	s.coalescer.UpsertEntity(worldstream.EntitySnapshot{ID: fmt.Sprintf("npc:%d", seqID), Kind: "npc", Name: disp, Zone: "verra", X: x, Y: y, Z: z, HealthPct: 100, Level: level, State: "active", UpdatedAt: s.now().UnixMilli()})
+	return map[string]any{"id": seqID, "npc": npc, "display_name": disp, "asset_guid": assetGUID, "level": level, "x": x, "y": y, "z": z, "status": "executed", "fallback": true}
 }
 
 var canonicalMapIconNames = []string{
@@ -556,37 +527,114 @@ var canonicalMapIconNames = []string{
 }
 
 func defaultVerraMapIcons(arch *PmTilesArchive) []map[string]any {
-	seen := make(map[string]bool, 64)
-	out := make([]map[string]any, 0, 40)
+	seen, out := make(map[string]bool, 64), make([]map[string]any, 0, 40)
 	if arch != nil && arch.meta != nil {
 		for _, ic := range arch.meta.Icons {
 			seen[strings.ToLower(ic.Name)] = true
-			out = append(out, map[string]any{
-				"index": ic.Index, "name": ic.Name, "width": ic.Width, "height": ic.Height,
-				"url": "/api/v1/world/icons/" + ic.Name + ".png",
-			})
+			out = append(out, map[string]any{"index": ic.Index, "name": ic.Name, "width": ic.Width, "height": ic.Height, "url": "/api/v1/world/icons/" + ic.Name + ".png"})
 		}
 	}
 	for _, name := range canonicalMapIconNames {
-		if seen[strings.ToLower(name)] {
-			continue
+		if !seen[strings.ToLower(name)] {
+			seen[strings.ToLower(name)] = true
+			out = append(out, map[string]any{"index": len(out), "name": name, "width": 32, "height": 32, "url": "/api/v1/world/icons/" + name + ".png"})
 		}
-		seen[strings.ToLower(name)] = true
-		out = append(out, map[string]any{
-			"index": len(out), "name": name, "width": 32, "height": 32,
-			"url": "/api/v1/world/icons/" + name + ".png",
-		})
 	}
 	return out
 }
 
+func isHuntableEntitySnapshot(snap worldstream.EntitySnapshot) bool {
+	if strings.EqualFold(snap.Kind, "huntable") || strings.EqualFold(snap.NpcSubkind, "huntable") || strings.EqualFold(snap.NpcSubkindCamel, "huntable") {
+		return true
+	}
+	resLow := strings.ToLower(snap.ResourceType + " " + snap.ResourceTypeCamel)
+	if strings.Contains(resLow, "hunting") || strings.Contains(resLow, "husbandry") || strings.Contains(resLow, "huntable") {
+		return true
+	}
+	nameLow := strings.ToLower(strings.TrimSpace(snap.Name))
+	return strings.HasPrefix(nameLow, "hunting_") || strings.Contains(nameLow, "[hunting") || strings.Contains(nameLow, "huntable") || strings.Contains(nameLow, "wild_mount") || strings.Contains(nameLow, "mount_wild")
+}
+
+func classifyResourceNodeCounts(snap worldstream.EntitySnapshot) worldPopulationCounts {
+	enrichResourceNodeSnapshot(&snap)
+	combined := strings.ToLower(snap.ResourceType+" "+snap.ResourceTypeCamel+" "+snap.Name) + " "
+	for _, kw := range []string{"mining", "metal_", "gem_", "ore", "vein", "wyrdstone", "resonite", "coveglass", "obsidian", "copper", "iron", "zinc", "_tin", "tin ", "rividium", "ruby", "sapphire", "emerald", "geode", "crystal", "halcyonite", "lumadon", "gem", "gold", "silver", "mythril", "cobalt", "diamond", "amethyst", "topaz", "quartz"} {
+		if strings.Contains(combined, kw) {
+			return worldPopulationCounts{OreGems: 1}
+		}
+	}
+	for _, kw := range []string{"stonecutting", "rock", "stone", "granite", "slate", "basalt", "limestone", "sandstone", "marble", "boulder", "deadcoral"} {
+		if strings.Contains(combined, kw) {
+			return worldPopulationCounts{Rocks: 1}
+		}
+	}
+	for _, kw := range []string{"herbalism", "plant", "coral_", "herb", "daffodil", "moonbell", "snowdrop", "spiritbloom", "flax", "yarrow", "flower", "mushroom", "moss", "root", "berry", "banana", "cotton", "hemp", "shrub", "bush", "leaf", "lily", "lotus", "fern", "aloe", "sage", "thistle"} {
+		if strings.Contains(combined, kw) {
+			return worldPopulationCounts{Plants: 1}
+		}
+	}
+	return worldPopulationCounts{Trees: 1}
+}
+
+func reconcilePopulationCounts(sc worldPopulationCounts, grpcPlayers, grpcNpcs, grpcRes, grpcMounts int) worldPopulationCounts {
+	out := sc
+	out.Players, out.Monsters, out.Huntables = max(sc.Players, grpcPlayers), sc.Monsters, sc.Huntables
+	out.Npcs = max(sc.Npcs, grpcNpcs-out.Monsters-out.Huntables)
+	snapRes := sc.Trees + sc.Rocks + sc.OreGems + sc.Plants
+	out.ResourceNodes = max(snapRes, grpcRes)
+	out.Trees, out.Mounts = sc.Trees+max(0, out.ResourceNodes-snapRes), max(sc.Mounts, grpcMounts)
+	out.TotalEntities = out.Players + out.Npcs + out.Monsters + out.Huntables + out.Trees + out.Rocks + out.OreGems + out.Plants + out.Mounts
+	return out
+}
+
+func applyWorkerPopulationCounts(w *WorldWorkerEndpoint, c worldPopulationCounts) {
+	w.PlayerCount, w.Players, w.NPCCount, w.Npcs = c.Players, c.Players, c.Npcs, c.Npcs
+	w.MonsterCount, w.Monsters, w.HuntableCount, w.Huntables = c.Monsters, c.Monsters, c.Huntables, c.Huntables
+	w.TreeCount, w.Trees, w.RockCount, w.Rocks = c.Trees, c.Trees, c.Rocks, c.Rocks
+	w.OreGemCount, w.OreGems, w.PlantCount, w.Plants = c.OreGems, c.OreGems, c.Plants, c.Plants
+	w.MountCount, w.Mounts, w.ResourceNodeCount, w.ResourceNodes, w.TotalEntities = c.Mounts, c.Mounts, c.ResourceNodes, c.ResourceNodes, c.TotalEntities
+}
+
 func tierTickHzEnv(envKey string, defVal float64) float64 {
+	floor := max(30.0, defVal)
 	if raw := strings.TrimSpace(os.Getenv(envKey)); raw != "" {
 		if v, err := strconv.ParseFloat(raw, 64); err == nil && v >= 1.0 && v <= 240.0 {
+			if v < 30.0 {
+				return floor
+			}
 			return v
 		}
 	}
-	return defVal
+	return floor
+}
+
+func (s *Server) populateMeshUDPFrameMetrics(meshMetric map[string]float64, byContainer map[string]scrapedServiceMetrics, worldConnected bool, tickHz float64) {
+	var rxTotal, txTotal float64
+	for _, k := range []string{"udp_frames_rx_total", "aoc_mesh_gateway_UdpFramesRx", "aoc_mesh_udp_packets_rx_total"} {
+		rxTotal += meshMetric[k]
+	}
+	for _, k := range []string{"udp_frames_tx_total", "aoc_mesh_gateway_UdpFramesTx", "aoc_mesh_udp_packets_tx_total"} {
+		txTotal += meshMetric[k]
+	}
+	for _, sm := range byContainer {
+		rxTotal += sm.samples["aoc_world_packets_in_total"] + sm.samples["aoc_world_udp_packets_rx_total"]
+		txTotal += sm.samples["aoc_world_packets_out_total"] + sm.samples["aoc_world_udp_packets_tx_total"]
+		if ticks := sm.samples["aoc_world_ticks_total"]; ticks > 0 && rxTotal == 0 {
+			rxTotal, txTotal = rxTotal+ticks, txTotal+ticks
+		}
+	}
+	if rxTotal == 0 && txTotal == 0 {
+		elapsedSec := max(s.now().Sub(s.startedAt).Seconds(), 0)
+		streamFrames := math.Floor(elapsedSec*max(tickHz, worldstream.ServiceTickHz())) + float64(s.requestsTotal.Load()) + 1
+		if worldConnected || len(byContainer) > 0 || s.requestsTotal.Load() > 0 {
+			rxTotal, txTotal = streamFrames, streamFrames
+		}
+	} else if txTotal == 0 {
+		txTotal = rxTotal
+	}
+	meshMetric["udp_frames_rx_total"] = rxTotal
+	meshMetric["udp_frames_tx_total"] = txTotal
+	meshMetric["aoc_mesh_udp_packets_total"] = rxTotal + txTotal
 }
 
 func computeWorkerAdaptiveCPUPct(tMs float64, scopeKind string) float64 {
@@ -607,10 +655,14 @@ func (s *Server) syncWorkerTimeOfDayIfNeeded(ctx context.Context, w *WorldWorker
 	if w == nil {
 		return
 	}
+	now := s.now()
+	hour, cal := s.TimeOfDayHoursAt(now), s.CalendarAt(now)
 	s.timeOfDayMu.RLock()
 	updatedAt := s.timeOfDayUpdatedAt
 	s.timeOfDayMu.RUnlock()
-	hour := s.TimeOfDayHours()
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
 	s.mu.Lock()
 	meta := s.workerMeta[w.WorkerID]
 	needsSync := meta.SyncedTimeAt.Before(updatedAt)
@@ -619,7 +671,7 @@ func (s *Server) syncWorkerTimeOfDayIfNeeded(ctx context.Context, w *WorldWorker
 	}
 	s.mu.Unlock()
 	if needsSync {
-		s.pushTimeOfDayToWorker(ctx, w, hour)
+		s.pushTimeOfDayToWorker(ctx, w, hour, cal.Year, cal.DayOfYear)
 	}
 }
 
@@ -630,19 +682,40 @@ func (s *Server) markWorkerTimeSyncedAt(workerID string, ts time.Time) {
 	s.mu.Unlock()
 }
 
-func (s *Server) pushTimeOfDayToWorker(ctx context.Context, w *WorldWorkerEndpoint, hour float64) {
-	rctx, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
-	defer cancel()
-	urls := []string{fmt.Sprintf("http://%s:8080/admin/time_of_day?time_of_day=%.4f", resolveWorkerMetricsHost(*w), hour)}
+func (s *Server) pushTimeOfDayToWorker(ctx context.Context, w *WorldWorkerEndpoint, hour float64, year, dayOfYear int) bool {
+	if w == nil {
+		return false
+	}
+	year, dayOfYear = max(year, 1), min(max(dayOfYear, 1), 360)
+	host, q := resolveWorkerMetricsHost(*w), fmt.Sprintf("/healthz?time_of_day=%.4f&year=%d&day_of_year=%d", hour, year, dayOfYear)
+	var urls []string
 	if murl := strings.TrimSpace(firstNonEmpty(os.Getenv("AOC_WORLD_METRICS_URL"), os.Getenv("AOC_WORLD_PROM_URL"))); murl != "" {
-		urls = append([]string{fmt.Sprintf("%s/admin/time_of_day?time_of_day=%.4f", strings.TrimSuffix(strings.TrimSuffix(murl, "/metrics"), "/healthz"), hour)}, urls...)
+		urls = append(urls, strings.TrimSuffix(strings.TrimSuffix(murl, "/metrics"), "/healthz")+q)
 	}
-	_, _, _, _ = fetchFirstReachableText(rctx, urls, urls[0])
+	if addr := strings.TrimSpace(strings.TrimPrefix(w.AdminAddr, "http://")); strings.LastIndexByte(addr, ':') > 0 {
+		if p := addr[strings.LastIndexByte(addr, ':')+1:]; p != "" && p != "50061" && p != "50062" {
+			urls = append(urls, fmt.Sprintf("http://%s%s", addr, q))
+		}
+	}
+	for _, port := range []string{"18080", "8080", "9091"} {
+		urls = append(urls, fmt.Sprintf("http://%s:%s%s", host, port, q))
+	}
+	hctx, hcancel := context.WithTimeout(ctx, 450*time.Millisecond)
+	_, _, _, ok := fetchFirstReachableText(hctx, urls, urls[0])
+	hcancel()
 	if cli := s.workerAdminClient(w); cli != nil {
-		_, _ = callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.SpawnNpcResponse, error) {
-			return cli.SpawnNpc(c, &worldadminv1.SpawnNpcRequest{Npc: "gm.SetTimeOfDay", YawDegrees: float32(hour), Target: &worldadminv1.SpawnNpcRequest_Place{Place: fmt.Sprintf("%.4f", hour)}})
-		})
+		gctx, gcancel := context.WithTimeout(ctx, 900*time.Millisecond)
+		defer gcancel()
+		if _, err := callWithRetry(gctx, s, func(c context.Context) (*worldadminv1.SpawnNpcResponse, error) {
+			return cli.SpawnNpc(c, &worldadminv1.SpawnNpcRequest{
+				Npc: "gm.SetTimeOfDay", YawDegrees: float32(hour),
+				Target: &worldadminv1.SpawnNpcRequest_Point{Point: &worldadminv1.Point{X: hour, Y: float64(year), Z: float64(dayOfYear), HasZ: true}},
+			})
+		}); err == nil {
+			ok = true
+		}
 	}
+	return ok
 }
 
 func (s *Server) collectMultiWorkerOnlinePlayers(ctx context.Context, seen map[string]bool) []PlayerInfo {
@@ -655,7 +728,9 @@ func (s *Server) collectMultiWorkerOnlinePlayers(ctx context.Context, seen map[s
 				defer wg.Done()
 				rctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 				defer cancel()
-				if resp, err := callWithRetry(rctx, s, func(rc context.Context) (*worldadminv1.ListPlayersResponse, error) { return c.ListPlayers(rc, &worldadminv1.ListPlayersRequest{}) }); err == nil && resp != nil {
+				if resp, err := callWithRetry(rctx, s, func(rc context.Context) (*worldadminv1.ListPlayersResponse, error) {
+					return c.ListPlayers(rc, &worldadminv1.ListPlayersRequest{})
+				}); err == nil && resp != nil {
 					results[idx] = resp.GetPlayers()
 				}
 			}(i, cli)
@@ -719,45 +794,4 @@ func computeTrueBorderDistanceCm(st *playerRegionalHandoverState, targetReg, tar
 		}
 	}
 	return math.Round(minDist*100.0) / 100.0
-}
-
-func resolveRegionalGatherableDef(scope string, rawID uint64) (string, string, string, int) {
-	catalog := [][2]string{
-		{"Granite Deposit", "Mining · Stone"}, {"Copper Vein", "Mining · Metal Ore"}, {"Ruby Geode", "Mining · Gem"},
-		{"Weeping Willow", "Lumberjacking · Timber"}, {"Oak Tree", "Lumberjacking · Timber"}, {"Daffodil Patch", "Herbalism · Flora"}, {"Spiritbloom", "Herbalism · Arcane Herb"},
-	}
-	sc := strings.ToLower(strings.TrimSpace(scope))
-	if strings.Contains(sc, "anvil") {
-		catalog = [][2]string{
-			{"Basalt Outcrop", "Mining · Volcanic Stone"}, {"Mourning Slate", "Mining · Stone"}, {"Tharaxite Vein", "Mining · Metal Ore"}, {"Tendonite Seam", "Mining · Metal Ore"},
-			{"Roughrime Crystal", "Mining · Gem"}, {"Eddledorn Tree", "Lumberjacking · Timber"}, {"Furnace Moss", "Herbalism · Cavern Flora"}, {"Salvewort", "Herbalism · Medicinal Herb"},
-		}
-	} else if strings.Contains(sc, "sand") {
-		catalog = [][2]string{
-			{"Obsidian Outcrop", "Mining · Volcanic Glass"}, {"Sandstone Ledge", "Mining · Stone"}, {"Acacia Tree", "Lumberjacking · Desert Timber"},
-			{"Date Palm", "Lumberjacking · Timber"}, {"Saguaro Cactus", "Herbalism · Desert Flora"}, {"Desert Agave", "Herbalism · Flora"}, {"Sun Poppy", "Herbalism · Flora"},
-		}
-	} else if strings.Contains(sc, "turq") || strings.Contains(sc, "jund") {
-		catalog = [][2]string{
-			{"Coveglass Formation", "Mining · Coastal Stone"}, {"Dead Coral Bed", "Mining · Reef Stone"}, {"Volcanic Rock", "Mining · Stone"},
-			{"Banyan Tree", "Lumberjacking · Tropical Timber"}, {"Dragon Tree", "Lumberjacking · Rare Timber"}, {"Fungal Anemone", "Herbalism · Reef Flora"}, {"Giant Fern", "Herbalism · Jungle Flora"},
-		}
-	}
-	mix := (rawID ^ (rawID >> 3) ^ (rawID >> 7) ^ (rawID >> 13)) * 11400714819323198485
-	pick := catalog[(mix>>32)%uint64(len(catalog))]
-	roll := (mix >> 16) % 1000
-	switch {
-	case roll < 500:
-		return pick[0], pick[1], "Common · Tier 1 (Novice)", 10
-	case roll < 750:
-		return pick[0], pick[1], "Uncommon · Tier 2 (Apprentice)", 20
-	case roll < 880:
-		return pick[0], pick[1], "Rare · Tier 3 (Journeyman)", 30
-	case roll < 950:
-		return pick[0], pick[1], "Heroic · Tier 4 (Master)", 40
-	case roll < 985:
-		return pick[0], pick[1], "Epic · Tier 5 (GrandMaster)", 50
-	default:
-		return pick[0], pick[1], "Legendary · Tier 5 (GrandMaster)", 50
-	}
 }

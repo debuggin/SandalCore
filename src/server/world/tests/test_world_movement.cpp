@@ -6,6 +6,7 @@
 #include "bootstrap/captured_setup.h"
 #include "capture_blocks.h"
 #include "capture_moves.h"
+#include "nav_fixture.h"
 
 #include <limits>
 #include <spdlog/sinks/ostream_sink.h>
@@ -489,6 +490,67 @@ static void test_saving_in_the_session() {
     check_session_interval_sink_and_yaw();
 }
 
+static void adopt_ground_and_rejoin(Harness& h) {
+    h.s.reset();
+    std::string err;
+    auto mesh = nav::AreaNav::from_file(navfix::build_file(), &err);
+    if (!mesh || !h.fx.world->adopt_ground(std::move(mesh), err)) {
+        std::printf("  [FAIL] the fixture's ground does not load: %s\n", err.c_str());
+        std::exit(2);
+    }
+    h.got.clear();
+    h.t = t0;
+    h.conn = Connection{
+        ConnectionConfig{
+            aoc::protocol::conn::OuterHeader{0x500c7696u, 0, 5},
+            aoc::protocol::conn::CustomField{0x38, 0x21, 0xc7, 0x0d, 0x43, 0x5d},
+            14265,
+            15870},
+        t0};
+    h.client = fake::Client{
+        aoc::protocol::conn::OuterHeader{0x500c7696u, 0, 5},
+        aoc::protocol::conn::CustomField{0x38, 0x21, 0xc7, 0x0d, 0x43, 0x5d},
+        14265,
+        15870};
+    h.s = PlayerSession::join(h.conn, *h.fx.world, cyb_record(), identity(), world_time_at(h.t), h.error);
+    if (!h.s) {
+        std::printf("  [FAIL] the session does not join: %s\n", h.error.c_str());
+        std::exit(2);
+    }
+    h.pawn_ch = h.s->channel_of(bs::Role::Pawn);
+    h.settle();
+}
+
+static void place_on_ground(Harness& h, double x, double y, double z) {
+    const PlayerSession::GmMoveResult moved = h.s->gm_teleport(h.conn, x, y, z, h.t, "the test: on the ground");
+    CHECK(moved.status == PlayerSession::GmMoveResult::Status::Moved, "(the player is put on the fixture's ground)");
+    h.flush();
+    h.step(milliseconds(3000));
+}
+
+static void test_moves_under_the_ground() {
+    std::printf("a walking move under the ground\n");
+    Harness h;
+    adopt_ground_and_rejoin(h);
+    float ts = 1.0f;
+
+    place_on_ground(h, 2000, 0, 1000);
+    auto replies = h.send_move(move_at(ts, 2000, 0, 1000));
+    CHECK(replies.size() == 1 && is_ack(*replies[0], ts), "(a walking move on the fixture's ground is acknowledged)");
+    h.step(milliseconds(1000));
+    const GoodPosition on_ground = h.s->movement().good();
+    ts += 1.0f;
+    replies = h.send_move(move_at(ts, 2100, 0, 600));
+    CHECK(replies.size() == 1 && correction_is(*replies[0], ts, on_ground.x, on_ground.y, on_ground.z) && h.s->moves_refused() == 1,
+          "a walking move 4 m under the ground is refused: one ClientAdjustPosition to the last good position");
+    CHECK(h.s->movement().good() == on_ground, "(the last good position is the ground's: the refused move changed nothing)");
+
+    h.step(milliseconds(1000));
+    ts += 1.0f;
+    replies = h.send_move(move_at(ts, 2200, 0, 900));
+    CHECK(replies.size() == 1 && is_ack(*replies[0], ts) && h.s->moves_refused() == 1, "a walking move 1 m under the ground is acknowledged: the allowance is 300 cm");
+}
+
 int main() {
     auto logger = std::make_shared<spdlog::logger>("test", std::make_shared<spdlog::sinks::ostream_sink_mt>(g_log));
     logger->set_level(spdlog::level::debug);
@@ -507,6 +569,7 @@ int main() {
     run_movement_saver();
     run_movement_based_tests();
     run_movement_presence_tests();
+    test_moves_under_the_ground();
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -2,21 +2,17 @@
   "version": 6,
   "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
   "configurePresets": [
-    { "name": "windows-base", "hidden": true, "binaryDir": "${sourceDir}/../build/x64", "cacheVariables": { "CMAKE_CXX_STANDARD": "23", "CMAKE_CXX_STANDARD_REQUIRED": "ON", "CMAKE_CXX_EXTENSIONS": "OFF", "CMAKE_CXX_FLAGS": "/DWIN32 /D_WINDOWS /EHsc /fp:precise" } },
-    { "name": "windows-rel", "inherits": "windows-base", "binaryDir": "${sourceDir}/../build/x64" },
     { "name": "linux-base", "hidden": true, "generator": "Ninja", "binaryDir": "${sourceDir}/../build/${presetName}", "cacheVariables": { "CMAKE_CXX_STANDARD": "23", "CMAKE_CXX_STANDARD_REQUIRED": "ON", "CMAKE_CXX_EXTENSIONS": "OFF", "CMAKE_EXPORT_COMPILE_COMMANDS": "ON", "CMAKE_CXX_FLAGS": "-Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-common" } },
     { "name": "linux-release", "inherits": "linux-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -flto=thin" } },
     { "name": "linux-asan-ubsan", "inherits": "linux-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "CMAKE_CXX_FLAGS": "-Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-common -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all" } },
     { "name": "linux-tsan", "inherits": "linux-base", "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "CMAKE_CXX_FLAGS": "-Wall -Wextra -Wpedantic -Werror -ffp-contract=off -fno-common -O1 -g -fno-omit-frame-pointer -fsanitize=thread" } }
   ],
   "buildPresets": [
-    { "name": "windows-rel", "configurePreset": "windows-rel", "configuration": "Release" },
     { "name": "linux-release", "configurePreset": "linux-release", "configuration": "Release" },
     { "name": "linux-asan-ubsan", "configurePreset": "linux-asan-ubsan", "configuration": "RelWithDebInfo" },
     { "name": "linux-tsan", "configurePreset": "linux-tsan", "configuration": "RelWithDebInfo" }
   ],
   "testPresets": [
-    { "name": "windows-rel", "configurePreset": "windows-rel", "configuration": "Release", "output": { "outputOnFailure": true } },
     { "name": "linux-release", "configurePreset": "linux-release", "configuration": "Release", "output": { "outputOnFailure": true } },
     { "name": "linux-asan-ubsan", "configurePreset": "linux-asan-ubsan", "configuration": "RelWithDebInfo", "output": { "outputOnFailure": true } },
     { "name": "linux-tsan", "configurePreset": "linux-tsan", "configuration": "RelWithDebInfo", "output": { "outputOnFailure": true } }

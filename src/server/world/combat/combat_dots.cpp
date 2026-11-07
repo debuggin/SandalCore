@@ -19,6 +19,7 @@ namespace {
 const char* const kApplyPhases[] = {"Apply"};
 const char* const kTickPhases[] = {"Tick"};
 const char* const kExpirePhases[] = {"Expire", "End"};
+constexpr double  kCcAnimEndMargin = 1.4;
 
 class BookView final : public TargetEffects {
 public:
@@ -111,10 +112,27 @@ void CombatWorld::send_effects(Npc& n, const effects::Book::Changes& changes) {
 void CombatWorld::apply_crowd_control(Npc& n) {
     const effects::Book::Crowd cc = n.book.cc();
     if (cc == n.cc) return;
+    const effects::Book::Crowd was = n.cc;
     n.cc = cc;
-    write_cc_state(registry_, n.actor_id, cc.flags, cc.snare);
+    CcWire wire;
+    wire.flags = cc.flags;
+    wire.snare = cc.snare;
+    wire.rooted_by_other = (cc.flags & content::kCcEmplace) != 0;
+    wire.override_move = cc.override_move;
+    wire.anim_request = cc.anim;
+    if (cc.anim != content::kCcAnimNone) {
+        wire.anim_record = cc.anim_record;
+        wire.anim_start = bootstrap::effect_clock(cc.anim_start);
+        wire.anim_seconds = cc.anim_seconds;
+        wire.anim_end = wire.anim_start + cc.anim_seconds - kCcAnimEndMargin;
+    }
+    if (!write_cc_state(registry_, n.actor_id, wire)) spdlog::debug("[cc] {} ({}) has no crowd control state to write: its clients are not told, its walk is held all the same", n.leaf, n.actor_id);
     const double kept = std::clamp(1.0 - cc.snare, 0.0, 1.0);
-    if (npcs_world_) npcs_world_->set_speed_scale(n.actor_id, kept);
+    if (npcs_world_) {
+        npcs_world_->set_speed_scale(n.actor_id, kept);
+        npcs_world_->set_locks(n.actor_id, (cc.flags & content::kCcRoot) != 0, (cc.flags & content::kCcNoTurn) != 0);
+    }
+    if ((cc.flags & content::kCcNoAbilities) != 0 && (was.flags & content::kCcNoAbilities) == 0) drop_attack(n);
     cc_unlogged_.insert(n.actor_id);
 }
 
@@ -127,7 +145,14 @@ void CombatWorld::log_crowd_control() {
         if (n.cc == n.cc_logged) continue;
         n.cc_logged = n.cc;
         const double kept = std::clamp(1.0 - n.cc.snare, 0.0, 1.0);
-        spdlog::log(cc_logged_++ < kLoggedCc ? spdlog::level::info : spdlog::level::debug, "[cc] {} ({}) snare {:.2f} speed {:.0f}", n.leaf, n.actor_id, n.cc.snare, n.ai.params().chase_speed_cm_s * kept);
+        const bool held = (n.cc.flags & content::kCcRoot) != 0;
+        std::string binds;
+        if (held) binds += "no walk, ";
+        if (n.cc.flags & content::kCcNoTurn) binds += "no turn, ";
+        if (n.cc.flags & content::kCcNoAbilities) binds += "no attack, ";
+        if (!binds.empty()) binds = " (" + binds.substr(0, binds.size() - 2) + ")";
+        spdlog::log(cc_logged_++ < kLoggedCc ? spdlog::level::info : spdlog::level::debug, "[cc] {} ({}) snare {:.2f} speed {:.0f} flags {}{}", n.leaf, n.actor_id, n.cc.snare,
+                    held ? 0.0 : n.ai.params().chase_speed_cm_s * kept, n.cc.flags, binds);
     }
     cc_unlogged_.clear();
 }
@@ -159,18 +184,67 @@ void CombatWorld::drop_effects_of(uint64_t instigator) {
     }
 }
 
-void CombatWorld::land_effect(Npc& n, const effects::Applied& a, uint64_t instigator, double now) {
+void CombatWorld::drop_effects_of_pet(uint64_t pet) {
+    for (const uint64_t id : std::vector<uint64_t>(effect_holders_.begin(), effect_holders_.end())) {
+        const auto it = npcs_.find(id);
+        if (it == npcs_.end()) continue;
+        Npc& n = *it->second;
+        effects::Book::Changes changes;
+        if (n.book.remove_from_pet(pet, changes) == 0) continue;
+        send_effects(n, changes);
+        if (n.book.empty()) {
+            for (const int64_t stat : {data_.ids().status_burning, data_.ids().status_burning_dur}) {
+                if (stat != 0) n.cs->set_current(stat, 0.0f);
+            }
+        }
+        spdlog::info("[effects] the effects of pet {} on {} ({}) end: it is gone", pet, n.leaf, n.actor_id);
+    }
+}
+
+void CombatWorld::wake_on_damage(Npc& n, const Resolved& r, const HitOrigin* origin, double now) {
+    if (n.dead || r.miss() || n.book.empty()) return;
+    bool took_health = false;
+    for (const ResolvedMod& m : r.mods) took_health = took_health || (m.stat_guid == data_.ids().health && std::isfinite(m.value) && m.value < 0.0);
+    if (!took_health) return;
+    const int64_t record = origin && origin->hit ? origin->hit->row.guid : 0;
+    std::set<int64_t> broken;
+    for (const effects::Instance& e : n.book.instances()) {
+        if (e.def && e.def->breaks_on_damage && !e.def->breaks_on_damage->leaves(record)) broken.insert(e.def->row.guid);
+    }
+    for (const int64_t guid : broken) {
+        if (n.dead) return;
+        const abilities::EffectDef* def = catalog_.effect(guid);
+        spdlog::info("[effects] {} ({}) is hit by {}: {} ends", n.leaf, n.actor_id, origin && origin->hit ? origin->hit->row.name : std::string("a hit"), def ? def->row.name : std::string("an effect"));
+        remove_npc_effect(n.actor_id, guid, now);
+    }
+}
+
+bool CombatWorld::takes_crowd_control(const abilities::EffectDef& def) {
+    if (!def.cc) return false;
+    const int64_t status = def.cc->applied_status;
+    const int64_t known = content::kCcRoot | content::kCcNoTurn | content::kCcNoAbilities | content::kCcEmplace | content::kCcSnare;
+    if ((status & ~known) != 0) return false;
+    if ((status & (content::kCcRoot | content::kCcSnare)) == 0) return false;
+    if ((status & content::kCcNoAbilities) != 0 && (status & (content::kCcRoot | content::kCcNoTurn | content::kCcNoAbilities)) != (content::kCcRoot | content::kCcNoTurn | content::kCcNoAbilities)) return false;
+    return def.cc->animation_request.find("Custom") == std::string::npos;
+}
+
+void CombatWorld::land_effect(Npc& n, const effects::Applied& a, uint64_t instigator, double now, uint64_t via_pet) {
     if (n.dead || !a.def) return;
-    const bool slow = a.def->cc && a.def->cc->applied_status == content::kCcSnare;
-    if (a.def->row.crowd_control_guid != 0 && !slow) {
+    if (a.def->row.crowd_control_guid != 0 && !takes_crowd_control(*a.def)) {
         if (refused_effects_.insert(a.def->row.guid).second) {
-            spdlog::info("[effects] {} is a root, stun or other crowd control: mobs do not stop for one yet, so it is not put on {}", a.def->row.name, n.leaf);
+            if (a.def->cc) {
+                spdlog::info("[effects] {} is a crowd control mobs do not take yet (status {}: a silence, a knockback, a pull or an animation of its own), so it is not put on {}", a.def->row.name,
+                             a.def->cc->applied_status, n.leaf);
+            } else {
+                spdlog::info("[effects] {} names a crowd-control record the data does not have, so it is not put on {}", a.def->row.name, n.leaf);
+            }
         }
         return;
     }
     effects::Book::Changes changes;
     effects::Instance created;
-    const bool made = n.book.apply(a, instigator, now, changes, &created);
+    const bool made = n.book.apply(a, instigator, now, changes, &created, via_pet);
     send_effects(n, changes);
     if (!changes.empty() && a.def->row.category.find("Hidden") == std::string::npos) {
         spdlog::log(effects_logged_++ < kLoggedEffects ? spdlog::level::info : spdlog::level::debug, "[effects] {} ({}) takes {}: {} stack(s), {:.1f} s left, from player {}", n.leaf, n.actor_id,
@@ -253,6 +327,8 @@ void CombatWorld::run_effect_hits(Npc& n, const effects::Instance& e, const char
         send_effect_hit_confirm(*port, log_ctx, r, note);
         if (!n.dead) effect_hit_fires(n, e.instigator, *hit, e.def->row.guid, at);
         if (n.dead || r.miss()) continue;
+        if (!hit->remove_effects.empty() || (hit->max_remove > 0 && hit->removal != abilities::HitDef::Removal::Unknown)) remove_effects_from_npc(n.actor_id, *hit, at);
+        if (n.dead) return;
         Resolved gate;
         if (!resolver_.resolve_effects(from, n, *hit, meta, gate, why)) continue;
         if (!why.empty()) spdlog::debug("[combat] {} ({}): the effects of {}: {}", n.leaf, n.actor_id, hit->row.name, why);

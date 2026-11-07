@@ -605,6 +605,7 @@ void PlayerSession::die(Connection& conn, Clock::time_point now) {
   cancel_quick_make(&conn, "the player died");
   cancel_gather(&conn, "the player died", Interrupt::Death);
   if (pipeline_) pipeline_->set_dead(true);
+  if (combat_side_ && npc_world_ && npc_world_->combat()) npc_world_->combat()->player_died(pb_.setup().guids.pawn.ObjectId);
   dismiss_pet(now);
   item_reserved_.clear();
   if (mounted()) dismount(conn, now, DismountWhy::PlayerDied);

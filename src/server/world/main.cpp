@@ -96,7 +96,7 @@ struct WorldCliOptions {
     std::string npc_aggro_curves_path = "dist/content/npc_aggro_curves.tsv", mount_speeds_path = "dist/content/mount_speeds.tsv";
     std::string mount_riders_path = "dist/content/mount_riders.tsv", roads_path = "dist/content/roads.tsv";
     std::string town_platforms_path = "dist/content/town_platforms.bin", npc_exclude;
-    double spawn_hour = -1;
+    double spawn_hour = -1, world_hour = -1;
     std::string spawn_node_level = "Wilderness";
     bool no_combat = false, no_loot = false, no_respawn = false, no_death_loss = false;
     double npc_aggro_cm = 800.0, npc_leash_cm = 3000.0, npc_damage_mult = 1.0;
@@ -186,7 +186,9 @@ void register_area_cli_options(CLI::App& app, WorldCliOptions& o) {
     app.add_option("--npc-exclude", o.npc_exclude, "the kill switch for one NPC type: Blueprint names or archetype paths, comma separated, that are not spawned")->envname("AOC_NPC_EXCLUDE");
     app.add_flag("--no-spawn-filter", o.no_spawn_filter, "spawn every point of the design data whose Blueprint opens, as stage 2 did")->envname("AOC_NO_SPAWN_FILTER");
     app.add_flag("--spawn-humanoids", o.spawn_humanoids, "let the humanoid Blueprints through whose body needs an NPCAppearanceComponent the open does not carry")->envname("AOC_SPAWN_HUMANOIDS");
-    app.add_option("--spawn-hour", o.spawn_hour, "the game hour (0-24) the spawns' time-of-day conditions are judged at (default: the machine's local hour)")
+    app.add_option("--world-hour", o.world_hour, "the game hour (0 to 24) the world clock starts at (default: 12, noon); also the hour the spawns' time-of-day conditions are judged at")
+        ->envname("AOC_WORLD_HOUR")->check(CLI::Range(-1.0, 24.0));
+    app.add_option("--spawn-hour", o.spawn_hour, "alias for --world-hour when --world-hour is not given (kept for scripts that passed --spawn-hour)")
         ->envname("AOC_SPAWN_HOUR")->check(CLI::Range(-1.0, 24.0));
     app.add_option("--spawn-node-level", o.spawn_node_level, "the node level the spawns' conditions are judged at: Wilderness, Crossroads, Encampment, Village, Town, City, Metropolis")
         ->envname("AOC_SPAWN_NODE_LEVEL")->capture_default_str();
@@ -284,7 +286,7 @@ int validate_cli_options(WorldCliOptions& o) {
     }
     // CLI11 Range lets NaN through because comparisons with NaN evaluate false.
     const std::pair<const char*, double> checked[] = {
-        {"--area-radius", o.area_radius_m},         {"--scenery-radius", o.scenery_radius_m},   {"--spawn-hour", o.spawn_hour},
+        {"--area-radius", o.area_radius_m},         {"--scenery-radius", o.scenery_radius_m},   {"--world-hour", o.world_hour}, {"--spawn-hour", o.spawn_hour},
         {"--npc-damage-mult", o.npc_damage_mult},   {"--loot-chance-mult", o.loot_chance_mult}, {"--loot-rarity-boost", o.loot_rarity_boost},
         {"--gather-respawn-mult", o.gather_respawn_mult}, {"--foliage-regrow-mult", o.foliage_regrow_mult},
         {"--max-move-speed", o.movement.limits.max_speed}};
@@ -403,6 +405,14 @@ uint64_t configure_player_world(PlayerWorld& players, const WorldCliOptions& o, 
     players.set_dice_seed(dice_seed);
     spdlog::info("[combat] the hit, block and critical rolls start from seed {}{}", dice_seed,
                  o.combat_seed != 0 ? " (--combat-seed: the same rolls for the same fights)" : " (new on every start)");
+    const bool hour_asked = o.world_hour >= 0 || o.spawn_hour >= 0;
+    const double start_hour = o.world_hour >= 0 ? o.world_hour : (o.spawn_hour >= 0 ? o.spawn_hour : world::kDefaultStartHour);
+    const world::WorldClock day_clock = hour_asked ? world::WorldClock::starting_at(start_hour) : world::default_world_clock();
+    players.set_day_clock(day_clock);
+    if (hour_asked) bootstrap::set_global_time_of_day_hours(start_hour);
+    spdlog::info("[clock] the world clock starts at {} (hour {:.1f}; {}): {:.0f} game seconds per real second from hour 6 up to hour 18 and {:.0f} from hour 18 up to hour 6, so a game day takes {:.0f} minutes",
+                 world::hour_text(day_clock.hour(0.0)), day_clock.hour(0.0), o.world_hour >= 0 ? "--world-hour" : (o.spawn_hour >= 0 ? "--spawn-hour" : "default: noon"),
+                 world::WorldClock::kDayRate, world::WorldClock::kNightRate, (12.0 * 3600.0 / world::WorldClock::kDayRate + 12.0 * 3600.0 / world::WorldClock::kNightRate) / 60.0);
     players.set_quest_worker(&quest_worker);
     spdlog::info("[gm] the client's own GM teleport commands are {}",
                  o.gm_commands ? "ON (--gm-commands)" : "off (--gm-commands, or AOC_GM_COMMANDS=1, turns them on); each one the client sends is logged");
@@ -492,18 +502,7 @@ void configure_area_spawns_and_combat(PlayerWorld& players, const WorldCliOption
         spdlog::warn("[area] --spawn-node-level {} is no node level: Wilderness is used", o.spawn_node_level);
         context.node_level = "Wilderness";
     }
-    if (o.spawn_hour >= 0) {
-        context.hour = o.spawn_hour;
-    } else {
-        const std::time_t t = std::time(nullptr);
-        std::tm local{};
-#ifdef _WIN32
-        localtime_s(&local, &t);
-#else
-        localtime_r(&t, &local);
-#endif
-        context.hour = local.tm_hour + local.tm_min / 60.0;
-    }
+    context.hour = players.day_clock().hour(0.0);
     players.set_spawn_context(std::move(context));
     combat::CombatWorldConfig combat_config;
     combat_config.enabled = !o.no_combat;
@@ -661,7 +660,7 @@ std::unique_ptr<aoc::world::telemetry::HealthMetricsHttpServer> start_metrics_se
             static_cast<uint64_t>(std::max<int64_t>(0, up)), loop_stats.datagrams, loop_stats.packets_out, npcs, monsters, resources,
             aoc::worldd::npc::NpcWorld::global_simulate_all_npcs(), static_cast<uint32_t>(std::max(0, o.area.worker_index)),
             o.area.worker_name, std::string(o.area.scope_kind()), std::string(aoc::world::telemetry::ResolveDataMode()),
-            o.area.dynamic_scaling_stub, bootstrap::global_time_of_day_hours(), 37.5};
+            o.area.dynamic_scaling_stub, bootstrap::has_global_time_of_day_override() ? bootstrap::global_time_of_day_hours() : players.day_clock().hour(static_cast<double>(up) / 1000.0), 37.5};
     });
 }
 

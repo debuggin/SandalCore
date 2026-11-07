@@ -714,7 +714,7 @@ func (c *Catalog) SearchPlacesFiltered(_ context.Context, f PlaceFilter) ([]Plac
 		}
 	}
 	sortPlaces(matched, f.Sort)
-	return paginateSlice(matched, f.Offset, f.Limit, 50, max(200, f.Limit))
+	return paginateSlice(matched, f.Offset, f.Limit, max(len(matched), 1), max(len(matched), f.Limit, 1))
 }
 
 func mergePlaces(base, extra []PlaceEntry, nodeLevels map[string]int) []PlaceEntry {

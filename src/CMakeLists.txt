@@ -3,28 +3,12 @@
 # GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 cmake_minimum_required(VERSION 3.22)
 
-if(EXISTS "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows")
-    list(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows")
-    list(APPEND CMAKE_PROGRAM_PATH
-        "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/tools/protobuf"
-        "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/tools/grpc")
-elseif(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT} AND EXISTS "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
-    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
-endif()
-
 project(AshesOfCreation VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-if(MSVC AND MSVC_VERSION LESS 1950)
-    file(GLOB _vs18_lib_dirs "C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/VC/Tools/MSVC/*/lib/x64")
-    if(_vs18_lib_dirs)
-        list(GET _vs18_lib_dirs -1 _vs18_lib_dir)
-        link_directories(BEFORE "${_vs18_lib_dir}")
-    endif()
-endif()
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -65,11 +49,11 @@ find_package(CLI11 CONFIG REQUIRED)
 
 find_program(GRPC_CPP_PLUGIN grpc_cpp_plugin)
 if(NOT GRPC_CPP_PLUGIN)
-    message(FATAL_ERROR "grpc_cpp_plugin not found (install via vcpkg grpc)")
+    message(FATAL_ERROR "grpc_cpp_plugin not found")
 endif()
 find_program(PROTOC protoc)
 if(NOT PROTOC)
-    message(FATAL_ERROR "protoc not found (install via vcpkg protobuf)")
+    message(FATAL_ERROR "protoc not found")
 endif()
 
 # ── Proto codegen ───────────────────────────────────────────────────────────

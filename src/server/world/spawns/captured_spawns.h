@@ -149,4 +149,11 @@ using Minter = std::function<protocol::emit::FIntrepidNetworkGUID()>;
 /// Makes a world actor from an open: new NetGUIDs, the instance's own values (above). nullopt, with `error`, when a value is refused.
 std::optional<world::WorldActor> instantiate(const OpenTemplate& open, const Minter& mint, const InstanceParams& params, std::string& error);
 
+/// Reads `GatherableActorDef.Guid` from a captured gatherable's actor block (`0` if absent).
+int64_t gatherable_def_guid(const OpenTemplate& open) noexcept;
+
+namespace captured_spawns {
+using spawns::gatherable_def_guid;
+}  // namespace captured_spawns
+
 }  // namespace aoc::worldd::spawns

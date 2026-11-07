@@ -27,25 +27,19 @@ import (
 )
 
 var verraSeasonNames = [4]string{
-	"Spring (Greenwake)",
-	"Summer (Suncrest)",
-	"Autumn (Harvestfall)",
-	"Winter (Frostveil)",
-}
-
-var verraMonthNames = [12]string{
-	"Greenwake", "Bloomtide", "Sunseed",
-	"Suncrest", "Highflare", "Emberwane",
-	"Harvestfall", "Duskreap", "Mistveil",
-	"Frostveil", "Deepcold", "Starthaw",
+	"Spring",
+	"Summer",
+	"Autumn",
+	"Winter",
 }
 
 type VerraCalendar struct {
-	Year       int    `json:"year"`
-	DayOfYear  int    `json:"day_of_year"`
-	Season     string `json:"season"`
-	Month      string `json:"month"`
-	DayOfMonth int    `json:"day_of_month"`
+	Year        int    `json:"year"`
+	DayOfYear   int    `json:"day_of_year"`
+	Season      string `json:"season"`
+	DayOfSeason int    `json:"day_of_season"`
+	Month       string `json:"month"`
+	DayOfMonth  int    `json:"day_of_month"`
 }
 
 func (s *Server) initSimulationDefaults() {
@@ -107,13 +101,14 @@ func (s *Server) CalendarAt(at time.Time) VerraCalendar {
 	year := absDays/360 + 1
 	dayIdx := absDays % 360
 	seasonIdx := min(max(dayIdx/90, 0), 3)
-	monthIdx := min(max(dayIdx/30, 0), 11)
+	dayOfSeason := (dayIdx % 90) + 1
 	return VerraCalendar{
-		Year:       year,
-		DayOfYear:  dayIdx + 1,
-		Season:     verraSeasonNames[seasonIdx],
-		Month:      verraMonthNames[monthIdx],
-		DayOfMonth: (dayIdx % 30) + 1,
+		Year:        year,
+		DayOfYear:   dayIdx + 1,
+		Season:      verraSeasonNames[seasonIdx],
+		DayOfSeason: dayOfSeason,
+		Month:       fmt.Sprintf("Season Day %d", dayOfSeason),
+		DayOfMonth:  dayOfSeason,
 	}
 }
 
@@ -138,6 +133,8 @@ func (s *Server) enrichPayloadWithTimeAndCalendar(payload map[string]any, at tim
 	payload["day_of_year"] = cal.DayOfYear
 	payload["calendar_season"] = cal.Season
 	payload["season"] = cal.Season
+	payload["calendar_day_of_season"] = cal.DayOfSeason
+	payload["day_of_season"] = cal.DayOfSeason
 	payload["calendar_month"] = cal.Month
 	payload["month"] = cal.Month
 	payload["calendar_day_of_month"] = cal.DayOfMonth
@@ -145,6 +142,12 @@ func (s *Server) enrichPayloadWithTimeAndCalendar(payload map[string]any, at tim
 	payload["calendar"] = cal
 	payload["tick_mode"] = tickMode
 	payload["simulate_all_npcs"] = simAll
+	if workers, ok := payload["workers"].([]WorldWorkerStatus); ok && len(workers) > 0 {
+		payload["tick_mode"] = workers[0].TickMode
+		payload["target_tick_hz"] = workers[0].TargetTickHz
+		payload["current_tick_hz"] = workers[0].CurrentTickHz
+		payload["tick_hz"] = workers[0].TickHz
+	}
 }
 
 func (s *Server) registerSimulationRoutes() {
@@ -232,15 +235,29 @@ func (s *Server) applyTimeAndCalendarParams(ctx context.Context, p map[string]an
 }
 
 func (s *Server) broadcastTimeOfDayToWorkers(ctx context.Context, now time.Time, hour float64) {
+	if now.IsZero() {
+		now = s.now()
+	}
+	cal := s.CalendarAt(now)
+	s.timeOfDayMu.RLock()
+	updatedAt := s.timeOfDayUpdatedAt
+	s.timeOfDayMu.RUnlock()
+	if updatedAt.IsZero() {
+		updatedAt = now
+	}
 	s.mu.Lock()
 	workers := append([]*WorldWorkerEndpoint(nil), s.worldWorkers...)
 	s.mu.Unlock()
 	var wg sync.WaitGroup
 	for _, w := range workers {
 		if w != nil {
-			s.markWorkerTimeSyncedAt(w.WorkerID, now)
 			wg.Add(1)
-			go func(worker *WorldWorkerEndpoint) { defer wg.Done(); s.pushTimeOfDayToWorker(ctx, worker, hour) }(w)
+			go func(worker *WorldWorkerEndpoint) {
+				defer wg.Done()
+				if s.pushTimeOfDayToWorker(ctx, worker, hour, cal.Year, cal.DayOfYear) {
+					s.markWorkerTimeSyncedAt(worker.WorkerID, updatedAt)
+				}
+			}(w)
 		}
 	}
 	wg.Wait()
@@ -376,18 +393,64 @@ func (s *Server) callCityNodeSetLevel(ctx context.Context, cli citynodev1.CityNo
 	return resp, err
 }
 
+func workerOverrideAliasKeys(w *WorldWorkerEndpoint) []string {
+	if w == nil {
+		return []string{"aoc-world"}
+	}
+	out := make([]string, 0, 5)
+	for _, raw := range []string{w.WorkerID, w.ScopeKey, w.ContainerName, "aoc-" + w.ScopeKey, "aoc-world"} {
+		if k := strings.ToLower(strings.TrimSpace(raw)); k != "" {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func (s *Server) resolveWorkerTickFieldsLocked(w *WorldWorkerEndpoint, rawMeasuredHz float64) (float64, float64, float64, string) {
+	scopeKind := "region"
+	if w != nil && w.ScopeKind != "" {
+		scopeKind = w.ScopeKind
+	}
+	if w != nil && s.WorkerTickMode() == "manual" {
+		var foundHz float64
+		var foundOk bool
+		playerHandoversMu.Lock()
+		for _, k := range workerOverrideAliasKeys(w) {
+			if hz, ok := workerTickHzOverrides[serverPlayerKey{srv: s, player: k}]; ok {
+				foundHz, foundOk = hz, true
+				break
+			}
+		}
+		playerHandoversMu.Unlock()
+		if foundOk && foundHz >= 0 {
+			return foundHz, foundHz, foundHz, "manual"
+		}
+	}
+	defaultHz := max(defaultWorkerTierTickHz(scopeKind), 30.0)
+	cur := rawMeasuredHz
+	if w != nil && s.workerMeta != nil {
+		if meta := s.workerMeta[w.WorkerID]; meta.ScrapedTickHz >= 30.0 {
+			cur = meta.ScrapedTickHz
+		}
+	}
+	if cur < 30.0 {
+		cur = defaultHz
+	}
+	return cur, cur, -1, "dynamic"
+}
+
 func parseTickRateParams(p map[string]any) (int, string, error) {
 	mode := strings.ToLower(strings.TrimSpace(extractStringParam(p, "tick_mode", "mode")))
 	rawStr := strings.ToLower(strings.TrimSpace(extractStringParam(p, "tick_hz", "hz", "rate", "value")))
 	if mode == "dynamic" || rawStr == "dynamic" || rawStr == "auto" {
-		return 60, "dynamic", nil
+		return -1, "dynamic", nil
 	}
 	tickHz, ok := extractIntParam(p, "tick_hz", "hz", "rate", "amount", "value")
 	if !ok {
 		return 0, "", status.Error(codes.InvalidArgument, "tick_hz must be 'dynamic' (-1), 0 (pause worker NPCs), or 1..120")
 	}
-	if tickHz == -1 {
-		return 60, "dynamic", nil
+	if tickHz <= -1 {
+		return -1, "dynamic", nil
 	}
 	if tickHz == 0 {
 		return 0, "manual", nil
@@ -396,6 +459,66 @@ func parseTickRateParams(p map[string]any) (int, string, error) {
 		return 0, "", status.Error(codes.InvalidArgument, "tick_hz must be between 1 and 120, 0 (pause worker NPCs), or -1 ('dynamic')")
 	}
 	return tickHz, "manual", nil
+}
+
+func (s *Server) recordWorkerScrapedTickHz(workerID string, hz float64, snap *WorldWorkerEndpoint) {
+	if s == nil || hz <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.workerMeta == nil {
+		s.workerMeta = make(map[string]workerTopologyMeta)
+	}
+	meta := s.workerMeta[workerID]
+	meta.ScrapedTickHz = hz
+	s.workerMeta[workerID] = meta
+	for _, w := range s.worldWorkers {
+		if w != nil && w.WorkerID == workerID {
+			w.TickHz, w.CurrentTickHz, w.TargetTickHz, w.TickMode = s.resolveWorkerTickFieldsLocked(w, hz)
+		}
+	}
+	if snap != nil {
+		snap.TickHz, snap.CurrentTickHz, snap.TargetTickHz, snap.TickMode = s.resolveWorkerTickFieldsLocked(snap, hz)
+	}
+}
+
+func (s *Server) currentDynamicWorkerHz(w *WorldWorkerEndpoint) float64 {
+	scopeKind := "region"
+	if w != nil && w.ScopeKind != "" {
+		scopeKind = w.ScopeKind
+	}
+	cur := max(defaultWorkerTierTickHz(scopeKind), 30.0)
+	if w != nil {
+		s.mu.Lock()
+		if meta := s.workerMeta[w.WorkerID]; meta.ScrapedTickHz >= 30.0 {
+			cur = meta.ScrapedTickHz
+		}
+		s.mu.Unlock()
+	}
+	return cur
+}
+
+func (s *Server) applyWorkerTickOverrideKeys(tickMode string, hz float64, aliasKeys []string) {
+	s.timeOfDayMu.Lock()
+	s.workerTickMode = tickMode
+	if s.workerTickHzMap == nil {
+		s.workerTickHzMap = make(map[string]float64)
+	}
+	playerHandoversMu.Lock()
+	for _, rawKey := range aliasKeys {
+		if k := strings.ToLower(strings.TrimSpace(rawKey)); k != "" {
+			if hz < 0 {
+				delete(workerTickHzOverrides, serverPlayerKey{srv: s, player: k})
+				s.workerTickHzMap[k] = -1
+			} else {
+				workerTickHzOverrides[serverPlayerKey{srv: s, player: k}] = hz
+				s.workerTickHzMap[k] = hz
+			}
+		}
+	}
+	playerHandoversMu.Unlock()
+	s.timeOfDayMu.Unlock()
 }
 
 func (s *Server) pushWorkerTickAndNpcSim(ctx context.Context, host string, w *WorldWorkerEndpoint, adminHz int, tickMode string, simEnabled bool, simFlag int) {
@@ -477,16 +600,32 @@ func (s *Server) hydrateFromPostgres(ctx context.Context) {
 			s.timeScale = scale
 		}
 		s.simulateAllNpcs = simAll
-		s.workerTickMode = firstNonEmpty(tickMode, "dynamic")
-		_ = json.Unmarshal(tickHzRaw, &s.workerTickHzMap)
-		playerHandoversMu.Lock()
-		for k, hz := range s.workerTickHzMap {
-			workerTickHzOverrides[serverPlayerKey{srv: s, player: strings.ToLower(strings.TrimSpace(k))}] = hz
-		}
-		playerHandoversMu.Unlock()
 		s.timeOfDayMu.Unlock()
+		s.applyHydratedTickState(tickMode, tickHzRaw)
 	}
 	s.hydrateCityNodesFromPostgres(qctx)
+}
+
+func (s *Server) applyHydratedTickState(tickMode string, tickHzRaw []byte) {
+	s.timeOfDayMu.Lock()
+	defer s.timeOfDayMu.Unlock()
+	s.workerTickMode = strings.ToLower(strings.TrimSpace(firstNonEmpty(tickMode, "dynamic")))
+	if s.workerTickMode != "manual" {
+		s.workerTickMode = "dynamic"
+	}
+	s.workerTickHzMap = make(map[string]float64)
+	_ = json.Unmarshal(tickHzRaw, &s.workerTickHzMap)
+	playerHandoversMu.Lock()
+	for k, hz := range s.workerTickHzMap {
+		normKey := strings.ToLower(strings.TrimSpace(k))
+		if s.workerTickMode == "manual" && hz >= 0 {
+			workerTickHzOverrides[serverPlayerKey{srv: s, player: normKey}] = hz
+		} else {
+			delete(workerTickHzOverrides, serverPlayerKey{srv: s, player: normKey})
+			s.workerTickHzMap[k] = -1
+		}
+	}
+	playerHandoversMu.Unlock()
 }
 
 func (s *Server) hydrateCityNodesFromPostgres(ctx context.Context) {

@@ -161,6 +161,10 @@ struct ShrineInfo {
     uint64_t    seed = 0;         // the spawn point's seed: its SpawnerGuid is made from it
 };
 
+struct GatherCandidatePoint {
+    double x = 0, y = 0, z = 0;
+};
+
 /// What the harvesting player's own connection sees of a resource node that the shared state cannot say (an object reference to a pawn that only that
 /// player's client has).  The node's InteractableComponent holds InteractingPlayer as none; the actor view of the player `player_id` shows `pawn` in it while `show` is set
 /// (gather/node_wire.h).  Every other connection sees none, as the retail captures' second observer does.
@@ -168,6 +172,8 @@ struct GatherSeen {
     uint64_t                         player_id = 0;   // the PlayerId of the player who harvests (or harvested) the node
     protocol::emit::FIntrepidNetworkGUID pawn;        // ... and its pawn
     bool                             show = false;
+    std::vector<GatherCandidatePoint> area_points;
+    uint32_t                         next_point = 0;
 };
 
 /// The place on an actor for the update that the views share (session/shared_updates.h).  A copy of an actor starts without one: what it holds describes the actor it was made for.

@@ -390,23 +390,23 @@ void check_held_ranks_passives_and_mage(Rig &bard, Rig &plain) {
                 1.0,
             "...and true once the rank is bought (it could never be true: the "
             "join held skills only)");
-      CHECK(holds(mage.book->held_ranks(), stats::kRefTypeSkillTree,
+      CHECK(holds(mage.book->held_ranks(0), stats::kRefTypeSkillTree,
                   107281647359609ll, stats::kRefTypeSkillRank,
                   6064631986549818361ll),
-            "held_ranks() lists the rank-typed reference of the bought rank");
+            "held_ranks(0) lists the rank-typed reference of the bought rank");
     }
   }
 }
 
 void test_held_ranks() {
   std::printf(
-      "the ranks the join holds: the talents::Book's held_ranks() and "
+      "the ranks the join holds: the talents::Book's held_ranks(0) and "
       "passives(), the one source of both the session and these tests\n");
   Rig bard(2, 25, kTalents);
   CHECKF(bard.ok(), "the rig: %s", bard.problem.c_str());
   if (!bard.ok())
     return;
-  const std::vector<stats::SkillRank> held = bard.book->held_ranks();
+  const std::vector<stats::SkillRank> held = bard.book->held_ranks(0);
   const int64_t tree = bard.book->class_tree()->guid;
   size_t skills = 0, ranks = 0;
   for (const stats::SkillRank &s : held) {

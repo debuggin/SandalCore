@@ -20,16 +20,20 @@ namespace {
 
 void sample_area_points(const nav::AreaNav& nav, const spawns::AreaConfig& area, size_t& sampled, size_t& outside) {
     const auto probe = [&](double x, double y) {
+        if (!area.contains(x, y)) return;
         ++sampled;
         if (!nav.in_region(x, y)) ++outside;
     };
+    const auto probe_rect = [&](const spawns::region::Rect& r) {
+        probe((r.x0 + r.x1) * 0.5, (r.y0 + r.y1) * 0.5);
+        probe(r.x0 + 1.0, r.y0 + 1.0);
+        probe(r.x1 - 1.0, r.y1 - 1.0);
+    };
     if (area.region) {
-        for (size_t i = 0; i < spawns::region::kRiverlandsRectCount; ++i) {
-            const spawns::region::Rect& r = spawns::region::kRiverlandsRects[i];
-            probe((r.x0 + r.x1) * 0.5, (r.y0 + r.y1) * 0.5);
-            probe(r.x0 + 1.0, r.y0 + 1.0);
-            probe(r.x1 - 1.0, r.y1 - 1.0);
-        }
+        const bool by_zoi = !area.zoi_guids.empty();
+        const size_t n = by_zoi ? spawns::region::kZoiRectCount : spawns::region::kRiverlandsRectCount;
+        const spawns::region::Rect* rects = by_zoi ? spawns::region::kZoiRects : spawns::region::kRiverlandsRects;
+        for (size_t i = 0; i < n; ++i) probe_rect(rects[i]);
         return;
     }
     for (double dy = -area.radius_cm; dy <= area.radius_cm; dy += 10000.0) {
@@ -50,11 +54,13 @@ std::vector<std::pair<double, double>> sample_small_area_window(const nav::AreaN
     for (double dy = -r; dy <= r + 1; dy += 8000.0) {
         for (double dx = -r; dx <= r + 1; dx += 8000.0) {
             if (std::hypot(dx, dy) > r + 6000.0) continue;
-            const nav::ChunkKey k = nav.chunk_at(area.center_x + dx, area.center_y + dy);
+            const double px = area.center_x + dx, py = area.center_y + dy;
+            if (!area.contains(px, py)) continue;
+            const nav::ChunkKey k = nav.chunk_at(px, py);
             if (!keys.insert({k.x, k.y}).second) continue;
             const auto it = tiles_of.find({k.x, k.y});
             if (it != tiles_of.end()) tiles += it->second;
-            points.emplace_back(area.center_x + dx, area.center_y + dy);
+            points.emplace_back(px, py);
         }
     }
     if (tiles * 5 <= static_cast<size_t>(nav.file().settings.max_tiles) * 4) {

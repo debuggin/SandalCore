@@ -51,8 +51,17 @@ bool mark_dead(world::WorldActor& actor);
 /// CombatInfo.EliteRank.
 bool write_elite_rank(world::ActorRegistry& registry, uint64_t actor_id, int rank);
 
-/// The stats component's CrowdControlState: StatusFlags and SnareValue.
-bool write_cc_state(world::ActorRegistry& registry, uint64_t actor_id, int64_t flags, double snare);
+struct CcWire {
+    int64_t flags = 0;
+    double  snare = 0;
+    bool    rooted_by_other = false, override_move = false;
+    int     anim_request = 255;
+    int64_t anim_record = 0;
+    double  anim_start = 0, anim_seconds = 0, anim_end = -1;
+};
+
+/// Writes the creature's CrowdControlState.
+bool write_cc_state(world::ActorRegistry& registry, uint64_t actor_id, const CcWire& wire);
 
 /// The EveryoneProxy item's value for a stat of an actor opened from a template (what the client is told now); false when there is none.
 bool read_stat(const world::WorldActor& actor, int64_t record, float& value);

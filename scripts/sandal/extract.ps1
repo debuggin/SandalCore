@@ -58,6 +58,7 @@ function Get-ExtractToolBinaries {
         navbuild      = Join-Path $RootPath "dist/Release/aoc_navbuild$exeExt"
         itemnames     = Join-Path $RootPath 'src/tools/itemnames'
         npcabilities  = Join-Path $RootPath 'src/tools/npcabilities'
+        pcap_spawns   = Join-Path $RootPath 'src/tools/pcap_spawns'
         nav_inputs    = Join-Path $RootPath 'scripts/nav_inputs.ps1'
     }
 }
@@ -118,11 +119,12 @@ function Test-ExistingExtractedGameData {
         'roads'        = @('roads_raw.tsv', 'roads.tsv', 'roads_levels.tsv')
         'townfloors'   = @('town_platforms.bin')
         'townlayouts'  = @('town_layout_items.tsv', 'town_layouts.bin')
+        'pmtiles'      = @('verra.pmtiles')
         'npcabilities' = @('npc_abilities.tsv', 'npc_montages.tsv', 'npc_targeting.tsv', 'npc_senses.tsv', 'npc_aggro_curves.tsv', 'npc_looks.tsv', 'npc_appearances.tsv', 'npc_names.tsv', 'npc_trees.tsv')
-        'navmesh'      = @('npc_motion.tsv', 'region_foliage.tsv', 'area_geom.bin', 'area_nav.bin')
+        'navmesh'      = @('npc_motion.tsv', 'region_foliage.tsv', 'pcap_resource_spawners.tsv', 'area_geom.bin', 'area_nav.bin')
         'region'       = @()
     }
-    $allFiles = @('content.db', 'aoc.usmap', 'artisan_curves.tsv', 'mount_speeds.tsv', 'mount_riders.tsv', 'item_names.tsv', 'roads.tsv', 'roads_levels.tsv', 'town_platforms.bin', 'town_layout_items.tsv', 'town_layouts.bin', 'npc_abilities.tsv', 'npc_montages.tsv', 'npc_targeting.tsv', 'npc_senses.tsv', 'npc_aggro_curves.tsv', 'npc_looks.tsv', 'npc_appearances.tsv', 'npc_names.tsv', 'npc_trees.tsv', 'npc_motion.tsv', 'region_foliage.tsv', 'area_geom.bin', 'area_nav.bin', 'client_config/DefaultCombat.ini')
+    $allFiles = @('content.db', 'aoc.usmap', 'artisan_curves.tsv', 'mount_speeds.tsv', 'mount_riders.tsv', 'item_names.tsv', 'roads.tsv', 'roads_levels.tsv', 'town_platforms.bin', 'town_layout_items.tsv', 'town_layouts.bin', 'verra.pmtiles', 'npc_abilities.tsv', 'npc_montages.tsv', 'npc_targeting.tsv', 'npc_senses.tsv', 'npc_aggro_curves.tsv', 'npc_looks.tsv', 'npc_appearances.tsv', 'npc_names.tsv', 'npc_trees.tsv', 'npc_motion.tsv', 'region_foliage.tsv', 'pcap_resource_spawners.tsv', 'area_geom.bin', 'area_nav.bin', 'client_config/DefaultCombat.ini')
     $stageFiles = if ($stageMap.ContainsKey($GraphStage)) { $stageMap[$GraphStage] } else { $allFiles }
     foreach ($rel in $stageFiles) {
         $p = Join-Path $outDir $rel
@@ -143,7 +145,7 @@ function Test-ExtractStageReady {
             return $false
         }
     }
-    if ($GraphStage -in @('config', 'curves', 'names', 'database', 'region', 'roads', 'townfloors', 'townlayouts', 'npcabilities', 'navmesh')) {
+    if ($GraphStage -in @('config', 'curves', 'names', 'database', 'region', 'roads', 'townfloors', 'townlayouts', 'pmtiles', 'npcabilities', 'navmesh')) {
         if (-not (Test-ExistingExtractedGameData -RootPath $RootPath -GraphStage $GraphStage)) {
             return $false
         }

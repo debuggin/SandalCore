@@ -531,13 +531,15 @@ namespace SandalLauncher.ViewModels
 
         public static string SanitizeAutoCharacterName(string? raw)
         {
-            string uniqueHero = LauncherCliOptions.GenerateEffTempAccountName("TST");
+            string w1 = LauncherCliOptions.EffAccountWords[System.Security.Cryptography.RandomNumberGenerator.GetInt32(LauncherCliOptions.EffAccountWords.Count)];
+            string w2 = LauncherCliOptions.EffAccountWords[System.Security.Cryptography.RandomNumberGenerator.GetInt32(LauncherCliOptions.EffAccountWords.Count)];
+            string uniqueHero = $"TST{w1}{w2}";
+            if (uniqueHero.Length > 20)
+                uniqueHero = uniqueHero[..20];
             if (string.IsNullOrWhiteSpace(raw) || raw.Contains('_', StringComparison.Ordinal))
                 return uniqueHero;
-            if (ProfileStoreService.IsTemporaryUsername(raw))
-                return raw.Trim();
             string trimmed = new(raw.Trim().Where(char.IsLetterOrDigit).ToArray());
-            return trimmed.Length is >= 3 and <= 32 && char.IsLetter(trimmed[0]) ? trimmed : uniqueHero;
+            return trimmed.Length is >= 3 and <= 20 && char.IsLetter(trimmed[0]) ? trimmed : uniqueHero;
         }
 
         public static string NormalizeWorldEndpoint(string? worldEndpoint, Uri? gatewayUri)

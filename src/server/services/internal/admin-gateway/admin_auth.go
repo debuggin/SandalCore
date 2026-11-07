@@ -6,6 +6,7 @@ package admingateway
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -569,14 +570,12 @@ func (s *Server) snapshotWorldWorkerStatuses() []WorldWorkerStatus {
 	out, dynCounts := make([]WorldWorkerStatus, len(s.worldWorkers)), make(map[string]int)
 	for i, w := range s.worldWorkers {
 		meta, ep := s.workerMeta[w.WorkerID], *w
-		if hz, ok := s.lookupWorkerTickHzOverrideLocked(w); ok {
-			ep.TickHz = hz
-		} else if ep.TickHz <= 0 {
-			ep.TickHz = defaultWorkerTierTickHz(ep.ScopeKind)
-			if meta.ScrapedTickHz > 0 {
-				ep.TickHz = meta.ScrapedTickHz
-			}
+		rawHz := ep.TickHz
+		if meta.ScrapedTickHz > 0 {
+			rawHz = meta.ScrapedTickHz
 		}
+		ep.TickHz, ep.CurrentTickHz, ep.TargetTickHz, ep.TickMode = s.resolveWorkerTickFieldsLocked(w, rawHz)
+		w.TickHz, w.CurrentTickHz, w.TargetTickHz, w.TickMode = ep.TickHz, ep.CurrentTickHz, ep.TargetTickHz, ep.TickMode
 		if ep.CPUPct <= 0 {
 			ep.CPUPct = computeWorkerAdaptiveCPUPct(ep.TickP50Ms, ep.ScopeKind)
 		}
@@ -600,18 +599,14 @@ func (s *Server) handleRegisterMeshWorker(w http.ResponseWriter, r *http.Request
 		return
 	}
 	wid, scopeKind := extractStringParam(raw, "worker_id", "id", "name"), firstNonEmpty(extractStringParam(raw, "scope_kind", "topology_mode", "mode"), "region")
-	ep := &WorldWorkerEndpoint{
-		WorkerID: wid, ScopeKey: extractStringParam(raw, "scope_key", "region", "zoi_id", "city"), ScopeKind: scopeKind, ContainerName: extractStringParam(raw, "container_name", "container"),
-		AdminAddr: extractStringParam(raw, "admin_addr", "grpc_addr"), StreamAddr: extractStringParam(raw, "stream_addr"),
-		Status: "ONLINE", Connected: true, TickHz: defaultWorkerTierTickHz(scopeKind), LastSeenMs: s.now().UnixMilli(),
-	}
+	ep := &WorldWorkerEndpoint{WorkerID: wid, ScopeKey: extractStringParam(raw, "scope_key", "region", "zoi_id", "city"), ScopeKind: scopeKind, ContainerName: extractStringParam(raw, "container_name", "container"), AdminAddr: extractStringParam(raw, "admin_addr", "grpc_addr"), StreamAddr: extractStringParam(raw, "stream_addr"), Status: "ONLINE", Connected: true, TickHz: defaultWorkerTierTickHz(scopeKind), LastSeenMs: s.now().UnixMilli()}
 	idx, err := s.upsertRegisteredWorker(ep, extractPolygonFromMap(raw))
 	if err != nil {
 		writeProblem(w, r, http.StatusBadRequest, "worker-limit-exceeded", err.Error())
 		return
 	}
-	statuses := s.snapshotWorldWorkerStatuses()
-	var worker any
+	go s.syncWorkerTimeOfDayIfNeeded(context.Background(), ep)
+	statuses, worker := s.snapshotWorldWorkerStatuses(), any(nil)
 	if idx >= 0 && idx < len(statuses) {
 		worker = statuses[idx]
 	}
@@ -660,11 +655,16 @@ func (s *Server) upsertRegisteredWorker(ep *WorldWorkerEndpoint, poly [][2]float
 		ep.ContainerName = cname
 	}
 	if idx >= 0 {
+		if ep.AdminClient == nil && (ep.AdminAddr == "" || ep.AdminAddr == s.worldWorkers[idx].AdminAddr) {
+			ep.AdminClient, ep.adminConn, ep.StreamClient, ep.streamConn = s.worldWorkers[idx].AdminClient, s.worldWorkers[idx].adminConn, s.worldWorkers[idx].StreamClient, s.worldWorkers[idx].streamConn
+		}
 		s.worldWorkers[idx] = ep
 	} else {
 		idx, s.worldWorkers = len(s.worldWorkers), append(s.worldWorkers, ep)
 	}
-	s.workerMeta[ep.WorkerID] = workerTopologyMeta{WorkerIndex: idx, CanonicalName: cname, TopologyMode: ep.ScopeKind, PolygonCutout: poly, DynamicScalingStub: isDynamicStubMode(ep.ScopeKind)}
+	prevMeta := s.workerMeta[ep.WorkerID]
+	ep.TickHz, ep.CurrentTickHz, ep.TargetTickHz, ep.TickMode = s.resolveWorkerTickFieldsLocked(ep, ep.TickHz)
+	s.workerMeta[ep.WorkerID] = workerTopologyMeta{WorkerIndex: idx, CanonicalName: cname, TopologyMode: ep.ScopeKind, PolygonCutout: poly, DynamicScalingStub: isDynamicStubMode(ep.ScopeKind), ScrapedTickHz: prevMeta.ScrapedTickHz}
 	return idx, nil
 }
 
@@ -726,7 +726,7 @@ func (s *Server) collectCatalogZois() []any {
 			"zoi_id": zoiName, "name": zoiName, "display_name": n.DisplayName,
 			"node_name": n.Name, "node_guid": strconv.FormatInt(n.GUID, 10), "region": reg,
 			"canonical_worker": "aoc-" + strings.ReplaceAll(strings.ToLower(zoiName), "_", "-"),
-			"center_x_cm": n.Ox, "center_y_cm": n.Oy, "center_z_cm": n.Oz,
+			"center_x_cm":      n.Ox, "center_y_cm": n.Oy, "center_z_cm": n.Oz,
 			"min_x_cm": n.Ox - half, "min_y_cm": n.Oy - half, "max_x_cm": n.Ox + half, "max_y_cm": n.Oy + half,
 		})
 	}
@@ -796,4 +796,3 @@ func (s *Server) resolveAuthoritativeWorkerForTarget(st *playerRegionalHandoverS
 	}
 	return "aoc-world-" + strings.ReplaceAll(targetReg, "_", "-")
 }
-

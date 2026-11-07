@@ -505,7 +505,7 @@ void NpcWorld::step_all_ambient(double t) {
     if (total == 0) return;
     const uint32_t eff_hz = static_cast<uint32_t>(std::clamp(static_cast<int>(std::lround(1.0 / std::max(1e-3, cfg_.step_seconds))), 10, 60));
     const size_t min_for_1s_backlog = (total + eff_hz - 1) / eff_hz;
-    const size_t max_slice = std::min(total, std::max<size_t>(cfg_.sim_step_cap, min_for_1s_backlog));
+    const size_t max_slice = (cfg_.sim_step_cap == 0) ? total : std::min(total, std::max<size_t>(cfg_.sim_step_cap, min_for_1s_backlog));
     const double budget_ms = std::max(0.5, 0.375 * cfg_.step_seconds * 1000.0);
     const auto slice_start = std::chrono::steady_clock::now();
     auto it = npcs_.begin();
@@ -516,7 +516,7 @@ void NpcWorld::step_all_ambient(double t) {
         Npc& n = it->second;
         ++it;
         if (n.active || n.rm || (!n.can_ambient_roam && !allow_when_players)) continue;
-        if (n.mode == Mode::Ordered || n.pursue || n.track) continue;
+        if (n.mode == Mode::Ordered || n.pursue || n.track || n.lock_walk || n.lock_turn) continue;
         if (n.setup.ambient == Ambient::Stationary && !n.hostile && n.setup.route.size() < 2) continue;
         step_roam(n, t);
         ++stepped;
@@ -701,7 +701,7 @@ void NpcWorld::commit(Npc& n, double t, bool force) {
     if (!a) return;
     const nav::Vec3 g = n.mover.ground();
     const double z = n.mover.origin_z(), yaw = n.mover.yaw_degrees();
-    const bool moving = n.mover.moving() && n.active;
+    const bool moving = n.mover.moving() && n.active && !n.lock_walk;
     const nav::Vec3 vel = moving ? n.mover.velocity() : nav::Vec3{};
     const bool moved = std::fabs(a->x - g.x) > 1e-3 || std::fabs(a->y - g.y) > 1e-3 || std::fabs(a->z - z) > 1e-3 || std::fabs(a->yaw_degrees - yaw) > 1e-3;
     if (!force && !moved && moving == n.reported_moving) return;
@@ -711,21 +711,30 @@ void NpcWorld::commit(Npc& n, double t, bool force) {
     ++stats_.writes;
 }
 
+bool NpcWorld::track_running(const Npc& n, double t) { return n.track && !n.lock_turn && !(n.track_until > 0 && t >= n.track_until); }
+
+bool NpcWorld::set_locks(uint64_t id, bool no_walk, bool no_turn) {
+    const auto it = npcs_.find(id);
+    if (it == npcs_.end()) return false;
+    if (no_turn && !it->second.lock_turn) { it->second.turning = false; it->second.track = nullptr; }
+    it->second.lock_walk = no_walk; it->second.lock_turn = no_turn;
+    return true;
+}
+
 void NpcWorld::steer(Npc& n, double t) {
+    if (n.lock_turn) return;
     const double dt = cfg_.step_seconds;
     bool turned = false;
+    if (n.track && !track_running(n, t)) n.track = nullptr;
     if (n.track) {
-        nav::Vec3 at;
-        if (n.track_until > 0 && t >= n.track_until) {
-            n.track = nullptr;
-        } else if (n.track(at)) {
+        if (nav::Vec3 at; n.track(at)) {
             const nav::Vec3 g = n.mover.ground();
             if (std::hypot(at.x - g.x, at.y - g.y) > 1.0) {
                 n.mover.turn_toward(std::atan2(at.y - g.y, at.x - g.x) * 180.0 / 3.14159265358979323846, dt, n.track_rate);
                 turned = true;
             }
-        }
-    } else if (n.turning && !n.mover.moving()) {
+        } else n.track = nullptr;
+    } else if (n.turning && !(n.mover.moving() && !n.lock_walk)) {
         if (n.mover.turn_toward(n.turn_yaw, dt, n.turn_rate)) n.turning = false;
         turned = true;
     }
@@ -757,38 +766,31 @@ void NpcWorld::pursue_step(Npc& n, double) {
 
 void NpcWorld::advance_npc(Npc& n, double t) {
     const double dt = cfg_.step_seconds;
+    if (n.lock_walk) { steer(n, t); commit(n, t, false); return; }
     pursue_step(n, t);
-    if (n.mode == Mode::Stand) {
-        steer(n, t);
-        return;
-    }
+    if (n.mode == Mode::Stand) { steer(n, t); return; }
     if (n.mode == Mode::Idle || n.mode == Mode::PatrolPause) {
-        n.timer -= dt;
-        if (n.timer <= 0) decide(n, t);
+        if ((n.timer -= dt) <= 0) decide(n, t);
         if (n.mode == Mode::Idle || n.mode == Mode::PatrolPause) {
             if (n.reported_moving) commit(n, t, false);
             return;
         }
     }
-    const Mover::Status st = n.mover.advance(dt);
+    bool tracked = track_running(n, t);
+    if (nav::Vec3 target_at; tracked && !n.track(target_at)) { n.track = nullptr; tracked = false; }
+    const Mover::Status st = n.mover.advance(dt, !tracked);
     steer(n, t);
     commit(n, t, false);
     if (st == Mover::Status::Arrived) {
-        if (n.mode == Mode::Ordered) {
-            n.mover.stop();
-            return;
-        }
+        if (n.mode == Mode::Ordered) { n.mover.stop(); return; }
         if (n.mode == Mode::Patrol) {
             const size_t i = n.wp;
-            const double pause = i < n.setup.pauses.size() ? std::max(0.0, n.setup.pauses[i]) : 0.0;
             n.mover.stop();
             n.mode = Mode::PatrolPause;
-            n.timer = pause;
-        } else {
-            go_idle(n);
-        }
-    } else if (st == Mover::Status::Blocked || st == Mover::Status::Idle) {
-        if (n.mode != Mode::Ordered) go_idle(n);
+            n.timer = i < n.setup.pauses.size() ? std::max(0.0, n.setup.pauses[i]) : 0.0;
+        } else go_idle(n);
+    } else if ((st == Mover::Status::Blocked || st == Mover::Status::Idle) && n.mode != Mode::Ordered) {
+        go_idle(n);
     }
 }
 

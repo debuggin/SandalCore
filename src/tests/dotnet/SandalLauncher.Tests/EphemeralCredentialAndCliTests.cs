@@ -149,8 +149,9 @@ public sealed class EphemeralCredentialAndCliTests
             new Dictionary<string, string?> { ["AOC_LAUNCHER_EMAIL"] = "" });
 
         Assert.True(opts.RegisterTemp);
-        Assert.StartsWith("TMP ", opts.Username, StringComparison.Ordinal);
-        Assert.Matches("^TMP ([A-Z][a-z]+){3}$", opts.Username);
+        Assert.StartsWith("TMP_", opts.Username, StringComparison.Ordinal);
+        Assert.Matches("^[A-Za-z0-9_.-]{3,32}$", opts.Username);
+        Assert.Matches("^TMP_([A-Z][a-z]+){3}$", opts.Username);
         Assert.EndsWith("@sandalcore.local", opts.Email, StringComparison.Ordinal);
         Assert.DoesNotContain(" ", opts.Email, StringComparison.Ordinal);
         Assert.Matches("^[a-zA-Z0-9_-]{12,128}$", opts.Password);
@@ -181,15 +182,25 @@ public sealed class EphemeralCredentialAndCliTests
         string tstName = LauncherCliOptions.GenerateEffTempAccountName("TST");
         string defaultTemp = LauncherCliOptions.GenerateTempUsername();
 
-        Assert.Matches("^TMP ([A-Z][a-z]+){3}$", tmpName);
-        Assert.Matches("^TST ([A-Z][a-z]+){3}$", tstName);
-        Assert.Matches("^TMP ([A-Z][a-z]+){3}$", defaultTemp);
+        Assert.Matches("^[A-Za-z0-9_.-]{3,32}$", tmpName);
+        Assert.Matches("^[A-Za-z0-9_.-]{3,32}$", tstName);
+        Assert.Matches("^[A-Za-z0-9_.-]{3,32}$", defaultTemp);
+        Assert.Matches("^TMP_([A-Z][a-z]+){3}$", tmpName);
+        Assert.Matches("^TST_([A-Z][a-z]+){3}$", tstName);
+        Assert.Matches("^TMP_([A-Z][a-z]+){3}$", defaultTemp);
         Assert.True(ProfileStoreService.IsTemporaryUsername(tmpName));
         Assert.True(ProfileStoreService.IsTemporaryUsername(tstName));
+        Assert.True(ProfileStoreService.IsTemporaryUsername("TMP_HeroNoodleTruck"));
+        Assert.True(ProfileStoreService.IsTemporaryUsername("TST_GruelingBiscuitLauncher"));
         Assert.True(ProfileStoreService.IsTemporaryUsername("TMP HeroNoodleTruck"));
         Assert.True(ProfileStoreService.IsTemporaryUsername("TST GruelingBiscuitLauncher"));
+        Assert.Equal("tmp_heronoodletruck", LauncherCliOptions.ToEffAccountSlug("TMP_HeroNoodleTruck"));
+        Assert.Equal("tst_gruelingbiscuitlauncher", LauncherCliOptions.ToEffAccountSlug("TST_GruelingBiscuitLauncher"));
         Assert.Equal("tmp_heronoodletruck", LauncherCliOptions.ToEffAccountSlug("TMP HeroNoodleTruck"));
         Assert.Equal("tst_gruelingbiscuitlauncher", LauncherCliOptions.ToEffAccountSlug("TST GruelingBiscuitLauncher"));
+        Assert.Matches("^[A-Za-z][A-Za-z0-9]{2,19}$", SandalLauncher.ViewModels.MainWindowViewModel.SanitizeAutoCharacterName(null));
+        Assert.Matches("^[A-Za-z][A-Za-z0-9]{2,19}$", SandalLauncher.ViewModels.MainWindowViewModel.SanitizeAutoCharacterName("Hero_Auto"));
+        Assert.Matches("^[A-Za-z][A-Za-z0-9]{2,19}$", SandalLauncher.ViewModels.MainWindowViewModel.SanitizeAutoCharacterName("TST GruelingBiscuitLauncher"));
     }
 
     [Fact]

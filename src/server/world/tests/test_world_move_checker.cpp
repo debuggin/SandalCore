@@ -1,30 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  test_world_move_checker.cpp: the plausibility checks of plan A6 (spec section 10)
-//
-//    a walk (600 cm/s), a sprint (962), a dodge (1,423) and a jump's launch and descent are accepted
-//    a teleport, a non-finite number, a TimeStamp going back or standing still, a location outside the world,
-//      a climb or a fall faster than the limits get a correction, each with its own reason
-//    a refused move changes nothing: the last good position stays, and the next move is measured from it
-//    the time a move may claim is bounded (a raced clock buys no more than max_time_step)
-//    the time is paced against the server's clock: racing the TimeStamp, 36 moves at one instant and a client
-//      whose clock runs 8x fast are held to 1.25 x the speed limit over real time (a bank of 5 s, once); the
-//      captured moves, at their own pace, in 0.2 s and 1 s bursts and with a client clock 15% fast, are not
-//    the first move is measured against the spawn point; the client's clock reset every 240 s is allowed
-//    the limits are configurable (--max-move-speed): at 300 cm/s a walk is refused
-//    every one of the 2,483 captured moves is accepted at the defaults, in the order the session judges them
-//      (a packet's pending move, then its new one); at 900 cm/s (1.5 x the walking speed) the dodge and
-//      sprint of the native run are refused: why the default is 1.5 x the fastest measured speed
-//    the Verra box: the content envelope's corners are inside, a centimetre beyond any face is OutOfWorld
-//    the upward burst: the in-game ledge (112, 132, 131 cm in three moves 15 ms apart) is accepted, a sustained climb
-//      is held to max_rise_speed once the burst (max_rise_burst, 500 cm) is spent, and the burst refills
-//    the Dodge's dash (plan A7): the retail Rogue's dash (the retail capture: 2,237 cm/s, above max_speed) is accepted while a Dodge is
-//      on (check()'s dash, limit 3,355 cm/s), a dash that lasts is refused without it, and no Dodge allows 4,500
-// ============================================================================
+// Movement plausibility checks (plan A6, A7, and navmesh surface under-ground checks).
 #include "capture_moves.h"
 #include "capture_rogue_dash.h"
+#include "nav_fixture.h"
 #include "session/move_checker.h"
 
 #include <algorithm>
@@ -366,98 +346,86 @@ static void test_captures() {
     CHECK(refused >= 1 && fault == MoveFault::TooFast, "(control: a spawn point 300 m from where the client is: its first moves are refused)");
 }
 
-// ---- pacing against the server's clock ------------------------------------------------------------------------------------------
+static void test_pacing_speed_and_burst(const MoveLimits& lim) {
+    MoveChecker c(lim, start_at(kX, kY, kZ));
+    float ts = 1.0f;
+    double x = kX;
+    int accepted = 0, refused = 0;
+    c.check(move_at(ts, x, kY, kZ), at_s(0));
+    for (int i = 1; i <= 176; ++i) {
+        ts += 5.0f;
+        const double nx = x + 10000.0;
+        if (c.check(move_at(ts, nx, kY, kZ), at_s(i / 60.0)).accepted) {
+            ++accepted;
+            x = nx;
+        } else {
+            ++refused;
+        }
+    }
+    const double seconds = 176 / 60.0, covered = x - kX;
+    std::printf("    racing the TimeStamp for %.2f s: %d moves accepted, %d refused, %.0f cm covered (%.0f cm/s)\n", seconds, accepted, refused, covered, covered / seconds);
+    CHECK(refused >= 150 && accepted <= 10, "a client that claims 5 s per move at 60 moves a second: nearly every move is refused (unpaced, all 176 were accepted: 17.6 km in 2.9 s)");
+    CHECK(covered <= lim.max_speed * (lim.pace_bank + lim.pace_rate * seconds) + lim.slack + 1.0,
+          "the distance covered is the bank once plus 1.25 x the speed limit over the real time that passed");
+
+    MoveChecker burst(lim, start_at(kX, kY, kZ));
+    ts = 1.0f;
+    x = kX;
+    burst.check(move_at(ts, x, kY, kZ), at_s(0));
+    accepted = 0;
+    for (int i = 0; i < 36; ++i) {
+        ts += 5.0f;
+        if (burst.check(move_at(ts, x + 10000.0, kY, kZ), at_s(1.0)).accepted) {
+            ++accepted;
+            x += 10000.0;
+        }
+    }
+    CHECK(accepted <= 2 && x - kX <= lim.max_speed * (lim.pace_bank + lim.pace_rate * 1.0) + lim.slack + 1.0,
+          "36 racing moves at one instant: the bank's worth at most (about 100 m), not 3.6 km");
+}
+
+static void test_pacing_dilation_and_stall(const MoveLimits& lim) {
+    MoveChecker c(lim, start_at(kX, kY, kZ));
+    double x = kX;
+    float ts = 1.0f;
+    int accepted = 0, refused = 0;
+    const int moves = 1200;
+    for (int i = 0; i < moves; ++i) {
+        ts += 8.0f / 60.0f;
+        x += 8.0 * 600.0 / 60.0;
+        const MoveVerdict v = c.check(move_at(ts, x, kY, kZ), at_s(i / 60.0));
+        (v.accepted ? accepted : refused)++;
+        if (!v.accepted) x = c.good().x;
+    }
+    const double seconds = moves / 60.0, covered = c.good().x - kX;
+    std::printf("    8x time dilation for %.0f s: %d accepted, %d refused, %.0f cm covered (%.0f cm/s of real time; the client wants 4,800)\n", seconds, accepted, refused,
+                covered, covered / seconds);
+    CHECK(refused >= 300, "a client whose TimeStamp runs 8x fast has hundreds of its moves refused, and is held well below the 4,800 cm/s it wants (unpaced, all 1,200 were accepted)");
+    CHECK(covered <= lim.max_speed * (lim.pace_bank + lim.pace_rate * seconds) + lim.slack + 1.0, "and it covers no more than the pacing allows: 1.25 x the speed limit plus the bank once");
+
+    MoveChecker stall(lim, start_at(kX, kY, kZ));
+    stall.check(move_at(1.0f, kX, kY, kZ), at_s(0));
+    const MoveVerdict v = stall.check(move_at(6.0f, kX + 6000.0, kY, kZ), at_s(20.0));
+    CHECK(v.accepted && v.dt == 5.0, "after a 20 s stall one step of 5 s (60 m: 1,200 cm/s) is accepted: the bank was full");
+    const MoveVerdict again = stall.check(move_at(11.0f, kX + 12000.0, kY, kZ), at_s(20.016));
+    CHECK(!again.accepted && again.fault == MoveFault::TooFast, "but a second one at once is not: the bank is spent and refills at 1.25 s per second");
+
+    MoveChecker ref(lim, start_at(kX, kY, kZ));
+    ref.check(move_at(1.0f, kX, kY, kZ), at_s(0));
+    ref.check(move_at(1.5f, kX + 90000.0, kY, kZ), at_s(0.1));
+    const MoveVerdict next = ref.check(move_at(1.6f, kX + 100.0, kY, kZ), at_s(0.2));
+    CHECK(next.accepted && next.dt > 0.5 && next.dt <= 0.6 + 1e-6, "a refused move spends nothing: the next one is measured from the last good TimeStamp with its full time");
+}
 
 static void test_pacing() {
     std::printf("the TimeStamp is paced against the server's clock\n");
     const MoveLimits lim;
-    {
-        // a client that adds 5 s to its TimeStamp with every move, at 60 moves a second of the server's clock, 100 m a move
-        MoveChecker c(lim, start_at(kX, kY, kZ));
-        float ts = 1.0f;
-        double x = kX;
-        int accepted = 0, refused = 0;
-        c.check(move_at(ts, x, kY, kZ), at_s(0));
-        for (int i = 1; i <= 176; ++i) {
-            ts += 5.0f;
-            const double nx = x + 10000.0;
-            if (c.check(move_at(ts, nx, kY, kZ), at_s(i / 60.0)).accepted) {
-                ++accepted;
-                x = nx;
-            } else {
-                ++refused;
-            }
-        }
-        const double seconds = 176 / 60.0;
-        const double covered = x - kX;
-        std::printf("    racing the TimeStamp for %.2f s: %d moves accepted, %d refused, %.0f cm covered (%.0f cm/s)\n", seconds, accepted, refused, covered, covered / seconds);
-        CHECK(refused >= 150 && accepted <= 10, "a client that claims 5 s per move at 60 moves a second: nearly every move is refused (unpaced, all 176 were accepted: 17.6 km in 2.9 s)");
-        CHECK(covered <= lim.max_speed * (lim.pace_bank + lim.pace_rate * seconds) + lim.slack + 1.0,
-              "the distance covered is the bank once plus 1.25 x the speed limit over the real time that passed");
-    }
-    {
-        // the same client in one instant: 36 moves that share one `now` (one datagram)
-        MoveChecker c(lim, start_at(kX, kY, kZ));
-        float ts = 1.0f;
-        double x = kX;
-        c.check(move_at(ts, x, kY, kZ), at_s(0));
-        int accepted = 0;
-        for (int i = 0; i < 36; ++i) {
-            ts += 5.0f;
-            if (c.check(move_at(ts, x + 10000.0, kY, kZ), at_s(1.0)).accepted) {
-                ++accepted;
-                x += 10000.0;
-            }
-        }
-        CHECK(accepted <= 2 && x - kX <= lim.max_speed * (lim.pace_bank + lim.pace_rate * 1.0) + lim.slack + 1.0,
-              "36 racing moves at one instant: the bank's worth at most (about 100 m), not 3.6 km");
-    }
-    {
-        // a time-dilation speed hack: the TimeStamp runs 8x, the position keeps 600 cm/s of the TimeStamp (4,800 cm/s of real time)
-        MoveChecker c(lim, start_at(kX, kY, kZ));
-        double x = kX;
-        float ts = 1.0f;
-        int accepted = 0, refused = 0;
-        const int moves = 1200;   // 20 s at 60 moves a second
-        for (int i = 0; i < moves; ++i) {
-            ts += 8.0f / 60.0f;
-            x += 8.0 * 600.0 / 60.0;
-            const MoveVerdict v = c.check(move_at(ts, x, kY, kZ), at_s(i / 60.0));
-            (v.accepted ? accepted : refused)++;
-            if (!v.accepted) x = c.good().x;   // put back
-        }
-        const double seconds = moves / 60.0;
-        const double covered = c.good().x - kX;
-        std::printf("    8x time dilation for %.0f s: %d accepted, %d refused, %.0f cm covered (%.0f cm/s of real time; the client wants 4,800)\n", seconds, accepted, refused,
-                    covered, covered / seconds);
-        CHECK(refused >= 300, "a client whose TimeStamp runs 8x fast has hundreds of its moves refused, and is held well below the 4,800 cm/s it wants (unpaced, all 1,200 were accepted)");
-        CHECK(covered <= lim.max_speed * (lim.pace_bank + lim.pace_rate * seconds) + lim.slack + 1.0, "and it covers no more than the pacing allows: 1.25 x the speed limit plus the bank once");
-    }
-    {
-        // a stall: 20 s of nothing, then a client that plays honestly again (its TimeStamps kept running): one 5 s step is accepted
-        MoveChecker c(lim, start_at(kX, kY, kZ));
-        c.check(move_at(1.0f, kX, kY, kZ), at_s(0));
-        const MoveVerdict v = c.check(move_at(6.0f, kX + 6000.0, kY, kZ), at_s(20.0));
-        CHECK(v.accepted && v.dt == 5.0, "after a 20 s stall one step of 5 s (60 m: 1,200 cm/s) is accepted: the bank was full");
-        const MoveVerdict again = c.check(move_at(11.0f, kX + 12000.0, kY, kZ), at_s(20.016));
-        CHECK(!again.accepted && again.fault == MoveFault::TooFast, "but a second one at once is not: the bank is spent and refills at 1.25 s per second");
-    }
-    {
-        // a refused move does not spend the bank
-        MoveChecker c(lim, start_at(kX, kY, kZ));
-        c.check(move_at(1.0f, kX, kY, kZ), at_s(0));
-        c.check(move_at(1.5f, kX + 90000.0, kY, kZ), at_s(0.1));   // refused: a teleport
-        const MoveVerdict v = c.check(move_at(1.6f, kX + 100.0, kY, kZ), at_s(0.2));
-        CHECK(v.accepted && v.dt > 0.5 && v.dt <= 0.6 + 1e-6, "a refused move spends nothing: the next one is measured from the last good TimeStamp with its full time");
-    }
+    test_pacing_speed_and_burst(lim);
+    test_pacing_dilation_and_stall(lim);
 }
-// (CoA ~ C.Y.B)
-
-// ---- the Verra box ----------------------------------------------------------------------------------------------------------------
 
 static void test_world_box() {
     std::printf("the Verra box\n");
-    // the envelope of content.db's design-record locations (move_checker.h): every corner is inside the box and a player can stand there
     const double xs[2] = {-2008064.0, 432254.0}, ys[2] = {-912785.0, 1381376.0}, zs[2] = {-11119.0, 100352.0};
     bool corners = true;
     for (double x : xs)
@@ -468,8 +436,6 @@ static void test_world_box() {
             }
     CHECK(corners, "the eight corners of the content envelope (X -2,008,064 .. 432,254, Y -912,785 .. 1,381,376, Z -11,119 .. 100,352) are inside");
 
-    // each face (the documented numbers, not the constant: a box that moved must fail here): exactly on it is inside, a
-    // centimetre beyond it is OutOfWorld
     const WorldBox b = {-2600000.0, 1000000.0, -1500000.0, 2000000.0, -200000.0, 400000.0};
     CHECK(kVerraBox.min_x == b.min_x && kVerraBox.max_x == b.max_x && kVerraBox.min_y == b.min_y && kVerraBox.max_y == b.max_y &&
               kVerraBox.min_z == b.min_z && kVerraBox.max_z == b.max_z,
@@ -498,8 +464,6 @@ static void test_world_box() {
     }
 }
 
-/// The ledge of 2026-10-01 (world.log, 19:52:51): three moves that rise 112, 132 and 131 cm, 15-16 ms apart, standing still
-/// otherwise. `ts` and `now` (seconds) advance with the moves, which arrive at the pace of their own TimeStamps.
 static std::vector<MoveVerdict> ledge_climb(MoveChecker& c, float& ts, double& now) {
     static const double kRise[3] = {112.0, 132.0, 131.0};
     static const double kDt[3] = {0.015, 0.016, 0.016};
@@ -512,93 +476,83 @@ static std::vector<MoveVerdict> ledge_climb(MoveChecker& c, float& ts, double& n
     return out;
 }
 
+static void test_rise_burst_ledge_and_sustain() {
+    MoveChecker c({}, start_at(kX, kY, kZ));
+    float ts = 10.0f;
+    double now = 0;
+    CHECK(c.check(move_at(ts, kX, kY, kZ), at_s(now)).accepted, "(a first move at the spawn point)");
+    const double z0 = c.good().z;
+    const auto v = ledge_climb(c, ts, now);
+    CHECK(v[0].accepted && v[1].accepted && v[2].accepted, "the in-game ledge, 112, 132 and 131 cm up in three moves 15 ms apart (375 cm in 45 ms), is accepted");
+    CHECK(std::fabs(c.good().z - z0 - 375.0) < 0.05, "and the player is 375 cm higher");
+
+    MoveLimits as_before;
+    as_before.max_rise_burst = as_before.slack;
+    MoveChecker old_c(as_before, start_at(kX, kY, kZ));
+    ts = 10.0f;
+    now = 0;
+    old_c.check(move_at(ts, kX, kY, kZ), at_s(now));
+    const auto ov = ledge_climb(old_c, ts, now);
+    CHECK(!ov[0].accepted && ov[0].fault == MoveFault::RisingTooFast && ov[0].step > 111 && ov[0].allowed > 69 && ov[0].allowed < 71,
+          "(control: with the 50 cm credit the first move is refused, 112 cm against the 70 the log shows: the false positive)");
+
+    MoveChecker sustain({}, start_at(kX, kY, kZ));
+    ts = 10.0f;
+    now = 0;
+    sustain.check(move_at(ts, kX, kY, kZ), at_s(now));
+    size_t accepted = 0, refused = 0;
+    for (int i = 1; i <= 20; ++i) {
+        ts += 0.015f;
+        now += 0.015;
+        const MoveVerdict sv = sustain.check(move_at(ts, kX, kY, z0 + 130.0 * i), at_s(now));
+        (sv.accepted ? accepted : refused)++;
+    }
+    CHECK(accepted >= 3 && accepted <= 6 && refused >= 14, "20 moves of 130 cm every 15 ms: only the first few pass (the burst), the rest are refused");
+    CHECK(sustain.good().z - z0 < 700, "and the player has not climbed beyond what the burst and the speed allow");
+}
+
+static void test_rise_burst_refill() {
+    MoveChecker retry({}, start_at(kX, kY, kZ));
+    float ts = 10.0f;
+    double now = 0;
+    retry.check(move_at(ts, kX, kY, kZ), at_s(now));
+    const double z0 = retry.good().z;
+    size_t refused = 0;
+    for (int i = 0; i < 120; ++i) {
+        ts += 0.0167f;
+        now += 0.0167;
+        if (!retry.check(move_at(ts, retry.good().x, retry.good().y, retry.good().z + 50.0), at_s(now)).accepted) ++refused;
+    }
+    const double climbed = retry.good().z - z0;
+    char msg[200];
+    std::snprintf(msg, sizeof(msg), "3,000 cm/s of climbing for 2 s: %.0f cm climbed, the burst (500) and max_rise_speed (1,350 cm/s) over 2 s, %zu moves refused", climbed, refused);
+    CHECK(climbed > 2500 && climbed < 500 + 1350.0 * 2.0 + 150 && refused > 40, msg);
+
+    MoveChecker c({}, start_at(kX, kY, kZ));
+    ts = 10.0f;
+    now = 0;
+    c.check(move_at(ts, kX, kY, kZ), at_s(now));
+    size_t climbs = 0;
+    for (int i = 0; i < 40; ++i) {
+        ts += 0.015f;
+        now += 0.015;
+        if (!c.check(move_at(ts, c.good().x, c.good().y, c.good().z + 130.0), at_s(now)).accepted) break;
+        ++climbs;
+    }
+    CHECK(climbs >= 3 && climbs <= 6, "the burst is spent by a few moves of 130 cm: the next one in 15 ms is refused");
+    ts += 0.5f;
+    now += 0.5;
+    CHECK(c.check(move_at(ts, c.good().x, c.good().y, c.good().z), at_s(now)).accepted, "(0.5 s of quiet, then a move that stands still)");
+    const auto v = ledge_climb(c, ts, now);
+    CHECK(v[0].accepted && v[1].accepted && v[2].accepted, "the burst has refilled: the ledge (112, 132, 131 cm in 45 ms) passes again");
+}
+
 static void test_rise_burst() {
     std::printf("the upward burst (a climb onto a ledge)\n");
-    {
-        MoveChecker c({}, start_at(kX, kY, kZ));
-        float ts = 10.0f;
-        double now = 0;
-        CHECK(c.check(move_at(ts, kX, kY, kZ), at_s(now)).accepted, "(a first move at the spawn point)");
-        const double z0 = c.good().z;
-        const auto v = ledge_climb(c, ts, now);
-        CHECK(v[0].accepted && v[1].accepted && v[2].accepted,
-              "the in-game ledge, 112, 132 and 131 cm up in three moves 15 ms apart (375 cm in 45 ms), is accepted");
-        CHECK(std::fabs(c.good().z - z0 - 375.0) < 0.05, "and the player is 375 cm higher");
-    }
-    {
-        MoveLimits as_before;
-        as_before.max_rise_burst = as_before.slack;   // the credit the draft had: the same as every other direction
-        MoveChecker c(as_before, start_at(kX, kY, kZ));
-        float ts = 10.0f;
-        double now = 0;
-        c.check(move_at(ts, kX, kY, kZ), at_s(now));
-        const auto v = ledge_climb(c, ts, now);
-        CHECK(!v[0].accepted && v[0].fault == MoveFault::RisingTooFast && v[0].step > 111 && v[0].allowed > 69 && v[0].allowed < 71,
-              "(control: with the 50 cm credit the first move is refused, 112 cm against the 70 the log shows: the false positive)");
-    }
-
-    // a sustained climb is not a ledge: the burst is spent once
-    {
-        MoveChecker c({}, start_at(kX, kY, kZ));
-        float ts = 10.0f;
-        double now = 0;
-        c.check(move_at(ts, kX, kY, kZ), at_s(now));
-        const double z0 = c.good().z;
-        size_t accepted = 0, refused = 0;
-        for (int i = 1; i <= 20; ++i) {   // a client that claims 130 cm more every 15 ms (8,700 cm/s), 2.6 m in all
-            ts += 0.015f;
-            now += 0.015;
-            const MoveVerdict v = c.check(move_at(ts, kX, kY, z0 + 130.0 * i), at_s(now));
-            (v.accepted ? accepted : refused)++;
-        }
-        CHECK(accepted >= 3 && accepted <= 6 && refused >= 14, "20 moves of 130 cm every 15 ms: only the first few pass (the burst), the rest are refused");
-        CHECK(c.good().z - z0 < 700, "and the player has not climbed beyond what the burst and the speed allow");
-    }
-    {
-        // a client that is put back when refused and tries again from where it was put, climbing 3,000 cm/s for 2 s
-        MoveChecker c({}, start_at(kX, kY, kZ));
-        float ts = 10.0f;
-        double now = 0;
-        c.check(move_at(ts, kX, kY, kZ), at_s(now));
-        const double z0 = c.good().z;
-        size_t refused = 0;
-        for (int i = 0; i < 120; ++i) {
-            ts += 0.0167f;
-            now += 0.0167;
-            if (!c.check(move_at(ts, c.good().x, c.good().y, c.good().z + 50.0), at_s(now)).accepted) ++refused;
-        }
-        const double climbed = c.good().z - z0;
-        char msg[200];
-        std::snprintf(msg, sizeof(msg), "3,000 cm/s of climbing for 2 s: %.0f cm climbed, the burst (500) and max_rise_speed (1,350 cm/s) over 2 s, %zu moves refused",
-                      climbed, refused);
-        CHECK(climbed > 2500 && climbed < 500 + 1350.0 * 2.0 + 150 && refused > 40, msg);
-    }
-
-    // the burst refills: from a quiet moment (an accepted move that does not rise) the ledge passes again
-    {
-        MoveChecker c({}, start_at(kX, kY, kZ));
-        float ts = 10.0f;
-        double now = 0;
-        c.check(move_at(ts, kX, kY, kZ), at_s(now));
-        size_t climbs = 0;
-        for (int i = 0; i < 40; ++i) {   // 130 cm every 15 ms from where the player is, until a move is refused
-            ts += 0.015f;
-            now += 0.015;
-            if (!c.check(move_at(ts, c.good().x, c.good().y, c.good().z + 130.0), at_s(now)).accepted) break;
-            ++climbs;
-        }
-        CHECK(climbs >= 3 && climbs <= 6, "the burst is spent by a few moves of 130 cm: the next one in 15 ms is refused");
-        ts += 0.5f;
-        now += 0.5;
-        CHECK(c.check(move_at(ts, c.good().x, c.good().y, c.good().z), at_s(now)).accepted, "(0.5 s of quiet, then a move that stands still)");
-        const auto v = ledge_climb(c, ts, now);
-        CHECK(v[0].accepted && v[1].accepted && v[2].accepted, "the burst has refilled: the ledge (112, 132, 131 cm in 45 ms) passes again");
-    }
+    test_rise_burst_ledge_and_sustain();
+    test_rise_burst_refill();
 }
-// -- C-Y-B & CoA --
 
-/// Review A C1: a move in a 3D mode (mode 5 here: a Cleric's Wings of Salvation judges it in 3D) used to refill the vertical credits, so a client that alternated such a move with a
-/// climb of the full burst on the ground rule climbed 500 cm per pair, whatever the time.  The climb of the pair loop must stay within what the speed and the one burst allow.
 static void test_mode_alternation() {
     std::printf("alternating movement modes does not refill the vertical credits (review A C1)\n");
     for (const bool up : {true, false}) {
@@ -607,21 +561,17 @@ static void test_mode_alternation() {
         Clock::time_point now = t0;
         CHECK(c.check(move_at(ts, kX, kY, kZ), now).accepted, "(a first move at the spawn point)");
         double z = c.good().z;
-        const double z0 = z;
-        const double step = up ? 500.0 : -50.0;   // (a fall's credit is the 50 cm slack, a climb's the 500 cm burst)
+        const double z0 = z, step = up ? 500.0 : -50.0;
         size_t refused = 0;
         const int pairs = 300;
         for (int i = 0; i < pairs; ++i) {
             ts += 0.001f;
-            // the 3D move: standing still in mode 5 (accepted: distance 0)
             c.check(move_at(ts, kX, kY, z, 16384, repl::kMoveFlying), now);
             ts += 0.001f;
-            // the ground move: the climb (or fall) of the whole burst, in 1 ms
             if (c.check(move_at(ts, kX, kY, z + step, 16384, repl::kMoveWalking), now).accepted) z += step;
             else ++refused;
         }
-        const double seconds = ts - 10.0;
-        const double moved = std::fabs(z - z0);
+        const double seconds = ts - 10.0, moved = std::fabs(z - z0);
         const double bound = (up ? 1350.0 : 6000.0) * seconds + (up ? 500.0 : 50.0) + 100.0;
         char msg[240];
         std::snprintf(msg, sizeof(msg), "%d pairs of (mode 5 standing still, %s %.0f cm on the ground) in %.2f s: %.0f cm %s (at most %.0f), %zu refused", pairs, up ? "up" : "down", std::fabs(step), seconds, moved,
@@ -630,13 +580,11 @@ static void test_mode_alternation() {
     }
 }
 
-/// Review A I1: the pacing state is the session's.  A client that spent its pace bank (5 s of claimed time at one instant) and then mounts (or dismounts) must not get the bank and the
-/// first-move second again: the checker of the new body takes over the bank.
 static void test_rebase() {
     std::printf("a new body (a mount-up, a dismount) keeps the pace bank (review A I1)\n");
     const auto spent = [&](MoveChecker& c, float& ts, Clock::time_point now) {
         c.check(move_at(ts, kX, kY, kZ), now);
-        for (int i = 0; i < 4; ++i) {   // 4 s of claimed time per move, all at one instant: the bank (5 s) is gone
+        for (int i = 0; i < 4; ++i) {
             ts += 4.0f;
             c.check(move_at(ts, kX, kY, kZ), now);
         }
@@ -649,32 +597,25 @@ static void test_rebase() {
     CHECK(c.pace_bank() < 0.01, "after rebase the bank is still empty");
     const MoveVerdict v = c.check(move_at(0.1f, kX + 100 + 2000, kY, kZ), t0);
     CHECK(!v.accepted && v.fault == MoveFault::TooFast, "so the first move of the new body may not claim the first-move second: 2,000 cm in an instant is refused");
-    // the control: a fresh checker (what a possession used to make) takes the same move
     MoveChecker fresh({}, start_at(kX + 100, kY, kZ));
     CHECK(fresh.check(move_at(0.1f, kX + 100 + 2000, kY, kZ), t0).accepted, "(control: a new checker would have accepted it: it starts with a full bank)");
-    // the server's clock still earns the bank for the new body
     const MoveVerdict later = c.check(move_at(0.2f, kX + 100 + 20, kY, kZ), t0 + std::chrono::seconds(2));
     CHECK(later.accepted, "and an honest move after 2 s of the server's clock passes (the bank refills at 1.25 per second)");
-    // the new body's limits and position are used, the flight state is not carried
     MoveLimits slow;
     slow.max_speed = 300.0;
     c.rebase(slow, start_at(kX, kY, kZ));
     CHECK(c.limits().max_speed == 300.0 && c.good().x == kX && !c.good().has_time_stamp, "rebase takes the new limits and the new last good position (no TimeStamp yet)");
 }
 
-/// The retail Rogue's Dodge dash (the retail capture, tests/capture_rogue_dash.h): 14 moves at 2,236-2,237 cm/s, above max_speed (2,135).  The
-/// checker takes the dash speed while a Dodge is on (check()'s `dash`): the retail dash is accepted with it, a dash that goes on
-/// longer than the retail one is refused without it (the 50 cm slack covers the first 0.3 s), and no Dodge allows more than 3,355 cm/s.
 static void test_rogue_dash() {
     std::printf("the retail Rogue's Dodge dash\n");
     using capture_rogue_dash::kMoves;
-    constexpr double kWindow = 800.0;   // ms from the trigger: the Evasion (500) and AbilityRuntime::kDashMargin (300)
+    constexpr double kWindow = 800.0;
     const auto judge = [&](bool use_window, size_t* refused, double* peak) {
         MoveChecker c({}, start_at(kMoves[0].x, kMoves[0].y, kMoves[0].z));
         size_t bad = 0;
-        double fastest = 0;
+        double fastest = 0, last_x = 0, last_y = 0;
         float last_ts = 0;
-        double last_x = 0, last_y = 0;
         bool first = true;
         for (const auto& m : kMoves) {
             const bool dash = use_window && m.ms >= capture_rogue_dash::kDodgeTriggerMs && m.ms <= capture_rogue_dash::kDodgeTriggerMs + kWindow;
@@ -696,10 +637,8 @@ static void test_rogue_dash() {
     CHECK(peak > 2230 && peak < 2240, "(the capture's fastest step: 2,236-2,237 cm/s, above the limit of 2,135)");
     CHECK(with_window && refused == 0, "every move of the retail dash is accepted with the Dodge's dash window");
     const bool without_window = judge(false, &refused, &peak);
-    CHECK(without_window && refused == 0,
-          "(the retail dash alone, about 25 cm over the limit in all, fits the 50 cm slack and passes even with no window: only a dash that lasts needs it)");
+    CHECK(without_window && refused == 0, "(the retail dash alone, about 25 cm over the limit in all, fits the 50 cm slack and passes even with no window: only a dash that lasts needs it)");
 
-    // a dash that goes on at 2,237 cm/s for a second, 17.5 ms frames: the first 0.3 s are inside the slack, then it is over the limit
     const auto sustained = [&](bool dash, double cm_per_s, size_t* bad) {
         MoveChecker c({}, start_at(kX, kY, kZ));
         float ts = 10.0f;
@@ -719,12 +658,111 @@ static void test_rogue_dash() {
     CHECK(sustained(true, 2237.0, &bad), "the same with the Dodge's window is accepted");
     CHECK(sustained(true, 3300.0, &bad), "up to the dash's limit (3,355 cm/s) a Dodge allows it");
     CHECK(!sustained(true, 4500.0, &bad) && bad > 0, "and not 4,500: a Dodge buys no teleport");
-    // the allowance is the larger of the two limits: a lowered max_speed (--max-move-speed) is not a lower dash
     MoveLimits lowered;
     lowered.max_speed = 4000.0;
     MoveChecker fast(lowered, start_at(kX, kY, kZ));
     CHECK(fast.check(move_at(1.0f, kX + 300.0, kY, kZ), t0, false).accepted && fast.check(move_at(1.1f, kX + 600.0, kY, kZ), t0 + std::chrono::milliseconds(100), true).accepted,
           "a max_speed above the dash's is not lowered by the window");
+}
+
+static void test_ground_surface_and_sink(const nav::AreaNav& world) {
+    MoveChecker c1({}, start_at(2000, 0, 1000), &world);
+    CHECK(chk(c1, move_at(10.0f, 2000, 0, 1000)).accepted, "(a walking move on the ground is accepted)");
+    const MoveVerdict v1 = chk(c1, move_at(11.0f, 2100, 0, 600));
+    CHECK(!v1.accepted && v1.fault == MoveFault::UnderGround && v1.step > 399 && v1.step < 401,
+          "a walking move 4 m under the ground (100 cm on, 400 down in one second) is refused: UnderGround, with the depth (400 cm)");
+    CHECK(c1.good().z == 1000.0, "a refused move changes nothing: the last good position is the ground's");
+
+    MoveChecker c2({}, start_at(2000, 0, 1000), &world);
+    chk(c2, move_at(10.0f, 2000, 0, 1000));
+    CHECK(chk(c2, move_at(11.0f, 2100, 0, 900)).accepted, "a walking move 1 m under the ground (100 cm on, 100 down) is accepted: the allowance is 300 cm");
+
+    MoveChecker c3({}, start_at(2000, 0, 710), &world);
+    CHECK(chk(c3, move_at(10.0f, 2000, 0, 710)).accepted, "(a player standing 290 cm under the fixed surface)");
+    CHECK(chk(c3, move_at(11.0f, 2100, 0, 610)).accepted, "the reviewer's 290 -> 390 case (710 -> 610 under a fixed surface at 1,000) is accepted: the old spot is not near the surface");
+    bool all = true;
+    float ts = 11.0f;
+    double z = 610.0;
+    for (int i = 0; i < 6; ++i) {
+        ts += 1.0f;
+        z -= 100.0;
+        all = all && chk(c3, move_at(ts, 2000, 0, z)).accepted;
+    }
+    CHECK(all, "every further step of the same descent (610 -> 510 -> ... -> 10) is accepted");
+
+    MoveChecker c4({}, start_at(2000, 0, 1000), &world);
+    chk(c4, move_at(10.0f, 2000, 0, 1000));
+    const MoveVerdict v4 = chk(c4, move_at(11.0f, 2100, 0, 600));
+    CHECK(!v4.accepted && v4.fault == MoveFault::UnderGround && v4.step > 399 && v4.step < 401,
+          "a cheater standing on the surface who drops 400 cm in one move is refused: the old spot is near the surface and 400 cm is over the 300 cm allowance");
+
+    MoveChecker c5({}, start_at(2000, 0, 1000), &world);
+    chk(c5, move_at(10.0f, 2000, 0, 1000));
+    all = true;
+    ts = 10.0f;
+    z = 1000.0;
+    for (int i = 0; i < 6; ++i) {
+        ts += 1.0f;
+        z -= 100.0;
+        all = all && chk(c5, move_at(ts, 2000, 0, z)).accepted;
+    }
+    CHECK(all, "a sink of 100 cm per move from the surface is never refused (by design: after 100 cm the old spot leaves the near-surface band)");
+}
+
+static void test_ground_skips_and_exemptions(const nav::AreaNav& world) {
+    MoveChecker falling({}, start_at(2000, 0, 1000), &world);
+    chk(falling, move_at(10.0f, 2000, 0, 1000));
+    CHECK(chk(falling, move_at(11.0f, 2100, 0, 600, 16384, repl::kMoveFalling)).accepted,
+          "a falling move 4 m below the ground is accepted (movement mode not walking; it would be refused without that skip)");
+    MoveChecker flying({}, start_at(2000, 0, 1000), &world);
+    chk(flying, move_at(10.0f, 2000, 0, 1000));
+    CHECK(chk(flying, move_at(11.0f, 2100, 0, 600, 16384, repl::kMoveFlying)).accepted,
+          "a flying move 4 m below the ground is accepted (the 3D branch returns before the ground block; the walking-mode condition is not what saves it)");
+    MoveLimits mounted;
+    mounted.air.active = true;
+    mounted.air.can_fly = true;
+    mounted.air.fly_speed = 1290.0;
+    MoveChecker mount(mounted, start_at(2000, 0, 1000), &world);
+    chk(mount, move_at(10.0f, 2000, 0, 1000));
+    CHECK(chk(mount, move_at(11.0f, 2100, 0, 600)).accepted, "a mounted move 4 m below the ground is accepted (a mount's checker)");
+
+    MoveChecker dash({}, start_at(2000, 0, 1000), &world);
+    chk(dash, move_at(10.0f, 2000, 0, 1000));
+    CHECK(dash.check_allowing(move_at(11.0f, 2100, 0, 600), at_s(11), 2500.0).accepted, "a move in a movement ability's window 4 m below the ground is accepted (the dash allowance path)");
+
+    MoveChecker base({}, start_at(2000, 0, 1000), &world);
+    chk(base, move_at(10.0f, 2000, 0, 1000));
+    CHECK(base.check_allowing(move_at(11.0f, 2100, 0, 600), at_s(11), 0.0, /*based=*/true).accepted,
+          "a move on a movement base 4 m below the ground is accepted (a base's own place is not the navmesh's)");
+
+    MoveChecker tp({}, start_at(2000, 0, 1000), &world);
+    tp.teleport(2000, 0, 1000, 0, t0);
+    CHECK(tp.check(move_at(10.0f, 2100, 0, 600), t0 + std::chrono::seconds(1)).accepted, "within 2 s after a teleport a move 4 m below the ground is accepted");
+    MoveChecker later({}, start_at(2000, 0, 1000), &world);
+    later.teleport(2000, 0, 1000, 0, t0);
+    const MoveVerdict vl = later.check(move_at(10.0f, 2100, 0, 600), t0 + std::chrono::seconds(3));
+    CHECK(!vl.accepted && vl.fault == MoveFault::UnderGround, "after the 2 s the same move is refused: the grace is over");
+
+    MoveChecker deep({}, start_at(2000, 0, 500), &world);
+    CHECK(chk(deep, move_at(10.0f, 2000, 0, 500)).accepted, "(a player 500 cm under the fixed surface)");
+    CHECK(chk(deep, move_at(11.0f, 2100, 0, 400)).accepted,
+          "a player 500 cm under the fixed surface keeps walking at 600 cm under it: the old spot is not near the surface, so the check is skipped");
+
+    MoveChecker cave({}, start_at(-3200, 0, 1000), &world);
+    CHECK(chk(cave, move_at(10.0f, -3200, 0, 1000)).accepted, "(a walking move on the plain beside the wall)");
+    CHECK(chk(cave, move_at(11.0f, -3000, 0, 1000)).accepted,
+          "a walking step into the wall's footprint at the same height is accepted: the ground answer is 600 cm higher, but the player's own height did not drop");
+
+    MoveChecker unknown({}, start_at(300000, 0, -10000), &world);
+    CHECK(chk(unknown, move_at(10.0f, 300000, 0, -10000)).accepted, "(a walking move where the ground query knows nothing)");
+    CHECK(chk(unknown, move_at(11.0f, 300100, 0, -10400)).accepted, "a move 4 m below where no ground is known is accepted (10,400 cm under any floor)");
+}
+
+static void test_the_ground() {
+    std::printf("the ground (the world's navmesh)\n");
+    const nav::AreaNav& world = navfix::shared_nav();
+    test_ground_surface_and_sink(world);
+    test_ground_skips_and_exemptions(world);
 }
 
 int main() {
@@ -739,6 +777,7 @@ int main() {
     test_mode_alternation();
     test_rebase();
     test_rogue_dash();
+    test_the_ground();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

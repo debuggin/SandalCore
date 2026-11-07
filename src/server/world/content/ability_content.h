@@ -170,6 +170,7 @@ struct EffectRow {
 };
 
 inline constexpr int64_t kCcRoot = 1, kCcNoTurn = 2, kCcNoAbilities = 4, kCcEmplace = 8, kCcSnare = 16, kCcDisplace = 32;
+inline constexpr int kCcAnimStunned = 0, kCcAnimTripped = 1, kCcAnimNone = 255;
 
 struct CrowdControlRow {
     int64_t     guid = 0;

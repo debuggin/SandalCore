@@ -63,6 +63,7 @@ struct AbilityPipeline::Host::Hits {
       if (cast.missiles[k].due < cast.missiles[first].due) first = k;
     }
     if (cast.missiles[first].due > t) return false;
+    self.mark_launched(cast.client_id);
     if (cast.missiles[first].kind != Cast::Missile::Kind::Land) {
       const Cast::Missile step = cast.missiles[first];
       cast.missiles.erase(cast.missiles.begin() + static_cast<std::ptrdiff_t>(first));
@@ -115,10 +116,12 @@ struct AbilityPipeline::Host::Hits {
       return finish_step(self, i);
     }
     if (pop_due(cast.hit_due, t)) {
+      self.mark_launched(cast.client_id);
       self.step_hits(cast, t, "hit");
       return finish_step(self, i);
     }
     if (pop_due(cast.projectile_due, t)) {
+      self.mark_launched(cast.client_id);
       if (cast.flight_pending)
         self.launch_shot(cast, t);
       else
@@ -130,6 +133,7 @@ struct AbilityPipeline::Host::Hits {
 
   static bool step_due_cast_secondary(AbilityPipeline &self, Cast &cast, size_t i, double t) {
     if (pop_due(cast.branch_due, t)) {
+      self.mark_launched(cast.client_id);
       self.step_branch(cast, t);
       return finish_step(self, i);
     }
@@ -333,6 +337,7 @@ struct AbilityPipeline::Host::Hits {
           "[abilities] the key of {} went up {:.3f} s after the trigger: the cast goes on",
           cast.def->row.name, self.now_ - cast.trigger_at);
       self.reschedule_branch(cast, at, cast.branched->cost);
+      cast.released = true;
     }
   }
 
@@ -533,6 +538,7 @@ AbilityPipeline::HitVerdict AbilityPipeline::hit_request(
 
 void AbilityPipeline::run_slot(CastRecord &rec, HitSlot &slot, double t, bool response,
                                bool found, const std::vector<uint64_t> &targets) {
+  rec.launched = true;
   const FillScope fill(*this, rec.fill);
   const ConsumedScope consumed(*this, rec.item_cast);
   AbilityChange c;
@@ -609,14 +615,16 @@ void AbilityPipeline::bring_sooner(Cast &cast, double earlier) {
   }
 }
 
-void AbilityPipeline::abort_cast(size_t index, double t, const char *why) {
+void AbilityPipeline::abort_cast(size_t index, double t, const char *why, bool give_back) {
   Cast &cast = casts_[index];
-  const bool paid = cast.branched && cast.branched->cost_first;
+  const bool paid = cast.paid;
+  const char *paid_note =
+      give_back ? "its cost was paid before the bar's end and is given back, nothing more happens"
+                : "its cost was paid before the bar's end, nothing more happens";
   spdlog::info("[abilities] {} {:.3f} s after the trigger: {}: {}", cast.def->row.name,
-               t - cast.trigger_at, why,
-               paid ? "its cost was paid before the bar's end, nothing more happens"
-                    : "nothing is paid and nothing fires");
+               t - cast.trigger_at, why, paid ? paid_note : "nothing is paid and nothing fires");
   AbilityChange c;
+  if (give_back) refund(c, cast);
   if (cast.montage_branch && !cast.item_due && item_instance_ &&
       *item_instance_ == cast.instance) {
     cast.item.montage_path.clear();
@@ -665,11 +673,11 @@ bool AbilityPipeline::end_request(int32_t server_instance_id, double now) {
   for (size_t i = 0; i < casts_.size(); ++i) {
     if (casts_[i].instance == server_instance_id &&
         pets::for_ability(casts_[i].def->row.guid) && casts_[i].cost_due) {
-      abort_cast(i, now_, "the client ended the summon before completion");
+      abort_cast(i, now_, "the client ended the summon before completion", true);
       break;
     }
     if (Host::Hits::is_cancellable_bar_cast(casts_[i], server_instance_id)) {
-      abort_cast(i, now_, "the client ended the cast bar");
+      abort_cast(i, now_, "the client ended the cast bar", true);
       break;
     }
   }
@@ -684,7 +692,7 @@ bool AbilityPipeline::end_request(int32_t server_instance_id, double now) {
   return false;
 }
 
-void AbilityPipeline::end_instance(size_t index, double t) {
+void AbilityPipeline::end_instance(size_t index, double t, const std::string &why) {
   const Instance inst = instances_[index];
   instances_.erase(instances_.begin() + static_cast<std::ptrdiff_t>(index));
   AbilityEvent e;
@@ -703,7 +711,9 @@ void AbilityPipeline::end_instance(size_t index, double t) {
     e.change.abilities_changed.push_back(std::move(item));
   }
   e.end_ability = inst.client_id;
-  e.note = "the client ended the ability instance " + std::to_string(inst.server_id);
+  e.note = why.empty()
+               ? "the client ended the ability instance " + std::to_string(inst.server_id)
+               : why + " (the ability instance " + std::to_string(inst.server_id) + ")";
   events_.push_back(std::move(e));
 }
 

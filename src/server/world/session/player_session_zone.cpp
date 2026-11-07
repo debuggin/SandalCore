@@ -73,11 +73,11 @@ PlayerSession::GmMoveResult PlayerSession::move_to(Connection& conn, double x, d
     if (mounted() && ride_) {
         ride_->reposition(x, y, z, yaw, t);
         if (mounts_) mounts_->reposition_active(x, y, z);
-        checker_.teleport(x, y, z, yaw);
+        checker_.teleport(x, y, z, yaw, now);
         checker_.rebase(ride_->limits(base_limits_, t), checker_.good());
         r.dismounted = false;
     } else {
-        checker_.teleport(x, y, z, yaw);
+        checker_.teleport(x, y, z, yaw, now);
     }
     pending_fix_.reset();   // a correction a refused move left would put the client back where it was
     based_fix_.reset();

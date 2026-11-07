@@ -167,76 +167,109 @@ public static class Collector
     public static AreaGeometry Collect(Game g, double cx, double cy, double radius, double margin) => Collect(g, new Scope(cx, cy, radius, margin));
 // [CoA - C_Y_B]
 
+    /// <summary>Reads only the Foliage grid cells touching <paramref name="scope"/> and collects all gatherable foliage instances (<c>IntrepidGatherableFISMC_*</c>).</summary>
+    public static AreaGeometry CollectFoliageOnly(Game g, Scope scope, Action<string>? log = null)
+    {
+        var res = new AreaGeometry { CenterX = scope.Cx, CenterY = scope.Cy, Radius = scope.Radius, Margin = scope.Margin, Region = scope.Region };
+        var mine = Cells.Describe(g, scope).Where(c => c.Grid == "Foliage").ToList();
+        log?.Invoke($"foliage: {mine.Count} Foliage cells to read for {scope.Describe()}");
+        int done = 0;
+        var swAll = System.Diagnostics.Stopwatch.StartNew();
+        foreach (var c in mine)
+        {
+            string path = Cells.PathOf(c.Id);
+            var pkg = g.Load(path);
+            if (pkg == null) { res.Stat("cells.notloadable"); res.Warnings.Add($"cell {c.Id} (Foliage) is not in the game's containers"); continue; }
+            res.Stat("cells.Foliage");
+            try { CollectFoliageCellExports(res, c.Id, pkg, scope); }
+            finally { g.Forget(path); }
+            if (log != null && ++done % 250 == 0) log($"  {done}/{mine.Count} Foliage cells, {swAll.Elapsed.TotalSeconds:F0} s, {res.Foliage.Count} foliage instances");
+        }
+        res.Finish();
+        return res;
+    }
+
+    static void CollectFoliageCellExports(AreaGeometry res, string name, IPackage pkg, Scope scope)
+    {
+        var xfCache = new Dictionary<UObject, Xf>(ReferenceEqualityComparer.Instance);
+        Xf WorldOf(UObject o)
+        {
+            if (xfCache.TryGetValue(o, out var x)) return x;
+            x = Lv.World(o);
+            xfCache[o] = x;
+            return x;
+        }
+        foreach (var e in pkg.GetExports())
+        {
+            if (!e.ExportType.StartsWith("IntrepidGatherableFISMC", StringComparison.Ordinal) || e is not UInstancedStaticMeshComponent gism) continue;
+            CollectFoliage(res, name, gism, WorldOf(e), scope);
+        }
+    }
+
     /// <summary>One package's terrain tiles (a Landscape cell) or placed meshes into <paramref name="res"/>.</summary>
     static void CollectPackage(AreaGeometry res, string name, IPackage pkg, string grid, Dictionary<string, int> meshIdByPath,
                                Dictionary<(int, long, long, long, long, long, long), int> seen, Scope scope, int src)
     {
+        if (grid == "Landscape")
         {
-            if (grid == "Landscape")
+            foreach (var t in Terrain.Collect(pkg, name, w => res.Warnings.Add(w))) res.Tiles.Add(t);
+            return;
+        }
+        var xfCache = new Dictionary<UObject, Xf>(ReferenceEqualityComparer.Instance);
+        Xf WorldOf(UObject o) => xfCache.TryGetValue(o, out var x) ? x : (xfCache[o] = Lv.World(o));
+        foreach (var e in pkg.GetExports())
+        {
+            if (e is not UStaticMeshComponent smc) continue;
+            res.Stat("components.seen");
+            if (grid == "Water") { res.Stat("components.water.skipped"); continue; }
+            if (e.ExportType == "SplineMeshComponent" || e.ExportType == "PCGManagedSplineMeshComponent") { res.Stat("components.spline.skipped"); continue; }
+            var wx = WorldOf(e);
+            if (grid == "Foliage" && e.ExportType.StartsWith("IntrepidGatherableFISMC", StringComparison.Ordinal) && e is UInstancedStaticMeshComponent gism) CollectFoliage(res, name, gism, wx, scope);
+            if (scope.CullFar(wx.M03, wx.M13, 60000)) { res.Stat("components.far"); continue; }
+            CollectMeshComponent(res, smc, wx, meshIdByPath, seen, scope, src);
+        }
+    }
+
+    static void CollectMeshComponent(AreaGeometry res, UStaticMeshComponent smc, Xf wx, Dictionary<string, int> meshIdByPath,
+                                     Dictionary<(int, long, long, long, long, long, long), int> seen, Scope scope, int src)
+    {
+        bool instanced = smc is UInstancedStaticMeshComponent;
+        FInstancedStaticMeshInstanceData[]? inst = null;
+        if (instanced)
+        {
+            inst = ((UInstancedStaticMeshComponent)smc).GetInstances();
+            if (inst.Length == 0) { res.Stat("components.instanced.empty"); return; }
+        }
+        var meshIdx = smc.GetStaticMesh();
+        var meshObj = Lv.Resolve(meshIdx) as UStaticMesh;
+        if (meshObj == null) { res.Stat("components.nomesh"); return; }
+        string meshPath = Lv.PathOf(meshIdx), fullPath = "";
+        try { fullPath = meshIdx.ResolvedObject?.GetPathName() ?? ""; } catch { }
+        if (fullPath.Length == 0) fullPath = meshPath;
+        if (!meshIdByPath.TryGetValue(fullPath, out int mid))
+        {
+            var bs = Lv.Resolve(meshObj.BodySetup) as UBodySetup;
+            var geo = MeshShapes.Build(meshObj, meshPath + "@" + Fnv32(fullPath), bs);
+            mid = res.Meshes.Count;
+            res.Meshes.Add(geo);
+            meshIdByPath[fullPath] = mid;
+            res.Stat("meshes." + geo.Kind);
+            if (geo.HugeSkipped > 0) { res.Stat("meshes.hugeShapesSkipped", geo.HugeSkipped); res.Stat("meshes.withHugeShape"); }
+        }
+        var mg = res.Meshes[mid];
+        if (mg.Kind == "none") { res.Stat("components.nocollisionshape"); return; }
+        if (!BlocksPawn(smc, res, mg.DefaultProfile, mg.DefaultEnabled)) { res.Stat("components.nonblocking" + (instanced ? ".instanced" : "")); return; }
+        double rad = Math.Max(Math.Max(Math.Abs(mg.MinX), Math.Abs(mg.MaxX)), Math.Max(Math.Max(Math.Abs(mg.MinY), Math.Abs(mg.MaxY)), Math.Max(Math.Abs(mg.MinZ), Math.Abs(mg.MaxZ)))) * 1.75;
+        if (instanced)
+        {
+            foreach (var inst1 in inst!)
             {
-                foreach (var t in Terrain.Collect(pkg, name, w => res.Warnings.Add(w))) res.Tiles.Add(t);
-                return;
-            }
-            var xfCache = new Dictionary<UObject, Xf>(ReferenceEqualityComparer.Instance);
-            Xf WorldOf(UObject o)
-            {
-                if (xfCache.TryGetValue(o, out var x)) return x;
-                x = Lv.World(o);
-                xfCache[o] = x;
-                return x;
-            }
-            foreach (var e in pkg.GetExports())
-            {
-                if (e is not UStaticMeshComponent smc) continue;
-                res.Stat("components.seen");
-                if (grid == "Water") { res.Stat("components.water.skipped"); continue; }
-                if (e.ExportType == "SplineMeshComponent" || e.ExportType == "PCGManagedSplineMeshComponent") { res.Stat("components.spline.skipped"); continue; }
-                var wx = WorldOf(e);
-                if (grid == "Foliage" && e.ExportType.StartsWith("IntrepidGatherableFISMC", StringComparison.Ordinal) && e is UInstancedStaticMeshComponent gism) CollectFoliage(res, name, gism, wx, scope);
-                // a cheap cull before anything is loaded: far outside the circle even with the mesh's size left to the later test
-                if (scope.CullFar(wx.M03, wx.M13, 60000)) { res.Stat("components.far"); continue; }
-                bool instanced = e is UInstancedStaticMeshComponent;
-                FInstancedStaticMeshInstanceData[]? inst = null;
-                if (instanced)
-                {
-                    inst = ((UInstancedStaticMeshComponent)e).GetInstances();
-                    if (inst.Length == 0) { res.Stat("components.instanced.empty"); continue; }
-                }
-                var meshIdx = smc.GetStaticMesh();
-                var meshObj = Lv.Resolve(meshIdx) as UStaticMesh;
-                if (meshObj == null) { res.Stat("components.nomesh"); continue; }
-                string meshPath = Lv.PathOf(meshIdx);
-                // A mesh is known by its package path; its name in the geometry file is the short name (E1's, which sorts the placements) and a hash of that path, so that two assets with the
-                // same short name in different folders stay two meshes (the batches' parts are merged by name).  The hash comes after the closing quote: the order of different short names is unchanged.
-                string fullPath = "";
-                try { fullPath = meshIdx.ResolvedObject?.GetPathName() ?? ""; } catch { }
-                if (fullPath.Length == 0) fullPath = meshPath;
-                if (!meshIdByPath.TryGetValue(fullPath, out int mid))
-                {
-                    var bs = Lv.Resolve(meshObj.BodySetup) as UBodySetup;
-                    var geo = MeshShapes.Build(meshObj, meshPath + "@" + Fnv32(fullPath), bs);
-                    mid = res.Meshes.Count;
-                    res.Meshes.Add(geo);
-                    meshIdByPath[fullPath] = mid;
-                    res.Stat("meshes." + geo.Kind);
-                    if (geo.HugeSkipped > 0) { res.Stat("meshes.hugeShapesSkipped", geo.HugeSkipped); res.Stat("meshes.withHugeShape"); }
-                }
-                var mg = res.Meshes[mid];
-                if (mg.Kind == "none") { res.Stat("components.nocollisionshape"); continue; }
-                if (!BlocksPawn(e, res, mg.DefaultProfile, mg.DefaultEnabled)) { res.Stat("components.nonblocking" + (instanced ? ".instanced" : "")); continue; }
-                double rad = Math.Max(Math.Max(Math.Abs(mg.MinX), Math.Abs(mg.MaxX)), Math.Max(Math.Max(Math.Abs(mg.MinY), Math.Abs(mg.MaxY)), Math.Max(Math.Abs(mg.MinZ), Math.Abs(mg.MaxZ)))) * 1.75;
-                if (instanced)
-                {
-                    foreach (var inst1 in inst!)
-                    {
-                        var t = inst1.TransformData;
-                        var local = Xf.FromTRS(t.Translation.X, t.Translation.Y, t.Translation.Z, (t.Rotation.X, t.Rotation.Y, t.Rotation.Z, t.Rotation.W), t.Scale3D.X, t.Scale3D.Y, t.Scale3D.Z);
-                        AddPlacement(res, seen, mid, rad * Math.Max(wx.ScaleX, Math.Max(wx.ScaleY, wx.ScaleZ)), wx.Mul(local), scope, src);
-                    }
-                }
-                else AddPlacement(res, seen, mid, rad, wx, scope, src);
+                var t = inst1.TransformData;
+                var local = Xf.FromTRS(t.Translation.X, t.Translation.Y, t.Translation.Z, (t.Rotation.X, t.Rotation.Y, t.Rotation.Z, t.Rotation.W), t.Scale3D.X, t.Scale3D.Y, t.Scale3D.Z);
+                AddPlacement(res, seen, mid, rad * Math.Max(wx.ScaleX, Math.Max(wx.ScaleY, wx.ScaleZ)), wx.Mul(local), scope, src);
             }
         }
+        else AddPlacement(res, seen, mid, rad, wx, scope, src);
     }
 // CoA / C.Y.B
 

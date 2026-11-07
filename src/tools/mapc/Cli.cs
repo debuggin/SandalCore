@@ -44,7 +44,8 @@ public static class Cli
     {
         public string Cmd = "help";
         public string OutDir = Path.Combine("dist", "content");
-        public string Paks = Game.DefaultPaks, Usmap = Game.DefaultUsmap;
+        public string Paks = Environment.GetEnvironmentVariable("AOC_PAKS_DIR") is { Length: > 0 } ep ? ep : Game.DefaultPaks;
+        public string Usmap = Game.DefaultUsmap;
         public string Navbuild = Path.Combine("dist", "Release", "aoc_navbuild.exe");
         public double Cx = CenterX, Cy = CenterY, Radius = RadiusCm, Margin = GeometryMarginCm;
         public bool Circle;                // --center / --radius given: E1's circle, not the Riverlands' rectangles
@@ -116,8 +117,8 @@ public static class Cli
             switch (o.Cmd)
             {
                 case "help": case "build": case "extract": o.Cmd = "check"; break;   // the E1 gate: rebuild all three in a scratch folder and compare
-                case "check": case "mount-speeds": case "roads": case "artisan-curves": case "town-floors": case "town-layouts": case "pmtiles": break;   // these compare themselves
-                default: throw new ArgumentException("--check goes with build, mount-speeds, artisan-curves, roads, town-floors, town-layouts or pmtiles (or alone: the E1 check), not with " + o.Cmd);
+                case "check": case "foliage": case "mount-speeds": case "roads": case "artisan-curves": case "town-floors": case "town-layouts": case "pmtiles": break;   // these compare themselves
+                default: throw new ArgumentException("--check goes with build, foliage, mount-speeds, artisan-curves, roads, town-floors, town-layouts or pmtiles (or alone: the E1 check), not with " + o.Cmd);
             }
         }
         // review B I7: E1's circle is not the default area any more; its build must not land in (or be compared with) the Riverlands' files in dist/content
@@ -134,58 +135,7 @@ public static class Cli
         Opt o;
         try { o = Parse(args); } catch (ArgumentException e) { Console.Error.WriteLine("mapc: " + e.Message); return 2; }
         if (o.Explain) { Console.WriteLine($"command={o.Cmd} check={(o.CheckFlag ? "yes" : "no")} out-dir={o.OutDir}"); return 0; }
-        try
-        {
-            switch (o.Cmd)
-            {
-                case "extract":
-                {
-                    if (o.BatchIndex >= 0) return ExtractChild(o);
-                    Directory.CreateDirectory(o.OutDir);
-                    ExtractAndWrite(o, o.OutDir);
-                    return 0;
-                }
-                case "build": return Build(o, o.OutDir);
-                case "check": return Check(o);
-                case "probe": { var g = Extract(o, o.OutDir); Probe.Evaluate(g, o.Rest[0]); return 0; }
-                case "uses": { var game = new Game(o.Paks, o.Usmap); Inspect.Uses(game, o.Rest[0], 12000, o.Rest.Count > 1 ? int.Parse(o.Rest[1]) : 3); return 0; }
-                case "npc-motion": { var game = new Game(o.Paks, o.Usmap); var rows = NpcBlueprints.Collect(game, NpcBlueprints.AllPaths(game), out var n, out var bad); Directory.CreateDirectory(o.OutDir); File.WriteAllText(Path.Combine(o.OutDir, "npc_motion.tsv"), NpcBlueprints.ToTsv(rows)); Console.WriteLine($"{rows.Count} pawn Blueprints of {n} packages ({bad} unreadable)"); return 0; }
-                case "npc-bp":
-                {
-                    // npc-bp OUT.tsv [PATHS.txt]: the pawn Blueprints (a list of package paths, or every package under DesignAssets)
-                    var game = new Game(o.Paks, o.Usmap);
-                    IEnumerable<string> paths = o.Rest.Count > 1
-                        ? File.ReadAllLines(o.Rest[1]).Where(l => l.Length > 0)
-                        : NpcBlueprints.AllPaths(game);
-                    var rows = NpcBlueprints.Collect(game, paths, out var n, out var bad);
-                    File.WriteAllText(o.Rest[0], NpcBlueprints.ToTsv(rows));
-                    Console.WriteLine($"{rows.Count} pawn Blueprints of {n} packages ({bad} unreadable)");
-                    return 0;
-                }
-                case "probe-cells":
-                {
-                    var game = new Game(o.Paks, o.Usmap);
-                    return Diag.ProbeCells(game, MakeScope(o), o.Batches, m => Console.WriteLine(m));
-                }
-                case "foliage-probe": { var game = new Game(o.Paks, o.Usmap); return Diag.FoliageProbe(game, MakeScope(o), o.Rest.Count > 0 ? int.Parse(o.Rest[0]) : 4); }
-                case "foliage-detail": { var game = new Game(o.Paks, o.Usmap); return Diag.FoliageDetail(game, o.Rest[0], o.Rest.Count > 1 ? int.Parse(o.Rest[1]) : 3); }
-                case "cell-exports": { var game = new Game(o.Paks, o.Usmap); return Diag.CellExports(game, o.Rest[0], o.Rest.Count > 1 ? o.Rest[1] : null, 12); }
-                case "export-config": return Export.Config(new Game(o.Paks, o.Usmap), o.OutDir);
-                case "export-zoi": return Export.Zoi(new Game(o.Paks, o.Usmap), o.OutDir);
-                case "mount-speeds": return MountSpeedsCommand(o);
-                case "artisan-curves": return ArtisanCurvesCommand(o);
-                case "roads": return RoadsCommand(o);
-                case "town-floors": return TownFloorsCommand(o);
-                case "town-layouts": return TownLayoutsCommand(o);
-                case "pmtiles": return PmTilesCommand(o);
-                case "merge-geometry": return MergeGeometryCommand(o);
-                case "bp": { var game = new Game(o.Paks, o.Usmap); Inspect.Bp(game, o.Rest[0], o.Rest.Count > 1 ? o.Rest[1] : null); return 0; }
-                case "inspect": { var game = new Game(o.Paks, o.Usmap); Inspect.Run(game, new[] { "inspect" }.Concat(o.Rest).ToArray()); return 0; }
-                default:
-                    Console.WriteLine("mapc extract | build | --check | probe-cells | export-config | export-zoi | mount-speeds [--check] | artisan-curves [--check] | roads [--check] | town-floors [--check] | town-layouts [--check] | pmtiles [--check] | merge-geometry BASE LAYER OUT | probe KEY.tsv | inspect NAME...   [--out-dir D --paks D --usmap F --navbuild EXE --region FILE | --center X,Y --radius CM  --margin CM --threads N --batches M --heap-gb G --min-free-gb G --work-dir D --stop-after N]");
-                    return o.Cmd == "help" ? 0 : 2;
-            }
-        }
+        try { return Dispatch(o); }
         catch (StoppedAfterBatch s)
         {
             Console.WriteLine("mapc: " + s.Message);
@@ -196,6 +146,51 @@ public static class Cli
         {
             Console.Error.WriteLine("mapc: " + e.Message);
             return 1;
+        }
+    }
+
+    static int Dispatch(Opt o)
+    {
+        switch (o.Cmd)
+        {
+            case "extract":
+                if (o.BatchIndex >= 0) return ExtractChild(o);
+                Directory.CreateDirectory(o.OutDir);
+                ExtractAndWrite(o, o.OutDir);
+                return 0;
+            case "build": return Build(o, o.OutDir);
+            case "check": return Check(o);
+            case "foliage": return FoliageCommand(o);
+            case "probe": { var g = Extract(o, o.OutDir); Probe.Evaluate(g, o.Rest[0]); return 0; }
+            case "uses": { var game = new Game(o.Paks, o.Usmap); Inspect.Uses(game, o.Rest[0], 12000, o.Rest.Count > 1 ? int.Parse(o.Rest[1]) : 3); return 0; }
+            case "npc-motion": { var game = new Game(o.Paks, o.Usmap); var rows = NpcBlueprints.Collect(game, NpcBlueprints.AllPaths(game), out var n, out var bad); Directory.CreateDirectory(o.OutDir); File.WriteAllText(Path.Combine(o.OutDir, "npc_motion.tsv"), NpcBlueprints.ToTsv(rows)); Console.WriteLine($"{rows.Count} pawn Blueprints of {n} packages ({bad} unreadable)"); return 0; }
+            case "npc-bp":
+            {
+                var game = new Game(o.Paks, o.Usmap);
+                IEnumerable<string> paths = o.Rest.Count > 1 ? File.ReadAllLines(o.Rest[1]).Where(l => l.Length > 0) : NpcBlueprints.AllPaths(game);
+                var rows = NpcBlueprints.Collect(game, paths, out var n, out var bad);
+                File.WriteAllText(o.Rest[0], NpcBlueprints.ToTsv(rows));
+                Console.WriteLine($"{rows.Count} pawn Blueprints of {n} packages ({bad} unreadable)");
+                return 0;
+            }
+            case "probe-cells": return Diag.ProbeCells(new Game(o.Paks, o.Usmap), MakeScope(o), o.Batches, m => Console.WriteLine(m));
+            case "foliage-probe": return Diag.FoliageProbe(new Game(o.Paks, o.Usmap), MakeScope(o), o.Rest.Count > 0 ? int.Parse(o.Rest[0]) : 4);
+            case "foliage-detail": return Diag.FoliageDetail(new Game(o.Paks, o.Usmap), o.Rest[0], o.Rest.Count > 1 ? int.Parse(o.Rest[1]) : 3);
+            case "cell-exports": return Diag.CellExports(new Game(o.Paks, o.Usmap), o.Rest[0], o.Rest.Count > 1 ? o.Rest[1] : null, 12);
+            case "export-config": return Export.Config(new Game(o.Paks, o.Usmap), o.OutDir);
+            case "export-zoi": return Export.Zoi(new Game(o.Paks, o.Usmap), o.OutDir);
+            case "mount-speeds": return MountSpeedsCommand(o);
+            case "artisan-curves": return ArtisanCurvesCommand(o);
+            case "roads": return RoadsCommand(o);
+            case "town-floors": return TownFloorsCommand(o);
+            case "town-layouts": return TownLayoutsCommand(o);
+            case "pmtiles": return PmTilesCommand(o);
+            case "merge-geometry": return MergeGeometryCommand(o);
+            case "bp": { Inspect.Bp(new Game(o.Paks, o.Usmap), o.Rest[0], o.Rest.Count > 1 ? o.Rest[1] : null); return 0; }
+            case "inspect": { Inspect.Run(new Game(o.Paks, o.Usmap), new[] { "inspect" }.Concat(o.Rest).ToArray()); return 0; }
+            default:
+                Console.WriteLine("mapc extract | build | foliage [--check] | --check | probe-cells | export-config | export-zoi | mount-speeds [--check] | artisan-curves [--check] | roads [--check] | town-floors [--check] | town-layouts [--check] | pmtiles [--check] | merge-geometry BASE LAYER OUT | probe KEY.tsv | inspect NAME...   [--out-dir D --paks D --usmap F --navbuild EXE --region FILE | --center X,Y --radius CM  --margin CM --threads N --batches M --heap-gb G --min-free-gb G --work-dir D --stop-after N]");
+                return o.Cmd == "help" ? 0 : 2;
         }
     }
 
@@ -437,7 +432,49 @@ public static class Cli
     static Scope MakeScope(Opt o)
     {
         if (o.Circle) return new Scope(o.Cx, o.Cy, o.Radius, o.Margin);
-        return new Scope(Region.Load(o.RegionPath ?? Region.DefaultPath()), CenterX, CenterY, RadiusCm, o.Margin);
+        var allBiomes = ResolveAllBiomesRegionPath();
+        var regionPath = o.RegionPath ?? (File.Exists(allBiomes) ? allBiomes : Region.DefaultPath());
+        return new Scope(Region.Load(regionPath), CenterX, CenterY, RadiusCm, o.Margin);
+    }
+
+    static string ResolveAllBiomesRegionPath()
+    {
+        var gen = Path.Combine("build", "gen", "nav", "all_biomes_rects.tsv");
+        if (File.Exists(gen)) return gen;
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d != null; d = d.Parent)
+        {
+            var g = Path.Combine(d.FullName, "build", "gen", "nav", "all_biomes_rects.tsv");
+            if (File.Exists(g)) return g;
+        }
+        return Region.DefaultPath();
+    }
+
+    static Scope MakeFoliageScope(Opt o)
+    {
+        if (o.Circle) return new Scope(o.Cx, o.Cy, o.Radius, o.Margin);
+        return new Scope(Region.Load(o.RegionPath ?? ResolveAllBiomesRegionPath()), CenterX, CenterY, RadiusCm, o.Margin);
+    }
+
+    static int FoliageCommand(Opt o)
+    {
+        var sw = Stopwatch.StartNew();
+        var scope = MakeFoliageScope(o);
+        var g = Collector.CollectFoliageOnly(new Game(o.Paks, o.Usmap), scope, m => Console.WriteLine(m));
+        string scopeLabel = scope.Region != null ? "the region " + scope.Region.Hash.ToString("X16", CultureInfo.InvariantCulture) : ScopeText(scope);
+        string text = BatchRunner.FoliageTsv(g.Foliage, scopeLabel);
+        string file = Path.Combine(o.OutDir, BatchRunner.FoliageFileName);
+        if (o.CheckFlag)
+        {
+            if (!File.Exists(file)) { Console.WriteLine($"{BatchRunner.FoliageFileName}: missing in {o.OutDir}"); return 1; }
+            var have = File.ReadAllBytes(file); var fresh = Encoding.UTF8.GetBytes(text);
+            bool same = have.AsSpan().SequenceEqual(fresh);
+            Console.WriteLine(same ? $"{BatchRunner.FoliageFileName}: identical ({have.Length} bytes)" : $"{BatchRunner.FoliageFileName}: DIFFERS (file {have.Length} bytes, fresh {fresh.Length})");
+            return same ? 0 : 1;
+        }
+        Directory.CreateDirectory(o.OutDir);
+        File.WriteAllText(file, text);
+        Console.WriteLine($"wrote {file} ({new FileInfo(file).Length} bytes, {g.Foliage.Count} instances in {sw.Elapsed.TotalSeconds:F1} s)");
+        return 0;
     }
 
     /// <summary>Batches of a region read when none is asked for (the cells are cut by package size: see Cells.Split; the first batch's measured peak is in tools/mapc/README.md).</summary>
@@ -530,9 +567,18 @@ public static class Cli
         Console.WriteLine($"wrote {geom} ({new FileInfo(geom).Length} bytes)");
         if (g.Region != null)
         {
+            var folScope = MakeFoliageScope(o);
+            List<FoliageRow> folRows = g.Foliage;
+            ulong folHash = g.Region.Hash;
+            if (folScope.Region != null && folScope.Region.Hash != g.Region.Hash)
+            {
+                var fg = Collector.CollectFoliageOnly(new Game(o.Paks, o.Usmap), folScope, m => Console.WriteLine(m));
+                folRows = fg.Foliage;
+                folHash = folScope.Region.Hash;
+            }
             string fol = Path.Combine(dir, BatchRunner.FoliageFileName);
-            File.WriteAllText(fol, BatchRunner.FoliageTsv(g.Foliage, "the region " + g.Region.Hash.ToString("X16", CultureInfo.InvariantCulture)));
-            Console.WriteLine($"wrote {fol} ({new FileInfo(fol).Length} bytes, {g.Foliage.Count} instances)");
+            File.WriteAllText(fol, BatchRunner.FoliageTsv(folRows, "the region " + folHash.ToString("X16", CultureInfo.InvariantCulture)));
+            Console.WriteLine($"wrote {fol} ({new FileInfo(fol).Length} bytes, {folRows.Count} instances)");
         }
     }
 

@@ -237,7 +237,7 @@ void PlayerWorld::reset_on_content_error(const std::string& problem) {
 PlayerWorld::PlayerWorld(const content::ContentDb* content, std::string content_problem, bootstrap::GameStateMode mode,
                          uint32_t server_id, protocol::ServerGuidAllocator& guids)
     : content_(content), content_problem_(std::move(content_problem)), mode_(mode), server_id_(server_id), guids_(guids),
-      game_state_(guids.next()) {
+      game_state_(guids.next()), day_clock_(world::default_world_clock()) {
     if (!content_) return;
     std::string error;
     rules_ = content_->ability_rules(error);
@@ -455,6 +455,9 @@ void PlayerWorld::tick_town_people_and_roads(double now_seconds) {
 
 void PlayerWorld::tick_world(double now_seconds) {
     world_clock_ = now_seconds;
+    if (bootstrap::has_global_time_of_day_override()) {
+        day_clock_ = world::WorldClock::reading(bootstrap::client_times(now_seconds).game_time, now_seconds);
+    }
     if (view_config_.phases) view_config_.phases->begin_tick();
     tick_props(now_seconds);
     TickProfile& profile = tick_profile();

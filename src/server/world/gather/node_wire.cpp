@@ -185,7 +185,19 @@ bool node_reset(world::WorldActor& node, std::string& error) {
         node = std::move(backup);
         return false;
     }
-    node.gather = world::GatherSeen{};
+    node.actor.open.spawn.location = repl::quantize_vector(10, node.x, node.y, node.z);
+    if (node.actor.obj.schema) {
+        if (const repl::Value* v = node.actor.obj.state.get(7)) {
+            if (const auto* old = v->get_if<repl::RepMovement>()) {
+                repl::RepMovement m = *old;
+                m.location = repl::quantize_location(node.actor.obj.opts, node.x, node.y, node.z);
+                node.actor.obj.state.set(*node.actor.obj.schema, "ReplicatedMovement", repl::Value(m));
+            }
+        }
+    }
+    node.gather.player_id = 0;
+    node.gather.pawn = protocol::emit::FIntrepidNetworkGUID{};
+    node.gather.show = false;
     return true;
 }
 

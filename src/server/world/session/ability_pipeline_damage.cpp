@@ -15,12 +15,8 @@ using bootstrap::AbilityChange;
 struct AbilityPipeline::Host::Damage {
   class PortEffects final : public combat::TargetEffects {
   public:
-    PortEffects(combat::HitPort &port, uint64_t actor, double t)
-        : port_(port), actor_(actor), t_(t) {}
-    double remaining(int64_t effect_guid) const override {
-      return port_.effect_remaining(actor_, effect_guid, t_);
-    }
-
+    PortEffects(combat::HitPort &port, uint64_t actor, double t) : port_(port), actor_(actor), t_(t) {}
+    double remaining(int64_t effect_guid) const override { return port_.effect_remaining(actor_, effect_guid, t_); }
   private:
     combat::HitPort &port_;
     uint64_t actor_;
@@ -35,6 +31,7 @@ struct AbilityPipeline::Host::Damage {
     int mask = 0;
     bool melee = false, active_in_hit = false;
     uint64_t active = 0, closest = 0;
+    const content::ExprRow *ask_each = nullptr;
   };
 
   static bool target_reached(const AbilityPipeline &self, const combat::TargetInfo &ti,
@@ -143,50 +140,72 @@ struct AbilityPipeline::Host::Damage {
     }
   }
 
-  static void apply_target_resolved_effects(AbilityPipeline &self, const TargetBatch &batch,
-                                            uint64_t id, combat::Fighter &tf,
-                                            const combat::TargetInfo &ti) {
+  static const content::ExprRow *per_target_requirement(const AbilityPipeline &self,
+                                                        const HitDef &hit, const HitSource &src) {
+    if (src.type != content::kSourceTypeReaction || hit.row.requirement_expr == 0 || !self.catalog_)
+      return nullptr;
+    const content::ExprRow *req = self.catalog_->expr(hit.row.requirement_expr);
+    return (req && req->uses_target && req->program >= 0) ? req : nullptr;
+  }
+
+  static bool target_meets_requirement(AbilityPipeline &self, int program,
+                                       stats::CharacterStats::Evaluation &target_eval, const combat::TargetInfo &ti) {
+    std::string err;
+    if (!self.evaluation_->set_actor(stats::kRoleTarget, target_eval, err)) return false;
+    const combat::EvalView self_view(*self.evaluation_), target_view(target_eval);
+    combat::HitContext ask;
+    ask.instigator = &self_view;
+    ask.target = &target_view;
+    ask.distance_cm = ti.surface_distance_cm + ti.radius_cm + self.combat_->self().radius_cm();
+    ask.enemy = ti.relation == combat::Relation::Hostile;
+    ask.neutral = ti.relation == combat::Relation::Neutral;
+    Host ask_host(self);
+    ask_host.set_context(&ask);
+    double v = 0;
+    self.evaluation_->set_consumed(self.consumed_);
+    const bool wanted = self.evaluation_->eval(program, ask_host, v, err) && std::isfinite(v) && v != 0.0;
+    self.evaluation_->clear_actors();
+    return wanted;
+  }
+
+  static combat::Resolved resolve_target_effects(AbilityPipeline &self, const TargetBatch &batch,
+                                                 uint64_t id, combat::Fighter &tf, const combat::TargetInfo &ti) {
+    combat::Resolved gate;
     bool applies_effects = false;
-    for (const content::HitEffectRow &row : batch.hit.effects)
-      applies_effects = applies_effects || row.kind != "self";
-    if (!applies_effects) return;
+    for (const content::HitEffectRow &row : batch.hit.effects) applies_effects = applies_effects || row.kind != "self";
+    if (!applies_effects) return gate;
     std::string after_err, gate_why;
     auto after = tf.stats().evaluation(tf.worn(), after_err, true);
-    if (!after) return;
+    if (!after) return gate;
     Host host(self);
     combat::HitMeta meta = build_hit_meta(self, batch, id);
     const PortEffects target_effects(*self.combat_, id, batch.t);
     meta.target_effects = &target_effects;
-    combat::Resolved gate;
-    if (!self.combat_->resolver().resolve_effects_with(
-            *self.evaluation_, host, after.get(), ti.surface_distance_cm,
-            ti.relation == combat::Relation::Hostile, ti.relation == combat::Relation::Neutral,
-            batch.hit, meta, gate, gate_why))
-      return;
-    if (!gate_why.empty())
-      spdlog::debug("[abilities] the effects of {} on actor {}: {}", batch.hit.row.name, id, gate_why);
-    if (!gate.effects.empty()) self.combat_->apply_effects(id, gate.effects, batch.t);
+    if (!self.combat_->resolver().resolve_effects_with(*self.evaluation_, host, after.get(), ti.surface_distance_cm,
+                                                       ti.relation == combat::Relation::Hostile, ti.relation == combat::Relation::Neutral,
+                                                       batch.hit, meta, gate, gate_why))
+      return {};
+    if (!gate_why.empty()) spdlog::debug("[abilities] the effects of {} on actor {}: {}", batch.hit.row.name, id, gate_why);
+    return gate;
   }
 
-  static void resolve_single_target(AbilityPipeline &self, const TargetBatch &batch,
-                                    uint64_t id, std::vector<bootstrap::HitTargetOut> &outs,
-                                    HitEvent &event) {
+  static void resolve_single_target(AbilityPipeline &self, const TargetBatch &batch, uint64_t id,
+                                    std::vector<bootstrap::HitTargetOut> &outs, HitEvent &event) {
     const combat::TargetInfo ti = self.combat_->inspect(id);
     if (!target_reached(self, ti, batch.mask, batch.melee, batch.src.reach_free)) return;
     combat::Fighter *tf = self.combat_->fighter(id);
     if (!tf) return;
     std::string err, why;
     auto target_eval = tf->stats().evaluation(tf->worn(), err, true);
-    if (!target_eval) return;
+    if (!target_eval || (batch.ask_each && !target_meets_requirement(self, batch.ask_each->program, *target_eval, ti))) return;
     Host host(self);
     combat::HitMeta meta = build_hit_meta(self, batch, id);
     const PortEffects target_effects(*self.combat_, id, batch.t);
     meta.target_effects = &target_effects;
     combat::Resolved r;
-    if (!self.combat_->resolver().resolve_with(
-            *self.evaluation_, host, target_eval.get(), ti.surface_distance_cm,
-            ti.relation == combat::Relation::Hostile, ti.relation == combat::Relation::Neutral,
-            batch.hit, meta, r, why)) {
+    if (!self.combat_->resolver().resolve_with(*self.evaluation_, host, target_eval.get(), ti.surface_distance_cm,
+                                               ti.relation == combat::Relation::Hostile, ti.relation == combat::Relation::Neutral,
+                                               batch.hit, meta, r, why)) {
       if (self.no_formula_.insert(batch.hit.row.guid).second)
         spdlog::warn("[abilities] the hit {} does not run on another actor: {}", batch.hit.row.name, why);
       return;
@@ -198,10 +217,11 @@ struct AbilityPipeline::Host::Damage {
     record_delivered_hit(r, d, id, event);
     outs.push_back(build_target_out(self, id, ti, r, d));
     if (r.miss()) return;
-    if (!batch.hit.remove_effects.empty() && batch.hit.row.name.rfind("Summoner_", 0) == 0)
-      self.combat_->remove_effects(id, batch.hit, batch.t);
     apply_target_shields(self, id, batch.hit, batch.t);
-    if (!d.lethal) apply_target_resolved_effects(self, batch, id, *tf, ti);
+    const combat::Resolved gate = !d.lethal ? resolve_target_effects(self, batch, id, *tf, ti) : combat::Resolved{};
+    if (!batch.hit.remove_effects.empty() || (batch.hit.max_remove > 0 && batch.hit.removal != HitDef::Removal::Unknown))
+      self.combat_->remove_effects(id, batch.hit, batch.t);
+    if (!gate.effects.empty()) self.combat_->apply_effects(id, gate.effects, batch.t);
   }
 
   static void apply_single_caster_hit_effect(AbilityPipeline &self, AbilityChange &c,
@@ -486,24 +506,21 @@ double AbilityPipeline::take_damage(double amount, double now) {
 
 void AbilityPipeline::apply_hit_on_targets(AbilityChange &c, const HitDef &hit,
                                            const std::vector<uint64_t> &targets, double t,
-                                           const HitSource &src, const AbilityDef *ability,
-                                           bool *landed) {
+                                           const HitSource &src, const AbilityDef *ability, bool *landed) {
   if (landed) *landed = false;
   if (!combat_ || targets.empty()) return;
   std::string why;
   bool ok = true;
-  if (!eval_bool(hit.row.requirement_expr, true, ok, why) || !ok) return;
+  const content::ExprRow *ask_each = Host::Damage::per_target_requirement(*this, hit, src);
+  if (!ask_each && (!eval_bool(hit.row.requirement_expr, true, ok, why) || !ok)) return;
   if (!ensure_evaluation(why)) return;
   const double max_targets = Host::Damage::eval_max_targets(*this, hit, why);
   Host::Damage::TargetBatch batch{hit, ability, src, t, static_cast<double>(targets.size()),
-                                  hit.row.applicable_targets, is_melee_ability(ability)};
+                                  hit.row.applicable_targets, is_melee_ability(ability), false, 0, 0, ask_each};
   Host::Damage::scan_primary_target(*this, targets, batch);
   if (landed) *landed = batch.closest != 0;
   std::vector<bootstrap::HitTargetOut> outs;
-  HitEvent event;
-  event.hit = &hit;
-  event.ability = ability;
-  event.src = src;
+  HitEvent event{&hit, ability, src};
   for (const uint64_t id : targets) {
     if (static_cast<double>(outs.size()) >= max_targets) break;
     Host::Damage::resolve_single_target(*this, batch, id, outs, event);
@@ -740,12 +757,8 @@ void AbilityPipeline::regenerate(double t) {
   next_regen_ = t + kRegenInterval;
   if (dead_) return;
   AbilityChange c;
-  Host::Damage::regenerate_single_vital(*this, c, content::kGuidHealth,
-                                        content::kGuidHealthRegeneration,
-                                        content::kGuidMaxHealth);
-  Host::Damage::regenerate_single_vital(*this, c, content::kGuidMana,
-                                        content::kGuidManaRegeneration,
-                                        content::kGuidMaxMana);
+  Host::Damage::regenerate_single_vital(*this, c, content::kGuidHealth, content::kGuidHealthRegeneration, content::kGuidMaxHealth);
+  Host::Damage::regenerate_single_vital(*this, c, content::kGuidMana, content::kGuidManaRegeneration, content::kGuidMaxMana);
   if (Host::Damage::regenerate_custom_resources(*this, c)) recompute(c);
   if (c.empty()) return;
   ++regen_ticks_;

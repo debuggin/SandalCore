@@ -19,7 +19,7 @@ function Get-SandalStageGraph {
         'region'       = @{ Upstream = @('database'); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc') + $schema }
         'headers'      = @{ Upstream = @('config', 'region'); Inputs = $schema }
         'fixtures'     = @{ Upstream = @('database'); Inputs = @('src/tools/schemagen/gen_talent_fixture.ps1', 'src/tools/schemagen/gen_gear_fixture.ps1', 'src/tools/schemagen/gen_tooltips.ps1', 'src/server/services/internal/statprog') }
-        'navbuild'     = @{ Upstream = @('headers'); Inputs = @('src/libs/aocnav', 'src/tools/navbuild', 'build/third_party/recastnavigation', 'src/vcpkg.json') }
+        'navbuild'     = @{ Upstream = @('headers'); Inputs = @('src/libs/aocnav', 'src/tools/navbuild', 'build/third_party/recastnavigation') }
         'roads'        = @{ Upstream = @('region'); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc', 'src/server/services/cmd/contentc', 'src/server/services/internal/content') }
         'townfloors'   = @{ Upstream = @(); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc') }
         'townlayouts'  = @{ Upstream = @('database'); Inputs = @('src/config/layouts/aoc.usmap', 'src/tools/mapc', 'src/tools/schemagen/gen_town_layouts.ps1', 'src/config/seeds/citynode_seed.json') }

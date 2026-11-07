@@ -1,49 +1,46 @@
-# SandalCore Web Admin & GM Studio Reference (`docs/WEB_ADMIN.md`)
+# Web Admin and GM Studio
 
-**Primary Diataxis Quadrant**: `Technical Reference` (`DOC-01`)
-**Related Guides**: [Root Architecture Overview](../README.md) | [UI Style Guide & Design System](UI_STYLE_GUIDE.md) | [Configuration Reference](CONFIGURATION.md) | [Server Workers & Spatial Authority](SERVER_WORKERS.md) | [Control-Plane Services Reference](SERVICES.md) | [Web Admin SPA Component Reference](../src/clients/web-admin/README.md) | [`cmd/web-admin` Asset Server Reference](../src/server/services/cmd/web-admin/README.md) | [`cmd/admin-gateway` API Reference](../src/server/services/cmd/admin-gateway/README.md) | [`cmd/gateway` Reference](../src/server/services/cmd/gateway/README.md) | [Go Control-Plane Services Reference](../src/server/services/README.md)
+**Related Guides**: [Root Overview](../README.md) | [Web Admin Architecture](WEB_ADMIN_ARCHITECTURE.md) | [UI Style Guide](UI_STYLE_GUIDE.md) | [Configuration Reference](CONFIGURATION.md) | [Operational Runbook](RUNBOOK.md) | [Server Workers](SERVER_WORKERS.md) | [Web Admin Frontend Source](../src/clients/web-admin/README.md)
 
-This document specifies the architecture, authentication lifecycle, viewport-bounded real-time entity streaming, interactive map selection ergonomics, Game Master (GM) manipulation modals, and 4-zone observability explorer implemented by the SandalCore Web Admin & GM Studio (`https://localhost:8443/admin/` via `aoc-ingress-proxy` or `http://localhost:8090` via `aoc-web-admin`).
+This guide explains how to sign in to the SandalCore **Web Admin and GM Studio** (`https://localhost:8443/admin/` or `http://localhost:8090`), navigate the live `30 Hz` world map, inspect and manipulate players, NPCs, City Nodes, and resource nodes, adjust worker tick rates and the Verra calendar, and monitor container health in the **Observability** tab.
 
 ---
 
-## 1. Startup Passphrase & Scoped `HS256` JWT Authentication
+## Signing In and Session Security
 
-To protect live world manipulation, SQL hotfix execution, and container lifecycle endpoints without requiring external OAuth providers during local or private-server operation, SandalCore enforces a **Startup Passphrase -> Scoped `HS256` JWT** authentication pipeline (`src/server/services/internal/admin-gateway/router.go`).
+SandalCore protects all Game Master commands, SQL hotfixes, and container controls with a single-boot passphrase exchanged for a scoped `HS256` JWT (`src/server/services/internal/admin-gateway/router.go`).
 
-### Authentication Lifecycle & `boot_id` Session Invalidation
+### How to Sign In
 
-1. **Startup Passphrase Generation & Console Banner**:
-   - On every `start.bat` / `sandal.ps1 up` invocation, `scripts/lib/Env.psm1` (`Ensure-SandalAdminPassphrase`) generates a fresh cryptographic passphrase (`AOC_ADMIN_PASSPHRASE`, e.g., `verra-xxxx-xxxx-xxxx`), a 256-bit signing key (`AOC_ADMIN_JWT_SECRET`), and a unique boot identifier (`AOC_ADMIN_BOOT_ID`).
-   - The passphrase is written to `deploy/.admin_passphrase` and printed prominently in the terminal startup banner alongside `Username: Admin` (`DEFAULT_ADMIN_USERNAME = "Admin"`).
-2. **Passphrase-to-JWT Exchange (`POST /api/v1/admin/auth/login`) & `END SESSION`**:
-   - Submitting `{"username": "Admin", "passphrase": "<passphrase>"}` to `POST /api/v1/admin/auth/login` validates the credentials using constant-time comparison (`subtle.ConstantTimeCompare`) and returns a signed `HS256` Bearer JWT (`token`), `expires_at`, `boot_id`, and granted `scopes`. Authenticated operators can terminate their session at any time via the top-bar **`END SESSION`** button (`END_SESSION_BUTTON_LABEL = "END SESSION"`).
-3. **Extensible Scope Matrix**:
-   - Every issued JWT embeds an explicit `scopes` array checked by middleware on `aoc-gateway`:
-     - `admin:read` -- Read world state, entity inspector, catalog tables, and map layers.
-     - `admin:write` -- Modify server runtime parameters and administrative settings.
-     - `gm:commands` -- Execute NPC lifecycle commands (`KillNpc`, `DespawnNpc`, `HealNpc`, `ResetNpc`, `RespawnNpc`, `MoveNpc`).
-     - `gm:spawn` -- Spawn dynamic NPCs and monsters (`SpawnNpc`).
-     - `gm:teleport` -- Teleport online or offline players across coordinates and workers (`TeleportPlayer`).
-     - `gm:node_governance` -- Change CityNode progression stages (`0..6`), tax rates, and node buildings.
-     - `gm:sql_hotfix` -- Execute audited SQL hotfix transactions against `aoc-postgres` or `content.db`.
-     - `metrics:read` -- Query Prometheus Golden Signals, USE/RED container metrics, and worker shard telemetry.
-     - `containers:manage` -- Trigger container restart/recreate actions from the Infrastructure panel.
-4. **Automatic `boot_id` Verification & Re-Authentication Modal**:
-   - Every JWT carries the server stack's `boot_id` claim (`AOC_ADMIN_BOOT_ID`), and `GET /api/v1/admin/auth/status` returns the live `boot_id`.
-   - When the server stack restarts (`stop.bat` -> `start.bat`), `AOC_ADMIN_BOOT_ID` rotates. Any browser tab holding a token from a previous boot receives `401 Unauthorized` / `403 Forbidden` (or detects `status.boot_id != token.boot_id`), automatically purges the stale token from `sessionStorage`/`localStorage`, and opens the glassmorphic **Admin Login Modal** prompting for the new console passphrase.
+1. **Copy the Startup Passphrase from the Terminal**:
+   When you run `.\start.bat` (`.\sandal.ps1 up`), PowerShell generates a fresh single-boot passphrase (`AOC_ADMIN_PASSPHRASE`), saves it to `deploy/.admin_passphrase`, and prints it in the startup banner alongside `Username: Admin`.
+2. **Open the Web Admin Studio**:
+   Navigate to `https://localhost:8443/admin/` (or `http://localhost:8090`) in your browser. The glassmorphic **Admin Login Modal** appears automatically.
+3. **Exchange the Passphrase for a Session Token**:
+   Enter username **`Admin`** and paste the passphrase. The gateway verifies the passphrase in constant time (`POST /api/v1/admin/auth/login`) and returns a signed `HS256` Bearer JWT bound to the server's current `boot_id`.
+4. **End or Rotate Your Session**:
+   Click **`END SESSION`** in the top bar at any time to sign out immediately. If you stop and restart the server stack (`stop.bat` -> `start.bat`), `AOC_ADMIN_BOOT_ID` rotates automatically, invalidating any previously stored browser token and prompting you for the new boot passphrase.
+
+### Permission Scopes
+
+Every issued admin JWT includes explicit permission scopes verified by `aoc-gateway`:
+
+- `admin:read` and `admin:write` for viewing world state, catalogs, and updating runtime parameters.
+- `gm:commands`, `gm:spawn`, `gm:teleport`, and `gm:node_governance` for executing NPC lifecycle commands, spawning monsters, teleporting players, and changing City Node stages (`0..6`).
+- `gm:sql_hotfix` for previewing, applying, and rolling back audited SQL hotfixes.
+- `metrics:read` and `containers:manage` for viewing SRE telemetry and restarting containers from the **Observability** tab.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Operator as "Operator Browser (Web Admin)"
-    participant Gateway as "aoc-gateway (:8080) - admin-gateway Auth Middleware"
-    participant Stream as "world-stream Coalescer (30 Hz Entity Delta Engine)"
-    participant Worker as "Authoritative C++23 Worker (aoc-world / aoc-<region> / aoc-<zoi>)"
+    participant Gateway as "aoc-gateway (:8080) - Auth Middleware"
+    participant Stream as "world-stream Coalescer (30 Hz)"
+    participant Worker as "Authoritative Zone Worker"
 
     Operator->>Gateway: "GET /api/v1/admin/auth/status"
     Gateway-->>Operator: "{auth_required: true, boot_id: 'boot-2026...'}"
-    Operator->>Gateway: "POST /api/v1/admin/auth/login {username, passphrase}"
+    Operator->>Gateway: "POST /api/v1/admin/auth/login {username: 'Admin', passphrase}"
     Gateway-->>Operator: "200 OK {token (HS256 JWT), boot_id, scopes[]}"
     Operator->>Gateway: "GET /api/v1/world/state?minX=...&maxX=...&zoom=7 (Bearer JWT)"
     Gateway->>Stream: "Filter Viewport AABB at Constant 30 Hz (33 ms Interval)"
@@ -56,68 +53,54 @@ sequenceDiagram
 
 ---
 
-## 2. Viewport-Bounded Entity Streaming & Constant `30 Hz` (`33 ms`) Update Rate
+## Real-Time `30 Hz` Map Streaming and Layers
 
-Rendering thousands of continent-wide NPCs and players simultaneously in a browser tab wastes network bandwidth and GPU frame budget. The Web Admin map (`src/clients/web-admin/src/map/VerraMapCanvas.tsx` and `src/state/worldStreamStore.ts`) combines **server-side viewport AABB culling** with a **constant `30 Hz` (`33 ms` interval) update cadence across all zoom levels**:
+The **Map** workspace (`src/clients/web-admin/src/map/VerraMapCanvas.tsx`) renders an interactive orthographic map of Verra backed by `verra.pmtiles` and real-time entity streaming:
 
-### Viewport AABB Culling (`minX`, `minY`, `maxX`, `maxY`)
+- **Viewport-Bounded Culling**: Every poll sends your camera's visible bounding box in world centimeters (`minX`, `minY`, `maxX`, `maxY`) to `/api/v1/world/state` so only entities inside your view are serialized over the network.
+- **Constant `30 Hz` (`33 ms`) Update Rate**: Web Admin polls `/api/v1/world/state` at a constant **`30 Hz`** (`33 ms` interval) across all zoom levels (`z0` continent overview through `z7+` street-level view) without entity downsampling flicker. When you zoom in to `zoom >= 3.0`, the map automatically switches to high-resolution `z=7` minimap tiles (`TUI_s50000`).
+- **Authentic Resource Nodes and Foliage**: Gatherable resource nodes and foliage markers on the map are populated strictly from extracted client data (`region_foliage.tsv` painted `AIntrepidStateIFA` instances modeled by the 2D convex hull polygon or brush circle of the exact definition, and `content.db` dynamic `RandomGatherableSpawnersDefRecordBase` circle spawners served as `AGatherableActor`), using retail packet captures (`pcap_resource_spawners.tsv`) strictly as a last-resort fallback (`+ kAreaEpsilonCm` containment margin) with zero synthetic catalogs.
+- **3-Pass ZOI Borders and `1 km x 1 km` City Node Plugs**: Toggling **ZOI Borders** renders all 27 Settlement and Divine Gate Voronoi territories with biome-tinted interior fills and glow strokes. Toggling **Worker Grid** or **City Nodes** overlays the rotated `1 km x 1 km` City Node OBB boundaries and active server worker authority boxes.
 
-Every entity poll and WebSocket subscription sends the active camera bounding box in Unreal world centimeters (`minX`, `minY`, `maxX`, `maxY`) to `aoc-gateway` (`/api/v1/world/state`, `/api/v1/admin/world/entities`, and `/api/v1/admin/world/stream`). The Go `world-stream` coalescer (`src/server/services/internal/world-stream/coalescer.go`) filters the authoritative entity snapshot in $O(N)$ over cache-hot slices so only entities inside the operator's visible viewport (plus a margin around the screen edges) are serialized over the wire.
-
-### Constant `30 Hz` (`33 ms` Interval) Polling Across All Zoom Levels (`z0..z7+`)
-
-Web Admin polls `/api/v1/world/state` at a constant **`30 Hz`** (`33 ms` interval, `DEFAULT_MAP_POLL_HZ = 30`) across all map zoom levels (`z0` continent overview through `z7+` street-level settlement inspection), matching the server's `30 Hz` simulation cadence for real-time player and NPC movement telemetry:
-
-| Map Zoom Level (`z`) | Stream / Poll Frequency (`Hz`) | Poll / Frame Interval (`ms`) | Operational View Scale |
+| Map Zoom Level | Poll Frequency | Poll Interval | Typical Camera View |
 |:---:|:---:|:---:|:---|
-| **`z0..z1`** | **`30 Hz` (constant)** | `33 ms` (`33.3 ms`) | Full Verra continent & multi-region strategic view (`2,150 km^2` macro view) |
-| **`z2..z3`** | **`30 Hz` (constant)** | `33 ms` (`33.3 ms`) | Single biome region (`aoc-riverlands`, `aoc-sandsquall`) & multi-ZOI cluster view |
-| **`z4..z5`** | **`30 Hz` (constant)** | `33 ms` (`33.3 ms`) | Single Zone of Influence (ZOI) & settlement perimeter view |
-| **`z6..z7+`** | **`30 Hz` (constant)** | `33 ms` (`33.3 ms`) | CityNode `1 km x 1 km` OBB plug perimeter & 1:1 street-level combat/NPC pathing parity |
+| **`z0..z1`** | **`30 Hz` (constant)** | `33 ms` | Full Verra continent and multi-region overview |
+| **`z2..z3`** | **`30 Hz` (constant)** | `33 ms` | Single biome region (`aoc-riverlands`, `aoc-sandsquall`) and ZOI cluster (`z=7` tiles at `zoom >= 3.0`) |
+| **`z4..z5`** | **`30 Hz` (constant)** | `33 ms` | Single Zone of Influence (ZOI) and settlement perimeter |
+| **`z6..z7+`** | **`30 Hz` (constant)** | `33 ms` | `1 km x 1 km` City Node OBB plug and street-level NPC/player movement |
 
 ---
 
-## 3. Tile-Clipped Inward ZOI Borders (`27` Settlement & Divine Gate ZOIs)
+## Inspecting Entities, Controlling City Nodes, and Spawning Actors
 
-The Web Admin map renders the exact **27 in-game Zone of Influence (ZOI)** Voronoi territories (`src/clients/web-admin/src/map/verraZoiPolygons.ts`, sourced from `zoi_polygons.tsv` in `content.db` `v41`), covering all 22 Economic/Settlement nodes (`winstead`, `joeva`, `halcyon`, `new_aela`, `miraleth`, `sunhaven`, `azmaran`, etc.) and 5 Divine Gate territories:
+### Mutually Exclusive Map Selection
 
-- **Tile-Clipped Coastline & World-Edge Geometry**: Outer Voronoi rays are clipped tightly against the playable tile pyramid footprint (`[-1,433,600 .. +716,800]` cm X, `[-1,331,200 .. +819,200]` cm Y) so ZOI borders never bleed into unplayable ocean void.
-- **Inward-Offset Double-Stroke Borders**: Adjacent ZOI polygons share exact mathematical edges. To allow operators to distinguish which ZOI owns which side of a border at any zoom level, `VerraMapCanvas.tsx` renders an inward-offset biome-tinted stroke along the interior of each polygon alongside the shared boundary line.
-- **Rotated `1 km x 1 km` CityNode OBB Plugs**: Toggling the **Node Plugs (`1 km`)** layer renders the exact rotated `100,000 cm x 100,000 cm` CityNode Oriented Bounding Boxes (`node_plug_bounds.tsv`), showing the boundary between `aoc-<city-name>` Node Plug workers and `aoc-<zoi-name>` ZOI workers.
+Clicking on the map canvas selects one target at a time in the top-right inspector slot (`unified-map-inspector-slot`, `width: 360px`), automatically clearing any previous selection so the inspector never shows overlapping cards:
 
----
+1. **Player, NPC, Monster, Mount, or Resource Node (`Entity`)**: Clicking any live marker opens the **Entity Inspector**, displaying its live health/mana, 128-bit `FGuid`, owning server worker (`aoc-*`), world coordinates `(X, Y, Z)` cm, and (for resource nodes) its **`Resource Type`** and **`Quality / Rarity`**. For NPCs and monsters, one-click buttons let you **Heal**, **Kill**, **Reset**, **Respawn**, **Despawn**, or **Nudge** the actor.
+2. **Ground Coordinate Pin (`Map Position`)**: Clicking open terrain drops a coordinate pin showing `(X, Y, Z)` cm and the owning worker, with buttons to open **`Teleport Player Here...`** or **`Spawn NPC / Monster Here...`**.
+3. **Settlement Marker (`CityNode`)**: Clicking any of the 85 settlements opens the **City Node Governance Card**, where you can set its progression stage (`Stage 0..6`: `Wilderness` to `Metropolis`), add `+1,000` or `+10,000 XP`, update mayor/tax settings, or teleport players and spawn NPCs directly at that settlement.
+4. **Point of Interest (`POI`)**: Clicking a dungeon, ruin, or shrine marker displays its content GUID, biome tags, and associated spawners.
 
-## 4. Strictly Mutually Exclusive Map Selection & Searchable GM Action Modals
+### Searchable Teleport and Spawn Modals
 
-### Strictly Mutually Exclusive Map Selection (`4` Selection Modes)
+- **`Teleport Player Here...` Modal**: Shows the destination `(X, Y, Z)` coordinates (automatically snapping $Z$ to the terrain or town platform when $Z = 0$) and provides an instant search box to filter online or offline characters by name, account, or zone.
+- **`Spawn NPC / Monster Here...` Modal**: Searches the extracted `npcs.tsv` / `content.db` (`v41`) catalog across `4,200+` authentic NPC and monster definitions by name, tag, faction, or GUID, letting you choose the spawn level before dispatching `POST /api/v1/admin/gm/npc/spawn`.
 
-Clicking on the Verra map canvas enforces a **strictly mutually exclusive selection state** (`SelectionState` in `src/clients/web-admin/src/main.tsx`). Selecting any one target atomically clears the other three so the right-hand Inspector drawer never displays ambiguous or overlapping context:
+### World Clock, 4-Season Verra Calendar, and Per-Worker Tick Rates
 
-1. **`Entity` Selection (`Player` or `NPC`)**: Clicking an online player marker or live NPC marker selects that actor (`selectedEntity`), highlights its velocity vector and tether/home radius, and opens the **Entity Inspector** (displaying live HP/Mana, 128-bit `FGuid`, owning worker shard `aoc-*`, coordinates, and one-click GM actions: `Heal`, `Kill`, `Reset`, `Respawn`, `Despawn`, `Move Here`, or `Teleport Player`).
-2. **`Map Position` Selection (Ground Pin `(x, y, z)`)**: Clicking open terrain drops a high-precision ground pin (`selectedMapPin`), resolves the owning region, ZOI, and CityNode OBB, and presents two primary action buttons in the Inspector: **`Teleport Player Here...`** and **`Spawn NPC / Monster Here...`**.
-3. **`CityNode` Selection (`NodeRecord`)**: Clicking one of the 85 settlement markers selects that CityNode (`selectedCityNode`), highlights its parent ZOI polygon and `1 km x 1 km` Node Plug OBB, and opens the **CityNode Governance Inspector** (allowing live `Tier 0..6` progression changes, population inspection, and building slot management).
-4. **`POI` Selection (`Point of Interest`)**: Clicking a dungeon, ruin, shrine, or outpost marker selects that POI (`selectedPoi`) and displays its content GUID, biome tags, level range, and associated spawner definitions.
-
-### Searchable `Teleport Player Here...` & `Spawn NPC / Monster Here...` Modals
-
-When an operator clicks a ground pin (`Map Position`) or triggers a GM action from the inspector (`src/clients/web-admin/src/components/NodeGovernanceAndSpawnModals.tsx`):
-
-- **`Teleport Player Here...` Modal**:
-  - Displays the target world coordinates `(X, Y, Z)` (with automatic server-side terrain/platform $Z$ snapping when $Z = 0$) and the destination server worker (`aoc-<region>`, `aoc-<zoi>`, or `aoc-<city>`).
-  - Provides an instant fuzzy-search filter across all online and registered characters by character name, account email, character GUID, or current zone, plus manual coordinate override fields.
-- **`Spawn NPC / Monster Here...` Modal**:
-  - Searches the server's `admin-catalog` (`npcs.tsv` / `content.db` `v41`) across `4,200+` authentic NPC and monster definitions by display name, internal tag, level, faction, or `60100001` design GUID.
-  - Allows configuring spawn level, faction override, respawn timer, and count before dispatching `POST /api/v1/admin/gm/npc/spawn` to the authoritative worker.
+- **Top-Bar Clock and `VerraCalendarPopover`**: Verra time, date, and season control is located solely in the top-bar `VerraCalendarPopover` (`zIndex >= 100`, with no `Set Time / Date` card on the **Observability** tab). Clicking the **`Time HH:MM:SS`** pill or **`Set Time`** button in the top bar opens the popover, where you can jump to time presets (**06:00 Dawn**, **12:00 Noon**, **18:00 Dusk**, **00:00 Night**), enter a custom `HH:MM` time, or adjust the **360-day Verra Calendar** (`Year >= 1 AE`) across the **`4 x 90`-day seasons** (**`Spring`**, **`Summer`**, **`Autumn`**, and **`Winter`**, `360`-day year, `9x` clock speed). All changes are persisted in PostgreSQL (`world_simulation_state`) by `mesh-gateway` and synchronized mesh-wide (`time_of_day_hours`, `calendar_year`, `calendar_day_of_year`) to every server worker.
+- **`Visible Server Workers` Panel**: The bottom-right worker panel (`fixed 450px x 208px` with vertical scrolling for `> 6` workers) lists every worker intersecting your viewport. Clicking a worker row zooms the map to its territory. Each row includes a target tick-mode dropdown that defaults to **`Dynamic`** (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `30..120 Hz` adaptive range) alongside **`0 Hz (Off)`** (`0 Hz (Pause NPCs)`) and manual **`10, 15, 20, 25, 30, 40, 50, 60 Hz`** rates, paired with a read-only **`Actual Hz` / `Current Hz`** badge (`aria-readonly="true"`) fed by live `aoc_world_tick_hz` telemetry.
 
 ---
 
-## 5. `Observability` Tab -- Zero-Redundancy 4-Zone Observability & Structured Logs Explorer
+## Observability Tab
 
-The **Observability** workspace (`src/clients/web-admin/src/components/LogsAndContainersTab.tsx`) consolidates cluster observability into **4 non-overlapping zones** with zero duplicate metric cards:
+Clicking the **`Observability`** tab in the top navigation bar opens the cluster monitoring and log workspace (`src/clients/web-admin/src/components/LogsAndContainersTab.tsx`) with plain-English headings (`0` `"OTel"`, `"Scrape"`, or `"Series"` jargon and `0` `Set Time / Date` cards):
 
-| Zone | Title & Scope | Key Signals & Operator Controls |
+| Zone | Panel Name | What It Shows and Controls |
 |:---:|:---|:---|
-| **Zone 1** | **Google SRE Four Golden Signals Banner** | Top-level KPI strip aggregating cluster-wide **Latency** (tick duration $p50 / p99$ vs. frame budget), **Traffic** (active UDP sessions, packets/sec, gRPC RPS), **Errors** (failed RPCs, dropped frames, auth rejections), and **Saturation** (worker tick budget utilization `%` and SQLite/Postgres pool pressure). |
-| **Zone 2** | **Dynamic Server Worker Shards Table** | Live table of all registered `aoc-world` / `aoc-<region>` / `aoc-<zoi>` / `aoc-<city>` workers showing `worker_index`, spatial tier (`world | region | zoi | node_plug | polygon_cutout`), target vs. actual Tick Rate (`Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)`, or manual `10, 15, 20, 25, 30, 40, 50, 60 Hz` with Little's Law `<= 1.0 s` / `>= 1 Hz` entity backlog floor), active player count, spawned NPC count, `.tsv` storage mode (`memory` vs. `disk`), and handover counters. |
-| **Zone 3** | **USE / RED Container Matrix** | Per-container row matrix across all active Linux containers (`aoc-postgres`, `aoc-auth`, `aoc-character`, `aoc-citynode`, `aoc-quest`, `aoc-mesh`, `aoc-mesh-gateway`, `aoc-gateway`, `aoc-web-admin`, `aoc-ingress-proxy`, and `aoc-*` world workers) reporting **Utilization** (CPU `%`, RSS memory MB), **Saturation** (run-queue / memory limit `%`), **Errors** (restart count, healthcheck status), and one-click container restart actions (`containers:manage` scope). |
-| **Zone 4** | **Structured Logs & GM Audit Trail Explorer** | Real-time filterable log viewer querying structured JSON container logs and the persistent GM Audit Trail (`gm_audit_log`), with instant filtering by container service, severity (`INFO`, `WARN`, `ERROR`), worker shard, correlation/request ID, or free-text search. |
+| **Zone 1** | **`Simulation`, `World Population`, `Traffic & Cache`, and `Errors & Saturation`** | Four summary KPI cards:<br/>- **`Simulation`**: `Tick Hz (p50 / p99)` and `Publish Avg / Max` (`30 Hz`).<br/>- **`World Population`**: `Total Entities` equals the exact sum of the **9 mutually-exclusive categories** (`Players`, `NPCs`, `Monsters`, `Huntables`, `Trees`, `Rocks`, `Ore & Gems`, `Plants`, and `Mounts`) with `0` double-counted entities.<br/>- **`Traffic & Cache`**: `Gateway Requests`, **`API Cache Hits / Misses`** (with hit percentage), and `UDP Frames Forwarded`.<br/>- **`Errors & Saturation`**: `Gateway Errors / Retries` (`<errors> / <retries>`), `Active Containers`, and **`Monitored Metrics`** (`active` metrics and metric groups). |
+| **Zone 2** | **`World Workers` Table** | Live table of all registered `aoc-*` workers in `worker_index` order (`#0..#N`), with discrete columns for **`Scope Tier`**, **`Target Tick Mode`** (default **`Dynamic`** with `target_tick_hz: -1`, `tick_mode: "dynamic"`, `30..120 Hz` adaptive range, `0 Hz (Pause NPCs)`, or manual `10, 15, 20, 25, 30, 40, 50, 60 Hz`), and read-only **`Current Hz`** (`Actual Hz`, `aria-readonly="true"`, fed by live `aoc_world_tick_hz` telemetry), plus `Tick p50 / p99` and counts for `Total Entities`, `Players`, `NPCs`, `Monsters`, and `Resources`. |
+| **Zone 3** | **`Container Metrics & Analytics`, `Service Routing & Connection Health`, and `Telemetry & Metrics`** | - **`Container Metrics & Analytics`**: Per-container table with plain-English headings (`Container`, `Image`, `State / Status`, `CPU %`, `Memory (Used / Limit / %)`, **`Processes`**, `Net RX / TX`, **`Health (Status / Metrics / Latency)`**, and `Logs`).<br/>- **`Service Routing & Connection Health`**: Per-route `<Service Name> (<Protocol>)` cards showing total requests, **`2xx` / `3xx` / `4xx` / `5xx`** HTTP status classes per route, timeouts, active connections, and healthy members.<br/>- **`Telemetry & Metrics`**: Polls cluster-internal `/metrics` endpoints (`http://mesh-gateway:8082/metrics`, `http://<worker>:8080/metrics`, `http://<service>:18080/metrics`, with `0` `127.0.0.1` or `localhost` addresses) and displays each target's status (`UP` / `DOWN`), **`Monitored Metrics`** count, and response latency (`ms`). |
+| **Zone 4** | **`Log Explorer` and `GM Audit Log`** | Real-time viewer for container `stdout`/`stderr` JSON logs and the persistent `gm_audit_log` ledger, featuring container, stream, and severity (`ALL`, `ERROR`, `WARN`, `INFO`, `DEBUG`) filters plus **`Auto Tail`** (pause/resume live polling) and **`Auto Follow`** (pin scroll to bottom) toggles. |

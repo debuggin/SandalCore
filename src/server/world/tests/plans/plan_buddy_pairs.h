@@ -9,10 +9,11 @@
 namespace aoc::world::tests::plans {
 
 inline bool verify_buddy_pair_visual_continuity_step(
+    bots::LiveSession& s,
     bots::PlayerBot& actor,
     bots::PlayerBot& observer,
     bots::BotTestEnv env) {
-    if (!bots::assert_partner_visible_and_updating(actor, observer)) return false;
+    if (!bots::assert_partner_visible_and_updating(s, actor, observer)) return false;
 
     const bots::Vec3Cm delta{240.0, 180.0, env == bots::BotTestEnv::InWater ? -40.0 : 0.0};
     const bots::Vec3Cm next_actor_pos{
@@ -26,9 +27,9 @@ inline bool verify_buddy_pair_visual_continuity_step(
         observer.pos_cm.z + delta.z,
     };
 
-    bots::step_bot_along_navmesh(actor, next_actor_pos, 3);
-    bots::step_bot_along_navmesh(observer, next_observer_pos, 3);
-    if (!bots::assert_partner_visible_and_updating(actor, observer)) return false;
+    bots::step_bot_along_navmesh(s, actor, next_actor_pos, 1);
+    bots::step_bot_along_navmesh(s, observer, next_observer_pos, 1);
+    if (!bots::assert_partner_visible_and_updating(s, actor, observer)) return false;
 
     if (env == bots::BotTestEnv::AcrossBoundary) {
         const std::string prev_worker = actor.worker_id;
@@ -36,17 +37,19 @@ inline bool verify_buddy_pair_visual_continuity_step(
         actor.worker_id = (prev_worker == "aoc-world-riverlands") ? "aoc-world-sandsquall" : "aoc-world-riverlands";
         ++actor.authority_epoch;
         ++actor.completed_handovers;
-        if (!bots::assert_partner_visible_and_updating(actor, observer)) return false;
+        if (!bots::assert_partner_visible_and_updating(s, actor, observer)) return false;
     }
     return observer.partner_visible_in_aoi && observer.partner_visibility_checks >= 2;
 }
 
-inline bool run_plan_buddy_pairs(std::vector<bots::PlayerBot>& roster) {
-    return bots::run_all_64_archetype_combinations_all_envs(
-        roster,
-        [](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv env) {
-            return verify_buddy_pair_visual_continuity_step(actor, observer, env);
+inline bool run_plan_buddy_pairs(bots::LiveSession& s, std::vector<bots::PlayerBot>& roster) {
+    const bool ok = bots::run_all_64_archetype_combinations_all_envs(
+        s, roster,
+        [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv env) {
+            return verify_buddy_pair_visual_continuity_step(s, actor, observer, env);
         });
+    pump_udp(s, 25);
+    return ok;
 }
 
 }  // namespace aoc::world::tests::plans

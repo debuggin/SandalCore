@@ -47,6 +47,43 @@ using spawns::Why;
 static content::PopFilter open_filter() { return content::PopFilter{}; }   // Wilderness .. Metropolis, nothing else
 // [Cyb - C-O-A]
 
+static void test_time_of_day_windows(const SpawnContext& ctx, const std::set<std::string>& none) {
+    content::PopFilter day = open_filter();
+    day.time_of_day_start = 10;
+    day.time_of_day_end = 23;
+    SpawnContext at = ctx;
+    at.hour = 12;
+    CHECK(SpawnFilter(at, nullptr).filter(day, none) == Why::Spawns, "a 10-23 asset spawns at noon");
+    at.hour = 2;
+    CHECK(SpawnFilter(at, nullptr).filter(day, none) == Why::TimeOfDay, "...not at 2 in the morning");
+    day.time_of_day_start = 22;
+    day.time_of_day_end = 5;
+    at.hour = 23.5;
+    const bool late = SpawnFilter(at, nullptr).filter(day, none) == Why::Spawns;
+    at.hour = 3;
+    const bool early = SpawnFilter(at, nullptr).filter(day, none) == Why::Spawns;
+    at.hour = 12;
+    CHECK(late && early && SpawnFilter(at, nullptr).filter(day, none) == Why::TimeOfDay, "a night asset (22 to 5) wraps past midnight");
+    day.time_of_day_start = 0;
+    day.time_of_day_end = -1;
+    CHECK(SpawnFilter(at, nullptr).filter(day, none) == Why::TimeOfDay || SpawnFilter(at, nullptr).filter(day, none) == Why::Spawns, "a half-open day is judged without a crash");
+
+    content::PopFilter by_day = open_filter(), by_night = open_filter();
+    by_day.time_of_day_start = 5;
+    by_day.time_of_day_end = 20;
+    by_night.time_of_day_start = 20;
+    by_night.time_of_day_end = 5;
+    const auto spawns_at = [&](const content::PopFilter& window, double hour) {
+        SpawnContext c = ctx;
+        c.hour = hour;
+        return SpawnFilter(c, nullptr).filter(window, none) == Why::Spawns;
+    };
+    CHECK(spawns_at(by_day, 5.0) && !spawns_at(by_night, 5.0), "hour 5 is day only: the day set spawns, the night set does not");
+    CHECK(!spawns_at(by_day, 20.0) && spawns_at(by_night, 20.0), "hour 20 is night only");
+    CHECK(!spawns_at(by_day, 4.99) && spawns_at(by_night, 4.99) && spawns_at(by_day, 19.99) && !spawns_at(by_night, 19.99), "the hours just before each edge belong to the period that is ending");
+    CHECK(spawns_at(by_day, 7.0) && !spawns_at(by_night, 7.0) && spawns_at(by_night, 0.0) && !spawns_at(by_day, 0.0), "the default start hour (7) is in the day set; hour 0 is in the night set");
+}
+
 static void test_conditions() {
     std::printf("PopulationFilter against the context\n");
     SpawnContext ctx;
@@ -105,25 +142,7 @@ static void test_conditions() {
     other.weather = {"Rain"};
     CHECK(f.filter(other, none) == Why::Weather, "a weather (the sky is clear)");
 
-    content::PopFilter day = open_filter();
-    day.time_of_day_start = 10;
-    day.time_of_day_end = 23;
-    SpawnContext at = ctx;
-    at.hour = 12;
-    CHECK(SpawnFilter(at, nullptr).filter(day, none) == Why::Spawns, "a 10-23 asset spawns at noon");
-    at.hour = 2;
-    CHECK(SpawnFilter(at, nullptr).filter(day, none) == Why::TimeOfDay, "...not at 2 in the morning");
-    day.time_of_day_start = 22;
-    day.time_of_day_end = 5;
-    at.hour = 23.5;
-    const bool late = SpawnFilter(at, nullptr).filter(day, none) == Why::Spawns;
-    at.hour = 3;
-    const bool early = SpawnFilter(at, nullptr).filter(day, none) == Why::Spawns;
-    at.hour = 12;
-    CHECK(late && early && SpawnFilter(at, nullptr).filter(day, none) == Why::TimeOfDay, "a night asset (22 to 5) wraps past midnight");
-    day.time_of_day_start = 0;
-    day.time_of_day_end = -1;
-    CHECK(SpawnFilter(at, nullptr).filter(day, none) == Why::TimeOfDay || SpawnFilter(at, nullptr).filter(day, none) == Why::Spawns, "a half-open day is judged without a crash");
+    test_time_of_day_windows(ctx, none);
 
     content::PopFilter tag = open_filter();
     tag.required_tags = {"npc.stature.rareSpawn"};

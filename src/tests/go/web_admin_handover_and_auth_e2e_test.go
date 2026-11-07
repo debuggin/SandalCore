@@ -383,6 +383,7 @@ func verifySixteenBotEightClassLevel50BoundaryPlay(t *testing.T, baseURL string)
 
 func TestSixPartitionTopologiesAndMultiBotCrossBoundaryE2E(t *testing.T) {
 	baseURL := resolveLiveOrEphemeralBaseURL(t)
+	verifyLiveAdminAuthLoginAndSession(t, baseURL)
 	verifySixEnvConfigurablePartitionTopologies(t, baseURL)
 	verifySixteenBotEightClassLevel50BoundaryPlay(t, baseURL)
 	verifyLiveBorderHandoverHysteresis(t, baseURL)

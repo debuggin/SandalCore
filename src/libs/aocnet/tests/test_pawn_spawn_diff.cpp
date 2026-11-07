@@ -1,50 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-// ============================================================================
-//  tools/test_pawn_spawn_diff.cpp
-//
-//  Phase III M1.calibration — byte-diff harness for Pawn (pkt#78) synthesis.
-//  Mirrors test_pc_spawn_diff.cpp but for the PlayerPawn_C Blueprint actor.
-//
-//  BASELINE GOAL
-//  -------------
-//  Run ActorBuilder::build_spawn with pawn_schema + plausible runtime
-//  values, compare bit-by-bit to captured pkt#78, report matching/
-//  differing bits.  This establishes our starting point for calibration —
-//  the schema needs whatever property handle adjustments bring us to
-//  byte-identity.
-//
-//  STATE (2026-04-24)
-//  ------------------
-//  - Recording: an 816-byte raw packet (recordings.h; the test prints SKIP and
-//    exits 0 without it)
-//  - Archetype paths confirmed:
-//      "Default__PlayerPawn_C"  (FString 22 bytes)
-//      "/Game/ThirdPersonCPP/Blueprints/PlayerPawn"  (FString 43 bytes)
-//  - Actor NetGUID: TODO(extract from pkt#78 bunch)
-//  - Archetype NetGUID: TODO(extract from pkt#78 bunch)
-//  - Level NetGUID: TODO(probably same 16442478405498561049 as PC)
-//  - Transform values: TODO(extract)
-//
-//  This harness uses PLACEHOLDER values for the unknowns.  The initial
-//  diff count will be large; each iteration of calibration reduces it.
-//
-//  PROGRESSION PLAN
-//  ----------------
-//  1. Run harness — note baseline bit-diff count.
-//  2. Extract actor/archetype/level NetGUIDs from pkt#78 bunch decode.
-//     Update rt.* values below.
-//  3. Extract transform values (location/rotation/scale/velocity flags +
-//     quantized bits).  Update rt.serialize_* below.
-//  4. Decode the 6-subobject property stream in pkt#78, capture values,
-//     populate ActorRuntime::values map.
-//  5. Iterate handle assignments in pawn_schema.cpp until diff count
-//     drops to < 10 bits (tolerance for alignment padding).
-//
-//  LAYER:   tools
-//  OWNER:   Phase III M1 calibration
-// ============================================================================
+// Baseline bit-diff calibration harness comparing synthesized PlayerPawn_C spawn bunches against captured packet fixtures.
 #include "protocol/emit/actor_builder.h"
 #include "protocol/emit/bunch_writer.h"
 #include "protocol/emit/intrepid_netguid.h"
@@ -52,7 +9,6 @@
 #include "protocol/emit/schema_value.h"
 #include "protocol/schema/schema_registry.h"
 #include "recordings.h"
-// -- C:Y:B . C O A --
 
 #include <cstdio>
 #include <cstdint>
@@ -90,7 +46,7 @@ static emit::ExportEntry build_two_level(uint64_t leaf_obj,
 }
 
 int main() {
-    std::printf("=== test_pawn_spawn_diff — baseline calibration run ===\n\n");
+    std::printf("=== test_pawn_spawn_diff -- baseline calibration run ===\n\n");
 
     const std::string fixture_path = recordings::find(recordings::kPacketB);
     if (fixture_path.empty()) return recordings::skip_test(recordings::kPacketB);
@@ -114,76 +70,61 @@ int main() {
     std::printf("  root properties : %zu\n", pawn_schema->root_properties.size());
     std::printf("  subobject count : %zu\n", pawn_schema->components.size());
 
-    // ── Build the captured export chain (archetype only — placeholder) ──
-    //
-    // From the extractor: we have two FString paths in captured pkt#78:
-    //   leaf:  "Default__PlayerPawn_C"          (22 bytes incl NUL)
-    //   outer: "/Game/ThirdPersonCPP/Blueprints/PlayerPawn"  (43 bytes incl NUL)
-    //
-    // NetGUID OIDs and checksums are TODO — extract them via a targeted
-    // pkt#78 bunch decode (same pattern as the PC spawn test).
+    // Synthetic export chain mirrors the two-level PlayerPawn_C archetype hierarchy in captured packets.
     std::vector<emit::ExportEntry> exports;
     {
         auto e = build_two_level(
-            /*leaf_obj=*/       0x1111111111111111ULL,   // TODO: from pkt#78
+            /*leaf_obj=*/       0x1111111111111111ULL,
             /*leaf_path=*/      "Default__PlayerPawn_C",
-            /*leaf_checksum=*/  0x00000000,              // TODO
-            /*outer_obj=*/      0x2222222222222222ULL,   // TODO
+            /*leaf_checksum=*/  0x00000000,
+            /*outer_obj=*/      0x2222222222222222ULL,
             /*outer_path=*/     "/Game/ThirdPersonCPP/Blueprints/PlayerPawn",
             /*outer_checksum=*/ 0x00000000,
             /*no_load=*/        false);
         exports.push_back(std::move(e));
     }
-    // Mark has_checksum on leaf/outer per captured flag bits (TODO: verify)
     exports[0].has_checksum = true;
     exports[0].outer->has_checksum = true;
 
-    // ── Actor runtime — placeholder values ───────────────────────────────
+    // Synthetic runtime GUIDs and quantized origin transform isolate schema handle layout from dynamic spawn variance.
     emit::ActorRuntime rt;
     rt.type = schema::ActorType::Pawn;
 
-    // Actor NetGUID for the pawn — dynamic, server-assigned at spawn.
-    // These are PLACEHOLDERS; real values come from pkt#78's SerializeNewActor.
     rt.actor_netguid       = 0xDEAD0000ULL;
-    rt.actor_server_id     = 60;  // probably same server as PC
+    rt.actor_server_id     = 60;
     rt.actor_randomizer    = 0x12345678U;
 
-    rt.archetype_netguid    = 0x1111111111111111ULL;   // matches exports[0] leaf
+    rt.archetype_netguid    = 0x1111111111111111ULL;
     rt.archetype_server_id  = 0;
     rt.archetype_randomizer = 0;
 
-    rt.level_netguid        = 16442478405498561049ULL; // likely same as PC
+    rt.level_netguid        = 16442478405498561049ULL;
     rt.level_server_id      = 0;
     rt.level_randomizer     = 0;
-// C | O | A / C.Y.B
 
-    // Transform — most pawns serialize location AND rotation (facing
-    // direction matters for rendering).  PC had no rotation serialized;
-    // pawns differ.  TODO: extract real values from pkt#78.
     rt.serialize_location     = true;
     rt.quantize_location      = true;
-    rt.location_scaled_x      = 0;   // TODO
+    rt.location_scaled_x      = 0;
     rt.location_scaled_y      = 0;
     rt.location_scaled_z      = 0;
     rt.location_max_bits      = 24;
-    rt.serialize_rotation     = false;   // TODO: pawns likely set this
+    rt.serialize_rotation     = false;
     rt.serialize_scale        = false;
     rt.serialize_velocity     = false;
 
-    // ── Build via ActorBuilder ───────────────────────────────────────────
     emit::BunchWriter bw;
     emit::EmitContext ctx;
-    ctx.channel              = 7;        // pawn's channel (TODO: confirm)
+    ctx.channel              = 7;
     ctx.ch_sequence          = 1;
     ctx.is_reliable          = true;
     ctx.is_partial           = false;
     ctx.partial_initial      = true;
     ctx.partial_final        = true;
-    ctx.is_control           = true;     // channel-open bunch
+    ctx.is_control           = true;
     ctx.b_open               = true;
     ctx.package_map_exports  = std::move(exports);
     ctx.ch_name_is_hardcoded = true;
-    ctx.ch_name_ename_idx    = 102;      // NAME_Actor
+    ctx.ch_name_ename_idx    = 102;
 
     emit::ActorBuilder builder;
     size_t built_bits = builder.build_spawn(*pawn_schema, rt, ctx, bw);
@@ -195,15 +136,7 @@ int main() {
         return 1;
     }
 
-    // ── Baseline bit-by-bit diff ─────────────────────────────────────────
-    //
-    // We can't directly compare our bunch-only output against a full
-    // packet (captured pkt#78 has packet prefix + bunch header + bunch).
-    // To get meaningful diff measurement:
-    //   1. Find the bunch start in captured (probably ~bit 150-160 per
-    //      PC pattern of 152-bit packet prefix).
-    //   2. Scan offsets in [40, 200] and report the one with fewest diffs.
-    //   3. Output that count — that's our baseline.
+    // Scan packet header offsets in [120, 200] bits because captured fixtures prepend outer UDP/packet headers before the bunch payload.
     std::printf("\n  Scanning for best alignment with captured...\n");
     size_t best_offset = 0;
     size_t best_diffs = SIZE_MAX;
@@ -232,14 +165,13 @@ int main() {
                  best_cmp - best_diffs,
                  100.0 * (best_cmp - best_diffs) / (best_cmp ? best_cmp : 1));
 
-    // ── Report ────────────────────────────────────────────────────────────
     std::printf("\n=== CALIBRATION STATE ===\n");
     if (best_diffs < built_bits / 10) {
-        std::printf("  Status: CLOSE — < 10%% diff.  Fine-tune specific props.\n");
+        std::printf("  Status: CLOSE -- < 10%% diff.  Fine-tune specific props.\n");
     } else if (best_diffs < built_bits / 2) {
-        std::printf("  Status: PARTIAL — structure roughly right; major props need values.\n");
+        std::printf("  Status: PARTIAL -- structure roughly right; major props need values.\n");
     } else {
-        std::printf("  Status: BASELINE — this is the starting point.  Next:\n");
+        std::printf("  Status: BASELINE -- this is the starting point.  Next:\n");
         std::printf("    1. Decode pkt#78 bunch header (channel, BDB, ChSeq).\n");
         std::printf("    2. Decode SerializeNewActor (actor/archetype/level GUIDs).\n");
         std::printf("    3. Decode transform + property stream.\n");

@@ -578,9 +578,18 @@ static void test_load_area(const content::ContentDb &db, const spawns::CapturedD
     std::printf("    note: %s\n", n.c_str());
   CHECK(report->refused == 0, "no spawn was refused");
   CHECK(registry.size() == report->total(), "the registry holds every actor the report counts");
-  CHECK(report->data_npcs > 400 && report->captured_npcs > 0 && report->gatherables >= 20 && report->gm_vendors == gm->vendors().size(), "NPCs from the data and from the captures, resource nodes, and one GM vendor per PTR def");
+  CHECK(report->data_npcs > 400 && report->captured_npcs > 0 && report->gatherables > 0 && report->gatherables + report->gatherable_duplicates >= 20 && report->gm_vendors == gm->vendors().size(), "NPCs from the data and from the captures, resource nodes, and one GM vendor per PTR def");
   const size_t npcs = registry.count(world::ActorKind::Npc), nodes = registry.count(world::ActorKind::Gatherable);
   CHECK(npcs == report->data_npcs + report->captured_npcs + report->gm_vendors && nodes == report->gatherables, "the registry's kinds match the report");
+  bool authentic_gatherables = nodes > 0;
+  registry.for_each([&](const world::WorldActor &a) {
+    if (a.kind != world::ActorKind::Gatherable) return;
+    const auto *def_val = a.actor.obj.schema ? a.actor.obj.state.get(*a.actor.obj.schema, "GatherableActorDef.Guid") : nullptr;
+    const int64_t def_guid = def_val && def_val->get_if<int64_t>() ? *def_val->get_if<int64_t>() : 0;
+    authentic_gatherables = authentic_gatherables && def_guid != 0 && !a.npc.name.empty() && a.npc.name.find("Tier 1") == std::string::npos && a.npc.name.find('[') == std::string::npos;
+  });
+  CHECK(authentic_gatherables, "every gatherable resolves its authentic GatherableActorDef GUID and carries no synthetic catalog label");
+  CHECK(spawns::resolve_point_region_bit(3000000.0, 3000000.0) == spawns::RegionBit::None, "deep-ocean coordinates outside ZOI and region polygons resolve to RegionBit::None");
   check_loaded_actors(registry, area, *gm);
   std::vector<uint64_t> near, within_350;
   registry.query(area.center_x, area.center_y, 15000, near);

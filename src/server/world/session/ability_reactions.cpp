@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 // Reaction dispatch for Hit (OwnerHits), Ability (Consume), and hit-carried ReactionsIds.
-#include "session/ability_pipeline.h"
+#include "session/ability_pipeline_internal.h"
+#include "session/summoner_pets.h"
 
 #include "combat/combat_world.h"
-#include "content/content_db.h"
 
 #include <spdlog/spdlog.h>
 
@@ -146,8 +146,7 @@ void AbilityPipeline::run_reactions(AbilityChange& c, int kind, int bit, const R
 
 void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, const ReactionContext& rc, double t) {
     const content::ReactionRow& row = r.row;
-    // who casts the hits: only the holder (Owner) is served; a reaction cast by the hit's instigator or its source needs actors the world does not hold yet
-    if (row.instigator != "Owner") {
+    if (row.instigator != "Owner" && row.instigator != "Instigator") {
         if (reaction_noted_.insert(row.guid).second) spdlog::info("[abilities] the reaction {} is cast by {}, which is not served yet: it does not fire", row.name, row.instigator);
         return;
     }
@@ -190,6 +189,232 @@ void AbilityPipeline::fire_reaction(AbilityChange& c, const ReactionDef& r, cons
     }
     spdlog::log(reactions_fired_ <= 40 ? spdlog::level::info : spdlog::level::debug, "[abilities] the reaction {} fired ({} of its {} hit(s) applied; event: {})", row.name, applied, row.hits.size(),
                 rc.hit && rc.hit->hit ? "a hit, " + rc.hit->hit->row.name : rc.consumed ? "the cost of " + rc.consumed->row.name + " paid" : std::string("?"));
+}
+
+namespace {
+
+constexpr const char* kMovesAtPress[] = {"Fighter_Leapstrike", "Fighter_LungingAssault", "Ranger_Dash"};
+
+double refunded_stat_value(const stats::CharacterStats& stats, int64_t stat, double now_value, double amount,
+                           std::pair<double, double> max_mana_and_health) {
+    double cap = kInf;
+    if (stat == content::kGuidMana) cap = max_mana_and_health.first;
+    else if (stat == content::kGuidHealth) cap = max_mana_and_health.second;
+    else if (const stats::StatValue* v = stats.find(stat); v && v->has_max) cap = static_cast<double>(v->max);
+    return std::max(now_value, std::min(cap, now_value + amount));
+}
+
+bool cast_spends_mana(const ability_types::Cast& cast) {
+    for (const auto& [stat, amount] : cast.stat_costs) {
+        if (amount > 0 && stat == content::kGuidMana) return true;
+    }
+    return false;
+}
+
+const ability_types::Group* refund_group_charge(AbilityChange& c, const ability_types::Cast& cast,
+                                                std::map<std::string, ability_types::Group>& groups) {
+    if (!cast.triggers_cooldown || !(cast.cooldown > 0)) return nullptr;
+    const auto it = groups.find(cast.group);
+    if (it == groups.end()) return nullptr;
+    ability_types::Group& g = it->second;
+    g.charges = std::min(g.max_charges, g.charges + cast.charge_cost);
+    if (g.charges < g.max_charges) return &g;
+    for (const int64_t a : g.items) c.cooldowns_removed.push_back(a);
+    groups.erase(it);
+    return nullptr;
+}
+
+void erase_client_instances(std::deque<ability_types::Instance>& instances, int32_t client_id) {
+    instances.erase(std::remove_if(instances.begin(), instances.end(),
+                                   [client_id](const ability_types::Instance& in) { return in.client_id == client_id; }),
+                    instances.end());
+}
+
+bool record_has_launched_slot(const ability_types::CastRecord& r) {
+    if (r.launched || !r.asked.empty()) return true;
+    for (const ability_types::HitSlot& s : r.slots) {
+        if (s.requests > 0 || s.applied || !s.due.empty()) return true;
+    }
+    return false;
+}
+
+bool pop_pending_swing_cast(std::vector<ability_types::Cast>& casts, double t, const char* why, AbilityEvent& out) {
+    for (size_t i = casts.size(); i-- > 0;) {
+        const ability_types::Cast& p = casts[i];
+        if (!is_weapon_combo(p.def->row) || !p.item_due) continue;
+        out = {};
+        out.at = t;
+        out.end_ability = p.client_id;
+        out.note = "the swing of " + p.def->row.name + " is ended: " + why;
+        casts.erase(casts.begin() + static_cast<std::ptrdiff_t>(i));
+        return true;
+    }
+    return false;
+}
+
+void clear_unlaunched_swing_casts(std::vector<ability_types::Cast>& casts, int64_t server_id) {
+    for (ability_types::Cast& cast : casts) {
+        if (cast.instance != server_id) continue;
+        cast.hit_due.reset();
+        if (!cast.shot && !cast.flight_pending) cast.projectile_due.reset();
+    }
+}
+
+}  // namespace
+
+bool gone_out_at_the_press(const content::AbilityRow& row) {
+    for (const pets::PetBarCommand& c : pets::kPetBarCommands) {
+        if (c.ability == row.guid) return true;
+    }
+    if (row.networking_max_speed > 0) return true;
+    for (const Dash& d : kDashes) {
+        if (row.name == d.ability) return true;
+    }
+    for (const char* name : kMovesAtPress) {
+        if (row.name == name) return true;
+    }
+    return false;
+}
+
+void AbilityPipeline::restore_stacks(AbilityChange& c, const EffectDef& def, int stacks, double t) {
+    for (EffectInst& e : effects_) {
+        if (e.def != &def) continue;
+        e.stacks += stacks;
+        c.effects_changed.push_back(effect_item(e));
+        return;
+    }
+    apply_effect(c, def, stacks, std::nullopt, t, true);
+}
+
+bool AbilityPipeline::in_cast_bar(const Cast& cast) const {
+    if (pets::for_ability(cast.def->row.guid)) return cast.cost_due.has_value();
+    return cast.branched != nullptr && cast.branch_due && !cast.request_heard && !cast.charged && !cast.released;
+}
+
+void AbilityPipeline::refund(AbilityChange& c, Cast& cast) {
+    if (!cast.paid) return;
+    cast.paid = false;
+    give_back(c, cast);
+}
+
+void AbilityPipeline::give_back(AbilityChange& c, const Cast& cast) {
+    const std::pair<double, double> max_vitals{stat_now(content::kGuidMaxMana), stat_now(content::kGuidMaxHealth)};
+    for (const auto& [stat, amount] : cast.stat_costs) {
+        if (!(amount > 0)) continue;
+        if (stat == content::kGuidStamina) {
+            a7_.add_stamina(c, amount);
+        } else {
+            set_held(c, stat, refunded_stat_value(stats_, stat, stat_now(stat), amount, max_vitals));
+        }
+    }
+    if (resource_ && cast.resource_added > 0 && cast_spends_mana(cast)) {
+        remove_stacks(c, resource_->row.guid, cast.resource_added);
+    }
+    if (catalog_) {
+        for (const auto& [effect, n] : cast.effect_costs) {
+            if (const EffectDef* def = catalog_->effect(effect)) restore_stacks(c, *def, n, now_);
+        }
+    }
+    if (const Group* g = refund_group_charge(c, cast, groups_)) {
+        for (const int64_t a : g->items) c.cooldowns_set.push_back(cooldown_item(a, *g));
+    }
+    recompute(c);
+}
+
+size_t AbilityPipeline::end_cast_bars(double now, const char* why) {
+    advance(now);
+    size_t ended = 0;
+    for (size_t i = casts_.size(); i-- > 0;) {
+        if (!in_cast_bar(casts_[i])) continue;
+        const int32_t client_id = casts_[i].client_id;
+        const std::string name = casts_[i].def->row.name;
+        const bool paid = casts_[i].paid;
+        AbilityEvent e;
+        e.at = now_;
+        e.end_ability = client_id;
+        abort_cast(i, now_, why, true);
+        erase_client_instances(instances_, client_id);
+        e.note = name + " is over: " + why + (paid ? ", what it had paid is given back" : "");
+        events_.push_back(std::move(e));
+        ++ended;
+    }
+    return ended;
+}
+
+size_t AbilityPipeline::end_by_dodge(double now) {
+    size_t ended = end_cast_bars(now, "a Dodge ended the cast bar");
+    ended += end_unlaunched(now_, "a Dodge cancelled it before it went out");
+    ended += end_swings(now_, "a Dodge ended the swing");
+    return ended;
+}
+
+bool AbilityPipeline::gone_out(int32_t client_id, const Cast* cast) const {
+    if (cast && (cast->request_heard || cast->charged || cast->released)) return true;
+    for (const CastRecord& r : records_) {
+        if (r.client_id == client_id) return record_has_launched_slot(r);
+    }
+    return true;
+}
+
+void AbilityPipeline::mark_launched(int32_t client_id) {
+    if (CastRecord* r = record_of(client_id)) r->launched = true;
+}
+
+bool AbilityPipeline::dodge_cancels(const Cast& cast) const {
+    if (cast.loop || cast.toggle_off || cast.item_cast || is_weapon_combo(cast.def->row) || gone_out_at_the_press(cast.def->row)) return false;
+    return !gone_out(cast.client_id, &cast);
+}
+
+size_t AbilityPipeline::end_unlaunched(double t, const char* why) {
+    size_t ended = 0;
+    for (size_t i = casts_.size(); i-- > 0;) {
+        if (!dodge_cancels(casts_[i])) continue;
+        Cast& cast = casts_[i];
+        const int32_t client_id = cast.client_id;
+        const std::string name = cast.def->row.name;
+        const bool paid = cast.paid;
+        const double since = t - cast.trigger_at;
+        AbilityEvent e;
+        e.at = t;
+        e.end_ability = client_id;
+        for (int shot = 1; shot < cast.shots; ++shot) give_back(e.change, cast);
+        refund(e.change, cast);
+        step_end(cast, t);
+        drop_record(client_id);
+        end_zones_of(cast, t);
+        casts_.erase(casts_.begin() + static_cast<std::ptrdiff_t>(i));
+        erase_client_instances(instances_, client_id);
+        e.note = name + " is over: " + why + (paid ? ", what it had paid is given back" : "");
+        spdlog::info("[abilities] {} {:.3f} s after the trigger: {}", name, since, e.note);
+        events_.push_back(std::move(e));
+        ++ended;
+    }
+    return ended;
+}
+
+size_t AbilityPipeline::end_swings(double t, const char* why) {
+    size_t ended = 0;
+    AbilityEvent pending;
+    while (pop_pending_swing_cast(casts_, t, why, pending)) {
+        drop_record(*pending.end_ability);
+        events_.push_back(std::move(pending));
+        ++ended;
+    }
+    if (!item_instance_) return ended;
+    for (size_t i = 0; i < instances_.size(); ++i) {
+        const Instance inst = instances_[i];
+        if (inst.server_id != *item_instance_ || inst.end_due) continue;
+        const AbilityDef* a = catalog_ ? catalog_->ability(inst.ability) : nullptr;
+        if (!a || !is_weapon_combo(a->row)) continue;
+        if (gone_out(inst.client_id)) return ended;
+        drop_record(inst.client_id);
+        clear_unlaunched_swing_casts(casts_, inst.server_id);
+        stop_swing(inst.server_id);
+        end_instance(i, t, a->row.name + " is over: " + why);
+        ++ended;
+        break;
+    }
+    return ended;
 }
 
 }  // namespace aoc::worldd

@@ -559,8 +559,28 @@ struct AbilityPipeline::Host::Casts {
       schedule_cast_projectiles(self, plan, cast, !cast.target_actors.empty());
   }
 
+  static bool has_scheduled_cast_steps(const Cast &cast) {
+    return cast.end_due || cast.hit_due || cast.projectile_due ||
+           cast.own_due || !cast.missiles.empty();
+  }
+
+  static bool is_special_cast_mode(const Cast &cast) {
+    return cast.branched || cast.looped || cast.timed || cast.item_cast ||
+           cast.toggle_off;
+  }
+
+  static bool holds_for_dodge_cancel(const TriggerPlan &plan, const Cast &cast,
+                                     const CastRecord &rec) {
+    if (rec.slots.empty() || !plan.has_montage || plan.loop) return false;
+    if (has_scheduled_cast_steps(cast) || is_special_cast_mode(cast))
+      return false;
+    const content::AbilityRow &row = plan.def->row;
+    return !row.hold_animation && !is_weapon_combo(row) &&
+           !gone_out_at_the_press(row);
+  }
+
   static void record_cast_slots(AbilityPipeline &self, const TriggerPlan &plan,
-                                const Cast &cast) {
+                                Cast &cast) {
     const content::AbilityRow &row = plan.def->row;
     CastRecord rec;
     rec.client_id = plan.client_id;
@@ -573,6 +593,8 @@ struct AbilityPipeline::Host::Casts {
     rec.hit_delay = effective_hit_delay(plan);
     rec.reach = self.reach_of(*plan.def);
     Host::register_cast_hit_slots(self, *plan.def, cast, rec);
+    if (holds_for_dodge_cancel(plan, cast, rec))
+      cast.end_due = std::max(plan.t + kDodgeHold, *cast.cost_due + 0.05);
     self.records_.push_back(std::move(rec));
     while (self.records_.size() > kMaxRecords)
       self.records_.pop_front();

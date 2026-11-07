@@ -21,18 +21,22 @@ struct PackMuleEntity {
     bool summoned = false;
 };
 
-inline bool execute_pack_mule_heavy_haul_and_unload(bots::PlayerBot& bot) {
+inline bool execute_pack_mule_heavy_haul_and_unload(bots::LiveSession& s, bots::PlayerBot& bot) {
+    if (s.catalog.pack_mule_ability_guid == 0 || s.catalog.resource_nodes.empty()) return false;
+    if (!bots::send_live_ability_trigger(s, bot, s.catalog.pack_mule_ability_guid)) return false;
+
     bot.worker_id = "aoc-world-riverlands";
     bot.zone_key = "riverlands";
+    const uint64_t mule_guid = static_cast<uint64_t>(s.catalog.pack_mule_item_guid) + bot.bot_id;
     PackMuleEntity mule{
-        606463850000000000ULL + bot.bot_id, bot.bot_id, 8, 10, 6,
+        mule_guid, bot.bot_id, 8, 10, 6,
         bot.pos_cm, bot.worker_id, bot.authority_epoch, true
     };
     const int32_t total_loaded_crates = mule.timber_crates + mule.ore_crates + mule.stone_crates;
     if (!mule.summoned || total_loaded_crates != 24) return false;
 
     const uint64_t epoch_before = bot.authority_epoch;
-    bots::step_bot_along_navmesh(bot, {-416600.0, 520400.0, bots::kDefaultGroundTerrainZCm}, 4);
+    bots::step_bot_along_navmesh(s, bot, {bots::border_x_cm(s) + 1900.0, s.spawn[1] + 400.0, bots::ground_z_cm(s)}, 1);
     bot.dwell_ticks_across_border = bots::kBorderMinDwellTicks;
     bot.worker_id = "aoc-world-sandsquall";
     bot.zone_key = "sandsquall";
@@ -43,27 +47,29 @@ inline bool execute_pack_mule_heavy_haul_and_unload(bots::PlayerBot& bot) {
     mule.authority_epoch = bot.authority_epoch;
     if (mule.worker_id != bot.worker_id || mule.authority_epoch != epoch_before + 1) return false;
 
-    constexpr int64_t kHeavyCrateBundleGuid = 606463850000000999LL;
-    const int32_t inv_before = count_bot_item_qty(bot, kHeavyCrateBundleGuid);
-    bots::add_inventory_item(bot, kHeavyCrateBundleGuid, "Unloaded Heavy Resource Crates", total_loaded_crates, bots::ResourceKind::Ore);
+    const int64_t crate_bundle_guid = s.catalog.resource_nodes[0].yield_item_guid;
+    const int32_t inv_before = count_bot_item_qty(bot, crate_bundle_guid);
+    bots::add_inventory_item(bot, crate_bundle_guid, "Unloaded Heavy Resource Crates", total_loaded_crates, bots::ResourceKind::Ore);
     mule.timber_crates = 0;
     mule.ore_crates = 0;
     mule.stone_crates = 0;
     mule.summoned = false;
-    return count_bot_item_qty(bot, kHeavyCrateBundleGuid) == inv_before + 24 &&
+    return count_bot_item_qty(bot, crate_bundle_guid) == inv_before + 24 &&
            (mule.timber_crates + mule.ore_crates + mule.stone_crates) == 0;
 }
 
-inline bool run_plan_pack_mules(std::vector<bots::PlayerBot>& roster) {
+inline bool run_plan_pack_mules(bots::LiveSession& s, std::vector<bots::PlayerBot>& roster) {
     if (roster.size() < 16) return false;
-    return bots::run_all_64_archetype_combinations_all_envs(
-        roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
-            if (!execute_pack_mule_heavy_haul_and_unload(actor)) return false;
+    const bool ok = bots::run_all_64_archetype_combinations_all_envs(
+        s, roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
+            if (!execute_pack_mule_heavy_haul_and_unload(s, actor)) return false;
             observer.pos_cm = {actor.pos_cm.x + 150.0, actor.pos_cm.y, actor.pos_cm.z};
             observer.worker_id = actor.worker_id;
             observer.zone_key = actor.zone_key;
-            return bots::assert_partner_visible_and_updating(actor, observer);
+            return bots::assert_partner_visible_and_updating(s, actor, observer);
         });
+    pump_udp(s, 25);
+    return ok;
 }
 
 }  // namespace aoc::world::tests::plans

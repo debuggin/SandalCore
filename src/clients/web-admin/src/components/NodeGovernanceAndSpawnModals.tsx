@@ -157,6 +157,10 @@ export function CatalogComboboxPicker(props: CatalogComboboxPickerProps): React.
   const [open, setOpen] = React.useState(false);
   const [activeIndex, setActiveIndex] = React.useState(0);
   const listId = `${props.testIdPrefix}-listbox`;
+  const q = props.text.trim().toLowerCase();
+  const visibleOptions = q && !props.options.some((o) => o.label.toLowerCase() === q)
+    ? props.options.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q))
+    : props.options;
   const choose = (opt: CatalogPickerOption): void => { props.onSelectOption(opt); setOpen(false); };
   return (
     <div data-testid={`${props.testIdPrefix}-picker`} style={{ position: "relative", marginBottom: "8px" }}>
@@ -167,9 +171,9 @@ export function CatalogComboboxPicker(props: CatalogComboboxPickerProps): React.
         onChange={(e) => { setOpen(true); setActiveIndex(0); props.onTextChange(e.currentTarget.value); }}
         onKeyDown={(e) => {
           if (e.key === "Escape") setOpen(false);
-          else if (e.key === "ArrowDown") setActiveIndex((i) => Math.min(Math.max(0, props.options.length - 1), i + 1));
+          else if (e.key === "ArrowDown") setActiveIndex((i) => Math.min(Math.max(0, visibleOptions.length - 1), i + 1));
           else if (e.key === "ArrowUp") setActiveIndex((i) => Math.max(0, i - 1));
-          else if (e.key === "Enter" && open && props.options[activeIndex]) { e.preventDefault(); choose(props.options[activeIndex]); }
+          else if (e.key === "Enter" && open && visibleOptions[activeIndex]) { e.preventDefault(); choose(visibleOptions[activeIndex]); }
         }}
         style={{ ...INPUT_STYLE, width: "100%" }}
       />
@@ -180,9 +184,9 @@ export function CatalogComboboxPicker(props: CatalogComboboxPickerProps): React.
           ))}
         </div>
       ) : null}
-      {open && props.options.length > 0 ? (
+      {open && visibleOptions.length > 0 ? (
         <ul id={listId} role="listbox" data-testid={`${props.testIdPrefix}-options`} style={{ position: "absolute", top: "58px", left: 0, right: 0, maxHeight: "200px", overflowY: "auto", margin: 0, padding: "4px", listStyle: "none", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, zIndex: 10020 }}>
-          {props.options.map((opt, idx) => (
+          {visibleOptions.map((opt, idx) => (
             <li key={opt.value} role="option" aria-selected={idx === activeIndex} data-testid={`${props.testIdPrefix}-option-${opt.value}`} onMouseDown={(e) => { e.preventDefault(); choose(opt); }} style={{ padding: "6px 8px", borderRadius: "4px", cursor: "pointer", backgroundColor: idx === activeIndex ? "rgba(232, 178, 90, 0.22)" : "transparent", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, display: "flex", justifyContent: "space-between", fontSize: "12px" }}>
               <span>{opt.label}</span>
               {opt.detail ? <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, fontSize: "11px" }}>{opt.detail}</span> : null}

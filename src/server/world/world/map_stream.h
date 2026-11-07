@@ -23,7 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -46,7 +46,7 @@ inline constexpr uint8_t kHealthUnknown = 255;
 /// The largest side of an area a subscriber may ask for, and the most cells a density grid may have.
 inline constexpr int64_t kMaxSideCm = 10'000'000;   // 100 km
 inline constexpr int64_t kMaxCells = 65'536;
-inline constexpr size_t kMaxEntities = 100'000;
+inline constexpr size_t kMaxEntities = std::numeric_limits<size_t>::max();
 
 inline constexpr uint32_t layer_of(uint8_t kind) {
     switch (kind) {
@@ -202,9 +202,6 @@ inline std::string actor_display_name(const WorldActor& a) {
     constexpr char kDefault[] = "Default__";
     if (name.compare(0, sizeof kDefault - 1, kDefault) == 0) name.erase(0, sizeof kDefault - 1);
     if (name.size() > 2 && name.compare(name.size() - 2, 2, "_C") == 0) name.resize(name.size() - 2);
-    if (is_huntable_npc(a) && !ci_has_token(name, "[hunting")) {
-        name += " [Hunting / Animal Husbandry | Common | Tier 1 Novice]";
-    }
     return name;
 }
 

@@ -25,7 +25,6 @@ constexpr double kBlueprintSightDefaultCm = 3000.0;
 constexpr double kBlueprintSightConeDefaultDeg = 45.0;
 constexpr double kBlueprintHearingDefaultCm = 2000.0;
 constexpr double kBlueprintPlayerLookSeconds = 2.0;
-constexpr double kHumanoidTurnGain = 1.2;
 
 bool runs_at_stat_speed(const std::string& archetype) {
     return archetype.find("/Population/NPC/Humanoid/") != std::string::npos || archetype.find("/Population/NPC/PCRaces/") != std::string::npos;
@@ -98,6 +97,11 @@ void CombatWorld::remove_player(PlayerPort* port) {
         player_combat_until_.erase(port->actor_id());
         drop_effects_of(port->actor_id());
     }
+}
+
+void CombatWorld::player_died(uint64_t actor_id) {
+    player_combat_until_.erase(actor_id);
+    drop_effects_of(actor_id);
 }
 
 PlayerPort* CombatWorld::player(uint64_t actor_id) {
@@ -349,6 +353,13 @@ void CombatWorld::stop_cast(Npc& n) {
         npcs_world_->stop_tracking(n.actor_id);
     }
     end_npc_cast(registry_, n.actor_id, n.cast);
+}
+
+void CombatWorld::drop_attack(Npc& n) {
+    stop_cast(n);
+    n.hold_until = 0;
+    n.attack_walk_share = 1.0;
+    pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const Pending& p) { return p.npc == n.actor_id; }), pending_.end());
 }
 
 void CombatWorld::forget(uint64_t actor_id) {

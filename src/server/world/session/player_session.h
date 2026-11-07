@@ -744,15 +744,15 @@ class PlayerSession {
     std::unordered_map<const char*, size_t> client_calls_;
     size_t in_place_blocks_ = 0, in_place_bunches_ = 0, in_place_shared_logged_ = 0, skipped_fields_ = 0, skipped_fields_logged_ = 0;
     std::unordered_map<std::string, size_t> in_place_names_;
-    size_t moves_refused_ = 0, moves_stale_ = 0, corrections_ = 0, handed_over_ = 0, moves_borderline_ = 0, stale_streak_ = 0, speed_logged_ = 0;
-    bool   stale_streak_logged_ = false, position_log_started_ = false, sprint_seen_ = false, unreadable_move_logged_ = false;
+    size_t moves_refused_ = 0, moves_surface_refused_ = 0, moves_stale_ = 0, corrections_ = 0, handed_over_ = 0, moves_borderline_ = 0, stale_streak_ = 0, speed_logged_ = 0;
+    bool   stale_streak_logged_ = false, position_log_started_ = false, sprint_seen_ = false, unreadable_move_logged_ = false, surface_refusal_logged_ = false;
     SpeedTally sprint_speed_, run_speed_;
     std::optional<float> pending_fix_, based_fix_;
     size_t refused_logged_ = 0, periodic_save_logged_ = 0, dropped_ = 0, possession_logged_ = 0, load_logged_ = 0, combat_logged_ = 0, combat_empty_logged_ = 0, reply_sent_logged_ = 0;
     RequestBudget load_budget_{kLoadBurst, kLoadInterval}, combat_budget_{kLoadBurst, kLoadInterval}, storage_budget_{kStorageBurst, kStorageInterval};
     std::optional<HeldMoveAck> held_move_ack_;
     bool move_acked_ = false, move_acked_on_mount_ = false, pet_dirty_ = false, pet_follow_ = true, hunter_ranged_ = false, hunter_stance_set_ = false, pet_chasing_owner_ = false, presence_failed_ = false, presence_moving_ = false;
-    Clock::time_point last_move_ack_{}, pet_clock_{}, presence_moved_at_{};
+    Clock::time_point last_move_ack_{}, pet_clock_{}, presence_moved_at_{}, surface_refusal_log_{};
     size_t move_acks_held_back_ = 0, based_held_run_ = 0, moves_unreadable_ = 0, moves_based_ = 0, moves_based_unplaced_ = 0, moves_based_held_ = 0, moves_based_cut_ = 0;
     std::map<int64_t, int64_t> pet_effects_;
     uint64_t pet_actor_ = 0, pet_held_target_ = 0, pet_incap_target_ = 0, world_pawn_ = 0;

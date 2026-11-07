@@ -78,7 +78,8 @@ $quiet = [bool]$opts.Json
 if ($quiet) { $env:SANDAL_QUIET = '1' }
 if (-not $opts.DryRun) {
     Write-BuildStep -Message '[Step 1/4] Checking extracted game data in dist/content/ and staging dist/...' -Quiet $quiet
-    $null = Ensure-SandalGameData -RepoRoot $rootPath -CheckOnly
+    $needGameBootstrap = (-not (Test-Path -LiteralPath (Join-Path $rootPath 'build\gen\world\world\zoi_surface_table.h') -PathType Leaf)) -or (-not (Test-Path -LiteralPath (Join-Path $rootPath 'dist\content\content.db') -PathType Leaf))
+    $null = Ensure-SandalGameData -RepoRoot $rootPath -CheckOnly:(-not $needGameBootstrap)
     $null = Sync-SandalDistStage -RepoRoot $rootPath -Config $opts.Config
     Write-BuildStep -Message "[Step 2/4] Building C++ & .NET targets (config=$($opts.Config))..." -Quiet $quiet
     if ($opts.Json) {

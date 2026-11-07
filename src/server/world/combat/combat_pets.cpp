@@ -451,6 +451,7 @@ void CombatWorld::pet_stop(uint64_t pet) {
 
 void CombatWorld::pet_cleanup(uint64_t pet) {
     pet_stop(pet);
+    drop_effects_of_pet(pet);
     pet_stand_downs_.erase(pet);
     pet_casts_.erase(pet);
     pet_owners_.erase(pet);

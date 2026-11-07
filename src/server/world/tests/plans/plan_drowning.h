@@ -10,21 +10,26 @@
 namespace aoc::world::tests::plans {
 
 inline bool verify_drowning_lifecycle_with_observer(
+    bots::LiveSession& s,
     bots::PlayerBot& actor,
     bots::PlayerBot& observer,
     bots::BotTestEnv env) {
-    unlock_all_six_ember_springs(actor);
-    const double deep_submerged_z = bots::kDefaultRiverWaterSurfaceZCm - 480.0;
+    if (s.catalog.ember_springs.empty() || s.catalog.consumable_item_guids.empty()) return false;
+    unlock_all_six_ember_springs(s, actor);
+    const double wz = bots::water_surface_z_cm(s);
+    const double bx = bots::border_x_cm(s);
+    const double deep_submerged_z = wz - 480.0;
     const bots::Vec3Cm dive_pos{
-        env == bots::BotTestEnv::AcrossBoundary ? -1348500.0 : -1351500.0,
-        114200.0,
+        env == bots::BotTestEnv::AcrossBoundary ? bx + 1500.0 : bx - 1500.0,
+        s.spawn[1] + 200.0,
         deep_submerged_z,
     };
-    bots::step_bot_along_navmesh(actor, dive_pos, 3);
-    bots::step_bot_along_navmesh(observer, {dive_pos.x + 350.0, dive_pos.y, bots::kDefaultRiverWaterSurfaceZCm - 40.0}, 3);
-    if (actor.pos_cm.z >= bots::kDefaultRiverWaterSurfaceZCm - 300.0) return false;
     actor.movement_mode = bots::BotMovementMode::Swimming;
-    if (!bots::assert_partner_visible_and_updating(actor, observer)) return false;
+    observer.movement_mode = bots::BotMovementMode::Swimming;
+    bots::step_bot_along_navmesh(s, actor, dive_pos, 1);
+    bots::step_bot_along_navmesh(s, observer, {dive_pos.x + 350.0, dive_pos.y, wz - 40.0}, 1);
+    if (actor.pos_cm.z >= wz - 300.0) return false;
+    if (!bots::assert_partner_visible_and_updating(s, actor, observer)) return false;
 
     actor.oxygen_pct = 0;
     for (int tick = 0; tick < 4; ++tick) {
@@ -32,7 +37,7 @@ inline bool verify_drowning_lifecycle_with_observer(
         actor.hp = std::max(0, actor.hp - (actor.max_hp / 4 + 500));
         ++actor.replicated_state_seq;
         if (actor.hp >= hp_before) return false;
-        if (!bots::assert_partner_visible_and_updating(actor, observer)) return false;
+        if (!bots::assert_partner_visible_and_updating(s, actor, observer)) return false;
     }
     actor.hp = 0;
     actor.dead = true;
@@ -40,11 +45,11 @@ inline bool verify_drowning_lifecycle_with_observer(
     if (!actor.dead || actor.oxygen_pct != 0) return false;
 
     bots::LootPileTarget drown_pile{
-        79000ULL + actor.bot_id,
+        s.pawn_guid.ObjectId + actor.bot_id,
         actor.name + " Drowned Pack",
         actor.pos_cm,
         actor.worker_id,
-        606463390000000888LL,
+        s.catalog.consumable_item_guids[0],
         1,
         180,
         actor.bot_id,
@@ -55,22 +60,25 @@ inline bool verify_drowning_lifecycle_with_observer(
         return false;
     }
 
-    const auto& spring = bots::kEmberSprings[actor.bot_id % bots::kEmberSprings.size()];
+    const auto& spring = s.catalog.ember_springs[actor.bot_id % s.catalog.ember_springs.size()];
     actor.pos_cm = spring.location_cm;
     observer.pos_cm = {spring.location_cm.x + 300.0, spring.location_cm.y, spring.location_cm.z};
     actor.dead = false;
     actor.hp = actor.max_hp;
     actor.oxygen_pct = 100;
     actor.movement_mode = bots::BotMovementMode::Walking;
-    return bots::assert_partner_visible_and_updating(actor, observer);
+    observer.movement_mode = bots::BotMovementMode::Walking;
+    return bots::assert_partner_visible_and_updating(s, actor, observer);
 }
 
-inline bool run_plan_drowning(std::vector<bots::PlayerBot>& roster) {
-    return bots::run_all_64_archetype_combinations_all_envs(
-        roster,
-        [](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv env) {
-            return verify_drowning_lifecycle_with_observer(actor, observer, env);
+inline bool run_plan_drowning(bots::LiveSession& s, std::vector<bots::PlayerBot>& roster) {
+    const bool ok = bots::run_all_64_archetype_combinations_all_envs(
+        s, roster,
+        [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv env) {
+            return verify_drowning_lifecycle_with_observer(s, actor, observer, env);
         });
+    pump_udp(s, 25);
+    return ok;
 }
 
 }  // namespace aoc::world::tests::plans

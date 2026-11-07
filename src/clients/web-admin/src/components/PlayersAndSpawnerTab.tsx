@@ -331,7 +331,7 @@ function renderTeleportModeInputs(
 ): React.ReactElement {
   const { targetPlace, placeText, targetPlayer, operatorChar, activeChar, coords, pin } = state;
   if (mode === "place") {
-    return <CatalogComboboxPicker label="Destination Named Place" testIdPrefix="teleport-place" placeholder="Type place name..." value={targetPlace} text={placeText} options={placeOpts} presets={placeOpts.slice(0, 4)} onTextChange={handlers.setPlaceText} onSelectOption={(o) => { handlers.setTargetPlace(o.value); handlers.setPlaceText(o.label); }} />;
+    return <CatalogComboboxPicker label="Destination Named Place" testIdPrefix="teleport-place" placeholder="Type place name..." value={targetPlace} text={placeText} options={placeOpts} onTextChange={handlers.setPlaceText} onSelectOption={(o) => { handlers.setTargetPlace(o.value); handlers.setPlaceText(o.label); }} />;
   }
   if (mode === "player") {
     return <input type="search" aria-label="Target Player Y" data-testid="teleport-target-player" value={targetPlayer} onChange={(e) => handlers.setTargetPlayer(e.currentTarget.value)} placeholder="Search destination player by character name, ID, or account name..." style={{ ...INPUT_STYLE, width: "100%", boxSizing: "border-box", marginBottom: "6px" }} />;
@@ -367,12 +367,13 @@ export function TeleportCard(props: TeleportCardProps): React.ReactElement {
   const activeChar = (storeSnap.selectedPlayer || playerSearch || playerX).trim();
   const filteredPlayers = mergeAndFilterOnlinePlayers(players, storeSnap, playerSearch);
   const receipt = storeSnap.lastReceiptsByScope.teleport;
-  const speedReceipt = storeSnap.lastReceiptsByScope.moveSpeed;
-  const placeOpts: readonly CatalogPickerOption[] = places.map((pl) => ({ value: pl.name, label: pl.display_name, detail: pl.name }));
+  const allPlaceOpts: readonly CatalogPickerOption[] = places.map((pl) => ({ value: pl.name, label: pl.display_name, detail: pl.name }));
+  const placeQ = placeText.trim().toLowerCase();
+  const placeOpts: readonly CatalogPickerOption[] = placeQ && !allPlaceOpts.some((o) => o.label.toLowerCase() === placeQ) ? allPlaceOpts.filter((o) => o.label.toLowerCase().includes(placeQ) || o.value.toLowerCase().includes(placeQ)) : allPlaceOpts;
 
   return (
     <section aria-label="Teleport Player Card" data-testid="teleport-player-card" style={CARD_STYLE}>
-      <strong style={{ display: "block", marginBottom: "8px", color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 }}>Teleport & Movement Speed ({activeChar || "Select Player"})</strong>
+      <strong style={{ display: "block", marginBottom: "8px", color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 }}>Teleport Player ({activeChar || "Select Player"})</strong>
       {renderTeleportPlayerSearchSection(playerSearch, activeChar, filteredPlayers, (next) => { setPlayerSearch(next); storeSnap.setSelectedPlayer(next); }, (rowPlayer) => {
         setPlayerSearch(rowPlayer);
         storeSnap.setSelectedPlayer(rowPlayer);
@@ -384,17 +385,10 @@ export function TeleportCard(props: TeleportCardProps): React.ReactElement {
         ))}
       </div>
       {renderTeleportModeInputs(mode, placeOpts, { targetPlace, placeText, targetPlayer, operatorChar, activeChar, coords, pin }, { setPlaceText, setTargetPlace, setTargetPlayer, setOperatorChar, setCoords })}
-      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
         <button type="button" data-testid="teleport-submit-btn" onClick={() => void dispatchTeleportAction({ character: activeChar, mode, targetPlayer, operatorChar, targetPlace, coords, players: filteredPlayers, places, storeSnap, onRecordRun })} style={BTN_STYLE}>Teleport Player</button>
         {filteredPlayers.length > 0 && mode === "player" ? <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, fontSize: "11px" }}>Online: {filteredPlayers.map((p) => p.name).join(", ")}</span> : null}
         {receipt ? <span role="status" data-testid="teleport-receipt-banner" style={{ color: receipt.ok ? SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 : SANDAL_LAUNCHER_TOKENS.VerraRuinCrimson500, fontSize: "11px" }}>{receipt.message}</span> : null}
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", borderTop: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, paddingTop: "8px" }}>
-        <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, fontSize: "11px" }}>Move Speed:</span>
-        {MOVE_SPEED_MULTIPLIERS.map((mult) => (
-          <button key={mult} type="button" data-testid={`move-speed-${mult}x`} onClick={() => void dispatchAuxiliaryGmAction({ action: "set_move_speed", character: activeChar, speed_multiplier: mult }).then((r) => { const prose = `Set ${activeChar || "Player"} move speed to ${mult}x`; storeSnap.setScopedReceipt("moveSpeed", { ok: r.ok, message: r.ok ? prose : `${prose}: ${r.message}` }); })} style={CHIP_STYLE}>{mult}x</button>
-        ))}
-        {speedReceipt ? <span data-testid="move-speed-receipt-banner" style={{ color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "11px" }}>{speedReceipt.message}</span> : null}
       </div>
     </section>
   );

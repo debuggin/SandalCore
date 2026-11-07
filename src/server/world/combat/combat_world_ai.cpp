@@ -261,12 +261,14 @@ void CombatWorld::resolve_pending(double now) {
         PlayerPort* port = player(p.target);
         if (!p.animated) {
             if (it == npcs_.end() || it->second->dead || !port || !port->fighter().alive()) continue;
+            if ((it->second->cc.flags & content::kCcNoAbilities) != 0) continue;
             if (!swing_target_in_reach(*it->second, it->second->next.range_cm, port->fighter())) continue;
             for (const int64_t guid : p.hits) deliver_hit(*it->second, *port, *p.ability, guid, now);
             continue;
         }
         Npc& n = *it->second;
-        while (p.next_hit < p.timed_hits.size() && p.timed_hits[p.next_hit].first <= now) {
+        const auto stunned = [&n] { return (n.cc.flags & content::kCcNoAbilities) != 0; };
+        while (p.next_hit < p.timed_hits.size() && p.timed_hits[p.next_hit].first <= now && !stunned()) {
             const size_t at_hit = p.next_hit++;
             const BiteArea& area = p.timed_areas[at_hit];
             const uint64_t aimed = area.has_target_part() ? aimed_at(n, area, p.target) : 0;
@@ -275,9 +277,10 @@ void CombatWorld::resolve_pending(double now) {
                 if (q->fighter().alive() && hit_reaches(n, q->fighter(), area, aimed != 0 && q->actor_id() == aimed)) deliver_hit(n, *q, *p.ability, p.timed_hits[at_hit].second, now);
             }
         }
-        while (p.next_fire < p.timed_fires.size() && p.timed_fires[p.next_fire].first <= now) {
+        while (p.next_fire < p.timed_fires.size() && p.timed_fires[p.next_fire].first <= now && !stunned()) {
             launch(n, p.target, *p.ability, p.timed_fires[p.next_fire++].second, now);
         }
+        if (stunned()) continue;
         if (p.next_hit >= p.timed_hits.size() && p.next_fire >= p.timed_fires.size() && now >= p.end_at) {
             if (p.logged) log_animated_cast_finished(registry_, n.actor_id, n.leaf, p.ability->row.name, port);
             stop_cast(n);
@@ -385,8 +388,7 @@ Delivery CombatWorld::apply_hit_to_npc(uint64_t npc_actor, uint64_t attacker, co
     return land_hit(*n, attacker, r, now, true, threat_to, origin);
 }
 
-Delivery CombatWorld::land_hit(Npc& nn, uint64_t attacker, const Resolved& r, double now, bool log, uint64_t threat_to,
-                               const HitOrigin* origin) {
+Delivery CombatWorld::land_hit(Npc& nn, uint64_t attacker, const Resolved& r, double now, bool log, uint64_t threat_to, const HitOrigin* origin) {
     Npc* n = &nn;
     const uint64_t npc_actor = n->actor_id;
     Delivery d;
@@ -408,6 +410,7 @@ Delivery CombatWorld::land_hit(Npc& nn, uint64_t attacker, const Resolved& r, do
             d.lethal = true;
             d.flags |= stats::kHitLethal;
             pet_stop(npc_actor);
+            drop_effects_of_pet(npc_actor);
         }
         return d;
     }
@@ -418,18 +421,17 @@ Delivery CombatWorld::land_hit(Npc& nn, uint64_t attacker, const Resolved& r, do
         }
     }
     if (log) {
-        spdlog::info("[combat] player {} hit {} ({}, level {}): {}Health {:.1f} -> {:.1f}, threat {:.1f}", attacker, n->leaf, npc_actor, n->lvl,
-                     r.miss() ? "a miss, " : "", health_before, n->health(), std::max(threat, 1.0));
+        spdlog::info("[combat] player {} hit {} ({}, level {}): {}Health {:.1f} -> {:.1f}, threat {:.1f}", attacker, n->leaf, npc_actor, n->lvl, r.miss() ? "a miss, " : "", health_before, n->health(), std::max(threat, 1.0));
     }
     if (mod_res.burn_moved && log) {
         const stats::StatValue* pool = id.status_burning ? n->cs->find(id.status_burning) : nullptr;
         const stats::StatValue* dur = id.status_burning_dur ? n->cs->find(id.status_burning_dur) : nullptr;
         if (pool && dur && (pool->value != mod_res.burn_before || dur->value != mod_res.burn_dur_before)) {
-            spdlog::info("[combat] {} ({}) is burning: {:.1f} fire damage to burn over {:.1f} s (it was {:.1f} over {:.1f} s)", n->leaf, npc_actor,
-                         pool->value, dur->value, mod_res.burn_before, mod_res.burn_dur_before);
+            spdlog::info("[combat] {} ({}) is burning: {:.1f} fire damage to burn over {:.1f} s (it was {:.1f} over {:.1f} s)", n->leaf, npc_actor, pool->value, dur->value, mod_res.burn_before, mod_res.burn_dur_before);
         }
     }
     if (!lethal) {
+        wake_on_damage(*n, r, origin, now);
         n->ai.notice(threat_to != 0 ? threat_to : attacker, std::max(threat, 1.0), now);
         if (threat_to != 0) n->ai.notice(attacker, 0.01, now);
     }
@@ -438,9 +440,7 @@ Delivery CombatWorld::land_hit(Npc& nn, uint64_t attacker, const Resolved& r, do
         d.lethal = true;
         d.flags |= stats::kHitLethal;
         kill(*n, attacker, now);
-    } else {
-        think(*n, now);
-    }
+    } else think(*n, now);
     hit_reacts(npc_actor, event, threat_to, origin, now);
     return d;
 }
@@ -450,6 +450,7 @@ void CombatWorld::kill(Npc& n, uint64_t killer, double now, bool gm) {
     n.dead = true;
     n.killer = killer;
     clear_effects(n);
+    if (is_pet(n.actor_id)) drop_effects_of_pet(n.actor_id);
     n.ai.kill();
     n.cs->set_in_combat(false);
     n.cs->set_current(content::kGuidHealth, 0.0f);
@@ -458,9 +459,7 @@ void CombatWorld::kill(Npc& n, uint64_t killer, double now, bool gm) {
     n.flags_in_combat = false;
     n.flags_target = 0;
     if (npcs_world_) npcs_world_->halt(n.actor_id);
-    stop_cast(n);
-    n.hold_until = 0;
-    pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const Pending& p) { return p.npc == n.actor_id; }), pending_.end());
+    drop_attack(n);
     ++stats_.kills;
     if (death_hook_ && !is_pet(n.actor_id)) {
         const world::WorldActor* a = registry_.find(n.actor_id);
@@ -539,15 +538,13 @@ void CombatWorld::begin_reset(Npc& n, double now) {
         n.cs->set_current(content::kGuidHealth, max->value);
         write_stat(registry_, n.actor_id, content::kGuidHealth, max->value);
     }
-    stop_cast(n);
-    n.hold_until = 0;
-    pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const Pending& p) { return p.npc == n.actor_id; }), pending_.end());
+    drop_attack(n);
     set_flags(n, false, 0);
     if (npcs_world_) npcs_world_->order_return_home(n.actor_id);
 }
 
 void CombatWorld::pursue(Npc& n, uint64_t target, double speed_cm_s, double stop_distance_cm) {
-    if (!npcs_world_) return;
+    if (!npcs_world_ || (n.cc.flags & content::kCcRoot) != 0) return;
     npcs_world_->order_pursue(
         n.actor_id,
         [this, target](nav::Vec3& out) {
@@ -583,10 +580,12 @@ void CombatWorld::think(Npc& n, double now) {
     else if (n.ai.state() == npc::ai::State::Idle || n.ai.state() == npc::ai::State::Reset) set_flags(n, false, 0);
     const bool carried = npcs_world_ && npcs_world_->root_motion_active(n.actor_id);
     if (npcs_world_ && !o.began_reset && now >= n.hold_until && !carried) {
-        if (o.move == npc::ai::Orders::Move::ChaseTo) pursue(n, o.target, o.speed_cm_s, o.stop_distance_cm);
-        else if (o.move == npc::ai::Orders::Move::Stand && before != npc::ai::State::Attack) npcs_world_->order_move(n.actor_id, {a->x, a->y, a->z}, 0.0, 0.0);
+        if (o.move == npc::ai::Orders::Move::ChaseTo) {
+            const double speed = now < n.next_attack_at ? o.speed_cm_s * n.attack_walk_share : o.speed_cm_s;
+            pursue(n, o.target, speed, o.stop_distance_cm);
+        } else if (o.move == npc::ai::Orders::Move::Stand && before != npc::ai::State::Attack) npcs_world_->order_move(n.actor_id, {a->x, a->y, a->z}, 0.0, 0.0);
     }
-    if (!o.attack || now < n.next_attack_at) return;
+    if (!o.attack || now < n.next_attack_at || (n.cc.flags & content::kCcNoAbilities) != 0) return;
     bool allowed = true, have_pick = false;
     Attack picked;
     PlayerPort* port = (n.anim && npcs_world_ && now >= n.hold_until) ? player(o.target) : nullptr;

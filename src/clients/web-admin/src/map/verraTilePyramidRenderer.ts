@@ -19,7 +19,7 @@ import { clipZoiRingToValidMinimapTiles, hydrateVerraZoiPolygonsFromTsvApi, VERR
 export { clipZoiRingToValidMinimapTiles, hydrateVerraZoiPolygonsFromTsvApi, VERRA_ZOI_POLYGONS, type VerraZoiPolygon };
 import {
   type CameraViewport, computeNodePlugTileOverlay, computeVisibleBaseTiles, DEFAULT_CAMERA_VIEWPORT, DEFAULT_VERRA_MAP_META, getCityNodeCenterCm,
-  type LayerEntityCounts, type LayerToggles, type LngLatTuple, mosaicPxToWorldCm, NODE_STAGE_NAMES, type OverlayLayerKey,
+  type LayerEntityCounts, type LayerToggles, type LngLatTuple, mosaicPxToWorldCm, type OverlayLayerKey,
   type PoiOverlay, type VerraCityNodeMeta, type VerraMapMeta, type VerraUnrealPoint, verraUnrealToLngLat, worldCmToMosaicPx,
   type WorldEntity, type WorldStreamState,
 } from "../state/worldStreamStore";
@@ -306,6 +306,7 @@ export function resolveVerraMapViewState(
 }
 
 export function isEntityVisibleForLayers(entity: WorldEntity, layers: LayerToggles, zoom: number): boolean {
+  if ((entity.npcSubkind ?? entity.npc_subkind) === "emberspring") return layers.pois || layers.npcs;
   if (entity.kind === "player") return layers.players;
   if (entity.kind === "npc") return layers.npcs;
   if (entity.kind === "monster") return layers.monsters;
@@ -411,36 +412,22 @@ export function drawCanvasScene(
   const cam = isUnauthenticatedViewOnly() ? DEFAULT_CAMERA_VIEWPORT : state.camera;
   const [centerU, centerV] = worldCmToMosaicPx(cam.centerXCm, cam.centerYCm);
   const scale = Math.pow(2, cam.zoom - 5);
-  const visibleTiles = computeVisibleBaseTiles(
-    meta,
-    cam.centerXCm,
-    cam.centerYCm,
-    cam.zoom,
-    viewport,
-  );
+  const visibleTiles = computeVisibleBaseTiles(meta, cam.centerXCm, cam.centerYCm, cam.zoom, viewport);
   for (const tile of visibleTiles) {
     const sx = Math.floor(viewport.width / 2 + (tile.mosaicU0 - centerU) * scale);
     const sy = Math.floor(viewport.height / 2 + (tile.mosaicV0 - centerV) * scale);
     const sw = Math.ceil(tile.mosaicSpanPx * scale);
-    const img =
-      tileCache.getTile(tile.z, tile.x, tile.y, tile.distFromCenterPx ?? 0) ??
-      tileImageCache.get(tile.tileUrl) ??
-      null;
-    if (img) {
-      ctx.drawImage(img, sx, sy, sw, sw);
-      continue;
-    }
+    const img = tileCache.getTile(tile.z, tile.x, tile.y, tile.distFromCenterPx ?? 0) ?? tileImageCache.get(tile.tileUrl) ?? null;
+    if (img) { ctx.drawImage(img, sx, sy, sw, sw); continue; }
     const fallback = tileCache.findAncestorFallback(tile.z, tile.x, tile.y, meta.tile_px);
-    if (fallback) {
-      ctx.drawImage(fallback.img, fallback.sx, fallback.sy, fallback.sw, fallback.sh, sx, sy, sw, sw);
-    }
+    if (fallback) ctx.drawImage(fallback.img, fallback.sx, fallback.sy, fallback.sw, fallback.sh, sx, sy, sw, sw);
   }
   if (isUnauthenticatedViewOnly() || (state.connectionState === "offline" && state.cityNodes.length === 0)) return;
   const onAsyncAssetLoaded = () => tileCache.notifyLoaded();
   if (state.layers.nodePlugs) drawNodePlugOverlays(ctx, viewport, state, onAsyncAssetLoaded);
   if (state.layers.zoiBorders) drawZoiBorderOverlays(ctx, viewport, state);
-  if (state.layers.pois) drawPoiAndCityNodeMarkers(ctx, viewport, state, onAsyncAssetLoaded);
   drawEntityAndCrosshairMarkers(ctx, viewport, state, onAsyncAssetLoaded);
+  if (state.layers.pois) drawPoiAndCityNodeMarkers(ctx, viewport, state, onAsyncAssetLoaded);
 }
 
 function drawZoiBorderOverlays(
@@ -476,8 +463,9 @@ function drawZoiBorderOverlays(
       ctx.strokeStyle = zoi.color || "#F6CC7E"; ctx.globalAlpha = 0.98; ctx.lineWidth = 2.4; ctx.stroke();
       ctx.restore();
     }
+    const isCityNodeZoi = state.layers.cityNodes && (zoi.name.includes("_Node_") || state.cityNodes.some((n) => n.display_name === zoi.display_name || n.name === zoi.name));
     const cx = viewport.width / 2 + (zoi.centroid_u - centerU) * scale, cy = viewport.height / 2 + (zoi.centroid_v - centerV) * scale;
-    if (cx >= -60 && cy >= -20 && cx <= viewport.width + 60 && cy <= viewport.height + 20 && state.camera.zoom >= 1.8) {
+    if (!isCityNodeZoi && cx >= -60 && cy >= -20 && cx <= viewport.width + 60 && cy <= viewport.height + 20 && state.camera.zoom >= 1.8) {
       ctx.save(); ctx.setLineDash?.([]); ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
       ctx.strokeStyle = "rgba(6, 9, 15, 0.9)"; ctx.lineWidth = 3; ctx.strokeText?.(zoi.display_name, cx - 24, cy);
       ctx.fillStyle = "#F6CC7E"; ctx.fillText(zoi.display_name, cx - 24, cy); ctx.restore();
@@ -526,57 +514,65 @@ function drawPoiAndCityNodeMarkers(
   onIconLoaded: () => void,
 ): void {
   const iconPx = Math.max(18, Math.min(28, Math.round(18 + (state.camera.zoom - 2) * 2)));
-  ctx.font = '600 11px "Segoe UI", system-ui, sans-serif';
+  ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
   ctx.textBaseline = "middle";
   const takenLabels: Array<readonly [number, number, number, number]> = [];
+  if (state.layers.cityNodes) {
+    for (const node of state.cityNodes) {
+      const { cx_cm, cy_cm } = getCityNodeCenterCm(node);
+      const [sx, sy] = worldCmToScreenOffset(cx_cm, cy_cm, viewport, state.camera);
+      if (sx < -80 || sy < -30 || sx > viewport.width + 80 || sy > viewport.height + 30) continue;
+      const nodeIconName = resolveCityNodeIconName(node);
+      const nodeImg = requestTileImage(`/api/v1/world/icons/${nodeIconName}.png`, onIconLoaded);
+      if (nodeImg) {
+        ctx.beginPath(); ctx.arc(sx, sy, 14, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(8, 11, 17, 0.78)"; ctx.fill();
+        if (state.selectedCityNodeName === node.name) { ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.stroke(); }
+        ctx.drawImage(nodeImg, sx - 13, sy - 13, 26, 26);
+      } else {
+        ctx.fillStyle = node.level >= 1 ? "#d4af37" : "#64748b";
+        ctx.strokeStyle = state.selectedCityNodeName === node.name ? "#ffffff" : "#080b11";
+        ctx.lineWidth = state.selectedCityNodeName === node.name ? 2.5 : 1.5;
+        ctx.beginPath(); ctx.rect(sx - 6, sy - 6, 12, 12); ctx.fill(); ctx.stroke();
+      }
+      drawCollisionSafeLabel(ctx, node.display_name || node.name, sx, sy - 21, takenLabels);
+    }
+  }
   for (const poi of state.pois ?? []) {
+    if (state.layers.cityNodes && poi.kind !== "wayshrine" && (poi.kind === "city_node" || state.cityNodes.some((n) => n.name === poi.name || n.display_name === poi.display_name || n.guid === poi.guid))) continue;
     const [sx, sy] = worldCmToScreenOffset(poi.x_cm, poi.y_cm, viewport, state.camera);
     if (sx < -40 || sy < -30 || sx > viewport.width + 40 || sy > viewport.height + 30) continue;
     const iconImg = poi.icon_url ? requestTileImage(poi.icon_url, onIconLoaded) : null;
     if (iconImg) ctx.drawImage(iconImg, sx - iconPx / 2, sy - iconPx / 2, iconPx, iconPx);
     else { ctx.beginPath(); ctx.arc(sx, sy, 5.5, 0, Math.PI * 2); ctx.fillStyle = poi.tint_color || "#d4af37"; ctx.fill(); }
-    if (state.camera.zoom >= 3.2 || state.selectedPoiGuid === poi.guid) {
-      drawCollisionSafeLabel(ctx, poi.display_name || poi.name, sx + iconPx / 2 + 4, sy, takenLabels);
+    if (state.selectedPoiGuid === poi.guid) {
+      ctx.strokeStyle = "#d4af37"; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(sx, sy, Math.round(iconPx / 2) + 3, 0, Math.PI * 2); ctx.stroke();
     }
-  }
-  if (!state.layers.cityNodes) return;
-  for (const node of state.cityNodes) {
-    const { cx_cm, cy_cm } = getCityNodeCenterCm(node);
-    const [sx, sy] = worldCmToScreenOffset(cx_cm, cy_cm, viewport, state.camera);
-    if (sx < -80 || sy < -30 || sx > viewport.width + 80 || sy > viewport.height + 30) continue;
-    const nodeIconName = resolveCityNodeIconName(node);
-    const nodeImg = requestTileImage(`/api/v1/world/icons/${nodeIconName}.png`, onIconLoaded);
-    if (nodeImg) {
-      ctx.beginPath(); ctx.arc(sx, sy, 14, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(8, 11, 17, 0.78)"; ctx.fill();
-      if (state.selectedCityNodeName === node.name) { ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.stroke(); }
-      ctx.drawImage(nodeImg, sx - 13, sy - 13, 26, 26);
-    } else {
-      ctx.fillStyle = node.level >= 1 ? "#d4af37" : "#64748b";
-      ctx.strokeStyle = state.selectedCityNodeName === node.name ? "#ffffff" : "#080b11";
-      ctx.lineWidth = state.selectedCityNodeName === node.name ? 2.5 : 1.5;
-      ctx.beginPath(); ctx.rect(sx - 6, sy - 6, 12, 12); ctx.fill(); ctx.stroke();
+    const isNodeShrineLabel = poi.kind === "wayshrine" && (poi.name.toUpperCase().startsWith("NODE_") || (state.layers.cityNodes && state.cityNodes.some((n) => n.display_name === poi.display_name)));
+    if (state.selectedPoiGuid === poi.guid || (!isNodeShrineLabel && state.camera.zoom >= 3.2)) {
+      drawCollisionSafeLabel(ctx, poi.display_name || poi.name, sx, sy - Math.round(iconPx / 2) - 7, takenLabels);
     }
-    drawCollisionSafeLabel(ctx, `${node.display_name} (${NODE_STAGE_NAMES[node.level] ?? `Lv ${node.level}`})`, sx + 16, sy, takenLabels);
   }
 }
 
-function drawCollisionSafeLabel(
-  ctx: CanvasRenderingContext2D,
-  text: string,
-  tx: number,
-  ty: number,
-  taken: Array<readonly [number, number, number, number]>,
-): void {
-  const width = typeof ctx.measureText === "function" ? ctx.measureText(text).width : text.length * 6.5;
-  const box: readonly [number, number, number, number] = [tx - 2, ty - 8, tx + width + 2, ty + 8];
+function drawCollisionSafeLabel(ctx: CanvasRenderingContext2D, text: string, cx: number, ty: number, taken: Array<readonly [number, number, number, number]>): void {
+  const cleanText = text.replace(/\s*\((?:Wilderness|Expedition|Encampment|Village|Town|City|Metropolis|Lv\s*\d+)\)\s*$/i, "").trim();
+  if (!cleanText) return;
+  ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
+  const width = typeof ctx.measureText === "function" ? ctx.measureText(cleanText).width : cleanText.length * 6.5;
+  const halfW = width / 2;
+  const box: readonly [number, number, number, number] = [cx - halfW - 2, ty - 8, cx + halfW + 2, ty + 8];
   for (const other of taken) {
     if (box[0] < other[2] && box[2] > other[0] && box[1] < other[3] && box[3] > other[1]) return;
   }
   taken.push(box);
-  ctx.fillStyle = "#f8fafc";
-  ctx.fillText(text, tx, ty);
+  const drawX = Math.round(cx - halfW);
+  ctx.save(); ctx.setLineDash?.([]); ctx.font = '700 11px "Segoe UI", system-ui, sans-serif'; ctx.textBaseline = "middle"; ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(6, 9, 15, 0.92)"; ctx.lineWidth = 3.2; ctx.strokeText?.(cleanText, drawX, ty);
+  ctx.fillStyle = "#F6CC7E"; ctx.fillText(cleanText, drawX, ty); ctx.restore();
 }
+
+export type WorldPopulationCategory = "players" | "npcs" | "monsters" | "huntables" | "trees" | "rocks" | "ore_gems" | "plants" | "mounts";
 
 export const ENTITY_MAP_LEGEND_SWATCHES = Object.freeze([
   { id: "npcs", label: "NPCs", color: "#38bdf8" },
@@ -588,24 +584,34 @@ export const ENTITY_MAP_LEGEND_SWATCHES = Object.freeze([
   { id: "plants", label: "Plants", color: "#2dd4bf" },
 ] as const);
 
-export function resolveEntityMapMarkerColor(
+export function classifyWorldEntityCategory(
   entity: Pick<WorldEntity, "kind" | "name" | "npc_subkind" | "npcSubkind" | "resourceType" | "resource_type">,
-): string {
+): WorldPopulationCategory {
+  if (entity.kind === "player") return "players";
+  if (entity.kind === "mount") return "mounts";
   const subkind = (entity.npcSubkind ?? entity.npc_subkind ?? "").toLowerCase();
   const resType = (entity.resourceType ?? entity.resource_type ?? "").toLowerCase();
   const name = (entity.name ?? "").toLowerCase();
-  const combined = `${resType} ${name}`;
-  if (subkind === "huntable" || /hunting|husbandry/.test(resType) || /^hunting_/.test(name)) return "#f97316";
-  if (entity.kind === "monster") return "#ef4444";
-  if (entity.kind === "poi") return "#d4af37";
+  if (subkind === "huntable" || /hunting|husbandry/.test(resType) || /^hunting_/.test(name)) return "huntables";
   if (entity.kind === "resource_node" || resType.length > 0) {
-    if (/stonecutting|rock|stone|granite|slate|basalt|limestone|sandstone/.test(combined)) return "#94a3b8";
-    if (/mining|ore|vein|copper|iron|zinc|tin|rividium|ruby|sapphire|emerald|geode|crystal|halcyonite|lumadon/.test(combined)) return "#eab308";
-    if (/herbalism|plant|herb|daffodil|moonbell|snowdrop|spiritbloom|flax|yarrow/.test(combined)) return "#2dd4bf";
-    if (/lumberjacking|tree|wood|oak|ash|cedar|willow/.test(combined)) return "#22c55e";
-    return "#22c55e";
+    const combined = `${resType} ${name}`;
+    if (/(?:^|[\s_/]|\b)(metal|gem|ore|vein|copper|iron|zinc|tin|rividium|ruby|sapphire|emerald|geode|crystal|halcyonite|lumadon|wyrdstone|resonite|coveglass|obsidian|gold|silver|mythril|cobalt|diamond|amethyst|topaz|quartz)(?:$|[\s_/]|\b)|^(metal|gem)_|_(wyrdstone|resonite|coveglass|obsidian)_/i.test(combined)) return "ore_gems";
+    if (/mining\s*\/\s*stone|stonecutting|deadcoral|dead_coral|rock|stone|granite|slate|basalt|limestone|sandstone|marble|boulder/i.test(combined)) return "rocks";
+    if (/herbalism|plant|coral|herb|daffodil|moonbell|snowdrop|spiritbloom|flax|yarrow|flower|mushroom|moss|root|berry|banana|birdofparadise|dracaena|elephantear|anemone|bluebell|fern|pross|poppy|salvewort|spindlevine|shrub|bush|leaf|lily|lotus|aloe|sage|thistle/i.test(combined)) return "plants";
+    return "trees";
   }
-  return "#38bdf8";
+  return entity.kind === "monster" ? "monsters" : "npcs";
+}
+
+const CATEGORY_MARKER_COLORS: Readonly<Record<WorldPopulationCategory, string>> = Object.freeze({
+  players: "#22c55e", npcs: "#38bdf8", monsters: "#ef4444", huntables: "#f97316",
+  trees: "#22c55e", rocks: "#94a3b8", ore_gems: "#eab308", plants: "#2dd4bf", mounts: "#38bdf8",
+});
+
+export function resolveEntityMapMarkerColor(
+  entity: Pick<WorldEntity, "kind" | "name" | "npc_subkind" | "npcSubkind" | "resourceType" | "resource_type">,
+): string {
+  return entity.kind === "poi" ? "#d4af37" : CATEGORY_MARKER_COLORS[classifyWorldEntityCategory(entity)];
 }
 
 function drawEntityAndCrosshairMarkers(
@@ -678,32 +684,41 @@ export function findNearestEntityOrNodeAtScreen(
   viewport: { readonly width: number; readonly height: number },
   state: WorldStreamState,
 ): { readonly entity?: WorldEntity; readonly node?: VerraCityNodeMeta; readonly poi?: PoiOverlay } | null {
-  let bestEnt: WorldEntity | null = null;
-  let bestDist = 16;
+  let bestEnt: WorldEntity | null = null, bestEntDist = 18;
   for (const ent of state.entities.values()) {
     if (!isEntityVisibleForLayers(ent, state.layers, state.camera.zoom)) continue;
     const [ex, ey] = worldCmToScreenOffset(ent.xCm, ent.yCm, viewport, state.camera);
-    const d = Math.hypot(ex - sx, ey - sy);
-    if (d <= bestDist) {
-      bestDist = d;
-      bestEnt = ent;
+    const isShrineOrPoi = (ent.npcSubkind ?? ent.npc_subkind) === "emberspring" || ent.kind === "poi";
+    const d = Math.hypot(ex - sx, ey - sy), hitR = isShrineOrPoi || ent.kind === "player" ? 18 : 16;
+    if (d <= hitR && (d < bestEntDist || (isShrineOrPoi && bestEnt && (bestEnt.npcSubkind ?? bestEnt.npc_subkind) !== "emberspring" && d <= bestEntDist + 4))) {
+      bestEntDist = d; bestEnt = ent;
     }
   }
-  if (bestEnt) return { entity: bestEnt };
+  let bestPoi: PoiOverlay | null = null, bestPoiDist = 20;
+  if (state.layers.pois) {
+    for (const poi of state.pois ?? []) {
+      if (state.layers.cityNodes && poi.kind === "city_node" && state.cityNodes.some((n) => n.name === poi.name || n.display_name === poi.display_name || n.guid === poi.guid)) continue;
+      const [px, py] = worldCmToScreenOffset(poi.x_cm, poi.y_cm, viewport, state.camera);
+      const d = Math.hypot(px - sx, py - sy), hitR = Math.max(18, Math.min(22, (poi.icon_size ?? 24) * 0.75));
+      const isEmber = /wayshrine|emberspring|attune|shrine/i.test(`${poi.category} ${poi.kind ?? ""} ${poi.icon_name}`);
+      if (d <= hitR && (d < bestPoiDist || (isEmber && bestPoi && !/wayshrine|emberspring|attune|shrine/i.test(`${bestPoi.category} ${bestPoi.icon_name}`) && d <= bestPoiDist + 5))) {
+        bestPoiDist = d; bestPoi = poi;
+      }
+    }
+  }
+  let bestNode: VerraCityNodeMeta | null = null, bestNodeDist = 18;
   if (state.layers.pois && state.layers.cityNodes) {
     for (const node of state.cityNodes) {
       const { cx_cm, cy_cm } = getCityNodeCenterCm(node);
       const [nx, ny] = worldCmToScreenOffset(cx_cm, cy_cm, viewport, state.camera);
-      if (Math.hypot(nx - sx, ny - sy) <= 18) return { node };
+      const d = Math.hypot(nx - sx, ny - sy);
+      if (d <= bestNodeDist) { bestNodeDist = d; bestNode = node; }
     }
   }
-  if (state.layers.pois) {
-    for (const poi of state.pois ?? []) {
-      const [px, py] = worldCmToScreenOffset(poi.x_cm, poi.y_cm, viewport, state.camera);
-      if (Math.hypot(px - sx, py - sy) <= 16) return { poi };
-    }
-  }
-  return null;
+  if (bestEnt && ((bestEnt.npcSubkind ?? bestEnt.npc_subkind) === "emberspring" || bestEnt.kind === "poi" || bestEnt.kind === "player") && bestEntDist <= bestPoiDist && bestEntDist <= bestNodeDist) return { entity: bestEnt };
+  if (bestPoi && (!bestNode || bestPoiDist <= bestNodeDist + (bestPoi.category === "city_node" ? -2 : 4)) && (!bestEnt || bestPoiDist <= bestEntDist + 6)) return { poi: bestPoi };
+  if (bestNode && (!bestEnt || bestNodeDist <= bestEntDist + 4)) return { node: bestNode };
+  return bestEnt ? { entity: bestEnt } : bestPoi ? { poi: bestPoi } : bestNode ? { node: bestNode } : null;
 }
 
 export function filterMapSearchItems(
@@ -718,8 +733,7 @@ export function filterMapSearchItems(
   const results: MapSearchResultItem[] = [];
   for (const ent of entities.values()) {
     if (ent.name.toLowerCase().includes(q) || ent.guid.toLowerCase().includes(q) || ent.kind.toLowerCase().includes(q)) {
-      const category =
-        ent.kind === "player" ? "player" : ent.kind === "monster" ? "monster" : ent.kind === "resource_node" ? "resource_node" : "npc";
+      const category = ent.kind === "player" ? "player" : ent.kind === "monster" ? "monster" : ent.kind === "resource_node" ? "resource_node" : "npc";
       results.push({ id: `ent:${ent.guid}`, label: `${ent.name} (${ent.kind} Lv ${ent.level})`, category, xCm: ent.xCm, yCm: ent.yCm, zCm: ent.zCm, playerName: ent.kind === "player" ? ent.name : undefined, entityGuid: ent.guid });
     }
   }
@@ -734,46 +748,51 @@ export function filterMapSearchItems(
       results.push({ id: `poi:${poi.guid}`, label: `${poi.display_name || poi.name} (${poi.category || "POI"})`, category: "poi", xCm: poi.x_cm, yCm: poi.y_cm, zCm: poi.z_cm, poiGuid: poi.guid });
     }
   }
-  for (const hit of remoteHits) {
-    if (!results.some((r) => r.id === hit.id)) results.push(hit);
-  }
+  for (const hit of remoteHits) { if (!results.some((r) => r.id === hit.id)) results.push(hit); }
   return results.slice(0, 20);
 }
 
 export function resolvePoiIconName(rawIconOrKind: string): string {
   const cleaned = rawIconOrKind.trim().replace(/\.png$/i, "");
-  const lower = cleaned.toLowerCase();
-  if (lower.includes("wayshrine") || lower.includes("emberspring") || lower.includes("attune") || lower.includes("shrine")) {
-    return "TUI_Icon_Map_ReviveShrine_Active";
-  }
+  if (/wayshrine|emberspring|attune|shrine/i.test(cleaned)) return "TUI_Icon_Map_ReviveShrine_Active";
   return cleaned || "T_Icon_Poi_Default";
 }
 
 export function parsePoisFromPayload(raw: unknown): readonly PoiOverlay[] {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const list = Array.isArray(obj.pois)
-    ? (obj.pois as readonly Record<string, unknown>[])
-    : normalizePaginatedEnvelope<Record<string, unknown>>(obj, ["pois", "places", "items"], 250, 0).items;
-  const out: PoiOverlay[] = [];
+  const list = Array.isArray(raw) ? (raw as readonly Record<string, unknown>[]) : Array.isArray(obj.pois) ? (obj.pois as readonly Record<string, unknown>[]) : Array.isArray(obj.places) ? (obj.places as readonly Record<string, unknown>[]) : normalizePaginatedEnvelope<Record<string, unknown>>(obj, ["pois", "places", "items"], 2000, 0).items;
+  const out: PoiOverlay[] = [], seen = new Set<string>();
   for (const item of list) {
-    const guid = String(item.guid ?? item.id ?? item.name ?? "");
-    const name = String(item.name ?? guid);
-    if (!name) continue;
-    const category = String(item.category ?? item.kind ?? "poi");
-    const iconName = resolvePoiIconName(String(item.icon_name ?? item.icon ?? category));
+    const rawGuid = String(item.guid ?? item.id ?? "").trim(), name = String(item.name ?? item.display_name ?? rawGuid).trim();
+    if (!name && !rawGuid) continue;
+    const x_cm = Number(item.x_cm ?? item.x ?? item.ox ?? 0), y_cm = Number(item.y_cm ?? item.y ?? item.oy ?? 0), z_cm = Number(item.z_cm ?? item.z ?? item.oz ?? 0);
+    const category = String(item.category ?? item.kind ?? "poi").trim() || "poi", kind = String(item.kind ?? category).trim() || category;
+    const baseGuid = rawGuid && rawGuid !== "0" ? rawGuid : `${category}:${name || `${Math.round(x_cm)}_${Math.round(y_cm)}`}`;
+    const guid = seen.has(baseGuid) ? `${baseGuid}:${name}:${Math.round(x_cm)}:${Math.round(y_cm)}` : baseGuid;
+    seen.add(guid);
+    const iconName = resolvePoiIconName(String(item.icon_name ?? item.icon ?? category)), rad = Number(item.radius ?? item.radius_cm ?? 0);
     out.push({
-      guid: guid || name,
-      name,
-      display_name: String(item.display_name ?? name),
-      category,
-      x_cm: Number(item.x_cm ?? item.x ?? item.ox ?? 0),
-      y_cm: Number(item.y_cm ?? item.y ?? item.oy ?? 0),
-      z_cm: Number(item.z_cm ?? item.z ?? item.oz ?? 0),
-      icon_name: iconName,
-      icon_url: String(item.icon_url ?? `/api/v1/world/icons/${iconName}.png`),
-      tint_color: typeof item.tint_color === "string" ? item.tint_color : undefined,
-      icon_size: typeof item.icon_size === "number" ? item.icon_size : 22,
+      guid, name: name || guid, display_name: String(item.display_name ?? (name || guid)), category, kind, x_cm, y_cm, z_cm,
+      node_name: typeof item.node_name === "string" && item.node_name.trim() ? item.node_name.trim() : undefined,
+      node_type: typeof item.node_type === "string" && item.node_type.trim() ? item.node_type.trim() : undefined,
+      biome: typeof item.biome === "string" && item.biome.trim() ? item.biome.trim() : undefined,
+      radius: Number.isFinite(rad) && rad > 0 ? rad : undefined, yaw: Number.isFinite(Number(item.yaw ?? item.yaw_deg)) ? Number(item.yaw ?? item.yaw_deg) : undefined,
+      level: Number.isFinite(Number(item.level)) ? Number(item.level) : undefined, min_level: Number.isFinite(Number(item.min_level)) ? Number(item.min_level) : undefined,
+      max_level: Number.isFinite(Number(item.max_level)) ? Number(item.max_level) : undefined, levelable: typeof item.levelable === "boolean" ? item.levelable : undefined,
+      stage_name: typeof item.stage_name === "string" && item.stage_name.trim() ? item.stage_name.trim() : undefined,
+      description: typeof (item.description ?? item.descriptor) === "string" && String(item.description ?? item.descriptor).trim() ? String(item.description ?? item.descriptor).trim() : undefined,
+      tags: Array.isArray(item.tags) ? item.tags.map(String) : undefined, icon_name: iconName, icon_url: String(item.icon_url ?? `/api/v1/world/icons/${iconName}.png`),
+      tint_color: typeof item.tint_color === "string" ? item.tint_color : undefined, icon_size: typeof item.icon_size === "number" ? item.icon_size : 22,
     });
   }
   return out;
+}
+
+export function mergePoiOverlays(existing: readonly PoiOverlay[], incoming: readonly PoiOverlay[]): readonly PoiOverlay[] {
+  if (existing.length === 0) return incoming;
+  if (incoming.length === 0) return existing;
+  const byKey = new Map<string, PoiOverlay>();
+  for (const p of existing) byKey.set(p.guid || p.name, p);
+  for (const p of incoming) byKey.set(p.guid || p.name, { ...byKey.get(p.guid || p.name), ...p });
+  return [...byKey.values()];
 }

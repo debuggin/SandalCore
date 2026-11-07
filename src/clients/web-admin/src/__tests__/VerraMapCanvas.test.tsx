@@ -4,18 +4,39 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  buildEntityInspectorModel,
+  formatPoiCategoryDisplay,
+  poiOverlayToInspectedEntity,
+  resolveMutuallyExclusiveInspectorTarget,
+} from "../components/EntityInspector";
+import {
+  classifyWorldEntityCategory,
+  drawCanvasScene,
+  findNearestEntityOrNodeAtScreen,
+  mergePoiOverlays,
+  parsePoisFromPayload,
+  resolveEntityMapMarkerColor,
+  VerraTileCache,
+  worldCmToScreenOffset,
+} from "../map/verraTilePyramidRenderer";
+import { VERRA_SEASON_PRESETS } from "../map/VerraCalendarPopover";
+import {
   computeViewportWorldBoundsCm,
   computeVerraCalendar,
   createWorldStreamStore,
   DEFAULT_CAMERA_VIEWPORT,
   DEFAULT_REGIONAL_WORLD_WORKERS,
+  DEFAULT_VERRA_MAP_META,
   formatCanonicalWorkerName,
   formatWorkerTickHzOptionLabel,
   getVisibleWorkersForViewport,
+  inferResourceNodeType,
   loadPersistedWebAdminState,
   normalizeWorkerTickHz,
+  resolveWorkerTickFields,
   savePersistedWebAdminState,
   SESSION_UI_STORAGE_KEY,
+  VERRA_CALENDAR_SEASON_NAMES,
   type WorldWorkerInfo,
   WORKER_TICK_HZ_OPTIONS,
 } from "../state/worldStreamStore";
@@ -101,13 +122,12 @@ describe("VerraMapCanvas Wave 41E/41F Regression Suite", () => {
     expect(winsteadZoi?.region_label).toBe("Riverlands \u00b7 Winstead ZOI");
   });
 
-  it("renders time-of-day-popover (zIndex: 1200) with Verra Calendar controls and prevents sessionStorage from overwriting backend time_of_day_hours", () => {
+  it("renders time-of-day-popover (zIndex: 1200) with authentic 4-Season Verra Calendar controls, bottom-left vertical legend, and uniform StreamStatus typography", () => {
     const mapCanvasSource = readVerraMapCanvasSource();
+    const streamStatusSource = readFileSync(fileURLToPath(new URL("../components/StreamStatus.tsx", import.meta.url)), "utf8");
+    const storeSource = readFileSync(fileURLToPath(new URL("../state/worldStreamStore.ts", import.meta.url)), "utf8");
     const store = createWorldStreamStore({
-      timeOfDayHours: 18.5,
-      calendarDayOfYear: 95,
-      calendarYear: 2,
-      calendarSeason: "Summer (Suncrest)",
+      timeOfDayHours: 18.5, calendarDayOfYear: 95, calendarYear: 2, calendarSeason: "Summer",
     });
     expect(
       mapCanvasSource.includes('data-testid="time-of-day-popover"') ||
@@ -115,28 +135,35 @@ describe("VerraMapCanvas Wave 41E/41F Regression Suite", () => {
     ).toBe(true);
     expect(mapCanvasSource).toMatch(/zIndex:\s*(?:[a-zA-Z0-9_]+\s*\?\s*)?1200\b/);
     expect(mapCanvasSource).toContain("verra-calendar-year-input");
+    expect(mapCanvasSource).toContain("verra-calendar-season-select");
+    expect(mapCanvasSource).toContain("verra-calendar-day-of-season-input");
     expect(mapCanvasSource).toContain("verra-calendar-day-slider");
+    expect(mapCanvasSource.includes("Newbloom")).toBe(false);
+    expect(mapCanvasSource.includes("Suncrest")).toBe(false);
+    expect(storeSource.includes("Newbloom")).toBe(false);
+    expect(storeSource.includes("Stonecutting")).toBe(false);
+    expect([...VERRA_CALENDAR_SEASON_NAMES]).toEqual(["Spring", "Summer", "Autumn", "Winter"]);
+    expect(inferResourceNodeType("Granite Rock")).toBe("Mining / Stone");
+
+    expect(mapCanvasSource).toContain('left: "12px", bottom: "12px"');
+    expect(mapCanvasSource).toContain('flexDirection: "column"');
+    expect(mapCanvasSource.indexOf('data-testid="map-entity-legend"')).toBeGreaterThan(mapCanvasSource.indexOf("</header>"));
+
+    expect(streamStatusSource).toContain('{`Players Online: ${counts.players}`}');
+    expect(streamStatusSource.includes("tabular-nums")).toBe(false);
 
     const cal = computeVerraCalendar(95, 2);
-    expect(cal.calendarDayOfYear).toBe(95);
-    expect(cal.calendarYear).toBe(2);
-    expect(cal.calendarSeason).toBe("Summer (Suncrest)");
+    expect([cal.calendarDayOfYear, cal.calendarYear, cal.calendarSeason, cal.calendarSeasonIndex, cal.calendarDayOfSeason]).toEqual([95, 2, "Summer", 2, 5]);
 
     const fakeStorage = new Map<string, string>();
     const storageAdapter = {
       getItem: (k: string) => fakeStorage.get(k) ?? null,
-      setItem: (k: string, v: string) => {
-        fakeStorage.set(k, v);
-      },
+      setItem: (k: string, v: string) => { fakeStorage.set(k, v); },
     };
     savePersistedWebAdminState(store.getState(), storageAdapter);
     fakeStorage.set(
       SESSION_UI_STORAGE_KEY,
-      JSON.stringify({
-        ...JSON.parse(fakeStorage.get(SESSION_UI_STORAGE_KEY) ?? "{}"),
-        timeOfDayHours: 3.25,
-        timeOfDayLabel: "03:15",
-      }),
+      JSON.stringify({ ...JSON.parse(fakeStorage.get(SESSION_UI_STORAGE_KEY) ?? "{}"), timeOfDayHours: 3.25, timeOfDayLabel: "03:15" }),
     );
 
     store.getState().setTimeOfDay(18.5, 1700000000000);
@@ -146,5 +173,166 @@ describe("VerraMapCanvas Wave 41E/41F Regression Suite", () => {
 
     const loaded = loadPersistedWebAdminState(storageAdapter, "", true);
     expect(loaded.timeOfDayHours).toBe(12.0);
+  });
+
+  it("separates target_tick_hz (dropdown setting) from current_tick_hz (live output) so Dynamic (-1) never snaps back to a number on poll", async () => {
+    const store = createWorldStreamStore({ workers: DEFAULT_REGIONAL_WORLD_WORKERS });
+    const initialWorker = store.getState().workers.find((w) => w.worker_id === "world-riverlands")!;
+    expect(initialWorker.target_tick_hz).toBe(-1);
+    expect(initialWorker.tick_mode).toBe("dynamic");
+    expect(initialWorker.current_tick_hz).toBeGreaterThanOrEqual(30);
+
+    await store.getState().executeSetWorkerTickRateAction("world-riverlands", 20, async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    expect(store.getState().workers.find((w) => w.worker_id === "world-riverlands")?.target_tick_hz).toBe(20);
+    expect(store.getState().workers.find((w) => w.worker_id === "world-riverlands")?.current_tick_hz).toBe(20);
+
+    await store.getState().executeSetWorkerTickRateAction("world-riverlands", -1, async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    store.getState().setWorkers([
+      {
+        ...initialWorker,
+        worker_id: "world-riverlands",
+        tick_hz: 45,
+        current_tick_hz: 45,
+        target_tick_hz: -1,
+        tick_mode: "dynamic",
+      },
+    ]);
+    const afterPoll = resolveWorkerTickFields(store.getState().workers[0]);
+    expect(afterPoll.target_tick_hz).toBe(-1);
+    expect(afterPoll.tick_mode).toBe("dynamic");
+    expect(afterPoll.current_tick_hz).toBe(45);
+  });
+
+  it("hit-tests and selects Ember Springs and all POI types on the map canvas and populates authentic metadata in EntityInspector", () => {
+    const viewport = { width: 960, height: 540 };
+    const parsedPois = parsePoisFromPayload({
+      places: [
+        {
+          guid: "attune-lionhold-01", name: "Attune_RVR_Lionhold_01", display_name: "Lionhold Ember Spring",
+          category: "wayshrine", kind: "wayshrine", node_name: "Winstead", node_type: "Economic", biome: "Riverlands",
+          x: -777664, y: 522023, z: 11524, radius: 5000, level: 10, description: "Ancient attunable respawn shrine",
+        },
+        {
+          guid: "poi-carphin-01", name: "POI_RVR_TowerOfCarphin", display_name: "Tower of Carphin",
+          category: "dungeon", kind: "dungeon", node_name: "Winstead", biome: "Riverlands",
+          x: -720000, y: 500000, z: 14200, radius: 12000, min_level: 20, max_level: 30,
+          description: "Corrupted spire dungeon", tags: ["Dungeon", "Elite"],
+        },
+      ],
+    });
+    expect(parsedPois.length).toBe(2);
+    expect(formatPoiCategoryDisplay(parsedPois[0])).toBe("Ember Spring");
+    expect(formatPoiCategoryDisplay(parsedPois[1])).toBe("Dungeon");
+    expect(mergePoiOverlays(parsedPois, [parsedPois[0]]).length).toBe(2);
+
+    const store = createWorldStreamStore();
+    store.getState().setPois(parsedPois);
+    store.getState().applyWorldDelta({
+      seq: 1, isSnapshot: true,
+      added: [{ guid: "npc-nearby-guard", name: "Lionhold Guard", kind: "npc", xCm: -777664 + 1200, yCm: 522023 + 1200, zCm: 11524, yawDeg: 0, level: 25, healthPct: 100 }],
+    });
+
+    const [esX, esY] = worldCmToScreenOffset(parsedPois[0].x_cm, parsedPois[0].y_cm, viewport, store.getState().camera);
+    const hitEmberSpring = findNearestEntityOrNodeAtScreen(esX, esY, viewport, store.getState());
+    expect(hitEmberSpring?.poi?.guid).toBe("attune-lionhold-01");
+
+    store.getState().selectPoi(hitEmberSpring!.poi!.guid);
+    const excl = resolveMutuallyExclusiveInspectorTarget(store.getState());
+    expect([excl.activeKind, excl.entity?.name, excl.entity?.poiCategory, excl.entity?.recordName]).toEqual(["poi", "Lionhold Ember Spring", "Ember Spring", "Attune_RVR_Lionhold_01"]);
+
+    const emberModel = buildEntityInspectorModel({ entity: excl.entity });
+    expect(emberModel.rows.find((r) => r.rowId === "category")?.value).toBe("Ember Spring");
+    expect(emberModel.rows.find((r) => r.rowId === "record_name")?.value).toBe("Attune_RVR_Lionhold_01");
+    expect(emberModel.rows.find((r) => r.rowId === "region_zoi")?.value).toContain("Riverlands");
+    expect(emberModel.rows.find((r) => r.rowId === "radius")?.value).toBe("50.0 m (5000 cm)");
+    expect(emberModel.rows.find((r) => r.rowId === "node_association")?.value).toContain("Winstead");
+    expect(emberModel.rows.find((r) => r.rowId === "description")?.value).toContain("Ancient attunable respawn shrine");
+
+    const [poiX, poiY] = worldCmToScreenOffset(parsedPois[1].x_cm, parsedPois[1].y_cm, viewport, store.getState().camera);
+    const hitDungeon = findNearestEntityOrNodeAtScreen(poiX, poiY, viewport, store.getState());
+    expect(hitDungeon?.poi?.guid).toBe("poi-carphin-01");
+    const dungeonModel = buildEntityInspectorModel({ entity: poiOverlayToInspectedEntity(hitDungeon!.poi!, store.getState().workers) });
+    expect(dungeonModel.rows.find((r) => r.rowId === "category")?.value).toBe("Dungeon");
+    expect(dungeonModel.rows.find((r) => r.rowId === "level")?.value).toBe("20-30");
+    expect(dungeonModel.rows.find((r) => r.rowId === "description")?.value).toContain("Corrupted spire dungeon");
+  });
+
+  it("classifies bare Verra resource def_names into distinct marker colors and renders clean VerraCalendarPopover labels and dark inputs", () => {
+    const bareResourceCases = [
+      { defName: "Tree_EasternHemlock_Large_1", category: "trees", color: "#22c55e" },
+      { defName: "Stone_Basalt_Medium_1", category: "rocks", color: "#94a3b8" },
+      { defName: "Stone_Wyrdstone_Large_1", category: "ore_gems", color: "#eab308" },
+      { defName: "Stone_Resonite_Medium_1", category: "ore_gems", color: "#eab308" },
+      { defName: "Metal_Rividium_Large_1", category: "ore_gems", color: "#eab308" },
+      { defName: "Plant_Banana_Fruited_1", category: "plants", color: "#2dd4bf" },
+      { defName: "Coral_BlueCoral_Large_1", category: "plants", color: "#2dd4bf" },
+    ] as const;
+
+    for (const c of bareResourceCases) {
+      const entity = { kind: "resource_node" as const, name: c.defName, resource_type: undefined, resourceType: undefined };
+      expect(classifyWorldEntityCategory(entity)).toBe(c.category);
+      expect(resolveEntityMapMarkerColor(entity)).toBe(c.color);
+    }
+
+    expect(VERRA_SEASON_PRESETS.map((p) => p.label)).toEqual(["Spring", "Summer", "Autumn", "Winter"]);
+    expect(VERRA_SEASON_PRESETS.some((p) => p.label.includes("(D"))).toBe(false);
+
+    const popoverSrc = readFileSync(fileURLToPath(new URL("../map/VerraCalendarPopover.tsx", import.meta.url)), "utf8");
+    expect(popoverSrc.includes("(D1)")).toBe(false);
+    expect(popoverSrc).toContain('colorScheme: "dark"');
+    expect(popoverSrc).toContain("Verra Calendar");
+    expect(popoverSrc.includes("Verra Calendar (360d)")).toBe(false);
+
+    const rendererSrc = readFileSync(fileURLToPath(new URL("../map/verraTilePyramidRenderer.ts", import.meta.url)), "utf8");
+    const drawSceneBlock = rendererSrc.slice(
+      rendererSrc.indexOf("export function drawCanvasScene"),
+      rendererSrc.indexOf("function drawZoiBorderOverlays"),
+    );
+    const entityOrderIdx = drawSceneBlock.indexOf("drawEntityAndCrosshairMarkers(");
+    const poiOrderIdx = drawSceneBlock.indexOf("drawPoiAndCityNodeMarkers(");
+    expect(entityOrderIdx).toBeGreaterThan(0);
+    expect(poiOrderIdx).toBeGreaterThan(entityOrderIdx);
+
+    const labelBlock = rendererSrc.slice(
+      rendererSrc.indexOf("function drawCollisionSafeLabel"),
+      rendererSrc.indexOf("export type WorldPopulationCategory"),
+    );
+    expect(labelBlock).toMatch(/#F6CC7E/i);
+    expect(labelBlock).toContain("strokeText");
+  });
+
+  it("draws POI and City Node labels centered above icons without NODE_STAGE_NAMES / (Wilderness) suffixes and omits Move Speed strip from TeleportCard", () => {
+    const rendererSrc = readFileSync(fileURLToPath(new URL("../map/verraTilePyramidRenderer.ts", import.meta.url)), "utf8");
+    const markerBlock = rendererSrc.slice(
+      rendererSrc.indexOf("function drawPoiAndCityNodeMarkers"),
+      rendererSrc.indexOf("export type WorldPopulationCategory"),
+    );
+    expect(markerBlock.includes("NODE_STAGE_NAMES")).toBe(false);
+    expect(markerBlock).toContain("sy - 21");
+    expect(markerBlock).toContain("sy - Math.round(iconPx / 2) - 7");
+    expect(markerBlock).toContain("Wilderness|Expedition|Encampment|Village|Town|City|Metropolis");
+
+    const drawnTexts: Array<{ text: string; x: number; y: number }> = [];
+    const mockCtx = {
+      fillStyle: "", strokeStyle: "", lineWidth: 1, font: "", textBaseline: "alphabetic", lineJoin: "miter",
+      fillRect: () => {}, strokeRect: () => {}, clip: () => {}, drawImage: () => {},
+      beginPath: () => {}, closePath: () => {}, setLineDash: () => {}, arc: () => {},
+      fill: () => {}, stroke: () => {}, moveTo: () => {}, lineTo: () => {}, rect: () => {},
+      strokeText: () => {}, fillText: (text: string, x: number, y: number) => { drawnTexts.push({ text, x, y }); },
+      measureText: (txt: string) => ({ width: txt.length * 8 }),
+      save: () => {}, restore: () => {}, translate: () => {}, rotate: () => {},
+    } as unknown as CanvasRenderingContext2D;
+    const store = createWorldStreamStore();
+    store.getState().setCameraViewport({ centerXCm: -644519, centerYCm: 376773, zoom: 3.5 });
+    store.getState().setPois([{ guid: "poi-test-1", name: "POI_Test", display_name: "Carphin Spire (Wilderness)", category: "dungeon", kind: "dungeon", x_cm: -610000, y_cm: 376773, z_cm: 11000, icon_name: "T_Icon", icon_url: "/api/v1/world/icons/T_Icon.png" }]);
+    drawCanvasScene(mockCtx, { width: 960, height: 540 }, DEFAULT_VERRA_MAP_META, store.getState(), new VerraTileCache(() => {}));
+    expect(drawnTexts.some((d) => /\((?:Wilderness|Expedition|Village|Town|City|Metropolis)\)/i.test(d.text))).toBe(false);
+    expect(drawnTexts.some((d) => d.text === "Winstead")).toBe(true);
+    expect(drawnTexts.some((d) => d.text === "Carphin Spire")).toBe(true);
+
+    const playersTabSrc = readFileSync(fileURLToPath(new URL("../components/PlayersAndSpawnerTab.tsx", import.meta.url)), "utf8");
+    expect(playersTabSrc).toContain("Teleport Player ({activeChar || \"Select Player\"})");
+    expect(playersTabSrc.includes("Teleport & Movement Speed")).toBe(false);
+    expect(playersTabSrc.includes("Move Speed:")).toBe(false);
   });
 });

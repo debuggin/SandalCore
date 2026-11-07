@@ -352,11 +352,6 @@ services:
       AOC_WORLD_TICK_HZ_ZOI: ${AOC_WORLD_TICK_HZ_ZOI:-60}
       AOC_WORLD_TICK_HZ_NODE: ${AOC_WORLD_TICK_HZ_NODE:-100}
       AOC_WORLD_TICK_HZ_POI: ${AOC_WORLD_TICK_HZ_POI:-100}
-      AOC_WORLD_NPC_SIM_STEP_CAP_WORLD: ${AOC_WORLD_NPC_SIM_STEP_CAP_WORLD:-5200}
-      AOC_WORLD_NPC_SIM_STEP_CAP_REGION: ${AOC_WORLD_NPC_SIM_STEP_CAP_REGION:-3600}
-      AOC_WORLD_NPC_SIM_STEP_CAP_ZOI: ${AOC_WORLD_NPC_SIM_STEP_CAP_ZOI:-2600}
-      AOC_WORLD_NPC_SIM_STEP_CAP_NODE: ${AOC_WORLD_NPC_SIM_STEP_CAP_NODE:-1500}
-      AOC_WORLD_NPC_SIM_STEP_CAP_POI: ${AOC_WORLD_NPC_SIM_STEP_CAP_POI:-1500}
       AOC_WORLD_CPU_TARGET_PCT: ${AOC_WORLD_CPU_TARGET_PCT:-38}
       AOC_WORLD_AOI_HALO_CM: ${AOC_WORLD_AOI_HALO_CM:-35000}
       AOC_WORLD_HANDOVER_HYSTERESIS_CM: ${AOC_WORLD_HANDOVER_HYSTERESIS_CM:-5000}
@@ -488,12 +483,6 @@ services:
       AOC_WORLD_TICK_HZ_ZOI: "${AOC_WORLD_TICK_HZ_ZOI:-60}"
       AOC_WORLD_TICK_HZ_NODE: "${AOC_WORLD_TICK_HZ_NODE:-100}"
       AOC_WORLD_TICK_HZ_POI: "${AOC_WORLD_TICK_HZ_POI:-100}"
-      AOC_WORLD_NPC_SIM_STEP_CAP: "${AOC_WORLD_NPC_SIM_STEP_CAP_REGION:-3600}"
-      AOC_WORLD_NPC_SIM_STEP_CAP_WORLD: "${AOC_WORLD_NPC_SIM_STEP_CAP_WORLD:-5200}"
-      AOC_WORLD_NPC_SIM_STEP_CAP_REGION: "${AOC_WORLD_NPC_SIM_STEP_CAP_REGION:-3600}"
-      AOC_WORLD_NPC_SIM_STEP_CAP_ZOI: "${AOC_WORLD_NPC_SIM_STEP_CAP_ZOI:-2600}"
-      AOC_WORLD_NPC_SIM_STEP_CAP_NODE: "${AOC_WORLD_NPC_SIM_STEP_CAP_NODE:-1500}"
-      AOC_WORLD_NPC_SIM_STEP_CAP_POI: "${AOC_WORLD_NPC_SIM_STEP_CAP_POI:-1500}"
       AOC_WORLD_CPU_TARGET_PCT: "${AOC_WORLD_CPU_TARGET_PCT:-38}"
       AOC_DATA_MODE_DEFAULT: "${AOC_DATA_MODE_DEFAULT:-memory}"
       AOC_DATA_MODE_ZOIS: "${AOC_DATA_MODE_ZOIS:-memory}"
@@ -513,9 +502,9 @@ services:
       AOC_CONTENT_DB: /app/content/content.db
       AOC_AREA_RADIUS_M: "${AOC_AREA_RADIUS_M:--1}"
       AOC_SERVICE_TOKEN: ${AOC_SERVICE_TOKEN:?AOC_SERVICE_TOKEN must be set in deploy/.env}
-      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
+      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "1"
       AOC_WORLD_CACHE_ALL_CONTENT_IN_MEMORY: ${AOC_WORLD_CACHE_ALL_CONTENT_IN_MEMORY:-true}
-      AOC_WORLD_CACHE_CONTENT_DB_IN_MEMORY: ${AOC_WORLD_CACHE_CONTENT_DB_IN_MEMORY:-false}
+      AOC_WORLD_CACHE_CONTENT_DB_IN_MEMORY: "${AOC_WORLD_CACHE_CONTENT_DB_IN_MEMORY:-true}"
       AOC_WORLD_CACHE_AREA_NAV_IN_MEMORY: ${AOC_WORLD_CACHE_AREA_NAV_IN_MEMORY:-true}
       AOC_WORLD_CACHE_FILES: ${AOC_WORLD_CACHE_FILES:-content.db,area_nav.bin}
       AOC_WORLD_NAV_PUMP_BUDGET_MS: ${AOC_WORLD_NAV_PUMP_BUDGET_MS:-4.0}
@@ -637,16 +626,15 @@ services:
     profiles: ["zoi-sandsquall", "zoi", "node_plug_zoi", "mixed"]
     container_name: aoc-verra-san-node-sunhaven
     hostname: world-sandsquall-sunhaven
-    command: ["--mesh=mesh:50054", "--gateway=gateway:50050", "--character=character:50053", "--citynode=citynode:50056", "--port=${WORLD_UDP_PORT:-7777}", "--admin-port=${WORLD_ADMIN_PORT:-50061}", "--area-zoi=Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Djinna,Verra_SAN_HARBOR_SandsquallRiver,Verra_SAN_Lawless_Desert", "--tick-hz=${AOC_WORLD_TICK_HZ_ZOI:-60}"]
+    command: ["--mesh=mesh:50054", "--gateway=gateway:50050", "--character=character:50053", "--citynode=citynode:50056", "--port=${WORLD_UDP_PORT:-7777}", "--admin-port=${WORLD_ADMIN_PORT:-50061}", "--area-zoi=Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Djinna,Verra_SAN_HARBOR_SandsquallRiver,Verra_SAN_Lawless_Desert,Verra_SAN_Sunhaven,Verra_SAN_Djinna,NLD_Verra_SAN_Sunhaven_L3,NLD_Verra_SAN_Djinna_L3,Verra_SAN_ANY_L3", "--tick-hz=${AOC_WORLD_TICK_HZ_ZOI:-60}"]
     environment:
       <<: *world_env
       AOC_WORLD_REGION: "sandsquall"
-      AOC_WORLD_ZOI: "Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Djinna,Verra_SAN_HARBOR_SandsquallRiver,Verra_SAN_Lawless_Desert"
+      AOC_WORLD_ZOI: "Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Djinna,Verra_SAN_HARBOR_SandsquallRiver,Verra_SAN_Lawless_Desert,Verra_SAN_Sunhaven,Verra_SAN_Djinna,NLD_Verra_SAN_Sunhaven_L3,NLD_Verra_SAN_Djinna_L3,Verra_SAN_ANY_L3"
       AOC_WORLD_WORKER_ID: "world-sandsquall-sunhaven"
       AOC_WORLD_WORKER_INDEX: "4"
       AOC_ADVERTISE_HOST: "world-sandsquall-sunhaven"
       AOC_WORLD_TICK_RATE_HZ: "${AOC_WORLD_TICK_HZ_ZOI:-60}"
-      AOC_WORLD_NPC_SIM_STEP_CAP: "${AOC_WORLD_NPC_SIM_STEP_CAP_ZOI:-2600}"
       AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
     networks:
       edge_net: { aliases: [world-sandsquall-sunhaven, aoc-verra-san-node-sunhaven, aoc-zoi-sunhaven, aoc-world-sandsquall-sunhaven] }
@@ -658,16 +646,15 @@ services:
     profiles: ["zoi-sandsquall", "zoi", "node_plug_zoi", "mixed"]
     container_name: aoc-verra-san-node-azmaran
     hostname: world-sandsquall-azmaran
-    command: ["--mesh=mesh:50054", "--gateway=gateway:50050", "--character=character:50053", "--citynode=citynode:50056", "--port=${WORLD_UDP_PORT:-7777}", "--admin-port=${WORLD_ADMIN_PORT:-50061}", "--area-zoi=Verra_SAN_Node_Azmaran,Verra_SAN_Node_Aithanahr,Verra_SAN_Node_SquallsEnd,Verra_SAN_HARBOR_SandsquallEastern", "--tick-hz=${AOC_WORLD_TICK_HZ_ZOI:-60}"]
+    command: ["--mesh=mesh:50054", "--gateway=gateway:50050", "--character=character:50053", "--citynode=citynode:50056", "--port=${WORLD_UDP_PORT:-7777}", "--admin-port=${WORLD_ADMIN_PORT:-50061}", "--area-zoi=Verra_SAN_Node_Azmaran,Verra_SAN_Node_Aithanahr,Verra_SAN_Node_SquallsEnd,Verra_SAN_HARBOR_SandsquallEastern,Verra_SAN_Azmaran,Verra_SAN_Aithanahr,Verra_SAN_SquallsEnd,NLD_Verra_SAN_Azmaran_L3,NLD_Verra_SAN_Aithanahr_L3", "--tick-hz=${AOC_WORLD_TICK_HZ_ZOI:-60}"]
     environment:
       <<: *world_env
       AOC_WORLD_REGION: "sandsquall"
-      AOC_WORLD_ZOI: "Verra_SAN_Node_Azmaran,Verra_SAN_Node_Aithanahr,Verra_SAN_Node_SquallsEnd,Verra_SAN_HARBOR_SandsquallEastern"
+      AOC_WORLD_ZOI: "Verra_SAN_Node_Azmaran,Verra_SAN_Node_Aithanahr,Verra_SAN_Node_SquallsEnd,Verra_SAN_HARBOR_SandsquallEastern,Verra_SAN_Azmaran,Verra_SAN_Aithanahr,Verra_SAN_SquallsEnd,NLD_Verra_SAN_Azmaran_L3,NLD_Verra_SAN_Aithanahr_L3"
       AOC_WORLD_WORKER_ID: "world-sandsquall-azmaran"
       AOC_WORLD_WORKER_INDEX: "5"
       AOC_ADVERTISE_HOST: "world-sandsquall-azmaran"
       AOC_WORLD_TICK_RATE_HZ: "${AOC_WORLD_TICK_HZ_ZOI:-60}"
-      AOC_WORLD_NPC_SIM_STEP_CAP: "${AOC_WORLD_NPC_SIM_STEP_CAP_ZOI:-2600}"
       AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
     networks:
       edge_net: { aliases: [world-sandsquall-azmaran, aoc-verra-san-node-azmaran, aoc-zoi-azmaran, aoc-world-sandsquall-azmaran] }
@@ -688,7 +675,6 @@ services:
       AOC_WORLD_WORKER_INDEX: "6"
       AOC_ADVERTISE_HOST: "world-node-sunhaven"
       AOC_WORLD_TICK_RATE_HZ: "${AOC_WORLD_TICK_HZ_NODE:-100}"
-      AOC_WORLD_NPC_SIM_STEP_CAP: "${AOC_WORLD_NPC_SIM_STEP_CAP_NODE:-1500}"
       AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
     networks:
       edge_net: { aliases: [world-node-sunhaven, aoc-sunhaven] }
@@ -709,7 +695,6 @@ services:
       AOC_WORLD_WORKER_INDEX: "7"
       AOC_ADVERTISE_HOST: "world-node-azmaran"
       AOC_WORLD_TICK_RATE_HZ: "${AOC_WORLD_TICK_HZ_NODE:-100}"
-      AOC_WORLD_NPC_SIM_STEP_CAP: "${AOC_WORLD_NPC_SIM_STEP_CAP_NODE:-1500}"
       AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
     networks:
       edge_net: { aliases: [world-node-azmaran, aoc-azmaran] }

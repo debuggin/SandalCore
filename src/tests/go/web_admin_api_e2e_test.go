@@ -108,6 +108,15 @@ func resolveAdminPassphrase(t *testing.T) string {
 			return v
 		}
 	}
+	if out, err := exec.Command("docker", "inspect", "--format", "{{range .Config.Env}}{{println .}}{{end}}", "aoc-web-admin").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && strings.TrimSpace(k) == "AOC_ADMIN_PASSPHRASE" {
+				if clean := strings.Trim(strings.TrimSpace(v), `"'`); clean != "" {
+					return clean
+				}
+			}
+		}
+	}
 	root := webAdminRepoRoot(t)
 	if raw, err := os.ReadFile(filepath.Join(root, "deploy", ".admin_passphrase")); err == nil && strings.TrimSpace(string(raw)) != "" {
 		return strings.TrimSpace(string(raw))

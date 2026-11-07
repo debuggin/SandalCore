@@ -69,6 +69,7 @@ public:
     NpcCastState                           cast;
     std::map<std::string, double>          cooldown_until;
     double                                 hold_until = 0;
+    double                                 attack_walk_share = 1.0;
     double                                 stand_off_cm = -1;
     double                                 shot_reach_cm = -1;
     double                                 fight_began = 0;
@@ -130,6 +131,7 @@ public:
         if (pet_.health() <= 0.0) {
             pet_.dead = true;
             world_.pet_stop(pet_.actor_id);
+            world_.drop_effects_of_pet(pet_.actor_id);
         }
     }
     void set_in_combat(bool, double) override {}

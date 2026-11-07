@@ -6,74 +6,12 @@
 
 #include "aoc/worldadmin/v1/worldadmin.grpc.pb.h"
 #include "plan_abilities.h"
-#include "protocol/repl/move_packed.h"
 
 #include <grpcpp/grpcpp.h>
 
 namespace aoc::world::tests::plans {
 
-inline std::vector<bots::MonsterTarget> build_regional_monster_pack() {
-    return {
-        {70001ULL, "Highland Goblin Raider", "Goblin", 50, 22000, 22000, {-643200.0, 377400.0, 11400.0}, "aoc-world-riverlands", false, false, 0},
-        {70002ULL, "Mycelette Sporeling", "Mycelette", 50, 21000, 21000, {-642500.0, 378100.0, 11420.0}, "aoc-world-riverlands", false, false, 0},
-        {70003ULL, "Carrion Raven Stalker", "Raven", 50, 19500, 19500, {-591200.0, 342800.0, 11200.0}, "aoc-world-riverlands", false, false, 0},
-        {70004ULL, "Sandsquall Dune Scorpion", "Scorpion", 50, 25000, 25000, {-417200.0, 682600.0, 9800.0}, "aoc-world-sandsquall", false, false, 0},
-        {70005ULL, "Winstead Highway Bandit", "Bandit", 50, 23500, 23500, {-644000.0, 376200.0, 11400.0}, "aoc-world-riverlands", false, false, 0},
-        {70006ULL, "Briarmoor Dire Wolf", "Wolf", 50, 22500, 22500, {-617400.0, 398500.0, 11600.0}, "aoc-world-riverlands", false, false, 0},
-        {70007ULL, "Lionhold Stone Golem", "Golem", 50, 28000, 28000, {-684200.0, 412600.0, 12500.0}, "aoc-world-riverlands", false, false, 0},
-        {70008ULL, "Ashland Cultist Pyromancer", "Cultist", 50, 21500, 21500, {-654100.0, 385600.0, 11800.0}, "aoc-world-riverlands", false, false, 0},
-    };
-}
-
-inline bool run_plan_combat(std::vector<bots::PlayerBot>& roster) {
-    if (roster.size() < 16) return false;
-    auto monsters = build_regional_monster_pack();
-    size_t seq = 0;
-    return bots::run_all_64_archetype_combinations_all_envs(
-        roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
-            auto mob = monsters[seq++ % monsters.size()];
-            mob.pos_cm = {actor.pos_cm.x + 250.0, actor.pos_cm.y, actor.pos_cm.z};
-            mob.worker_id = actor.worker_id;
-            actor.in_combat = true;
-            observer.in_combat = true;
-            actor.locked_target_id = mob.monster_id;
-            observer.locked_target_id = mob.monster_id;
-            mob.in_combat = true;
-            mob.aggro_bot_id = actor.bot_id;
-            for (int round = 0; round < 4 && mob.hp > 0; ++round) {
-                (void)execute_bot_class_ability_rotation(actor, mob);
-                if (mob.hp > 0) (void)execute_bot_class_ability_rotation(observer, mob);
-            }
-            if (mob.hp != 0) return false;
-            mob.dead = true;
-            mob.in_combat = false;
-            actor.in_combat = false;
-            observer.in_combat = false;
-            ++actor.monsters_killed;
-            ++observer.monsters_killed;
-            actor.xp_earned += 4500;
-            observer.xp_earned += 4500;
-            actor.mana = actor.max_mana;
-            observer.mana = observer.max_mana;
-            return bots::assert_partner_visible_and_updating(actor, observer);
-        });
-}
-
-inline bots::BunchWriter encode_pawn_move(float ts, double x, double y, double z) {
-    const bots::schema::ClassSchema& pawn = bots::class_named("PlayerPawn_C");
-    const bots::schema::NetField* f = pawn.field("ServerMovePacked");
-    bots::BunchWriter out;
-    if (!f) return out;
-    bots::repl::MovePacked mp;
-    mp.new_move.time_stamp = ts;
-    mp.new_move.acceleration = bots::repl::quantize_vector(10, 0.0, 0.0, 0.0);
-    mp.new_move.location = bots::repl::quantize_vector(100, x, y, z);
-    mp.new_move.movement_mode = bots::repl::kMoveWalking;
-    bots::BunchWriter params, field;
-    if (!bots::repl::write_move_packed(params, mp) || bots::repl::write_field(pawn, f->index, params, field) == 0) return out;
-    bots::repl::write_content_block(out, bots::repl::BlockHeader{}, field, false);
-    return out;
-}
+using bots::encode_pawn_move;
 
 inline void attach_service_auth(grpc::ClientContext& ctx) {
     const char* env_tok = std::getenv("AOC_SERVICE_TOKEN");
@@ -110,41 +48,47 @@ inline bool discover_live_goblin(bots::LiveSession& s) {
         std::fprintf(stderr, "[FAIL] Stage 5: WorldStream Search('Goblin') returned 0 results\n");
         return false;
     }
+    s.catalog.monsters.clear();
     double best_dist = 1e18;
     for (const auto& r : sr_resp.results()) {
         if (r.entity().kind() != aoc::worldadmin::v1::ENTITY_KIND_NPC ||
             (r.entity().state() & aoc::worldadmin::v1::ENTITY_STATE_DEAD) != 0) continue;
-        const double d = std::hypot(r.entity().x_cm() - s.spawn[0], r.entity().y_cm() - s.spawn[1]);
+        const bots::Vec3Cm pos{static_cast<double>(r.entity().x_cm()),
+                               static_cast<double>(r.entity().y_cm()),
+                               static_cast<double>(r.entity().z_cm())};
+        if (s.catalog.monsters.size() < 8) {
+            s.catalog.monsters.push_back(
+                {r.entity().id(), r.name(), "Goblin", 50, 22000, 22000, pos, "aoc-world-riverlands", false, false, 0});
+        }
+        const double d = std::hypot(pos.x - s.spawn[0], pos.y - s.spawn[1]);
         if (d < best_dist) {
             best_dist = d;
             s.goblin_id = r.entity().id();
             s.goblin_name = r.name();
-            s.goblin_pos = {static_cast<double>(r.entity().x_cm()), static_cast<double>(r.entity().y_cm()),
-                            static_cast<double>(r.entity().z_cm())};
+            s.goblin_pos = {pos.x, pos.y, pos.z};
         }
     }
-    return s.goblin_id != 0;
+    return s.goblin_id != 0 && !s.catalog.monsters.empty();
 }
 
 inline bool teleport_to_goblin(bots::LiveSession& s) {
     auto stub = aoc::worldadmin::v1::WorldAdminService::NewStub(
         grpc::CreateChannel("127.0.0.1:50061", grpc::InsecureChannelCredentials()));
     const std::string want_id = bots::strip_hyphens_lower(s.cfg.char_id);
-    std::string char_name;
     grpc::ClientContext lp_ctx;
     attach_service_auth(lp_ctx);
     aoc::worldadmin::v1::ListPlayersResponse lp_resp;
     if (!stub->ListPlayers(&lp_ctx, {}, &lp_resp).ok() || lp_resp.players().empty()) return false;
     for (const auto& p : lp_resp.players()) {
-        if (bots::strip_hyphens_lower(p.character_id()) == want_id) char_name = p.name();
+        if (bots::strip_hyphens_lower(p.character_id()) == want_id) s.char_name = p.name();
     }
-    if (char_name.empty()) char_name = lp_resp.players(0).name();
+    if (s.char_name.empty()) s.char_name = lp_resp.players(0).name();
     auto gm_call = [&](const char* cmd, uint32_t lvl) {
         grpc::ClientContext ctx;
         attach_service_auth(ctx);
         aoc::worldadmin::v1::SpawnNpcRequest req;
         req.set_npc(cmd);
-        req.set_place(char_name);
+        req.set_place(s.char_name);
         req.set_level(lvl);
         aoc::worldadmin::v1::SpawnNpcResponse resp;
         (void)stub->SpawnNpc(&ctx, req, &resp);
@@ -155,7 +99,7 @@ inline bool teleport_to_goblin(bots::LiveSession& s) {
         grpc::ClientContext tp_ctx;
         attach_service_auth(tp_ctx);
         aoc::worldadmin::v1::TeleportRequest req;
-        req.set_character(char_name);
+        req.set_character(s.char_name);
         auto* pt = req.mutable_point();
         pt->set_x(s.goblin_pos[0] + 100.0);
         pt->set_y(s.goblin_pos[1]);
@@ -169,6 +113,7 @@ inline bool teleport_to_goblin(bots::LiveSession& s) {
 }
 
 inline bool run_stage5_movement(bots::LiveSession& s) {
+    if (!load_dynamic_world_catalog(s)) return false;
     for (int step = 1; step <= 3; ++step) {
         s.move_ts += 0.2f;
         const bots::BunchWriter mv = encode_pawn_move(s.move_ts, s.spawn[0] + step * 40.0, s.spawn[1], s.spawn[2]);
@@ -212,6 +157,42 @@ inline bool inspect_goblin_combat(const bots::LiveSession& s) {
 inline bool run_stage8_combat_abilities(bots::LiveSession& s) {
     dispatch_live_stage8_ability_rpcs(s);
     return inspect_goblin_combat(s);
+}
+
+inline bool run_plan_combat(bots::LiveSession& s, std::vector<bots::PlayerBot>& roster) {
+    if (roster.size() < 16 || s.catalog.monsters.empty()) return false;
+    size_t seq = 0;
+    const bool ok = bots::run_all_64_archetype_combinations_all_envs(
+        s, roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
+            auto mob = s.catalog.monsters[seq++ % s.catalog.monsters.size()];
+            mob.pos_cm = {actor.pos_cm.x + 250.0, actor.pos_cm.y, actor.pos_cm.z};
+            mob.worker_id = actor.worker_id;
+            bots::step_bot_along_navmesh(s, actor, mob.pos_cm, 2);
+            actor.in_combat = true;
+            observer.in_combat = true;
+            actor.locked_target_id = mob.monster_id;
+            observer.locked_target_id = mob.monster_id;
+            mob.in_combat = true;
+            mob.aggro_bot_id = actor.bot_id;
+            for (int round = 0; round < 4 && mob.hp > 0; ++round) {
+                (void)execute_bot_class_ability_rotation(s, actor, mob);
+                if (mob.hp > 0) (void)execute_bot_class_ability_rotation(s, observer, mob);
+            }
+            if (mob.hp != 0) return false;
+            mob.dead = true;
+            mob.in_combat = false;
+            actor.in_combat = false;
+            observer.in_combat = false;
+            ++actor.monsters_killed;
+            ++observer.monsters_killed;
+            actor.xp_earned += 4500;
+            observer.xp_earned += 4500;
+            actor.mana = actor.max_mana;
+            observer.mana = observer.max_mana;
+            return bots::assert_partner_visible_and_updating(s, actor, observer);
+        });
+    pump_udp(s, 30);
+    return ok && inspect_goblin_combat(s);
 }
 
 }  // namespace aoc::world::tests::plans

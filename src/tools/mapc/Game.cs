@@ -16,7 +16,7 @@ namespace Mapc;
 public sealed class Game
 {
     public static readonly string DefaultPaks = Path.Combine(Environment.GetEnvironmentVariable("GAME_ROOT") ?? @"C:\Ashes of Creation\Game", "AOC", "Content", "Paks");   // $GAME_ROOT\AOC\Content\Paks
-    public static readonly string DefaultUsmap = ResolveDefaultUsmap();   // $HOME/.aoc/usmap/* if present, else dist/content/aoc.usmap
+    public static readonly string DefaultUsmap = ResolveDefaultUsmap();   // $HOME/.aoc/aoc.usmap if present, else dist/content/aoc.usmap
     public const string MasterPath = "AOC/Content/Levels/Verra_World_Master/Verra_World_Master";
 
     private static string ResolveDefaultUsmap()
@@ -24,19 +24,21 @@ public sealed class Game
         try
         {
             string? homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            string? aocHomeOverride = !string.IsNullOrWhiteSpace(homeDir) ? Path.Combine(homeDir, ".aoc", "usmap") : null;
+            string? userUsmap = !string.IsNullOrWhiteSpace(homeDir) ? Path.Combine(homeDir, ".aoc", "aoc.usmap") : null;
             foreach (string? candidate in new[]
             {
                 Environment.GetEnvironmentVariable("SANDAL_USMAP_PATH"),
                 Environment.GetEnvironmentVariable("AOC_USMAP"),
                 Environment.GetEnvironmentVariable("SANDAL_USMAP_OVERRIDE_DIR"),
                 Environment.GetEnvironmentVariable("AOC_USMAP_OVERRIDE_DIR"),
-                aocHomeOverride
+                userUsmap
             })
             {
                 if (TryResolveUsmapCandidate(candidate, out string resolved))
                     return resolved;
             }
+            if (!string.IsNullOrWhiteSpace(userUsmap) && File.Exists(userUsmap) && new FileInfo(userUsmap).Length > 0)
+                return userUsmap;
             string distUsmap = Path.Combine("dist", "content", "aoc.usmap");
             if (File.Exists(distUsmap) && new FileInfo(distUsmap).Length > 0)
                 return distUsmap;

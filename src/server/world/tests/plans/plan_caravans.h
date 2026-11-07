@@ -25,18 +25,22 @@ struct CaravanConvoyEntity {
     bool delivered = false;
 };
 
-inline bool execute_caravan_corridor_and_border_handover(bots::PlayerBot& bot) {
+inline bool execute_caravan_corridor_and_border_handover(bots::LiveSession& s, bots::PlayerBot& bot) {
+    if (s.catalog.ember_springs.empty() || s.catalog.monsters.empty()) return false;
+    const auto& origin_spring = s.catalog.ember_springs[0];
+    const auto& dest_spring = s.catalog.ember_springs[s.catalog.ember_springs.size() > 1 ? 1 : 0];
     bot.worker_id = "aoc-verra-rvr-node-winstead";
     bot.zone_key = "verra_rvr_node_winstead";
-    bot.pos_cm = bots::kEmberSprings[2].location_cm;
+    bot.pos_cm = origin_spring.location_cm;
 
+    const uint64_t caravan_guid = static_cast<uint64_t>(s.catalog.ground_mount_item_guid) + bot.bot_id;
     CaravanConvoyEntity caravan{
-        606463800000000000ULL + bot.bot_id, bot.bot_id, "Winstead", "Miraleth",
+        caravan_guid, bot.bot_id, "Winstead", "Miraleth",
         65000, 65000, 12, 1800, bot.pos_cm, bot.worker_id, bot.authority_epoch, true, false
     };
 
-    const bots::Vec3Cm border_waypoint{-615400.0, 360000.0, bots::kDefaultGroundTerrainZCm};
-    bots::step_bot_along_navmesh(bot, border_waypoint, 4);
+    const bots::Vec3Cm border_waypoint{bots::border_x_cm(s) + 1200.0, s.spawn[1] + 600.0, bots::ground_z_cm(s)};
+    bots::step_bot_along_navmesh(s, bot, border_waypoint, 1);
     caravan.pos_cm = bot.pos_cm;
     bot.dwell_ticks_across_border = bots::kBorderMinDwellTicks;
     bot.worker_id = "aoc-verra-rvr-node-miraleth";
@@ -46,17 +50,19 @@ inline bool execute_caravan_corridor_and_border_handover(bots::PlayerBot& bot) {
     caravan.worker_id = bot.worker_id;
     caravan.authority_epoch = bot.authority_epoch;
 
-    bots::MonsterTarget highway_raider{
-        95000ULL + bot.bot_id, "Highway Caravan Raider", "Bandit", 50, 22000, 22000,
-        {caravan.pos_cm.x + 220.0, caravan.pos_cm.y, caravan.pos_cm.z}, caravan.worker_id, true, false, bot.bot_id
-    };
+    bots::MonsterTarget highway_raider = s.catalog.monsters[bot.bot_id % s.catalog.monsters.size()];
+    highway_raider.hp = 22000;
+    highway_raider.max_hp = 22000;
+    highway_raider.dead = false;
+    highway_raider.pos_cm = {caravan.pos_cm.x + 220.0, caravan.pos_cm.y, caravan.pos_cm.z};
+    highway_raider.worker_id = caravan.worker_id;
     caravan.hp -= 3500;
-    const int32_t dealt = execute_bot_class_ability_rotation(bot, highway_raider);
+    const int32_t dealt = execute_bot_class_ability_rotation(s, bot, highway_raider);
     highway_raider.hp = 0;
     highway_raider.dead = true;
     if (dealt <= 0 || caravan.hp <= 0 || caravan.cargo_commodity_crates != 12) return false;
 
-    bots::step_bot_along_navmesh(bot, bots::kEmberSprings[3].location_cm, 4);
+    bots::step_bot_along_navmesh(s, bot, dest_spring.location_cm, 1);
     caravan.pos_cm = bot.pos_cm;
     caravan.in_transit = false;
     caravan.delivered = true;
@@ -66,16 +72,18 @@ inline bool execute_caravan_corridor_and_border_handover(bots::PlayerBot& bot) {
            bot.copper_balance == copper_before + 3600;
 }
 
-inline bool run_plan_caravans(std::vector<bots::PlayerBot>& roster) {
+inline bool run_plan_caravans(bots::LiveSession& s, std::vector<bots::PlayerBot>& roster) {
     if (roster.size() < 16) return false;
-    return bots::run_all_64_archetype_combinations_all_envs(
-        roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
-            if (!execute_caravan_corridor_and_border_handover(actor)) return false;
+    const bool ok = bots::run_all_64_archetype_combinations_all_envs(
+        s, roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
+            if (!execute_caravan_corridor_and_border_handover(s, actor)) return false;
             observer.pos_cm = {actor.pos_cm.x + 150.0, actor.pos_cm.y, actor.pos_cm.z};
             observer.worker_id = actor.worker_id;
             observer.zone_key = actor.zone_key;
-            return bots::assert_partner_visible_and_updating(actor, observer);
+            return bots::assert_partner_visible_and_updating(s, actor, observer);
         });
+    pump_udp(s, 25);
+    return ok;
 }
 
 }  // namespace aoc::world::tests::plans

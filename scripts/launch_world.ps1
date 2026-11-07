@@ -20,8 +20,6 @@ function Resolve-WorldExecutable {
     foreach ($exeName in $exeNames) {
         $candidates.Add((Join-Path $RepoRoot 'dist' 'server' 'world' $exeName))
         $candidates.Add((Join-Path $RepoRoot 'dist' 'Release' $exeName))
-        $candidates.Add((Join-Path $RepoRoot 'build' 'x64' 'src' 'server' 'world' 'Release' $exeName))
-        $candidates.Add((Join-Path $RepoRoot 'build' 'x64' 'src' 'server' 'world' $exeName))
         $candidates.Add((Join-Path $RepoRoot 'build' 'linux' 'src' 'server' 'world' $exeName))
     }
     foreach ($candidate in $candidates) {
@@ -29,7 +27,7 @@ function Resolve-WorldExecutable {
             return (Resolve-Path -LiteralPath $candidate).Path
         }
     }
-    throw "world executable ('$($exeNames[0])') not found under dist/server/world or build/x64/src/server/world. Run .\scripts\build.ps1 -Target world first."
+    throw "world executable ('$($exeNames[0])') not found under dist/server/world or build/linux/src/server/world. Run .\build.bat first."
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path

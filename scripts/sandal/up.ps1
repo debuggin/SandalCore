@@ -237,8 +237,8 @@ function Remove-SandalLegacyOrUntaggedContainers {
 
 function Remove-SandalStaleTestAccounts {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
-    $sql = "DELETE FROM accounts WHERE lower(username) LIKE 'tmp\_%' ESCAPE '\' OR lower(username) LIKE 'temp\_%' ESCAPE '\' OR lower(username) LIKE 'e2e\_%' ESCAPE '\' OR lower(username) = 'ephem_hero';"
-    try { $null | & docker exec -i aoc-postgres psql -U aoc -d aoc -tAc $sql *> $null } catch { }
+    $cmd = 'psql -U "${POSTGRES_USER:-aoc}" -d "${POSTGRES_DB:-aoc}" -tAc "DELETE FROM characters WHERE lower(name) LIKE ''tst\_%'' ESCAPE ''\'' OR lower(name) LIKE ''tmp\_%'' ESCAPE ''\'' OR lower(name) LIKE ''temp\_%'' ESCAPE ''\'' OR lower(name) LIKE ''e2e\_%'' ESCAPE ''\'' OR name ~ ''^TST[A-Z][a-z]+[A-Z][a-z]+$''; DELETE FROM accounts WHERE lower(username) LIKE ''tmp\_%'' ESCAPE ''\'' OR lower(username) LIKE ''tst\_%'' ESCAPE ''\'' OR lower(username) LIKE ''temp\_%'' ESCAPE ''\'' OR lower(username) LIKE ''e2e\_%'' ESCAPE ''\'' OR lower(username) = ''ephem_hero'';"'
+    try { $null | & docker exec -i aoc-postgres sh -c $cmd *> $null } catch { }
     $global:LASTEXITCODE = 0
 }
 

@@ -15,11 +15,12 @@
 namespace aoc::worldd::spawns {
 
 inline constexpr double kDefaultAoiBorderHaloCm = 35000.0;
+inline constexpr double kAreaEpsilonCm = 1.0e-2;
 
 struct Box {
     double min_x = 0.0, min_y = 0.0, max_x = 0.0, max_y = 0.0;
     [[nodiscard]] bool contains(double x, double y) const noexcept {
-        return x >= min_x && x <= max_x && y >= min_y && y <= max_y;
+        return x >= min_x - kAreaEpsilonCm && x <= max_x + kAreaEpsilonCm && y >= min_y - kAreaEpsilonCm && y <= max_y + kAreaEpsilonCm;
     }
 };
 
@@ -30,7 +31,7 @@ struct NodePlugObb {
         const double dx = x_cm - cx_cm, dy = y_cm - cy_cm;
         const double rad = -yaw_deg * (3.14159265358979323846 / 180.0);
         const double c = std::cos(rad), s = std::sin(rad);
-        return std::abs(dx * c - dy * s) <= half_extent_cm && std::abs(dx * s + dy * c) <= half_extent_cm;
+        return std::abs(dx * c - dy * s) <= half_extent_cm + kAreaEpsilonCm && std::abs(dx * s + dy * c) <= half_extent_cm + kAreaEpsilonCm;
     }
 };
 
@@ -132,15 +133,8 @@ inline constexpr ZoiRegionEntry kZoiRegionTable[] = {
 
 [[nodiscard]] inline RegionBit resolve_point_region_bit(double x_cm, double y_cm) noexcept {
     if (!std::isfinite(x_cm) || !std::isfinite(y_cm)) return RegionBit::None;
-    const RegionBit bit = region_of_zoi_guid(world::zoi_at(x_cm, y_cm));
-    if (bit != RegionBit::None) return bit;
     if (region::Index::get().contains(x_cm, y_cm)) return RegionBit::Riverlands;
-    size_t best_idx = 0; double best_d2 = 1.0e30;
-    for (size_t i = 0; i < (sizeof(kVerraNodePlugs) / sizeof(kVerraNodePlugs[0])); ++i) {
-        const double dx = x_cm - kVerraNodePlugs[i].cx_cm, dy = y_cm - kVerraNodePlugs[i].cy_cm;
-        if (const double d2 = dx * dx + dy * dy; d2 < best_d2) { best_d2 = d2; best_idx = i; }
-    }
-    return node_plug_region_bit(best_idx);
+    return region_of_zoi_guid(world::zoi_at(x_cm, y_cm));
 }
 
 template <typename Pred>
@@ -191,7 +185,7 @@ template <typename Pred>
 }
 inline constexpr double kNodeTownFootprintRadiusCm = 16500.0;
 [[nodiscard]] inline bool point_in_any_node_town_footprint(double x_cm, double y_cm) noexcept {
-    for (const NodePlugObb& p : kVerraNodePlugs) if (std::hypot(x_cm - p.cx_cm, y_cm - p.cy_cm) <= kNodeTownFootprintRadiusCm) return true;
+    for (const NodePlugObb& p : kVerraNodePlugs) if (std::hypot(x_cm - p.cx_cm, y_cm - p.cy_cm) <= kNodeTownFootprintRadiusCm + kAreaEpsilonCm) return true;
     return false;
 }
 [[nodiscard]] inline const NodePlugObb* find_node_plug(std::string_view name_or_guid) {
@@ -228,8 +222,9 @@ inline constexpr double kNodeTownFootprintRadiusCm = 16500.0;
     for (size_t i = 0; i < n; ++i) {
         const auto [ax, ay] = poly[i];
         const auto [bx, by] = poly[(i + 1) % n];
-        const double cross = (static_cast<double>(bx) - ax) * (y_cm - ay) - (static_cast<double>(by) - ay) * (x_cm - ax);
-        if (std::abs(cross) <= 1e-3) continue;
+        const double ex = static_cast<double>(bx) - ax, ey = static_cast<double>(by) - ay;
+        const double cross = ex * (y_cm - ay) - ey * (x_cm - ax);
+        if (std::abs(cross) <= kAreaEpsilonCm * std::hypot(ex, ey)) continue;
         const int cur = cross > 0.0 ? 1 : -1;
         if (sign == 0) sign = cur;
         else if (sign != cur) return false;
@@ -520,6 +515,12 @@ struct AreaConfig {
         handover_hysteresis_cm = world::runtime_handover_hysteresis_cm();
     }
 
+    static AreaConfig& active_worker_area(const AreaConfig* set = nullptr) {
+        static AreaConfig active = continent();
+        if (set) active = *set;
+        return active;
+    }
+
     static AreaConfig resolve_worker_area(const WorkerAreaSpec& spec) {
         if (spec.area_radius_m >= 0.0) {
             AreaConfig a;
@@ -528,6 +529,7 @@ struct AreaConfig {
             a.worker_index = std::max(0, spec.worker_index);
             a.apply_boundary_env_overrides();
             a.resolve_canonical_worker_name();
+            active_worker_area(&a);
             return a;
         }
         const std::string_view region_sv = env_or(spec.area_region, "AOC_WORLD_REGION", "WORLD_REGION");
@@ -540,14 +542,9 @@ struct AreaConfig {
         const std::string_view poi_sv = env_or(spec.poi_cutout, "AOC_WORLD_POI_CUTOUT", "WORLD_POI_CUTOUT");
         const std::string_view ex_poi_sv = env_or(spec.exclude_poi_cutout, "AOC_WORLD_EXCLUDE_POI_CUTOUT", "WORLD_EXCLUDE_POI_CUTOUT");
 
-        AreaConfig a = !zoi_sv.empty() ? continent() : (!region_sv.empty() ? for_region(region_sv) : continent());
-        if (!zoi_sv.empty()) {
-            a.zoi_guids = parse_zoi_csv(zoi_sv);
-            a.region_label = "zoi";
-        } else if (region_sv.empty() && !plug_sv.empty()) {
-            a.region_mask = static_cast<uint8_t>(RegionBit::None);
-            a.region_label = "node_plug";
-        }
+        AreaConfig a = !region_sv.empty() ? for_region(region_sv) : continent();
+        if (!zoi_sv.empty()) { a.zoi_guids = parse_zoi_csv(zoi_sv); a.region_label = "zoi"; }
+        else if (region_sv.empty() && !plug_sv.empty()) { a.region_mask = static_cast<uint8_t>(RegionBit::None); a.region_label = "node_plug"; }
         if (!ex_zoi_sv.empty()) a.exclude_zoi_guids = parse_zoi_csv(ex_zoi_sv);
         if (!plug_sv.empty()) a.include_node_plugs = parse_node_plug_csv(plug_sv);
         if (!ex_plug_sv.empty()) a.exclude_node_plugs = parse_node_plug_csv(ex_plug_sv);
@@ -566,6 +563,7 @@ struct AreaConfig {
         a.zones = !spec.no_zone_filter;
         a.apply_boundary_env_overrides();
         a.resolve_canonical_worker_name();
+        active_worker_area(&a);
         return a;
     }
 
@@ -605,7 +603,7 @@ struct AreaConfig {
                               : (kind == "region" ? "AOC_WORLD_NPC_SIM_STEP_CAP_REGION" : "AOC_WORLD_NPC_SIM_STEP_CAP_WORLD")));
         for (const char* k : {scope_env, "AOC_WORLD_NPC_SIM_STEP_CAP"}) {
             if (const char* v = std::getenv(k); v && *v) {
-                if (const long p = std::strtol(v, nullptr, 10); p >= 64 && p <= 50000) return static_cast<size_t>(p);
+                if (const long p = std::strtol(v, nullptr, 10); p >= 0) return static_cast<size_t>(p);
             }
         }
         if (kind == "polygon_cutout" || kind == "node_plug") return 1500;
@@ -631,12 +629,8 @@ struct AreaConfig {
     }
 
     [[nodiscard]] bool has_carve_out(double x, double y) const {
-        for (const auto& poly : excluded_polygons_cm) {
-            if (point_in_convex_polygon_cm(x, y, poly)) return true;
-        }
-        for (const NodePlugObb& plug : exclude_node_plugs) {
-            if (plug.contains(x, y)) return true;
-        }
+        for (const auto& poly : excluded_polygons_cm) if (point_in_convex_polygon_cm(x, y, poly)) return true;
+        for (const NodePlugObb& plug : exclude_node_plugs) if (plug.contains(x, y)) return true;
         if (!exclude_zoi_guids.empty()) {
             const uint64_t g = world::zoi_at(x, y);
             if (g != 0 && std::find(exclude_zoi_guids.begin(), exclude_zoi_guids.end(), g) != exclude_zoi_guids.end()) return true;
@@ -646,15 +640,14 @@ struct AreaConfig {
 
     bool contains(double x, double y) const {
         if (has_carve_out(x, y)) return false;
-        if (polygon_cutout_cm.size() >= 3) return point_in_convex_polygon_cm(x, y, polygon_cutout_cm);
-        for (const NodePlugObb& plug : include_node_plugs) {
-            if (plug.contains(x, y)) return true;
+        if (region && region_mask != 0 && region_mask != static_cast<uint8_t>(RegionBit::All)) {
+            if ((static_cast<uint8_t>(resolve_point_region_bit(x, y)) & region_mask) == 0) return false;
         }
+        if (polygon_cutout_cm.size() >= 3) return point_in_convex_polygon_cm(x, y, polygon_cutout_cm);
+        for (const NodePlugObb& plug : include_node_plugs) if (plug.contains(x, y)) return true;
         if (active_dynamic_worker_index && !dynamic_peers.empty()) return owns_dynamic_cell(x, y);
         if (!node_boxes.empty()) {
-            for (const Box& b : node_boxes) {
-                if (b.contains(x, y)) return true;
-            }
+            for (const Box& b : node_boxes) if (b.contains(x, y)) return true;
             return false;
         }
         if (!zoi_guids.empty()) {
@@ -662,15 +655,15 @@ struct AreaConfig {
             return g != 0 && std::find(zoi_guids.begin(), zoi_guids.end(), g) != zoi_guids.end();
         }
         if (region) {
-            if (whole_world) {
-                if (region_mask == static_cast<uint8_t>(RegionBit::None)) return false;
-                const uint64_t g = world::zoi_at(x, y);
-                if ((static_cast<uint8_t>(region_of_zoi_guid(g)) & region_mask) != 0) return true;
-                return (region_mask & static_cast<uint8_t>(RegionBit::Riverlands)) != 0 && region::Index::get().contains(x, y);
+            if (region_mask == static_cast<uint8_t>(RegionBit::None)) return false;
+            if (!whole_world && region_mask == static_cast<uint8_t>(RegionBit::Riverlands)) return region::Index::get().contains(x, y);
+            if (region && region_mask != 0) {
+                if ((static_cast<uint8_t>(resolve_point_region_bit(x, y)) & region_mask) == 0) return false;
             }
-            return region::Index::get().contains(x, y);
+            if (whole_world) return true;
+            return (static_cast<uint8_t>(resolve_point_region_bit(x, y)) & region_mask) != 0;
         }
-        return std::hypot(x - center_x, y - center_y) <= radius_cm;
+        return std::hypot(x - center_x, y - center_y) <= radius_cm + kAreaEpsilonCm;
     }
 
     [[nodiscard]] float signed_border_distance_cm(double x, double y) const noexcept {
@@ -679,17 +672,13 @@ struct AreaConfig {
             return signed_border_distance_for_predicate(x, y, [this](double px, double py) noexcept { return this->contains(px, py); });
         }
         if (region) {
-            if (region_mask != 0 && region_mask != static_cast<uint8_t>(RegionBit::All)) {
-                return spawns::signed_region_border_distance_cm(x, y, static_cast<RegionBit>(region_mask));
-            }
-            return -40000.0f;
+            return (region_mask != 0 && region_mask != static_cast<uint8_t>(RegionBit::All))
+                 ? spawns::signed_region_border_distance_cm(x, y, static_cast<RegionBit>(region_mask)) : -40000.0f;
         }
         return static_cast<float>(std::hypot(x - center_x, y - center_y) - radius_cm);
     }
 
-    [[nodiscard]] float signed_region_border_distance_cm(double x, double y) const noexcept {
-        return signed_border_distance_cm(x, y);
-    }
+    [[nodiscard]] float signed_region_border_distance_cm(double x, double y) const noexcept { return signed_border_distance_cm(x, y); }
 
     [[nodiscard]] bool uses_boundary_halo_for_spawns() const noexcept {
         return whole_world || aoi_border_halo_cm != kDefaultAoiBorderHaloCm || !zoi_guids.empty() ||
@@ -698,13 +687,14 @@ struct AreaConfig {
     }
 
     [[nodiscard]] bool contains_with_halo(double x, double y, double halo_cm = -1.0) const noexcept {
+        if (has_carve_out(x, y)) return false;
         if (contains(x, y)) return true;
         const double h = (halo_cm >= 0.0) ? halo_cm : aoi_border_halo_cm;
         if (h <= 0.0 || !std::isfinite(x) || !std::isfinite(y)) return false;
         if (!region && polygon_cutout_cm.size() < 3 && include_node_plugs.empty() && zoi_guids.empty()) {
-            return std::hypot(x - center_x, y - center_y) <= (radius_cm + h);
+            return std::hypot(x - center_x, y - center_y) <= (radius_cm + h + kAreaEpsilonCm);
         }
-        return static_cast<double>(signed_border_distance_cm(x, y)) <= h;
+        return static_cast<double>(signed_border_distance_cm(x, y)) <= (h + kAreaEpsilonCm);
     }
 
     [[nodiscard]] world::AuthorityState evaluate_handover(
@@ -713,11 +703,21 @@ struct AreaConfig {
         return world::evaluate_border_handover(signed_border_distance_cm(x, y), current_state, hysteresis_cm);
     }
     uint64_t zoi_at(double x, double y) const {
-        if (!region || !zones) return 0;
-        if (whole_world) { const uint64_t g = world::zoi_at(x, y); return g != 0 ? g : region::Index::get().zoi_guid(x, y); }
+        if (!zones || (!region && include_node_plugs.empty() && polygon_cutout_cm.size() < 3 && zoi_guids.empty())) return 0;
+        if (whole_world || (region_mask & ~static_cast<uint8_t>(RegionBit::Riverlands)) != 0 || !zoi_guids.empty() || !include_node_plugs.empty() || polygon_cutout_cm.size() >= 3) {
+            const uint64_t g = world::zoi_at(x, y);
+            return g != 0 ? g : region::Index::get().zoi_guid(x, y);
+        }
         return region::Index::get().zoi_guid(x, y);
     }
-    const char* zoi_name_at(double x, double y) const { return region && zones ? region::Index::get().zoi_name(x, y) : nullptr; }
+    const char* zoi_name_at(double x, double y) const {
+        if (!zones || (!region && include_node_plugs.empty() && polygon_cutout_cm.size() < 3 && zoi_guids.empty())) return nullptr;
+        if (const char* idx_zoi = region::Index::get().zoi_name(x, y); idx_zoi && *idx_zoi) return idx_zoi;
+        if (const uint64_t g = world::zoi_at(x, y); g != 0) {
+            for (const ZoiRegionEntry& row : kZoiRegionTable) if (row.guid == g) return row.name.data();
+        }
+        return nullptr;
+    }
 };
 
 enum class PartitionTopologyMode : uint8_t {

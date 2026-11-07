@@ -1,149 +1,44 @@
-# SandalCore Web Admin & GM Studio Frontend (`src/clients/web-admin`)
+# Web Admin Frontend
 
-**Primary Diataxis Quadrant**: `Technical Reference` & `Explanation` (`DOC-01`)
-**Related Guides**: [Web Admin & GM Studio Operational Guide](../../../docs/WEB_ADMIN.md) | [UI Style Guide & Design System](../../../docs/UI_STYLE_GUIDE.md) | [Control-Plane Services Reference](../../../docs/SERVICES.md) | [Server Workers & Spatial Authority](../../../docs/SERVER_WORKERS.md) | [Configuration Reference](../../../docs/CONFIGURATION.md) | [`cmd/web-admin` Asset Server Reference](../../server/services/cmd/web-admin/README.md) | [`cmd/admin-gateway` API Reference](../../server/services/cmd/admin-gateway/README.md)
+**Related Guides**: [Root Overview](../../../README.md) | [Web Admin Guide](../../../docs/WEB_ADMIN.md) | [Web Admin Architecture](../../../docs/WEB_ADMIN_ARCHITECTURE.md) | [UI Style Guide](../../../docs/UI_STYLE_GUIDE.md) | [Web Admin Container](../../server/services/cmd/web-admin/README.md)
 
-`src/clients/web-admin` is the React 19, TypeScript 5, Vite, Deck.gl, and MapLibre GL single-page application (SPA) that powers the SandalCore **Web Admin & GM Studio** (`https://localhost:8443/admin/` via `aoc-ingress-proxy` or `http://localhost:8090` via `aoc-web-admin`). It provides operators and Game Masters with a GPU-accelerated `60 FPS` orthographic map of Verra (`verra.pmtiles`), real-time viewport-bounded entity streaming at a constant **`30 Hz` (`33 ms` interval)** across all zoom levels (`z0..z7+`), strictly mutually exclusive map selection, searchable `Teleport Player Here...` and `Spawn NPC / Monster Here...` modals, live CityNode (`Stage 0..6`) governance, audited SQL hotfix execution, and a zero-redundancy 4-zone SRE observability explorer.
-
----
-
-## 1. Frontend Architecture & Component Hierarchy
-
-The diagram below illustrates how the React 19 UI components, reactive state stores, WebGL2 rendering layers, and backend `aoc-gateway` / `aoc-web-admin` endpoints interact at runtime:
-
-```mermaid
-flowchart TB
-    subgraph BrowserSPA["React 19 + TypeScript 5 Web Admin SPA (src/clients/web-admin)"]
-        Main["src/main.tsx - App Shell, Boot-ID JWT Guard & Mutually Exclusive SelectionState"]
-        AuthModal["Admin Login Modal - Startup Passphrase -> Scoped HS256 JWT Exchange"]
-        StreamStore["src/state/worldStreamStore.ts - Viewport AABB & Constant 30 Hz (33 ms) Polling Store (z0..z7+)"]
-
-        subgraph MapWorkspace["Interactive Verra Map & GM Studio Workspace"]
-            MapCanvas["src/map/VerraMapCanvas.tsx - MapLibre GL + Deck.gl Orthographic WebGL2 Canvas"]
-            TilePyramid["src/map/verraTilePyramidRenderer.ts - World-cm <-> Web Mercator Projection & PMTiles Z/X/Y"]
-            ZoiPolys["src/map/verraZoiPolygons.ts - 27 Tile-Clipped Inward-Stroked ZOI Polygons & 1 km OBB Plugs"]
-            Inspector["Right-Hand Context Inspector (Entity | Map Position | CityNode | POI)"]
-            GmModals["src/components/NodeGovernanceAndSpawnModals.tsx - Searchable Teleport Player & Spawn NPC Modals + Stage 0..6 Controls"]
-        end
-
-        subgraph ObservabilityAndData["Observability, Catalog & Database Workspaces"]
-            LogsTab["src/components/LogsAndContainersTab.tsx - 4-Zone Golden Signals, Worker Shards, USE/RED Matrix & Logs"]
-            DbTab["src/components/DatabaseAndEventsTabs.tsx - Audited SQL Hotfix Console & .tsv / v41 Catalog Browser"]
-        end
-    end
-
-    subgraph BackendEdge["SandalCore Backend Containers"]
-        WebAdminSrv["aoc-web-admin (:8090) - Static Bundle & HTTP 206 verra.pmtiles Byte-Range Server"]
-        AdminGw["aoc-gateway (:8080) - admin-gateway + admin-catalog + 30 Hz world-stream"]
-    end
-
-    Main --> AuthModal
-    Main --> StreamStore
-    Main --> MapCanvas
-    Main --> Inspector
-    Main --> LogsTab
-    Main --> DbTab
-    MapCanvas --> TilePyramid
-    MapCanvas --> ZoiPolys
-    Inspector --> GmModals
-    TilePyramid -->|"HTTP Range (206) /tiles/verra.pmtiles"| WebAdminSrv
-    AuthModal -->|"POST /api/v1/admin/auth/login"| AdminGw
-    StreamStore -->|"GET /api/v1/admin/world/entities?minX..maxY&zoom"| AdminGw
-    GmModals -->|"POST /api/v1/admin/gm/{npc/*,player/teleport,node-stage}"| AdminGw
-    LogsTab -->|"GET /api/v1/admin/{metrics,containers,logs,audit}"| AdminGw
-    DbTab -->|"GET /api/v1/admin/catalog/* & POST /sql-hotfix"| AdminGw
-```
+`src/clients/web-admin` is the browser frontend for the SandalCore **Web Admin and GM Studio**, served by `aoc-web-admin` (`:8090`) and `aoc-ingress-proxy` (`https://localhost:8443/admin/`).
 
 ---
 
-## 2. Source File Inventory & Module Responsibilities
+## Key Capabilities
 
-| File Path | Primary Exports / Symbols | Responsibility |
-|:---|:---|:---|
-| [`src/main.tsx`](src/main.tsx) | `App`, `ADMIN_TABS`, `WebAdminErrorBoundary` | Top-level application shell, navigation tabs (`Map` and **`Observability`**), `boot_id`-aware `HS256` JWT session management with default username **`Admin`** and **`END SESSION`** button (`AdminAuthSessionBadge`), and the strictly mutually exclusive 4-mode map selection state machine. |
-| [`src/map/VerraMapCanvas.tsx`](src/map/VerraMapCanvas.tsx) | `VerraMapCanvas` | Hosts the synchronized MapLibre GL (`verra.pmtiles` raster basemap) and Deck.gl overlay layers (`PolygonLayer` for 27 ZOIs and `1 km x 1 km` Node Plugs, `ScatterplotLayer` / `IconLayer` / `TextLayer` for 85 CityNodes, POIs, online players, and live NPCs), plus the `Visible Server Workers` panel with per-worker tick-rate selector (`Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)`, and manual `10, 15, 20, 25, 30, 40, 50, 60 Hz`). |
-| [`src/map/VerraCalendarPopover.tsx`](src/map/VerraCalendarPopover.tsx) | `useLiveVerraClockAndCalendar`, `VerraCalendarDateModifierSection` | Renders and synchronizes the authoritative `9x` Verra Time of Day and **360-day Verra Calendar** (`Year >= 1 AE`, 4 seasons x 3 months x 30 days) backed by PostgreSQL `world_simulation_state` in `mesh-gateway`. |
-| [`src/map/verraTilePyramidRenderer.ts`](src/map/verraTilePyramidRenderer.ts) | `worldCmToLngLat`, `lngLatToWorldCm`, `getStreamHzForZoom` | Bijective coordinate transformation between Unreal Engine world centimeters (`[-1,433,600 .. +716,800]` cm X, `[-1,331,200 .. +819,200]` cm Y) and normalized Web Mercator coordinates across zoom levels `z0..z7`. |
-| [`src/map/verraZoiPolygons.ts`](src/map/verraZoiPolygons.ts) | `VERRA_ZOI_POLYGONS`, `clipPolygonToPlayableBounds`, `computeInwardOffsetPolygon` | Defines all 27 authentic in-game Zone of Influence Voronoi territories (22 settlement nodes + 5 Divine Gates), clips exterior edges to the playable tile footprint, and computes inward-offset border rings so adjacent ZOIs display distinct interior territory colors. |
-| [`src/state/worldStreamStore.ts`](src/state/worldStreamStore.ts) | `useWorldStreamStore`, `WORKER_TICK_HZ_OPTIONS`, `computeVerraCalendar` | Manages viewport bounding-box (`minX, minY, maxX, maxY`) synchronization, constant `30 Hz` (`33 ms`) polling across all zoom levels (`z0..z7+`), authoritative `9x` Verra server clock + 360-day calendar tracking, per-worker tick-rate options (`Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)`, `10..60 Hz`), entity state maps, and optimistic UI updates after GM mutations. |
-| [`src/components/NodeGovernanceAndSpawnModals.tsx`](src/components/NodeGovernanceAndSpawnModals.tsx) | `TeleportPlayerModal`, `SpawnNpcModal`, `NodeStagePanel`, `EntityGmActions` | Implements the searchable **`Teleport Player Here...`** modal, the searchable **`Spawn NPC / Monster Here...`** modal (backed by `4,200+` catalog NPCs), CityNode `Stage 0..6` governance buttons (persisted in PostgreSQL `city_node_state` with Tier 5/6 fallback to the last defined populated layout), and full NPC lifecycle controls (`Kill`, `Despawn`, `Heal`, `Reset`, `Respawn`, `Move`). |
-| [`src/components/LogsAndContainersTab.tsx`](src/components/LogsAndContainersTab.tsx) | `LogsAndContainersTab` | Renders the **`Observability`** workspace's zero-redundancy **4-ZoneObservability & Structured Logs Explorer** (`Golden Signals`, `Dynamic Server Worker Shards`, `USE/RED Container Matrix`, and `Structured Logs & GM Audit Trail`). |
-| [`src/components/DatabaseAndEventsTabs.tsx`](src/components/DatabaseAndEventsTabs.tsx) | `DatabaseAndEventsTabs` | Provides the read/write audited SQL Hotfix console (`gm:sql_hotfix` scope) and the paginated `.tsv` / `content.db` (`v41`) catalog explorer (`NPCS`, `ITEMS`, `CITY_NODES`, `POIS`, `ZOIS`). |
-| [`e2e/gm_studio.spec.ts`](e2e/gm_studio.spec.ts) | Playwright E2E Suite | End-to-end headless Chromium verification covering passphrase login (`Username: Admin`, `END SESSION`), `boot_id` mismatch recovery, constant `30 Hz` streaming, mutually exclusive map clicks, GM modals, and the 4-zone **Observability** tab. |
+- **Single-Boot Passphrase Sign-In**: Displays the **Admin Login Modal** (`Username: Admin`) when unauthenticated or when `AOC_ADMIN_BOOT_ID` changes after a server restart, exchanging the startup passphrase for a scoped `HS256` JWT, with an **`END SESSION`** button in the top bar.
+- **Constant `30 Hz` (`33 ms`) Map Streaming**: Polls `/api/v1/world/state` every `33 ms` across all zoom levels (`z0..z7+`) with viewport bounding-box culling (`minX`, `minY`, `maxX`, `maxY`) and switches to `z=7` minimap tiles at `zoom >= 3.0`.
+- **Mutually Exclusive Map Selection**: Clicking a map item opens one card at a time in the top-right inspector slot (`width: 360px`) for an **Entity** (Player, NPC, Monster, Mount, or Resource Node with `Resource Type` and `Quality / Rarity`), **City Node** (`Stage 0..6`, XP, mayor, and tax controls), **POI**, or **Picked Coordinate**.
+- **Searchable Teleport and Spawn Modals**: Provides instant search modals for teleporting characters (`Teleport Player Here...`) and spawning NPCs or monsters from `npcs.tsv` (`Spawn NPC / Monster Here...`).
+- **World Clock, 4-Season Verra Calendar, and Worker Controls**: Includes the top-bar `Time HH:MM:SS` popover (`VerraCalendarPopover`) for the `9x` clock and 360-day Verra Calendar (`Spring`, `Summer`, `Autumn`, `Winter`), plus the fixed-size `Visible Server Workers` panel (`450px x 208px`) with per-worker tick-rate selectors (`Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)`, and `10..60 Hz`).
+- **`Observability` Workspace**: Displays the SRE Four Golden Signals, per-worker population tables, `<Service Name> (<Protocol>)` connection health cards, and live container logs with `Auto Tail` and `Auto Follow` toggles.
 
 ---
 
-## 3. Core Engineering Contracts
+## Source Layout
 
-### 1. Startup Passphrase -> Scoped `HS256` JWT, Default `Admin` Username, `END SESSION` & `boot_id` Invalidation
-
-When the server stack boots via `start.bat` or `.\sandal.ps1 up`, `Ensure-SandalAdminPassphrase` (`scripts/lib/Env.psm1`) generates a fresh single-boot passphrase (`AOC_ADMIN_PASSPHRASE`), a random 256-bit HMAC secret (`AOC_ADMIN_JWT_SECRET`), and a unique boot UUID (`AOC_ADMIN_BOOT_ID`), printing `Username: Admin` (`DEFAULT_ADMIN_USERNAME = "Admin"`) and `Passphrase: <passphrase>` to the console banner. Authenticated sessions display the top-bar **`END SESSION`** button (`END_SESSION_BUTTON_LABEL = "END SESSION"`).
-
-```mermaid
-stateDiagram-v2
-    [*] --> ProbeStatus: "SPA Mounts (GET /api/v1/admin/auth/status)"
-    ProbeStatus --> TokenValid: "Saved JWT exists & token.boot_id == server.boot_id"
-    ProbeStatus --> LoginModal: "No JWT or token.boot_id != server.boot_id"
-    TokenValid --> AuthenticatedWorkspace: "Attach Authorization: Bearer <jwt>"
-    AuthenticatedWorkspace --> LoginModal: "Server Restarted (401/403 or boot_id mismatch)"
-    LoginModal --> AuthenticatedWorkspace: "POST /api/v1/admin/auth/login -> 200 OK (Store JWT + boot_id + scopes)"
-```
-
-- **Scoped Claims**: The issued `HS256` JWT grants fine-grained scopes (`admin:read`, `admin:write`, `gm:commands`, `gm:spawn`, `gm:teleport`, `gm:node_governance`, `gm:sql_hotfix`, `metrics:read`, `containers:manage`).
-- **Zero Stale Session Bleed Across Restarts**: Because `AOC_ADMIN_BOOT_ID` rotates on every stack restart, any previously cached JWT in the operator's browser is immediately detected as stale and replaced by the **Admin Login Modal**.
-
-### 2. Viewport-Bounded Entity Streaming, Constant `30 Hz` (`33 ms`) Polling, Per-Worker `0 Hz` NPC Pause & PostgreSQL Verra Calendar SSoT
-
-`useWorldStreamStore` (`src/state/worldStreamStore.ts`) couples camera viewport bounds (`minX`, `minY`, `maxX`, `maxY` in world cm) with a constant **`30 Hz` (`33 ms` interval)** polling schedule across all zoom tiers (`z0..z7+`), while authoritative C++23 server workers step at `30 Hz` (`world`), `45 Hz` (`region`), `60 Hz` (`zoi`), and `100 Hz` (`node_plug` & `poi`) with a Little's Law `<= 1.0 s` (`>= 1 Hz`) entity backlog floor:
-
-- **Per-Worker Tick-Rate Selector (`WORKER_TICK_HZ_OPTIONS`)**: Each worker row in `Visible Server Workers` exposes `Dynamic (30-60 Hz)` (`-1`), **`0 Hz (Pause NPCs)`** (`0`, pausing NPC simulation on just that worker), and manual `10, 15, 20, 25, 30, 40, 50, 60 Hz`.
-- **PostgreSQL (`world_simulation_state` + `city_node_state`) Control-Plane SSoT**: `mesh-gateway` persists the continuous `9x` Time of Day + **360-day Verra Calendar** (`Year >= 1 AE`, 4 seasons x 3 months x 30 days) in `world_simulation_state` and settlement progression (`Stage 0..6`, with Tier 5/6 population fallback to the last defined populated layout) in `city_node_state`.
-
-| Zoom Tier | Web Admin Poll Rate | Poll Interval | Typical Viewport Coverage & Worker Scope Tick Rate |
-|:---:|:---:|:---:|:---|
-| `z0..z1` | **`30 Hz` (constant)** | `33.3 ms` | Full continent (`21.5 km x 21.5 km`) & multi-region quadrant (`world: 30 Hz`) |
-| `z2..z3` | **`30 Hz` (constant)** | `33.3 ms` | Single biome region (`aoc-riverlands`, `aoc-sandsquall` at `region: 45 Hz`) & multi-ZOI cluster (`z=7` crisp tiles at `zoom >= 3.0`) |
-| `z4..z5` | **`30 Hz` (constant)** | `33.3 ms` | Single Zone of Influence (`aoc-<zoi-name>` at `zoi: 60 Hz`) & settlement perimeter |
-| `z6..z7+` | **`30 Hz` (constant)** | `33.3 ms` | Rotated `1 km x 1 km` CityNode OBB plug (`aoc-<city-name>`) & POI cutouts (`node_plug` / `poi: 100 Hz`) |
-
-### 3. Tile-Clipped Inward ZOI Borders (`27` Settlement & Divine Gate ZOIs)
-
-`src/map/verraZoiPolygons.ts` renders the 27 Voronoi Zones of Influence extracted from `zoi_polygons.tsv`:
-
-- **Playable Footprint Clipping**: Exterior Voronoi polygons are clipped to the exact `verra.pmtiles` playable world rectangle (`[-1,433,600 .. +716,800]` cm X, `[-1,331,200 .. +819,200]` cm Y).
-- **Inward Border Offset**: Each polygon renders both its shared boundary edge and an inward-shrunk interior ring tinted with the region/ZOI color, eliminating visual ambiguity along shared borders.
-
-### 4. Strictly Mutually Exclusive Map Selection & Searchable GM Modals
-
-Map click handlers enforce a single active selection target across **4 mutually exclusive categories**:
-
-1. **`Entity` (`Player` or `NPC`)**: Opens the Entity Inspector with live vitals, owning worker shard (`aoc-*`), and instant GM lifecycle buttons (`SpawnNpc`, `KillNpc`, `DespawnNpc`, `HealNpc`, `ResetNpc`, `RespawnNpc`, `MoveNpc`, `TeleportPlayer`).
-2. **`Map Position` (`Ground Pin (X, Y, Z)`)**: Drops a coordinate pin on the terrain and exposes the searchable **`Teleport Player Here...`** modal and searchable **`Spawn NPC / Monster Here...`** modal.
-3. **`CityNode` (`85 Settlements`)**: Opens the CityNode Governance Inspector with live **Stage `0..6`** (`Wilderness` -> `Metropolis`) progression controls (`NodePopulations` scaling + `town_platforms.bin` Z-floor rescue).
-4. **`POI` (`Points of Interest`)**: Opens the POI Inspector displaying spawner clusters, biome tags, and design GUIDs.
-
-### 5. `Observability` Tab -- Zero-Redundancy 4-Zone Observability & Structured Logs Explorer
-
-The **`Observability`** tab (`src/components/LogsAndContainersTab.tsx`) organizes all operational telemetry into four non-overlapping zones:
-
-- **Zone 1 -- Google SRE Four Golden Signals**: Cluster-wide Latency ($p50/p99$ tick ms), Traffic (active players, UDP pps, gRPC RPS), Errors, and Saturation.
-- **Zone 2 -- Dynamic Server Worker Shards**: Live per-worker row table (`worker_index`, `aoc-world` / `aoc-<region>` / `aoc-<zoi>` / `aoc-<city>`, spatial tier, target vs. actual Hz, player/NPC counts, `.tsv` `memory|disk` mode, and handover counters).
-- **Zone 3 -- USE / RED Container Matrix**: Per-container Utilization (CPU %, RSS MB), Saturation, Errors, health status, and restart controls across all Linux containers.
-- **Zone 4 -- Structured Logs & GM Audit Trail**: Real-time filterable JSON container logs and persistent GM action audit records.
+| Path | Purpose |
+|:---|:---|
+| `src/main.tsx` | Top navigation bar (`Map` and `Observability` tabs), `StreamStatus` header, and workspace router. |
+| `src/map/VerraMapCanvas.tsx` | Interactive HTML5 map canvas, top-left zoom and city quick-jump controls, top-right inspector slot, and bottom-right worker panel. |
+| `src/map/verraTilePyramidRenderer.ts` | Renders `verra.pmtiles` map tiles (`z=7` at `zoom >= 3.0`), 3-pass ZOI borders, `1 km x 1 km` City Node OBBs, and entity markers. |
+| `src/state/worldStreamStore.ts` | Constant `30 Hz` (`33 ms`) state poller, persistent entity store, and mutually exclusive map selection state. |
+| `src/components/EntityInspector.tsx` | Inspector card for players, NPCs, monsters, mounts, resource nodes, and POIs, with one-click GM actions. |
+| `src/components/NodeGovernanceAndSpawnModals.tsx` | City Node governance card (`Stage 0..6`) and searchable `Teleport Player Here...` and `Spawn NPC / Monster Here...` modals. |
+| `src/components/VerraCalendarPopover.tsx` | Top-bar popover (`zIndex: 120`) for controlling the `9x` server clock and 360-day 4-season Verra Calendar. |
+| `src/components/LogsAndContainersTab.tsx` | Four-zone **Observability** workspace (Golden Signals, Worker Shards, Container USE & Service Health, and Structured Logs). |
+| `src/components/AdminLoginModal.tsx` | Single-boot passphrase login modal and `boot_id` session check. |
 
 ---
 
-## 4. Local Development, Unit Testing & Playwright E2E Verification
-
-During standard stack builds (`.\build.bat` or `.\sandal.ps1 build`), `src/deploy/docker/web-admin.Dockerfile` compiles the TypeScript and Vite production bundle inside Linux. You can also run the unit and E2E suites directly:
+## Local Development and Testing
 
 ```powershell
-# Run Vitest unit tests (coordinate projection, ZOI clipping, constant 30 Hz polling schedule)
-npm --prefix src/clients/web-admin test
+# Run the unit and component test suite
+npm --prefix src/clients/web-admin test -- --run
 
-# Run TypeScript typecheck and production Vite build
+# Type-check and build the production bundle
 npm --prefix src/clients/web-admin run build
-
-# Run Playwright E2E verification against the running stack
-npx --prefix src/clients/web-admin playwright test
 ```

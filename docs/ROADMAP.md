@@ -1,104 +1,73 @@
-# SandalCore — Project Roadmap
+# Project Roadmap
+
+**Related Guides**: [Root Overview](../README.md) | [Patch Notes](PATCH_NOTES.md) | [Known Issues](KNOWN_ISSUES.md) | [Server Workers](SERVER_WORKERS.md)
 
 > [!NOTE]
-> This roadmap reflects the ongoing development progress of SandalCore. SandalCore is a work in progress, not a final product. Features and milestones evolve continuously as the protocol is worked out and the server emulation advances.
+> This roadmap tracks ongoing development across **SandalCore**. Features and milestones evolve continuously as protocol research and server emulation advance.
 
-**Last updated:** 6 November 2026
-
----
-
-## Where We Are Now
-
-**5 of 16 phases are done** (1-5), **8 are in progress** (6-13) and 3 are planned (14-16).
-
-**Current phases:** `6- Progression and items`, `7- Combat and abilities`, `8- Gathering and professions`, `9- Living world`, `10- City nodes`, `11- Quests`, `12- Economy` and `13- Social` (all in progress)
-
-Phases 1-5 (the network protocol, login, entering the world, stats and mounts) are complete and validated against retail captures and test suites in `src/tests/cpp/`. Phases 6-13 work in their first parts, and what is left of each is named in its line below and under "Achieved and left". Since the first phases the server gained NPC conversations and the first part of quests, vendors and currency, crafting at the towns' stations, item rarities, weapon combo finishers, magic weapon scaling, mobs that notice and chase by their own settings, storage, NPC looks and names, and the Embersprings.
+**Last updated:** 7 November 2026
 
 ---
 
-## Achieved and left (no specific order)
+## Current Progress
 
-### Achieved
-- Connection, login and character creation; the world's start and player state.
-- Stats, talents, items and bags (the item bag and the material bags).
-- Combat and the class abilities; weapon combo finishers and weapon swaps; magic weapon scaling (caster weapons scale with Magical Power, and melee combos hit for their full share).
-- The walking map and NPC spawning; mobs that notice by hearing and sight and give up 140 m from where the fight began; loot rolls that change on every server start.
-- Mounts: ground, aquatic and flying.
-- Gathering, hunting and professions.
-- City nodes: node levels and experience, the towns' scenery, people and floor, and the towns' crafting stations.
-- NPC conversations (the talking window).
-- Vendors: currency, buying, selling, repairing and destroying items; talking shopkeepers.
-- Crafting: processing jobs, quick make and collecting finished jobs; the artisan gear a crafter wears (shirt, pants and tool belt of a profession) changes the result: a crafted piece's quality and experience, and a job's time, extra units, units that come out a rarity higher, and experience.
-- Consumables (first part): scrolls and elixirs are used from the item bag, take one off the stack, run their cooldown and give their buff for its time: the stats and artisan ratings the item holds at its quality (an Uncommon elixir of Herbalism, the Constitution scrolls, the experience scrolls), one scroll and one elixir at a time.
-- Item rarities for resources, weapons and armor, from mobs and from crafting.
-- Glint: all six kinds, ten of a kind into one of the next with a right-click, and kills paying Glint in kinds.
-- Tutorials that stay done, and quiet confirmations (targets, the PvP flag, loot windows, map markers).
-- The first part of quests: quest givers offer their quests; accepting, the journal and the tracker, abandoning; quests are kept across logins; Welcome to Verra starts in the starting area.
-- The second part of quests: objectives that count (talking to people, kills, Embersprings, places to reach, items carried, crates delivered, quest items that mobs drop), the tracker counting, the hand-in with its rewards (items, experience and town experience), and Welcome to Verra (both ways) with the quest after it.
-- Quest objects: the bodies, crates, roots, building sites and other objects of the beginner quests stand in the world, take the time the game gives their use, give what they give, count for the quests that name them, and come back after their own time.
-- The item hand-in to a person: a conversation that asks for items opens the hand-in window at its end; the items the player picks leave the bag, count for the quest's hand-in objective and the talk goes on (Hungry For More: the Suspicious Bread to Cleric Beyam). A hand-in objective that a conversation completes counts too (the crest of The Root of the Problem), and an active hand-in objective names the node its person's talk starts at.
-- Quest map markers: a pin or an area on the map for every active objective that has a place (the people a talk objective names, the places of a "go to" objective, what a collect, use or hand-in objective tracks, the camps of mobs to kill), and the quest-available mark on the NPCs that have a quest to take, over the NPC and on the map.
-- Storage: the Storage Clerk's item and materials storage, kept across logins.
-- NPC looks and names: every human NPC dressed, named and posed from the game's records, and the missing peaceful NPCs. The people whose records pin a face (the women guards of Lionhold and Joeva, several quest scholars, historians and workers) wear that preset face, with the race and gender it was made for.
-- Bandit raiders and captains: dressed, named and armed in the Riverlands' camps, and fighting with their own attacks (strikes, cleaves, heavy slashes and whirlwinds).
-- Bandit arsonists: dressed, named and in the Riverlands' camps, throwing their fire bolts (and the fire bolt combo for the few that have it) every two seconds or so from up to 30 m, and closing in to 25 m between casts.
-- Mob projectiles: a bolt or a bomb leaves the mob when its animation says, flies to its target at the game's speed and hurts when it arrives (the arsonists' fire bolts and the goblin shamans' oozing bomb).
-- Goblins and other mobs that were built from their Blueprint alone play their own attack animations, with the lunges and rolls that carry them (the Languid Goblins, the Flayers, the Warlord, the Diggers and the Skinwalkers among them).
-- Goblins and bandits chase at the game's own speed (faster with the mob's rank) and turn a fifth faster, walk straight up to a player instead of waiting where a special attack would reach, and the Goblin Flayers spin and the Goblin Assassins backstab and kickflip.
-- Embersprings: discovering them, attuning to one, and choosing where to respawn.
-- Weapon line experience: kills and the game master level scrolls pay every weapon you wear, each of the 21 weapon lines levels up to 25 on its own, the Skill Tree shows a line's level, bar and talent points, the weapon talents are bought with them, and the free Accuracy passives arrive at levels 5, 10, 15, 20 and 25.
-- Burning mobs: the Burning debuff takes a fire number from a mob every second for 8 seconds (up to 24), shows the fire and the Burning icon, follows it home after a reset and ends with its death or the burner's leaving.
-- Debuffs on mobs: the bleeds (Bleeding, Hemorrhage), the poisons and the stat debuffs of a hit take effect on a mob. Bleeds and poisons take Health at their ticks (one Bleeding debuff for each attacker, a poison's stacks make its ticks bigger), Shaken and Volatile make a mob take more physical and magical damage, Demoralized makes it hit softer and Blinded makes it miss more.
-- Server speed with many players: a fixed-rate server tick, the players' views of the world taking turns, cheaper updates, one update built for all the players who see the same mob in the same state, the players' views worked out on several processor cores, and move answers at the original server's pace. In a load test with simulated players that walk, the server held its 30 updates a second with about twice as many of them as before.
-- Mob attack animations for the other families: the undead, Minotaurs, constructs, spiders, cultists and the rest of the Beast, Humanoid and Monster families play their own attack animations (`429` abilities), as the goblins and bandits do.
-- Slowed mobs: a slow or snare on a mob (`MoveSpeed`, `Slow`, `Snare`, `Chilled`, the Mage's Chilled, the Ranger's and Fighter's Snared, the Tank's Grapple, mud and webs) puts it at its speed times one minus the strongest snare on it, at once, in a chase, a wander and on the walk home, and the mob's crowd control state tells the game client so; the debuff ends with its time, the mob's death or the leaving of the player who put it on, and a mob's own attack leap is not slowed.
+**5 of 16 phases are complete** (Phases 1-5), **8 are in progress** (Phases 6-13), and **3 are planned** (Phases 14-16).
 
-### In progress
-- Node stages: building sites below Village, and the Wilderness camp.
-- Reactions (first iteration): the game's reactions run for your own hits and for paying an ability's cost. The Bard's Resonance follows the game's rule (the Resonant Weapon passive from level 5) and its Menacing and Cathartic melodies add their damage at a combo finisher and spend up to 3 Resonance. The weapon talents that react at a finisher (the wand's Burning, Chilled and Volatile, the axes' Bleed, Snare and Wound, and the like) fire at the deadly finishing hit of the weapon in hand, the wand's Burning puts the Burning debuff on the mob, and the damage talents of the weapon trees count for its hits. The other classes' reactions run from the game's data and are not checked against the game yet.
-- Crates: construction crates and trade crates are made at the crate stations and carried in the cargo slot, which slows the carrier; a trade crate's rarity follows its materials, a quest can give a crate, and the Drop Crate ability takes the crate off the back. Next: the crate lying on the ground for others to pick up, then putting crates into building sites and selling them. The other crate types stay under Left.
-- Summoner pets: the Guardian, Hunter and Mystic come with the summon, follow, fight, take commands and stances, play their ten abilities and come back when more than 40 m away.
-- Seeing other players (first part): players within 150 m of each other are shown to each other as their characters, standing, walking and stopping, and leave each other's world when they log out. Still to come: riders on their mounts, gear and level changes, live Health and Mana, death, combat stances, and abilities and hits on other players.
+- **Completed Phases**: `1 - Network Protocol`, `2 - Login`, `3 - Into the World`, `4 - Stats`, and `5 - Mounts`, all verified against retail captures and automated test suites in `src/tests/cpp/` and `src/server/world/tests/`.
+- **Active Phases**: `6 - Progression and Items`, `7 - Combat and Abilities`, `8 - Gathering and Professions`, `9 - Living World`, `10 - City Nodes`, `11 - Quests`, `12 - Economy`, and `13 - Social`.
 
-### Left
-- Quests: the speech bubbles over NPCs who have an objective for you; the choose-one reward window and the Quest bag; hand-ins that ask for items by tag or rarity, and the pendant of The Great Mirage; objects that stand in the map itself (the Harbinger quests); the Destiny window, group quests, events and boards.
-- Reactions: the Bard's Cheerful, Pensive and Epic melodies at a finisher, the debuffs of its damage melodies, checking the other classes' finisher effects against the game, and the reactions that wait for you being hit or for other events.
-- Consumables: food and drinks (sitting down to eat, the regeneration meals), potions and salves (the heals, the shared cooldown), and buffs that stay through a logout.
-- Crafting ratings from guild perks (there are no guilds yet).
-- Stacks: joining, splitting and dragging stacks; the gathering bags' bigger stacks; paying with change.
-- Storage: buying more room, tab jobs, crates and guild storage.
-- Embersprings: the map markers, the respawn effect, and the siege, war and corruption respawns.
-- NPCs: face variety for the people whose records randomize their face (they take one of a small set of recorded faces), names for rare mobs, and the other hostile humanoids (the bandit archers and healers, and the cultists).
-- Mobs: the remaining mob abilities (the Goblin Flame Shamans' fire bombs, the arsonists' fire spray, stream and ring, and non-damaging or boss-phase tasks whose behaviour-tree conditions are not evaluated yet), smooth movement for goblins and bandits while their attack animations play, pack aggro, damage matched to retail, and flying mobs.
-- Abilities: the bars of Deliverance (a held cast) and Disengage follow the game's recorded timeline.
-- The walking map: walls, fences, water and holes.
-- The world: spawns that follow node levels, a world clock with day and night spawns, lava, world events and weather, treasure hunts, fishing, random gatherables, and camp props (tents, totems, caches, doors).
-- Nodes: the Camp's stations, harvesting a node's own trees, node experience and vassals, citizenship and mayor, and node taxes.
-- Economy: player trading, marketplaces, node currency and crates.
-- Social: guilds, parties and raids, chat and mail.
-- Node sieges and territory wars.
-- Caravans and trade routes.
-- Conversations: NPC voice and animation while they talk.
-- Infrastructure: multi-process cell sharding for crowded worlds.
+---
+
+## Completed, In-Progress, and Planned Features
+
+### Completed
+
+- **Connection, Login, and Character Creation**: Full launcher sign-in, `:19021` UDP tether ticket exchange, `:50061` ICS TLS 1.3 character creation, entering the world, and saving character state across logins.
+- **Multi-Worker Spatial Mesh**: Configurable single-worker (`single_riverlands`, `single_world`), per-region (`per_region`), per-ZOI (`per_zoi`), and mixed ZOI + City Node OBB + POI cut-out (`per_zoi_nodes_and_pois`) topologies with seamless cross-border player handovers (`5,000 cm` buffer, `3`-sample dwell, `2,000 ms` cooldown, and `lease_epoch` fencing).
+- **Web Admin and GM Studio**: Real-time `30 Hz` (`33 ms`) entity streaming, crisp `z=7` minimap tiles, 3-pass ZOI borders, continuous `9x` server clock and 360-day 4-season Verra Calendar (`Spring`, `Summer`, `Autumn`, `Winter`), per-worker tick-rate selector (`Dynamic`, `0 Hz` NPC pause, `10..60 Hz`), searchable player teleport and NPC spawn modals, and the 4-zone **Observability** workspace.
+- **Stats, Talents, and Equipment**: Bytecode-compiled character and NPC stat graphs (`statprog` / `libaocstats`), item rarity interpolation (`Common` to `Artifact`), inventory and material bags, and weapon skill-tree progression across all 21 weapon lines up to level 25.
+- **Combat, Class Abilities, and Status Effects**: Class abilities, weapon combo finishers, magic weapon scaling, projectile flight timing, burning/bleed/poison damage-over-time ticks, stat debuffs (`Shaken`, `Volatile`, `Demoralized`, `Blinded`), and movement slows/snares (`MoveSpeed`, `Slow`, `Snare`, `Chilled`).
+- **Navigation and Creature AI**: Chunked Recast/Detour navigation mesh (`area_nav.bin`) with town platform $Z$-floor rescue (`town_platforms.bin`), sight and hearing aggro, `140 m` leash rules, and `429` animated creature abilities across Beast, Humanoid, Monster, and Cultist families.
+- **Mounts**: Ground, aquatic, and flying mounts with road speed buffs (`roads_levels.tsv`).
+- **Gathering, Hunting, and Professions**: Authentic client-extracted and PCAP-backed gatherable foliage and resource nodes (`region_foliage.tsv`, `pcap_resource_spawners.tsv`), mining, logging, herbalism, hunting, processing jobs, and crafting at town stations with artisan gear bonuses.
+- **Consumables and Currency**: Scrolls and elixirs with stat/artisan buffs, all six Glint tiers (including right-click 10-to-1 conversion), NPC vendors (buying, selling, repairing), and persistent item/material storage with the Storage Clerk.
+- **City Nodes and Towns**: Live settlement progression across stages `0..6` (`Wilderness` to `Metropolis`, with Tier 5 and Tier 6 falling back to the Tier 4 populated layout), town scenery, NPCs, and crafting stations across the five major towns.
+- **Quests and Map Markers**: NPC dialogue windows, quest offers, journal and tracker progress, world quest objects (bodies, crates, roots, building sites), item hand-ins during conversations, completion rewards, and map pins/areas for active objectives.
+- **Embersprings**: Discovering Embersprings, attuning to a home shrine, and respawning after death.
+
+### In Progress
+
+- **Node Construction Sites**: Building sites below Village stage (`Stage 3`) and Wilderness camp progression.
+- **Combat Reactions**: Class and weapon finisher reactions (Bard Resonance and melodies, wand/axe finisher debuffs, and cross-class reaction verification).
+- **Construction and Trade Crates**: Packing crates at stations, carrying crates in the cargo slot, and dropping crates into the item bag (ground placement and building site turn-in are next).
+- **Summoner Pets**: Summoning and commanding the Guardian, Hunter, and Mystic pets (follow, stances, 10 pet abilities, and `40 m` leash recall).
+- **Multiplayer Visibility**: Showing nearby players within `150 m` (walking, standing, and cross-boundary AOI replication, with mounted riders, live gear/vital updates, and player-on-player abilities in progress).
+
+### Planned
+
+- **Quests**: NPC objective speech bubbles, choose-one reward selection windows, dedicated Quest bag, tag/rarity item hand-ins, Destiny progression, group quests, and commission boards.
+- **Consumables and Inventory**: Food and drink regeneration meals, healing potions and salves, buff persistence across logout, and stack merging/splitting.
+- **Crowd Control and Mob AI**: Hard crowd control on mobs (roots, stuns, knockbacks, sleeps), pack link aggro, boss-phase behavior-tree conditions, and flying creatures.
+- **World Simulation**: Node-level-dependent wilderness spawns, lava damage, dynamic weather and world events, treasure hunts, and fishing.
+- **Civic and Social Systems**: Full citizenship, mayoral elections, node taxes, vassal node hierarchies, player trading, marketplaces, guilds, parties, raids, chat, mail, caravans, and node sieges.
 
 ---
 
 ## Milestones
 
-1. **1- Network protocol** — [Done] How the client and the server talk: the handshake, packet framing and replication.
-2. **2- Login** — [Done] The launcher, accounts, character creation and character select.
-3. **3- Into the world** — [Done] Entering the world as your character, with your progress kept across logins.
-4. **4- Stats** — [Done] The game's own stat formulas, updated as your gear changes.
-5. **5- Mounts** — [Done] Ground, flying and swimming mounts, sprinting and roads.
-6. **6- Progression and items** — [In progress] XP and levels, talents, the action bar, bags, item rarities, weapon XP, scrolls and elixirs. Still to come: splitting and joining stacks, food and potions.
-7. **7- Combat and abilities** — [In progress] Most classes' abilities, weapon combos and finishers, buffs, death and respawn. Mobs take the Burning debuff, the bleeds, poisons and stat debuffs of a hit, slow down for a slow or a snare, and the Summoner's Guardian, Hunter and Mystic fight at their owner's side. Still to come: CC on mobs (roots, stuns, knockbacks).
-8. **8- Gathering and professions** — [In progress] Mining, logging, herbalism and hunting, and processing and crafting at the towns' stations. Still to come: fishing and the rest of the 22 professions.
-9. **9- Living world** — [In progress] Navigation, and mobs across Beast, Humanoid, Monster and cultist families that see, hear, chase and fight with their own attack animations, with loot and respawns. Still to come: flying mobs, and day and night spawns.
-10. **10- City nodes** — [In progress] Node levels and XP, and the five towns with their people, buildings and crafting stations. Still to come: citizenship, mayors, taxes and vassal nodes.
-11. **11- Quests** — [In progress] NPC conversations, quest offers, objectives, rewards and map markers, for the first quests of the starting area. Still to come: more quests, group quests and events.
-12. **12- Economy** — [In progress] Gold, silver, copper and Glint, the NPC vendors, crates and storage. Still to come: node currencies and more crates.
-13. **13- Social** — [In progress] Players within 150 m of each other see each other as their characters, standing, walking and stopping. Still to come: riders on their mounts, gear and level changes, live Health and Mana, death and combat stances, abilities and hits on other players, guilds, parties and raids, chat and mail, player trading and the marketplace.
-14. **14- Node sieges** — [Planned] Node sieges and territory wars.
-15. **15- Caravans** — [Planned] Caravans and trade routes.
-16. **16- World events** — [Planned] Corruption events and other world events.
+1. **1 - Network Protocol** -- `[Done]` Client-server handshake, packet framing, and actor replication.
+2. **2 - Login** -- `[Done]` Desktop launcher, accounts, character creation, and character selection.
+3. **3 - Into the World** -- `[Done]` Entering Verra as your character with persistent state across logins.
+4. **4 - Stats** -- `[Done]` Authentic stat formulas updated dynamically as gear, buffs, and levels change.
+5. **5 - Mounts** -- `[Done]` Ground, flying, and swimming mounts, sprinting, and road speed tiers.
+6. **6 - Progression and Items** -- `[In Progress]` XP, levels, talents, action bars, bags, item rarities, weapon XP, scrolls, and elixirs. Remaining: stack splitting/merging, food, and potions.
+7. **7 - Combat and Abilities** -- `[In Progress]` Class abilities, weapon combos and finishers, debuffs, slows, death/respawn, and Summoner pets. Remaining: hard crowd control on mobs.
+8. **8 - Gathering and Professions** -- `[In Progress]` Mining, logging, herbalism, hunting, processing, and crafting at town stations. Remaining: fishing and additional artisan professions.
+9. **9 - Living World** -- `[In Progress]` Streaming navigation mesh and animated mobs across Beast, Humanoid, Monster, and Cultist families with loot and respawns. Remaining: flying mobs and day/night spawn tables.
+10. **10 - City Nodes** -- `[In Progress]` Settlement levels (`0..6`), XP, and the five major towns with NPCs, buildings, and stations. Remaining: full citizenship, elections, taxes, and vassal rules.
+11. **11 - Quests** -- `[In Progress]` NPC conversations, quest offers, objectives, rewards, and map markers for starting-area quests. Remaining: choose-one reward windows, group quests, and dynamic events.
+12. **12 - Economy** -- `[In Progress]` Gold/silver/copper, Glint, NPC vendors, crates, and warehouse storage. Remaining: node currencies, marketplaces, and caravan trade.
+13. **13 - Social** -- `[In Progress]` Players within `150 m` see each other's characters moving in the world. Remaining: live mount/gear/vital replication to observers, guilds, parties, chat, mail, and player trading.
+14. **14 - Node Sieges** -- `[Planned]` Node sieges and territory wars.
+15. **15 - Caravans** -- `[Planned]` Caravans and regional trade routes.
+16. **16 - World Events** -- `[Planned]` Corruption events and dynamic world events.

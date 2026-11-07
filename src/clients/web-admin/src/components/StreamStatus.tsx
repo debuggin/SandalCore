@@ -44,9 +44,10 @@ const CONTAINER_BASE_STYLE: React.CSSProperties = Object.freeze({
   background: "linear-gradient(135deg, rgba(11, 14, 23, 0.78) 0%, rgba(16, 23, 36, 0.84) 100%)",
   backdropFilter: "blur(16px)",
   color: "#F4F1EA",
-  fontSize: "12px",
+  fontFamily: '"Segoe UI", system-ui, -apple-system, sans-serif',
+  fontSize: "11px",
+  fontWeight: 700,
   lineHeight: 1.4,
-  fontVariantNumeric: "tabular-nums",
 });
 
 const BADGE_BASE_STYLE: React.CSSProperties = Object.freeze({
@@ -178,8 +179,8 @@ export function StreamStatus(props: StreamStatusProps): React.ReactElement {
         <span aria-hidden="true">{descriptor.glyph}</span>
         <span>{descriptor.badgeLabel}</span>
       </span>
-      <span data-testid="stream-entity-count" style={{ color: "#B8C4D4" }} title="Online players in world">
-        Players Online: <strong style={{ color: "#F4F1EA" }}>{counts.players}</strong>
+      <span data-testid="stream-entity-count" style={{ color: "#F4F1EA", fontFamily: "inherit", fontSize: "11px", fontWeight: 700 }} title="Online players in world">
+        {`Players Online: ${counts.players}`}
       </span>
       {needsResync ? (
         <span role="alert" data-testid="stream-resync-alert" style={{ color: "#E05258", fontWeight: 600 }}>

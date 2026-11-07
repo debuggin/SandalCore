@@ -74,7 +74,11 @@ struct DrainResult {
 }
 
 [[nodiscard]] inline int ParseRequestedTickHz(std::string_view req, int fallback) noexcept {
-    if (req.find("dynamic") != std::string_view::npos || req.find("Dynamic") != std::string_view::npos) return -1;
+    const bool explicit_manual = req.find("tick_mode=manual") != std::string_view::npos ||
+                                 req.find("tick_mode=Manual") != std::string_view::npos ||
+                                 req.find("\"tick_mode\":\"manual\"") != std::string_view::npos ||
+                                 req.find("\"tick_mode\": \"manual\"") != std::string_view::npos;
+    if (!explicit_manual && (req.find("dynamic") != std::string_view::npos || req.find("Dynamic") != std::string_view::npos)) return -1;
     for (const std::string_view key : {std::string_view("tick_hz="), std::string_view("\"tick_hz\":"), std::string_view("tick_hz:")}) {
         const size_t pos = req.find(key);
         if (pos == std::string_view::npos) continue;
@@ -88,10 +92,10 @@ struct DrainResult {
             any = true;
             ++i;
         }
-        if (any) return val == 0 ? 0 : aoc::worldd::TickLoop::snap_manual_tick_hz(val);
+        if (any) return val == 0 ? (explicit_manual ? 0 : -1) : aoc::worldd::TickLoop::snap_manual_tick_hz(val);
     }
-    if (fallback < 0) return -1;
-    return fallback == 0 ? 0 : aoc::worldd::TickLoop::snap_manual_tick_hz(fallback);
+    if (fallback <= 0) return (fallback == 0 && explicit_manual) ? 0 : -1;
+    return aoc::worldd::TickLoop::snap_manual_tick_hz(fallback);
 }
 
 [[nodiscard]] inline bool ParseKeyedDouble(std::string_view req, std::initializer_list<std::string_view> keys, double& out) noexcept {
@@ -121,8 +125,11 @@ struct DrainResult {
     const std::string_view wname = st.worker_name.empty() ? std::string_view(st.server_id) : std::string_view(st.worker_name);
     const std::string_view scope = st.scope_kind.empty() ? std::string_view("region") : std::string_view(st.scope_kind);
     const std::string_view dmode = st.data_mode.empty() ? ResolveDataMode() : std::string_view(st.data_mode);
-    const int eff_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
-    const char* tmode = aoc::worldd::TickLoop::runtime_tick_mode() == aoc::worldd::TickMode::Dynamic ? "dynamic" : "manual";
+    const bool is_dyn = aoc::worldd::TickLoop::runtime_tick_mode() == aoc::worldd::TickMode::Dynamic;
+    const int raw_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
+    const int eff_hz = is_dyn ? std::max(aoc::worldd::TickLoop::kMinHz, raw_hz) : raw_hz;
+    const int target_hz = is_dyn ? -1 : aoc::worldd::TickLoop::runtime_target_tick_hz();
+    const char* tmode = is_dyn ? "dynamic" : "manual";
     const double tod = aoc::worldd::bootstrap::has_global_time_of_day_override() ? aoc::worldd::bootstrap::global_time_of_day_hours() : st.time_of_day_hours;
     const int32_t cal_year = aoc::worldd::bootstrap::global_calendar_year();
     const int32_t cal_day = aoc::worldd::bootstrap::global_calendar_day_of_year();
@@ -131,22 +138,28 @@ struct DrainResult {
                     ",\"scope_kind\":\"" + std::string(scope) + "\",\"data_mode\":\"" + std::string(dmode) +
                     "\",\"dynamic_scaling_stub\":" + (st.dynamic_scaling_stub ? "true" : "false") + ",\"ready\":" +
                     (r ? "true" : "false") + ",\"draining\":" + (st.draining ? "true" : "false") + ",\"active_sessions\":" +
-                    std::to_string(st.active_sessions) + ",\"tick_hz\":" + std::to_string(eff_hz) + ",\"tick_mode\":\"" + tmode +
-                    "\",\"time_of_day_hours\":" + std::to_string(tod) + ",\"day_of_year\":" + std::to_string(cal_day) +
-                    ",\"year\":" + std::to_string(cal_year) + ",\"cpu_saturation_pct\":" + std::to_string(st.cpu_saturation_pct) +
-                    ",\"uptime_ms\":" + std::to_string(st.uptime_ms) + "}";
+                    std::to_string(st.active_sessions) + ",\"tick_hz\":" + std::to_string(eff_hz) +
+                    ",\"current_tick_hz\":" + std::to_string(eff_hz) + ",\"target_tick_hz\":" + std::to_string(target_hz) +
+                    ",\"tick_mode\":\"" + tmode + "\",\"time_of_day_hours\":" + std::to_string(tod) +
+                    ",\"day_of_year\":" + std::to_string(cal_day) + ",\"year\":" + std::to_string(cal_year) +
+                    ",\"cpu_saturation_pct\":" + std::to_string(st.cpu_saturation_pct) + ",\"uptime_ms\":" + std::to_string(st.uptime_ms) + "}";
     return {r ? 200 : 503, "application/json", std::move(b)};
 }
 [[nodiscard]] inline HttpProbeResponse RenderOpenMetrics(const HealthMetricsState& st) {
     const bool r = st.content_loaded && st.mesh_registered && !st.draining;
     const bool sim = aoc::worldd::npc::NpcWorld::global_simulate_all_npcs();
-    const int eff_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
+    const bool is_dyn = aoc::worldd::TickLoop::runtime_tick_mode() == aoc::worldd::TickMode::Dynamic;
+    const int raw_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
+    const int eff_hz = is_dyn ? std::max(aoc::worldd::TickLoop::kMinHz, raw_hz) : raw_hz;
+    const int target_hz = is_dyn ? -1 : aoc::worldd::TickLoop::runtime_target_tick_hz();
     const double tod = aoc::worldd::bootstrap::has_global_time_of_day_override() ? aoc::worldd::bootstrap::global_time_of_day_hours() : st.time_of_day_hours;
     const int32_t cal_year = aoc::worldd::bootstrap::global_calendar_year();
     const int32_t cal_day = aoc::worldd::bootstrap::global_calendar_day_of_year();
     std::string b = "aoc_world_ready " + std::string(r ? "1\n" : "0\n") + "aoc_world_draining " + (st.draining ? "1\n" : "0\n") +
                     "aoc_world_worker_index " + std::to_string(st.worker_index) + "\naoc_world_active_sessions " + std::to_string(st.active_sessions) +
-                    "\naoc_world_tick_hz " + std::to_string(eff_hz) + "\naoc_world_packets_in_total " + std::to_string(st.packets_in_total) +
+                    "\naoc_world_tick_hz " + std::to_string(eff_hz) + "\naoc_world_current_tick_hz " + std::to_string(eff_hz) +
+                    "\naoc_world_target_tick_hz " + std::to_string(target_hz) + "\naoc_world_tick_mode_dynamic " + (is_dyn ? "1\n" : "0\n") +
+                    "aoc_world_packets_in_total " + std::to_string(st.packets_in_total) +
                     "\naoc_world_packets_out_total " + std::to_string(st.packets_out_total) + "\naoc_world_active_npcs " + std::to_string(st.active_npcs) +
                     "\naoc_world_active_monsters " + std::to_string(st.active_monsters) + "\naoc_world_resource_nodes " + std::to_string(st.resource_nodes) +
                     "\naoc_world_simulate_all_npcs " + (sim ? "1\n" : "0\n") + "aoc_world_time_of_day_hours " + std::to_string(tod) +
@@ -162,14 +175,18 @@ struct DrainResult {
             aoc::worldd::TickLoop::set_global_target_hz(parsed_hz);
             aoc::worldd::npc::NpcWorld::set_global_simulate_all_npcs(parsed_hz != 0);
         }
-        const int eff_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
-        const char* tmode = aoc::worldd::TickLoop::runtime_tick_mode() == aoc::worldd::TickMode::Dynamic ? "dynamic" : "manual";
+        const bool is_dyn = aoc::worldd::TickLoop::runtime_tick_mode() == aoc::worldd::TickMode::Dynamic;
+        const int raw_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
+        const int eff_hz = is_dyn ? std::max(aoc::worldd::TickLoop::kMinHz, raw_hz) : raw_hz;
+        const int target_hz = is_dyn ? -1 : aoc::worldd::TickLoop::runtime_target_tick_hz();
+        const char* tmode = is_dyn ? "dynamic" : "manual";
         const double ewma = aoc::worldd::TickLoop::runtime_ewma_work_ms();
         const bool sim = aoc::worldd::npc::NpcWorld::global_simulate_all_npcs();
         if (path != "/metrics") {
             return {200, "application/json",
-                    "{\"status\":\"ok\",\"tick_hz\":" + std::to_string(eff_hz) + ",\"tick_mode\":\"" + tmode +
-                        "\",\"simulate_all_npcs\":" + (sim ? "true" : "false") +
+                    "{\"status\":\"ok\",\"tick_hz\":" + std::to_string(eff_hz) +
+                        ",\"current_tick_hz\":" + std::to_string(eff_hz) + ",\"target_tick_hz\":" + std::to_string(target_hz) +
+                        ",\"tick_mode\":\"" + tmode + "\",\"simulate_all_npcs\":" + (sim ? "true" : "false") +
                         ",\"ewma_work_ms\":" + std::to_string(ewma) + "}"};
         }
     }

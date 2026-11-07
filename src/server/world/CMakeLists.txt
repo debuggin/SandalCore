@@ -667,6 +667,9 @@ target_compile_definitions(test_world_ability_pipeline PRIVATE
 world_add_test(test_world_ability_pipeline_chains tests/test_world_ability_pipeline_chains.cpp)
 target_compile_definitions(test_world_ability_pipeline_chains PRIVATE
     ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
+world_add_test(test_world_ability_pipeline_casts tests/test_world_ability_pipeline_casts.cpp)
+target_compile_definitions(test_world_ability_pipeline_casts PRIVATE
+    ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")
 world_add_test(test_world_ability_retail)
 target_compile_definitions(test_world_ability_retail PRIVATE
     ABILITY_CONTENT_DB_PATH="${AOC_DIST_ROOT}/content/content.db")

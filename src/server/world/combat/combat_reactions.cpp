@@ -92,7 +92,7 @@ void CombatWorld::remove_npc_effect(uint64_t npc_actor, int64_t effect_guid, dou
     }
 }
 
-void CombatWorld::land_effects_of_hit(Npc& n, PlayerPort& port, const abilities::HitDef& hit, const HitMeta& meta, double now) {
+void CombatWorld::land_effects_of_hit(Npc& n, PlayerPort& port, const abilities::HitDef& hit, const HitMeta& meta, double now, uint64_t via_pet) {
     Resolved gate;
     std::string why;
     // Effect expressions read target effect counts via the stat engine updated in send_effects.
@@ -105,7 +105,7 @@ void CombatWorld::land_effects_of_hit(Npc& n, PlayerPort& port, const abilities:
         if (n.dead) return;
         const double shield = resolver_.effect_shield(port.fighter(), n, *a.def);
         if (shield > 0) add_shield(n.actor_id, shield, std::isinf(a.duration) ? 0.0 : a.duration, now);
-        land_effect(n, a, port.actor_id(), now);
+        land_effect(n, a, port.actor_id(), now, via_pet);
     }
 }
 
@@ -150,7 +150,7 @@ void CombatWorld::land_for_player(uint64_t by, uint64_t target, const abilities:
     }
     if (d.applied && !r.miss() && !d.lethal) {
         if (hit.max_remove > 0 || !hit.remove_effects.empty()) remove_effects_from_npc(target, hit, now);
-        land_effects_of_hit(n, *port, hit, meta, now);
+        land_effects_of_hit(n, *port, hit, meta, now, src.pet);
     }
     if (src.children) land_children(by, target, hit, src, now, depth);
 }

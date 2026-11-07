@@ -2,13 +2,16 @@
 
 import React from "react";
 import {
+  findZoiContainingWorldCm,
   inferResourceNodeType,
+  type PoiOverlay,
   resolveWorkerForCoordinateOrZone,
   useWorldStreamStore,
   verraUnrealToLngLat,
   worldCmToMosaicPx,
   type WorldEntity,
   type WorldStreamState,
+  type WorldWorkerInfo,
 } from "../state/worldStreamStore";
 
 export type InspectorViewState =
@@ -104,52 +107,86 @@ function resolveStateFlagsList(entity: InspectedWorldEntity): string {
   return derived.length > 0 ? derived.join(", ") : "IDLE";
 }
 
-function buildEntityAttributeRows(
-  entity: InspectedWorldEntity | null,
-): readonly InspectorGridRow[] {
-  if (!entity) {
-    return [];
-  }
-  const [lng, lat] = verraUnrealToLngLat(entity.xCm, entity.yCm);
-  const [mosaicU, mosaicV] = worldCmToMosaicPx(entity.xCm, entity.yCm);
-  const pct = Number.isFinite(entity.healthPct)
-    ? entity.healthPct.toFixed(1)
-    : "0.0";
-  const hasHp =
-    typeof entity.hp === "number" &&
-    typeof entity.maxHp === "number" &&
-    Number.isFinite(entity.hp) &&
-    Number.isFinite(entity.maxHp);
-  const hpText = hasHp
-    ? `${Math.round(entity.hp!)} / ${Math.round(entity.maxHp!)} (${pct}%)`
-    : `${pct}%`;
-  const buffs =
-    entity.activeBuffs && entity.activeBuffs.length > 0
-      ? entity.activeBuffs.join(", ")
-      : "None";
-  const worker = resolveWorkerForCoordinateOrZone(
-    entity.xCm,
-    entity.yCm,
-    entity.zoneId,
-    useWorldStreamStore.getState().workers,
-    entity.name,
-  );
-  const rawResType = entity.resourceType ?? entity.resource_type;
-  const rawSubkind = entity.npcSubkind ?? entity.npc_subkind;
-  const resourceRows: InspectorGridRow[] =
-    entity.kind === "resource_node" || Boolean(rawResType) || rawSubkind === "huntable"
-      ? [
-          { rowId: "resource_type", label: "Resource Type", value: inferResourceNodeType(entity.name, rawResType, rawSubkind) },
-          { rowId: "resource_quality", label: "Quality / Rarity", value: entity.quality || "Common · Tier 1 (Novice)" },
-        ]
-      : [];
+export function formatPoiCategoryDisplay(poi: {
+  readonly category?: string; readonly kind?: string; readonly icon_name?: string;
+  readonly name?: string; readonly display_name?: string; readonly npc_subkind?: string; readonly npcSubkind?: string;
+}): string {
+  const s = `${poi.category ?? ""} ${poi.kind ?? ""} ${poi.icon_name ?? ""} ${poi.npcSubkind ?? poi.npc_subkind ?? ""} ${poi.name ?? ""} ${poi.display_name ?? ""}`.toLowerCase();
+  if (/wayshrine|emberspring|ember_spring|ember spring|attune|reviveshrine|shrine/.test(s)) return "Ember Spring";
+  if (/dungeon/.test(s)) return "Dungeon";
+  if (/landmark/.test(s)) return "Landmark";
+  if (/waypoint/.test(s)) return "Waypoint";
+  if (/harbor/.test(s)) return "Harbor";
+  if (/castle/.test(s)) return "Castle";
+  if (/outpost/.test(s)) return "Outpost";
+  if (/starting_area|startingarea|portal/.test(s)) return "Starting Area";
+  if (/spawn/.test(s)) return "Spawn Point";
+  if (/city_node/.test(s)) return "Settlement Node";
+  if (/zone/.test(s)) return "Zone";
+  const raw = (poi.category ?? poi.kind ?? "").trim();
+  return raw && raw.toLowerCase() !== "poi" && raw.toLowerCase() !== "npc" ? `${raw.charAt(0).toUpperCase()}${raw.slice(1)}` : "POI";
+}
+
+export function poiOverlayToInspectedEntity(
+  poi: PoiOverlay,
+  workers: readonly WorldWorkerInfo[] = useWorldStreamStore.getState().workers,
+): InspectedWorldEntity {
+  const zoi = findZoiContainingWorldCm(poi.x_cm, poi.y_cm);
+  const worker = resolveWorkerForCoordinateOrZone(poi.x_cm, poi.y_cm, poi.biome, workers, poi.node_name || poi.display_name);
+  const regionZoi = zoi ? `${zoi.display_name} · ${worker.region_label}` : worker.region_label;
+  const nodeParts = [poi.node_name, poi.node_type, poi.stage_name, poi.biome].filter((p): p is string => Boolean(p && p.trim().length > 0));
+  const uniqueNodeParts = [...new Set(nodeParts)];
+  const levelRange = poi.min_level !== undefined && poi.max_level !== undefined ? `${poi.min_level}-${poi.max_level}` : poi.level && poi.level > 0 ? String(poi.level) : undefined;
+  const descParts = [poi.description, poi.tags?.join(", ")].filter((p): p is string => Boolean(p && p.trim().length > 0));
+  return {
+    guid: poi.guid, name: poi.display_name || poi.name, recordName: poi.name, kind: "poi",
+    poiCategory: formatPoiCategoryDisplay(poi), regionZoi,
+    xCm: poi.x_cm, yCm: poi.y_cm, zCm: poi.z_cm, yawDeg: poi.yaw ?? 0,
+    level: poi.level ?? 1, healthPct: 100, radiusCm: poi.radius,
+    nodeAssociation: uniqueNodeParts.length > 0 ? uniqueNodeParts.join(" · ") : undefined,
+    levelRange, description: descParts.length > 0 ? descParts.join(" | ") : undefined,
+  };
+}
+
+function buildPoiSpecificRows(entity: InspectedWorldEntity, zoiName: string | undefined, regionLabel: string): readonly InspectorGridRow[] {
+  const isPoiOrShrine = entity.kind === "poi" || (entity.npcSubkind ?? entity.npc_subkind) === "emberspring" || Boolean(entity.poiCategory);
+  if (!isPoiOrShrine) return [];
+  const rows: InspectorGridRow[] = [
+    { rowId: "category", label: "Category / Subtype", value: entity.poiCategory || formatPoiCategoryDisplay(entity) },
+    { rowId: "record_name", label: "Record Name", value: formatSafeValue(entity.recordName ?? entity.name) },
+    { rowId: "region_zoi", label: "Region / ZOI", value: entity.regionZoi || (zoiName ? `${zoiName} · ${regionLabel}` : regionLabel) },
+  ];
+  if (entity.nodeAssociation) rows.push({ rowId: "node_association", label: "Node / Settlement", value: entity.nodeAssociation });
+  if (typeof entity.radiusCm === "number" && entity.radiusCm > 0) rows.push({ rowId: "radius", label: "Radius", value: `${(entity.radiusCm / 100).toFixed(1)} m (${Math.round(entity.radiusCm)} cm)` });
+  if (entity.description) rows.push({ rowId: "description", label: "Description / Tags", value: entity.description });
+  return rows;
+}
+
+function buildEntityAttributeRows(entity: InspectedWorldEntity | null): readonly InspectorGridRow[] {
+  if (!entity) return [];
+  const [lng, lat] = verraUnrealToLngLat(entity.xCm, entity.yCm), [mosaicU, mosaicV] = worldCmToMosaicPx(entity.xCm, entity.yCm);
+  const pct = Number.isFinite(entity.healthPct) ? entity.healthPct.toFixed(1) : "0.0";
+  const hasHp = typeof entity.hp === "number" && typeof entity.maxHp === "number" && Number.isFinite(entity.hp) && Number.isFinite(entity.maxHp);
+  const hpText = hasHp ? `${Math.round(entity.hp!)} / ${Math.round(entity.maxHp!)} (${pct}%)` : `${pct}%`;
+  const buffs = entity.activeBuffs && entity.activeBuffs.length > 0 ? entity.activeBuffs.join(", ") : "None";
+  const worker = resolveWorkerForCoordinateOrZone(entity.xCm, entity.yCm, entity.zoneId, useWorldStreamStore.getState().workers, entity.name);
+  const zoi = findZoiContainingWorldCm(entity.xCm, entity.yCm);
+  const rawResType = entity.resourceType ?? entity.resource_type, rawSubkind = entity.npcSubkind ?? entity.npc_subkind;
+  const resourceRows: InspectorGridRow[] = entity.kind === "resource_node" || Boolean(rawResType) || rawSubkind === "huntable"
+    ? [
+        { rowId: "resource_type", label: "Resource Type", value: inferResourceNodeType(entity.name, rawResType, rawSubkind) },
+        { rowId: "resource_quality", label: "Quality / Rarity", value: entity.quality || "Common · Tier 1 (Novice)" },
+      ]
+    : [];
+  const poiRows = buildPoiSpecificRows(entity, zoi?.display_name, worker.region_label);
   return [
     { rowId: "guid", label: "GUID", value: formatSafeValue(entity.guid) },
     { rowId: "name", label: "Name", value: formatSafeValue(entity.name) },
     { rowId: "kind", label: "Kind", value: formatSafeValue(entity.kind) },
+    ...poiRows,
     ...resourceRows,
     { rowId: "worker", label: "Server Worker", value: `${worker.worker_id} · ${worker.region_label}` },
-    { rowId: "level", label: "Level", value: formatSafeValue(entity.level) },
+    { rowId: "level", label: "Level", value: entity.levelRange ?? formatSafeValue(entity.level) },
     { rowId: "hp", label: "HP / MaxHP", value: hpText },
     { rowId: "unreal_cm", label: "Unreal (cm)", value: `X=${entity.xCm.toFixed(1)}, Y=${entity.yCm.toFixed(1)}, Z=${entity.zCm.toFixed(1)}` },
     { rowId: "mosaic_px", label: "Mosaic (px)", value: `U=${mosaicU.toFixed(1)}, V=${mosaicV.toFixed(1)}` },
@@ -225,19 +262,7 @@ export function resolveMutuallyExclusiveInspectorTarget(
     const poi = storeSnap.pois.find((p) => p.guid === storeSnap.selectedPoiGuid);
     return {
       activeKind: poi ? "poi" : "none",
-      entity: poi
-        ? {
-            guid: poi.guid,
-            name: poi.display_name || poi.name,
-            kind: "poi",
-            xCm: poi.x_cm,
-            yCm: poi.y_cm,
-            zCm: poi.z_cm,
-            yawDeg: 0,
-            level: 1,
-            healthPct: 100,
-          }
-        : null,
+      entity: poi ? poiOverlayToInspectedEntity(poi) : null,
       cityNodeName: null,
       pickedPosition: null,
     };

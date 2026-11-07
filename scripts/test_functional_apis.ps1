@@ -167,12 +167,12 @@ function Invoke-GoFunctionalApiSuite {
     Push-Location $servicesDir
     try {
         if ($Quiet) {
-            $out = @(& go test -v -count=1 ../../tests/go/functional_api_e2e_test.go 2>&1)
+            $out = @(& go test -v -count=1 ../../tests/go/functional_api_e2e_test.go ../../tests/go/functional_api_e2e_helpers_test.go 2>&1)
             if ($LASTEXITCODE -ne 0) {
                 throw "Go functional API E2E suite failed (exit $LASTEXITCODE):`n$($out -join "`n")"
             }
         } else {
-            & go test -v -count=1 ../../tests/go/functional_api_e2e_test.go
+            & go test -v -count=1 ../../tests/go/functional_api_e2e_test.go ../../tests/go/functional_api_e2e_helpers_test.go
             if ($LASTEXITCODE -ne 0) {
                 throw "Go functional API E2E suite failed (exit $LASTEXITCODE)."
             }
@@ -329,6 +329,38 @@ function Invoke-LauncherFunctionalApiSuite {
     return [int]$sw.ElapsedMilliseconds
 }
 
+function Invoke-WorldContainerDomainSuite {
+    param([bool]$Quiet = $false)
+    $bins = @(
+        '/app/test_world_area',
+        '/app/test_world_region',
+        '/app/test_world_gather',
+        '/app/test_world_foliage',
+        '/app/test_world_foliage_cells',
+        '/app/test_world_spawn_filter',
+        '/app/test_world_loop',
+        '/app/test_mesh_handover_hysteresis'
+    )
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $null | & docker exec -i aoc-world test -x '/app/test_world_live_e2e' *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Required live E2E binary '/app/test_world_live_e2e' is missing or not executable in aoc-world."
+    }
+    foreach ($bin in $bins) {
+        $null | & docker exec -i aoc-world test -x $bin *> $null
+        if ($LASTEXITCODE -ne 0) { continue }
+        $out = @($null | & docker exec -i aoc-world $bin 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Container C++ domain test '$bin' failed (exit $LASTEXITCODE):`n$($out -join "`n")"
+        }
+        if (-not $Quiet) {
+            [Console]::Out.WriteLine("[SandalCore] [PASS] Container C++ domain test $bin")
+        }
+    }
+    $sw.Stop()
+    return [int]$sw.ElapsedMilliseconds
+}
+
 $rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
 $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -337,6 +369,7 @@ if (-not $Json) {
     [Console]::Out.WriteLine("[SandalCore] [1/4] Verifying $expectedContainerTarget healthy Docker containers and 0 aoc-tether containers...")
 }
 $dockerCheck = Assert-SandalDockerStackHealthy -RootDir $rootPath
+$cppDomainElapsedMs = Invoke-WorldContainerDomainSuite -Quiet ([bool]$Json)
 
 if (-not $Json) {
     [Console]::Out.WriteLine('[SandalCore] [2/4] Running Go backend functional API E2E suite (HTTP :8080, gRPC :9090, ICS TLS :50061, UDP :7777)...')
@@ -358,6 +391,7 @@ $receipt = [ordered]@{
     ok                  = $true
     container_count     = $dockerCheck.ContainerCount
     aoc_tether_present  = $dockerCheck.TetherPresent
+    cpp_domain_ms       = $cppDomainElapsedMs
     go_api_ms           = $goElapsedMs
     web_admin_api_ms    = $webAdminElapsedMs
     launcher_api_ms     = $launcherElapsedMs

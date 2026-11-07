@@ -201,8 +201,11 @@ public:
         uint64_t restarts = 0;
     };
 
+    static constexpr int kMinHz = 30;
+    static constexpr int kMaxHz = 120;
+
     static constexpr int snap_manual_tick_hz(int hz) noexcept {
-        constexpr int kAllowed[8] = {10, 15, 20, 25, 30, 40, 50, 60};
+        constexpr int kAllowed[10] = {10, 15, 20, 25, 30, 40, 45, 50, 60, 120};
         int best = kAllowed[0];
         int best_diff = hz > best ? (hz - best) : (best - hz);
         for (int candidate : kAllowed) {
@@ -222,12 +225,29 @@ public:
         return TickMode::Dynamic;
     }
 
+    static int default_env_dynamic_hz() noexcept {
+        for (const char* k : {"AOC_WORLD_TICK_HZ", "AOC_TICK_HZ"}) {
+            if (const char* v = std::getenv(k); v && *v) {
+                const long n = std::strtol(v, nullptr, 10);
+                if (n > 0) return std::clamp(static_cast<int>(n), kMinHz, kMaxHz);
+            }
+        }
+        return 60;
+    }
+
     TickLoop(Config config = {}, Clock::time_point start = Clock::now())
         : config_(config),
           schedule_(config.hz > 0 ? config.hz : 60, start, config.max_catch_up),
           tick_mode_(default_env_tick_mode()),
-          effective_hz_(tick_mode_ == TickMode::Dynamic ? 60 : snap_manual_tick_hz(config.hz > 0 ? config.hz : 60)),
-          budget_(std::chrono::microseconds(1000000 / std::max(1, effective_hz_))) {}
+          effective_hz_(tick_mode_ == TickMode::Dynamic
+                            ? std::clamp(config.hz > 0 ? config.hz : 60, kMinHz, kMaxHz)
+                            : snap_manual_tick_hz(config.hz > 0 ? config.hz : 60)),
+          budget_(std::chrono::microseconds(1000000 / std::max(1, effective_hz_))) {
+        runtime_baseline_hz_slot().store(effective_hz_, std::memory_order_relaxed);
+        if (tick_mode_ == TickMode::Dynamic && runtime_tick_hz_slot().load(std::memory_order_relaxed) == 0) {
+            runtime_dynamic_hz_slot().store(effective_hz_, std::memory_order_relaxed);
+        }
+    }
 
     static std::atomic<int>& runtime_tick_hz_slot() noexcept {
         static std::atomic<int> slot{0};
@@ -237,8 +257,12 @@ public:
         static std::atomic<uint8_t> slot{static_cast<uint8_t>(default_env_tick_mode())};
         return slot;
     }
+    static std::atomic<int>& runtime_baseline_hz_slot() noexcept {
+        static std::atomic<int> slot{default_env_dynamic_hz()};
+        return slot;
+    }
     static std::atomic<int>& runtime_dynamic_hz_slot() noexcept {
-        static std::atomic<int> slot{60};
+        static std::atomic<int> slot{default_env_dynamic_hz()};
         return slot;
     }
     static std::atomic<bool>& runtime_dynamic_active_slot() noexcept {
@@ -262,13 +286,21 @@ public:
         return static_cast<TickMode>(runtime_tick_mode_slot().load(std::memory_order_relaxed));
     }
 
+    static int runtime_target_tick_hz() noexcept {
+        if (runtime_tick_mode() == TickMode::Dynamic) return -1;
+        const int rt = runtime_tick_hz_slot().load(std::memory_order_relaxed);
+        if (rt <= 0) return 0;
+        return std::clamp(rt, 1, TickSchedule::kMaxHz);
+    }
+
     static void set_global_runtime_tick_mode(TickMode mode) noexcept {
         runtime_tick_mode_slot().store(static_cast<uint8_t>(mode), std::memory_order_relaxed);
         runtime_dwell_over_slot().store(0, std::memory_order_relaxed);
         runtime_dwell_under_slot().store(0, std::memory_order_relaxed);
         if (mode == TickMode::Dynamic) {
+            const int base = std::clamp(runtime_baseline_hz_slot().load(std::memory_order_relaxed), kMinHz, kMaxHz);
             runtime_tick_hz_slot().store(0, std::memory_order_relaxed);
-            runtime_dynamic_hz_slot().store(60, std::memory_order_relaxed);
+            runtime_dynamic_hz_slot().store(base, std::memory_order_relaxed);
             runtime_dynamic_active_slot().store(true, std::memory_order_relaxed);
         }
     }
@@ -277,9 +309,10 @@ public:
         runtime_dwell_over_slot().store(0, std::memory_order_relaxed);
         runtime_dwell_under_slot().store(0, std::memory_order_relaxed);
         if (hz <= 0) {
+            const int base = std::clamp(runtime_baseline_hz_slot().load(std::memory_order_relaxed), kMinHz, kMaxHz);
             runtime_tick_mode_slot().store(static_cast<uint8_t>(TickMode::Dynamic), std::memory_order_relaxed);
             runtime_tick_hz_slot().store(0, std::memory_order_relaxed);
-            runtime_dynamic_hz_slot().store(60, std::memory_order_relaxed);
+            runtime_dynamic_hz_slot().store(base, std::memory_order_relaxed);
             runtime_dynamic_active_slot().store(false, std::memory_order_relaxed);
         } else {
             runtime_tick_mode_slot().store(static_cast<uint8_t>(TickMode::Manual), std::memory_order_relaxed);
@@ -320,20 +353,20 @@ public:
         if (runtime_tick_mode() != TickMode::Dynamic) {
             return effective_tick_hz(runtime_dynamic_hz_slot().load(std::memory_order_relaxed));
         }
-        int cur_hz = std::clamp(runtime_dynamic_hz_slot().load(std::memory_order_relaxed), 30, 60);
+        int cur_hz = std::clamp(runtime_dynamic_hz_slot().load(std::memory_order_relaxed), kMinHz, kMaxHz);
         const double period_ms = 1000.0 / static_cast<double>(cur_hz);
         const double util = ewma / period_ms;
-        if (util > 0.45 && cur_hz > 30) {
+        if (util > 0.45 && cur_hz > kMinHz) {
             runtime_dwell_under_slot().store(0, std::memory_order_relaxed);
             if (runtime_dwell_over_slot().fetch_add(1, std::memory_order_relaxed) + 1 >= 15) {
-                cur_hz = std::max(30, cur_hz - 5);
+                cur_hz = std::clamp(cur_hz - 5, kMinHz, kMaxHz);
                 runtime_dynamic_hz_slot().store(cur_hz, std::memory_order_relaxed);
                 runtime_dwell_over_slot().store(0, std::memory_order_relaxed);
             }
-        } else if (util < 0.30 && cur_hz < 60) {
+        } else if (util < 0.30 && cur_hz < kMaxHz) {
             runtime_dwell_over_slot().store(0, std::memory_order_relaxed);
             if (runtime_dwell_under_slot().fetch_add(1, std::memory_order_relaxed) + 1 >= 15) {
-                cur_hz = std::min(60, cur_hz + 5);
+                cur_hz = std::clamp(cur_hz + 5, kMinHz, kMaxHz);
                 runtime_dynamic_hz_slot().store(cur_hz, std::memory_order_relaxed);
                 runtime_dwell_under_slot().store(0, std::memory_order_relaxed);
             }
@@ -341,22 +374,25 @@ public:
             runtime_dwell_over_slot().store(0, std::memory_order_relaxed);
             runtime_dwell_under_slot().store(0, std::memory_order_relaxed);
         }
-        return cur_hz;
+        return std::clamp(cur_hz, kMinHz, kMaxHz);
     }
 
     static int effective_tick_hz(int configured_hz = 60) noexcept {
         const int rt = runtime_tick_hz_slot().load(std::memory_order_relaxed);
         if (rt < 0) return 0;
         if (rt > 0) return std::clamp(rt, 1, TickSchedule::kMaxHz);
-        if (runtime_tick_mode() == TickMode::Dynamic && runtime_dynamic_active_slot().load(std::memory_order_relaxed)) {
-            return std::clamp(runtime_dynamic_hz_slot().load(std::memory_order_relaxed), 30, 60);
+        if (runtime_tick_mode() == TickMode::Dynamic) {
+            if (runtime_dynamic_active_slot().load(std::memory_order_relaxed)) {
+                return std::clamp(runtime_dynamic_hz_slot().load(std::memory_order_relaxed), kMinHz, kMaxHz);
+            }
+            return std::clamp(configured_hz > 0 ? configured_hz : runtime_dynamic_hz_slot().load(std::memory_order_relaxed), kMinHz, kMaxHz);
         }
         return std::clamp(configured_hz, 1, TickSchedule::kMaxHz);
     }
 
     TickMode tick_mode() const noexcept { return tick_mode_; }
     int effective_hz() const noexcept { return effective_hz_; }
-    int target_hz() const noexcept { return effective_hz_; }
+    int target_hz() const noexcept { return tick_mode_ == TickMode::Dynamic ? -1 : effective_hz_; }
     double ewma_work_ms() const noexcept { return ewma_work_ms_; }
     std::chrono::microseconds tick_budget() const noexcept { return budget_; }
 
@@ -365,7 +401,7 @@ public:
         dwell_under_ = 0;
         if (hz < 0) {
             tick_mode_ = TickMode::Dynamic;
-            effective_hz_ = 60;
+            effective_hz_ = std::clamp(config_.hz > 0 ? config_.hz : 60, kMinHz, kMaxHz);
             set_global_target_hz(-1);
         } else if (hz == 0) {
             tick_mode_ = TickMode::Manual;
@@ -386,19 +422,20 @@ public:
         ewma_work_ms_ = (ewma_work_ms_ <= 0.0) ? work_ms : (0.15 * work_ms + 0.85 * ewma_work_ms_);
         (void)note_runtime_tick_work_ms(work_ms);
         if (tick_mode_ == TickMode::Dynamic) {
-            const double period_ms = 1000.0 / static_cast<double>( std::max(30, effective_hz_) );
+            effective_hz_ = std::clamp(effective_hz_, kMinHz, kMaxHz);
+            const double period_ms = 1000.0 / static_cast<double>(effective_hz_);
             const double util = ewma_work_ms_ / period_ms;
-            if (util > 0.45 && effective_hz_ > 30) {
+            if (util > 0.45 && effective_hz_ > kMinHz) {
                 dwell_under_ = 0;
                 if (++dwell_over_ >= 15) {
-                    effective_hz_ = std::max(30, effective_hz_ - 5);
+                    effective_hz_ = std::clamp(effective_hz_ - 5, kMinHz, kMaxHz);
                     dwell_over_ = 0;
                     set_hz(effective_hz_, now);
                 }
-            } else if (util < 0.30 && effective_hz_ < 60) {
+            } else if (util < 0.30 && effective_hz_ < kMaxHz) {
                 dwell_over_ = 0;
                 if (++dwell_under_ >= 15) {
-                    effective_hz_ = std::min(60, effective_hz_ + 5);
+                    effective_hz_ = std::clamp(effective_hz_ + 5, kMinHz, kMaxHz);
                     dwell_under_ = 0;
                     set_hz(effective_hz_, now);
                 }
@@ -406,7 +443,7 @@ public:
                 dwell_over_ = 0;
                 dwell_under_ = 0;
             }
-            runtime_dynamic_hz_slot().store(effective_hz_, std::memory_order_relaxed);
+            runtime_dynamic_hz_slot().store(std::clamp(effective_hz_, kMinHz, kMaxHz), std::memory_order_relaxed);
         }
         budget_ = std::chrono::microseconds(1000000 / std::max(1, effective_hz_));
         return effective_hz_;
@@ -472,8 +509,10 @@ private:
             p.tick(t);
             if (p.after_tick) p.after_tick();
             now = p.now();
-            const double work_ms = std::chrono::duration<double, std::milli>(now - t0).count();
-            (void)note_tick_work_ms(work_ms, now);
+            if (now > t0) {
+                const double work_ms = std::chrono::duration<double, std::milli>(now - t0).count();
+                (void)note_tick_work_ms(work_ms, now);
+            }
         }
     }
 

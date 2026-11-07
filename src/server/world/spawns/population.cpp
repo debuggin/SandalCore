@@ -34,6 +34,46 @@ std::string leaf_of(const std::string& archetype_path) {
 
 double unit(uint64_t h) { return static_cast<double>(h >> 11) / static_cast<double>(1ull << 53); }
 
+SpawnContext build_filter_context(const AreaConfig& area, SpawnContext fctx) {
+    if (!area.region && area.zoi_guids.empty() && !area.whole_world) {
+        if (!area.include_node_plugs.empty() || !area.polygon_cutout_cm.empty()) fctx.biome = "*";
+    } else if (!area.include_node_plugs.empty() || !area.polygon_cutout_cm.empty() ||
+               (area.region && area.region_mask != static_cast<uint8_t>(RegionBit::Riverlands)) || !area.zoi_guids.empty()) {
+        if (fctx.biome.empty() || fctx.biome == "Riverlands") fctx.biome = "*";
+    }
+    return fctx;
+}
+
+const content::PopFilter& effective_pop_filter(
+    const content::PopulationData& data, const content::NpcWorldSpawn* ws,
+    const content::NpcSetRow& set, const content::NpcInstanceRow& inst, const content::NpcAssetRow& asset) {
+    const int64_t ov = inst.filter_override ? inst.filter_override : (set.filter_override ? set.filter_override : (ws ? ws->filter_override : 0));
+    if (ov != 0) {
+        if (const auto it = data.filters.find(ov); it != data.filters.end()) return it->second;
+    }
+    return asset.filter;
+}
+
+std::set<std::string> collect_spawner_tags(
+    const content::PopulationData& data, const content::NpcSetRow& set,
+    const content::NpcInstanceRow& inst, int64_t set_guid, const content::NpcAssetRow& asset) {
+    std::set<std::string> tags(inst.tags.begin(), inst.tags.end());
+    tags.insert(set.tags.begin(), set.tags.end());
+    tags.insert(asset.tags.begin(), asset.tags.end());
+    if (const auto it = data.asset_set_tags.find(set_guid); it != data.asset_set_tags.end()) tags.insert(it->second.begin(), it->second.end());
+    return tags;
+}
+
+Why eval_asset_with_context(
+    const SpawnFilter& filter, const SpawnContext& fctx,
+    const content::PopFilter& pf, const std::set<std::string>& tags, const content::NpcAssetRow& asset) {
+    if (const Why w = SpawnFilter(fctx, nullptr).filter(pf, tags, fctx.zone); w != Why::Spawns) return w;
+    if (std::find(asset.tags.begin(), asset.tags.end(), "npc.type.prop") != asset.tags.end()) return Why::Prop;
+    return filter.visuals(asset);
+}
+
+thread_local bool g_allow_wildcard_biome = false;
+
 }  // namespace
 
 uint64_t point_hash(int64_t instance, int64_t set, int64_t placement, int64_t key) {
@@ -209,7 +249,15 @@ bool spawn_point(const content::PopulationData& data, const TemplateSource& temp
             const auto a = data.assets.find(asset_guid);
             if (a == data.assets.end() || a->second.archetype_path.empty()) continue;
             if (filter) {
-                if (const Why w = filter->asset(data, world_spawn, set, inst, set_guid, a->second, zoi); w != Why::Spawns) {
+                Why w = filter->asset(data, world_spawn, set, inst, set_guid, a->second, zoi);
+                if (w == Why::Biome && g_allow_wildcard_biome) {
+                    SpawnContext fctx = filter->context();
+                    fctx.biome = "*";
+                    fctx.zone = zoi;
+                    w = eval_asset_with_context(*filter, fctx, effective_pop_filter(data, world_spawn, set, inst, a->second),
+                                                collect_spawner_tags(data, set, inst, set_guid, a->second), a->second);
+                }
+                if (w != Why::Spawns) {
                     Candidate cand{&a->second, weight > 0 ? weight : 1.0, nullptr, false, Verdict::NoPath, w};
                     all.push_back(cand);
                     continue;
@@ -311,6 +359,8 @@ bool spawn_point(const content::PopulationData& data, const TemplateSource& temp
 
 std::vector<DataSpawn> select_data_spawns(const content::PopulationData& data, const TemplateSource& templates, const AreaConfig& area, PopulationStats& stats,
                                           const SpawnFilter* filter) {
+    const SpawnContext fctx = build_filter_context(area, filter ? filter->context() : SpawnContext{});
+    g_allow_wildcard_biome = (fctx.biome == "*");
     std::vector<DataSpawn> out;
     for (const content::NpcPlacement& placement : data.placements) {
         ++stats.placements;
@@ -319,10 +369,6 @@ std::vector<DataSpawn> select_data_spawns(const content::PopulationData& data, c
         const content::NpcSetRow& set = set_it->second;
         std::vector<Point> points;
         bool from_area = false;
-        const bool use_halo = area.uses_boundary_halo_for_spawns();
-        const auto in_area = [&](double px, double py) {
-            return use_halo ? area.contains_with_halo(px, py) : area.contains(px, py);
-        };
         if (set.area != 0) {
             // an area set: its instances are not at their offsets, the area's circles hold them
             const auto area_it = data.areas.find(set.area);
@@ -330,13 +376,13 @@ std::vector<DataSpawn> select_data_spawns(const content::PopulationData& data, c
             points = area_spawn_points(placement, set, area_it->second);
             from_area = true;
             bool any = false;
-            for (const Point& pt : points) any = any || in_area(pt.x, pt.y);
+            for (const Point& pt : points) any = any || area.contains(pt.x, pt.y);
             if (any) ++stats.area_sets;
         } else {
             points = placement_points(placement, set);
         }
         for (const Point& pt : points) {
-            if (!in_area(pt.x, pt.y)) continue;
+            if (!area.contains(pt.x, pt.y)) continue;
             ++(from_area ? stats.area_points : stats.points_in_area);
             const auto inst_it = data.instances.find(pt.instance);
             if (inst_it == data.instances.end()) continue;

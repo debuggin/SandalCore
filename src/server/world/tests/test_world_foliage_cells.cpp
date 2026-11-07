@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #include "test_world_foliage_common.h"
+#include "spawns/area.h"
 
 using namespace aoc::worldd;
 namespace repl = aoc::protocol::repl;
@@ -301,7 +302,7 @@ static void test_every_instance_has_its_state(World &w) {
     });
     char msg[240];
     std::snprintf(msg, sizeof msg, "%zu state actors in the world, %zu read back from their bits, %zu FoliageName twice, %zu components, %zu not initialized", actors, actors - unreadable, doubled, components, not_init);
-    CHECK(actors == 671 && unreadable == 0 && doubled == 0 && components == 10613 && not_init == 0 && client.size() == 671, msg);
+    CHECK(actors == 3761 && unreadable == 0 && doubled == 0 && components == 42267 && not_init == 0 && client.size() == 3761, msg);
     TsvRowStats st;
     FILE *f = std::fopen(tsv_path(), "rb");
     char buf[2048];
@@ -312,10 +313,10 @@ static void test_every_instance_has_its_state(World &w) {
         std::fclose(f);
     }
     std::snprintf(msg, sizeof msg, "%zu of the %zu rows resolve to an initialized component (%zu without a state actor, %zu without a component, %zu not initialized)", st.resolved, st.rows, st.no_actor, st.no_component, st.uninitialized);
-    CHECK(st.rows == 84218 && st.resolved == st.rows, msg);
+    CHECK(st.rows == 588362 && st.resolved == st.rows, msg);
     std::snprintf(msg, sizeof msg, "... %zu of %zu trees, %zu of %zu plants, %zu of %zu stones (and the four rock pillars)", st.trees_ok, st.trees, st.plants_ok, st.plants, st.stones_ok, st.stones);
-    CHECK(st.trees == 42250 && st.trees_ok == st.trees && st.plants == 21046 && st.plants_ok == st.plants && st.stones == 20922 && st.stones_ok == st.stones, msg);
-    CHECK(st.foreign == 0, "every row, the 20,922 stones among them, is in an IntrepidGatherableFISMC_<n> component: the class the client's target scan accepts");
+    CHECK(st.trees == 294820 && st.trees_ok == st.trees && st.plants == 148686 && st.plants_ok == st.plants && st.stones == 144856 && st.stones_ok == st.stones, msg);
+    CHECK(st.foreign == 0, "every row, the 144,856 stones among them, is in an IntrepidGatherableFISMC_<n> component: the class the client's target scan accepts");
 }
 
 static void test_cells_equal_retail(World &w) {
@@ -385,12 +386,12 @@ static void test_cell_actor(World &w) {
     const uint16_t owner = map.rows()[stone_row].owner;
     CHECK(w.f->name_of(stone_row) == "Stone_Granite_Large_3", "(a Granite stone)");
     const uint64_t actor_id = cells.actor_of(owner);
-    CHECK(actor_id != 0 && cells.actors() == 671 && cells.items_of(owner) == 0, "every cell has its state actor before anything in it is cut: 671, this one with no item");
+    CHECK(actor_id != 0 && cells.actors() == 3761 && cells.items_of(owner) == 0, "every cell has its state actor before anything in it is cut: 3,761, this one with no item");
     const size_t in_registry = w.world->registry().size();
     const Clock::time_point t0{seconds(1000)};
     const auto change = w.f->harvested(stone_row, t0);
     CHECK(change && change->state == fol::kEmpty, "the harvest is Empty");
-    CHECK(cells.actor_of(owner) == actor_id && cells.actors() == 671 && w.world->registry().size() == in_registry, "the first cut of the cell changed its actor and made no other");
+    CHECK(cells.actor_of(owner) == actor_id && cells.actors() == 3761 && w.world->registry().size() == in_registry, "the first cut of the cell changed its actor and made no other");
     const world::WorldActor *a = w.world->registry().find(actor_id);
     const bool flags_ok = a && a->kind == world::ActorKind::Foliage && a->snapshot_only && a->keep_fast_shadow && a->dormancy_delay == fol::kStateActorOpen && !a->never_dormant;
     CHECK(flags_ok, "it is a snapshot-only foliage actor with a 265 ms open, whose fast arrays the view keeps");
@@ -460,7 +461,7 @@ static void test_cell_regrowth(World &w) {
 }
 
 static void test_load(const char *db, const char *tsv) {
-    std::printf("the load: the 671 state actors made at start\n");
+    std::printf("the load: the 3,761 state actors made at start\n");
     World w;
     if (!w.open(db, tsv, false)) {
         return;
@@ -495,9 +496,52 @@ static void test_load(const char *db, const char *tsv) {
         ++opens;
     });
     const double grown_mb = ws1 > ws0 ? static_cast<double>(ws1 - ws0) / (1024.0 * 1024.0) : 0.0;
-    CHECK(made == 671 && subobjects == 10613 && w.world->registry().size() == registry_before + 671 && opens == 671, "671 actors with 10,613 components were made and each builds its open");
+    CHECK(made == 3761 && subobjects == 42267 && w.world->registry().size() == registry_before + 3761 && opens == 3761, "3,761 actors with 42,267 components were made and each builds its open");
     CHECK(ms < 2000.0, "they are made in under two seconds, once, at start");
     CHECK(ws0 == 0 || grown_mb < 100.0, "and they hold under 100 MB of the process (the measurement: see above)");
+}
+
+static void test_worker_area_filtering(World &w) {
+    std::printf("the cells: worker area filtering excludes carved-out holes and keeps only authoritative cells\n");
+    const fol::FoliageMap &map = w.f->map();
+    const spawns::AreaConfig saved = spawns::AreaConfig::active_worker_area();
+    spawns::AreaConfig carved = spawns::AreaConfig::continent();
+    carved.exclude_node_plugs = {spawns::kVerraNodePlugs[0]};
+    spawns::AreaConfig::active_worker_area(&carved);
+    world::ActorRegistry reg_carved;
+    uint64_t next_guid = 900000;
+    fol::FoliageCells cells_carved(reg_carved, map, [&] { return aoc::protocol::emit::FIntrepidNetworkGUID::from_u64(++next_guid); });
+    const size_t made_carved = cells_carved.make_all();
+    size_t carved_holes = 0;
+    size_t leaked_holes = 0;
+    for (size_t o = 0; o < map.owners().size(); ++o) {
+        double cx = 0.0, cy = 0.0;
+        map.cell_center(static_cast<uint16_t>(o), cx, cy);
+        const bool in_hole = carved.has_carve_out(cx, cy);
+        if (in_hole) {
+            ++carved_holes;
+            if (cells_carved.actor_of(static_cast<uint16_t>(o)) != 0) ++leaked_holes;
+        }
+    }
+    CHECK(carved_holes > 0 && leaked_holes == 0 && made_carved + carved_holes == map.owners().size(),
+          "make_all excludes every cell inside a carved-out hole (has_carve_out) and creates the rest");
+    spawns::AreaConfig plug = spawns::AreaConfig::continent();
+    plug.region_mask = static_cast<uint8_t>(spawns::RegionBit::None);
+    plug.region_label = "node_plug";
+    plug.include_node_plugs = {spawns::kVerraNodePlugs[0]};
+    spawns::AreaConfig::active_worker_area(&plug);
+    world::ActorRegistry reg_plug;
+    fol::FoliageCells cells_plug(reg_plug, map, [&] { return aoc::protocol::emit::FIntrepidNetworkGUID::from_u64(++next_guid); });
+    const size_t made_plug = cells_plug.make_all();
+    size_t outside_plug = 0;
+    for (size_t o = 0; o < map.owners().size(); ++o) {
+        double cx = 0.0, cy = 0.0;
+        map.cell_center(static_cast<uint16_t>(o), cx, cy);
+        if (cells_plug.actor_of(static_cast<uint16_t>(o)) != 0 && !plug.contains(cx, cy)) ++outside_plug;
+    }
+    spawns::AreaConfig::active_worker_area(&saved);
+    CHECK(made_plug == carved_holes && outside_plug == 0 && made_carved + made_plug == map.owners().size(),
+          "a plug worker only creates AIntrepidStateIFA cells inside its authoritative area");
 }
 
 void run_foliage_cells_tests(World &w, const char *db, const char *tsv) {
@@ -506,4 +550,5 @@ void run_foliage_cells_tests(World &w, const char *db, const char *tsv) {
     test_cell_actor(w);
     test_cell_regrowth(w);
     test_load(db, tsv);
+    test_worker_area_filtering(w);
 }

@@ -1,15 +1,22 @@
-# itemnames
+# Item Names Extractor
 
-Reads the words the game's items are named with out of your own game files.
+**Related Guides**: [Root Overview](../../../README.md) | [Game-Data Extractor](../aoc-extractor/README.md) | [Content Compiler](../../server/services/cmd/contentc/README.md)
 
-    dotnet build/dotnet/bin/itemnames/Release/net10.0/itemnames.dll read --paks "<PakDir>" --usmap src/config/layouts/aoc.usmap --table AOC/Content/UI_Kit/Items.uasset [--table ...] [--out-dir dist/content] [--check]
+`src/tools/itemnames` is an extraction utility that resolves localized display names, item categories, and equipment slot tags from the client string tables (`locres`) and DesignData records to generate `dist/content/items.tsv`.
 
-`scripts/extract_game_data.ps1` runs it as the `names` step (`-Only tools,names`); it needs only the game's containers (a few seconds).
-The tables it reads are listed in the script (`$StringTables`): the string tables that an item's name points at in the design data.
+---
 
-It writes `item_names.tsv`, one line per entry of each table: `table` (the table's object path, as the design data names it, for example `/Game/UI_Kit/Items.Items`), `key`
-and `text` (a backslash, a tab and a line break in a text are written `\\`, `\t` and `\n`). The lines are in the order of table and key, so the same game files give the same bytes.
-`contentc` reads the file (`--item-names`, default `dist/content/item_names.tsv`) and writes the text, instead of the key, into the item records whose name is a string-table entry
-(the six Glint kinds and six quest items): the pick-up pop-up then reads "Dim Glint" and not a text code.
+## How `items.tsv` Is Used
 
-`--check` writes nothing and exits 1 when `--out-dir` holds a different file.
+- **`worldctl give-item`**: Lets operators grant items by human-readable name (such as `" Copper Ore "` or `" Novice Sword "`) or GUID.
+- **Web Admin Catalog**: Powers item search and inventory display in `aoc-gateway` (`internal/admin-catalog`) under either `AOC_DATA_MODE_ITEMS=memory` or `disk`.
+
+---
+
+## Running the Tool
+
+`itemnames` is invoked automatically during game-data extraction:
+
+```powershell
+.\sandal.ps1 extract
+```

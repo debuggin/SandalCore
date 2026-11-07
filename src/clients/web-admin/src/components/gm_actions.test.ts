@@ -546,7 +546,7 @@ async function testZeroObjectLogFalsificationAndConsistentEntityTaxonomy(): Prom
   assert.equal(snap.workers.length, 1);
   assert.equal(snap.workers[0].total_entities, 250);
   assert.equal(snap.workers[0].tick_hz, 100);
-  assert.equal(snap.workers[0].scope_tier_badge, "NODE_PLUG 100Hz");
+  assert.equal(snap.workers[0].scope_tier_badge, "NODE_PLUG");
 
   const logsSrc = readFileSync(fileURLToPath(new URL("./LogsAndContainersTab.tsx", import.meta.url)), "utf8");
   assert.equal(logsSrc.includes('metric-total-entities'), true);

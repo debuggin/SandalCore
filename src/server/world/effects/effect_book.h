@@ -36,6 +36,7 @@ struct Instance {
     double                        next_tick = kForever;  // kForever: it does not tick
     std::vector<stats::EffectMod> mods;
     uint64_t                      instigator = 0;        // the actor that applied it (the one it is shown to be from); 0: none
+    uint64_t                      pet = 0;               // the pet whose hit put it on (its owner is the instigator); 0: the instigator's own.  It ends with the pet
 };
 
 class Book {
@@ -62,13 +63,14 @@ public:
     bool   empty() const { return items_.empty(); }
     size_t size() const { return items_.size(); }
 
-    bool apply(const Applied& a, uint64_t instigator, double t, Changes& out, Instance* created = nullptr) {
+    bool apply(const Applied& a, uint64_t instigator, double t, Changes& out, Instance* created = nullptr, uint64_t via_pet = 0) {
         if (!a.def || a.stacks < 1) return false;
         const content::EffectRow& row = a.def->row;
         const bool never_refresh = row.stack_duration_refresh.find("NeverRefresh") != std::string::npos;
         const bool in_place = row.stack_type.find("StackInPlace") != std::string::npos;
         const bool separate = row.stack_type.find("StackSeperate") != std::string::npos;
         const bool override_duration = row.stack_type.find("OverrideDuration") != std::string::npos;
+        const Source src{instigator, via_pet};
         Instance* existing = nullptr;
         int same = 0;
         for (Instance& e : items_) {
@@ -77,7 +79,7 @@ public:
             if (!existing && (!row.compare_source || e.instigator == instigator)) existing = &e;
         }
         const auto fresh = [&](int stacks) {
-            if (!add_fresh_instance(a, stacks, instigator, t, out)) return false;
+            if (!add_fresh_instance(a, stacks, src, t, out)) return false;
             if (created) *created = items_.back();
             return true;
         };
@@ -88,12 +90,12 @@ public:
         }
         if (in_place) {
             existing->stacks = std::min(std::max(1, a.in_place_limit), existing->stacks + a.stacks);
-            refresh_instance(*existing, a, instigator, t);
+            refresh_instance(*existing, a, src, t);
             note_changed(*existing, out);
         } else if (separate) {
             if (same < std::max(1, row.global_stack_limit)) return fresh(1);
         } else if (override_duration) {
-            refresh_instance(*existing, a, instigator, t);
+            refresh_instance(*existing, a, src, t);
             note_changed(*existing, out);
         } else {   // OverrideAlways: one instance, replaced (a record that never refreshes keeps what it has)
             if (never_refresh) return false;
@@ -150,6 +152,20 @@ public:
         return n;
     }
 
+    size_t remove_from_pet(uint64_t pet, Changes& out) {
+        size_t n = 0;
+        if (pet == 0) return 0;
+        for (size_t i = 0; i < items_.size();) {
+            if (items_[i].pet == pet) {
+                remove_key(items_[i].key, out);
+                ++n;
+            } else {
+                ++i;
+            }
+        }
+        return n;
+    }
+
     void clear(Changes& out) {
         for (const Instance& e : items_) out.removed.push_back(e.key);
         items_.clear();
@@ -190,23 +206,53 @@ public:
     struct Crowd {
         int64_t flags = 0;
         double  snare = 0;
+        bool    override_move = false;
+        int     anim = content::kCcAnimNone;
+        int64_t anim_record = 0;
+        double  anim_start = 0;
+        double  anim_seconds = 0;
         bool operator==(const Crowd&) const = default;
     };
     Crowd cc() const {
         Crowd out;
+        const Instance* shown = nullptr;
         for (const Instance& e : items_) {
             if (!e.def || !e.def->cc) continue;
-            out.flags |= e.def->cc->applied_status;
-            if (e.def->cc->applied_status & content::kCcSnare) out.snare = std::max(out.snare, e.def->cc->snare_strength);
+            const content::CrowdControlRow& r = *e.def->cc;
+            out.flags |= r.applied_status;
+            if (r.applied_status & content::kCcSnare) out.snare = std::max(out.snare, r.snare_strength);
+            out.override_move = out.override_move || r.override_client_move;
+            if (animation_of(r) == content::kCcAnimNone) continue;
+            if (!shown || r.priority > shown->def->cc->priority ||
+                (r.priority == shown->def->cc->priority && (e.end > shown->end || (e.end == shown->end && e.start > shown->start)))) {
+                shown = &e;
+            }
+        }
+        if (shown) {
+            out.anim = animation_of(*shown->def->cc);
+            out.anim_record = shown->def->cc->guid;
+            out.anim_start = shown->start;
+            out.anim_seconds = std::isinf(shown->end) ? static_cast<double>(std::numeric_limits<float>::max()) : static_cast<double>(static_cast<float>(shown->end - shown->start));
         }
         return out;
     }
+    static int animation_of(const content::CrowdControlRow& r) {
+        if (r.animation_request.find("Stunned") != std::string::npos) return content::kCcAnimStunned;
+        if (r.animation_request.find("Tripped") != std::string::npos) return content::kCcAnimTripped;
+        return content::kCcAnimNone;
+    }
 
 private:
-    static void refresh_instance(Instance& e, const Applied& a, uint64_t instigator, double t) {
+    struct Source {
+        uint64_t instigator = 0;
+        uint64_t via_pet = 0;
+    };
+
+    static void refresh_instance(Instance& e, const Applied& a, Source src, double t) {
         const content::EffectRow& row = a.def->row;
         e.mods = a.mods;
-        e.instigator = instigator;   // compare_source effects only reach an instance of this same instigator
+        e.instigator = src.instigator;   // compare_source effects only reach an instance of this same instigator
+        if (src.via_pet == 0 || e.pet != 0) e.pet = src.via_pet;
         if (row.stack_duration_refresh.find("NeverRefresh") != std::string::npos) return;
         const bool extend = row.stack_duration_refresh.find("ExtendDuration") != std::string::npos;
         if (extend && a.extension >= 0 && !std::isinf(e.end) && !std::isinf(a.duration)) {
@@ -220,7 +266,7 @@ private:
         e.end = std::isinf(a.duration) ? kForever : t + a.duration;
     }
 
-    bool add_fresh_instance(const Applied& a, int stacks, uint64_t instigator, double t, Changes& out) {
+    bool add_fresh_instance(const Applied& a, int stacks, Source src, double t, Changes& out) {
         if (items_.size() >= kMaxInstances) return false;
         const content::EffectRow& row = a.def->row;
         Instance e;
@@ -231,7 +277,8 @@ private:
         e.end = std::isinf(a.duration) ? kForever : t + a.duration;
         e.mods = a.mods;
         e.next_tick = row.tick_timer > 0 ? (row.ignore_initial_tick ? t + row.tick_timer : t) : kForever;
-        e.instigator = instigator;
+        e.instigator = src.instigator;
+        e.pet = src.via_pet;
         items_.push_back(e);
         out.added.push_back(e);
         return true;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import React from "react";
-import { EntityInspector } from "../components/EntityInspector";
+import { EntityInspector, formatPoiCategoryDisplay, poiOverlayToInspectedEntity } from "../components/EntityInspector";
 import {
   buildPaginatedQueryUrl,
   buildSpawnNpcCommand,
@@ -47,6 +47,7 @@ import {
   OVERLAY_LAYER_KEYS,
   parseTimeOfDayInput,
   resolveWorkerForCoordinateOrZone,
+  resolveWorkerTickFields,
   shouldFetchPoisCatalog,
   useAdminAuthStore,
   useWorldStreamStore,
@@ -79,6 +80,7 @@ import {
   isEntityVisibleForLayers,
   type MapSearchResultItem,
   MAX_VERRA_MAP_ZOOM,
+  mergePoiOverlays,
   MIN_VERRA_MAP_ZOOM,
   parsePoisFromPayload,
   PURE_BLACK_TILE_BG,
@@ -87,6 +89,7 @@ import {
   VerraTileCache,
 } from "./verraTilePyramidRenderer";
 
+export { formatPoiCategoryDisplay, poiOverlayToInspectedEntity };
 export * from "../state/worldStreamStore";
 export * from "./VerraCalendarPopover";
 export * from "./verraTilePyramidRenderer";
@@ -112,7 +115,7 @@ export const NPC_INSTANCE_ACTIONS: readonly { readonly id: NpcInstanceAction; re
 
 function applyPolledWorldState(stateData: unknown, snap: WorldStreamState): void {
   const added = parseWorldStateResponse(stateData, snap.layers), pois = parsePoisFromPayload(stateData);
-  if (pois.length > 0) snap.setPois(pois);
+  if (pois.length > 0) snap.setPois(mergePoiOverlays(snap.pois, pois));
   if (Array.isArray((stateData as { workers?: unknown }).workers)) snap.setWorkers((stateData as { workers: readonly WorldWorkerInfo[] }).workers);
   const sd = stateData as { time_of_day_hours?: unknown; time_of_day_anchor_hours?: unknown; calendar_day_of_year?: unknown; calendar_year?: unknown };
   const liveH = typeof sd.time_of_day_hours === "number" ? sd.time_of_day_hours : typeof sd.time_of_day_anchor_hours === "number" ? sd.time_of_day_anchor_hours : null;
@@ -141,10 +144,13 @@ function useWorldMapPolling(storeSnap: WorldStreamState, onMetaLoaded: (meta: Ve
       fetchWithTransientRetry("/api/v1/world/map-meta").then((r) => (r.ok ? r.json() : null)).catch(() => null),
       fetchWithTransientRetry("/api/v1/world/tiles/metadata.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
       fetchWithTransientRetry("/api/v1/world/zois").then((r) => (r.ok ? r.json() : null)).catch(() => null),
-    ]).then(([metaData, tileMeta, zoisData]) => {
+      fetchWithTransientRetry("/api/v1/catalog/places?limit=2000").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]).then(([metaData, tileMeta, zoisData, placesData]) => {
       if (cancelled || isUnauthenticatedViewOnly()) return;
       const zoiItems = Array.isArray((zoisData as { zois?: unknown })?.zois) ? (zoisData as { zois: unknown[] }).zois : Array.isArray(zoisData) ? zoisData : [];
       if (zoiItems.length > 0) hydrateVerraZoiPolygonsFromTsvApi(zoiItems as Parameters<typeof hydrateVerraZoiPolygonsFromTsvApi>[0]);
+      const catalogPois = parsePoisFromPayload(placesData);
+      if (catalogPois.length > 0) storeSnapRef.current.setPois(mergePoiOverlays(storeSnapRef.current.pois, catalogPois));
       const merged = { ...(tileMeta ?? {}), ...(metaData ?? {}) } as Partial<VerraMapMeta>;
       const nodes = Array.isArray(merged.nodes) && merged.nodes.length > 0 ? merged.nodes : DEFAULT_VERRA_CITY_NODES;
       onMetaLoaded({ ...DEFAULT_VERRA_MAP_META, ...merged, nodes });
@@ -206,35 +212,20 @@ export function parseWorldStateResponse(raw: unknown, layers: LayerToggles): rea
   const rawEntities = (Array.isArray(obj.entities) ? obj.entities : []) as readonly Record<string, unknown>[];
   for (const e of rawEntities) {
     const rawKind = String(e.kind ?? (e.hostile ? "monster" : "npc"));
-    const kind =
-      rawKind === "player" ||
-      rawKind === "monster" ||
-      rawKind === "resource_node" ||
-      rawKind === "mount" ||
-      rawKind === "loot_pile" ||
-      rawKind === "poi"
-        ? rawKind
-        : "npc";
-    const rawName = String(e.name ?? kind);
-    const rawSubkind = typeof e.npc_subkind === "string" && e.npc_subkind.length > 0 ? e.npc_subkind : typeof e.npcSubkind === "string" && e.npcSubkind.length > 0 ? e.npcSubkind : undefined;
+    const rawName = String(e.name ?? rawKind);
+    const explicitSub = typeof e.npc_subkind === "string" && e.npc_subkind.length > 0 ? e.npc_subkind : typeof e.npcSubkind === "string" && e.npcSubkind.length > 0 ? e.npcSubkind : undefined;
+    const isEmber = rawKind === "emberspring" || rawKind === "wayshrine" || explicitSub === "emberspring" || /\bemberspring\b|ember\s+spring|revive\s*shrine|attunable.*shrine|\bwayshrine\b/i.test(rawName);
+    const rawSubkind = isEmber ? "emberspring" : explicitSub;
+    const kind = rawKind === "player" || rawKind === "monster" || rawKind === "resource_node" || rawKind === "mount" || rawKind === "loot_pile" || rawKind === "poi" ? rawKind : "npc";
     const rawResType = typeof e.resourceType === "string" && e.resourceType.length > 0 ? e.resourceType : typeof e.resource_type === "string" && e.resource_type.length > 0 ? e.resource_type : undefined;
     const resType = kind === "resource_node" || rawSubkind === "huntable" || Boolean(rawResType) ? inferResourceNodeType(rawName, rawResType, rawSubkind) : undefined;
     const qual = typeof e.quality === "string" && e.quality.length > 0 ? e.quality : typeof e.rarity === "string" && e.rarity.length > 0 ? e.rarity : kind === "resource_node" ? "Common · Tier 1 (Novice)" : undefined;
     const ent: WorldEntity = {
-      guid: String(e.id ?? e.guid ?? e.name ?? "entity"),
-      name: rawName,
-      kind,
-      xCm: Number(e.x_cm ?? e.x ?? 0),
-      yCm: Number(e.y_cm ?? e.y ?? 0),
-      zCm: Number(e.z_cm ?? e.z ?? 0),
-      yawDeg: Number(e.yaw_deg ?? e.yaw ?? 0),
-      level: Number(e.level ?? 1),
-      healthPct: Number(e.health_pct ?? e.hp ?? 100),
-      npc_subkind: rawSubkind,
-      npcSubkind: rawSubkind,
-      resourceType: resType,
-      resource_type: resType,
-      quality: qual,
+      guid: String(e.id ?? e.guid ?? e.name ?? "entity"), name: rawName, kind,
+      xCm: Number(e.x_cm ?? e.x ?? 0), yCm: Number(e.y_cm ?? e.y ?? 0), zCm: Number(e.z_cm ?? e.z ?? 0),
+      yawDeg: Number(e.yaw_deg ?? e.yaw ?? 0), level: Number(e.level ?? 1), healthPct: Number(e.health_pct ?? e.hp ?? 100),
+      npc_subkind: rawSubkind, npcSubkind: rawSubkind, resourceType: resType, resource_type: resType, quality: qual,
+      poiCategory: isEmber ? "Ember Spring" : kind === "poi" ? formatPoiCategoryDisplay({ category: String(e.category ?? rawKind), name: rawName }) : undefined,
       zoneId: typeof e.zone === "string" ? e.zone : typeof e.zone_id === "string" ? e.zone_id : undefined,
     };
     if (isEntityVisibleForLayers(ent, layers, 5)) added.push(ent);
@@ -318,13 +309,13 @@ export function ServerTimeOfDayControl(props: { readonly storeSnap: WorldStreamS
       <span data-testid="world-current-time-display" title="Authoritative Verra Server Time (advances at 9x real time across all world workers)" style={{ fontFamily: "ui-monospace, monospace", fontVariantNumeric: "tabular-nums", fontSize: "11px", fontWeight: 700, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400 }}>
         Time {liveClock}
       </span>
-      <span data-testid="verra-calendar-badge" title={liveCalendar.calendarFormatted} style={{ fontSize: "10px", fontWeight: 600, color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
-        {compact ? `Y${liveCalendar.calendarYear} D${liveCalendar.calendarDayOfYear} ${liveCalendar.calendarSeason}` : `Year ${liveCalendar.calendarYear} AE · ${liveCalendar.calendarSeason} · ${liveCalendar.calendarDayOfMonth} ${liveCalendar.calendarMonthName} (Day ${liveCalendar.calendarDayOfYear}/360)`}
+      <span data-testid="verra-calendar-badge" title={`Year ${liveCalendar.calendarYear}, ${liveCalendar.calendarSeason} Day ${liveCalendar.calendarDayOfSeason} of 90 (Day ${liveCalendar.calendarDayOfYear} of 360)`} style={{ fontSize: "10px", fontWeight: 600, color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
+        {compact ? `${liveCalendar.calendarSeason} D${liveCalendar.calendarDayOfSeason}` : liveCalendar.calendarFormatted}
       </span>
-      <button type="button" data-testid="world-time-picker-btn" aria-expanded={popoverOpen} title="Open Server Time of Day & Verra Calendar editor" onClick={() => { if (!popoverOpen) { setDraftTime(formatTimeOfDayLabel(liveHours)); setDraftDayOfYear(liveCalendar.calendarDayOfYear); setDraftYear(liveCalendar.calendarYear); } setPopoverOpen((v) => !v); }} style={{ height: compact ? "22px" : "24px", padding: "0 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: popoverOpen ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: popoverOpen ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
+      <button type="button" data-testid="world-time-picker-btn" aria-expanded={popoverOpen} title="Open Server Time of Day & Verra Calendar editor" onClick={() => { if (!popoverOpen) { setDraftTime(formatTimeOfDayLabel(liveHours)); setDraftDayOfYear(liveCalendar.calendarDayOfYear); setDraftYear(liveCalendar.calendarYear); } setPopoverOpen((v) => !v); }} style={{ height: compact ? "22px" : "24px", padding: "0 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: popoverOpen ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: popoverOpen ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontFamily: "inherit", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
         Set Time
       </button>
-      <div id="time-of-day-popover" data-testid="world-time-picker-popover" style={{ display: popoverOpen ? "flex" : "none", position: "absolute", top: "calc(100% + 6px)", right: 0, width: "320px", flexDirection: "column", gap: "8px", padding: "10px 12px", borderRadius: "8px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(18px)", boxShadow: "0 12px 32px rgba(0,0,0,0.65)", zIndex: 1200 }}>
+      <div id="time-of-day-popover" data-testid="world-time-picker-popover" style={{ display: popoverOpen ? "flex" : "none", position: "absolute", top: "calc(100% + 6px)", right: 0, width: "340px", flexDirection: "column", gap: "8px", padding: "10px 12px", borderRadius: "8px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(18px)", boxShadow: "0 12px 32px rgba(0,0,0,0.65)", zIndex: 1200 }}>
         <div data-testid="time-of-day-popover" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px" }}>
           <strong style={{ color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, letterSpacing: "0.04em", textTransform: "uppercase" }}>Server Time of Day</strong>
           <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>{formatTimeOfDayLabel(draftHours)} ({formatTimePhaseLabel(draftHours)})</span>
@@ -334,11 +325,11 @@ export function ServerTimeOfDayControl(props: { readonly storeSnap: WorldStreamS
         </div>
         <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
           <input type="text" aria-label="Server Time of Day (HH:MM)" data-testid="world-time-of-day-select" placeholder="HH:MM" value={draftTime} onChange={(e) => setDraftTime(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === "Enter") applyHours(parseTimeOfDayInput(draftTime)); }} style={{ flex: 1, height: "28px", padding: "0 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontFamily: "ui-monospace, monospace", fontSize: "12px" }} />
-          <button type="button" data-testid="world-time-apply-btn" onClick={() => applyHours(parseTimeOfDayInput(draftTime))} style={{ height: "28px", padding: "0 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, color: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>Apply Time</button>
+          <button type="button" data-testid="world-time-apply-btn" onClick={() => applyHours(parseTimeOfDayInput(draftTime))} style={{ height: "28px", padding: "0 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, color: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, fontFamily: "inherit", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>Apply Time</button>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "4px" }}>
           {[{ h: 6, label: "06:00 Dawn" }, { h: 12, label: "12:00 Noon" }, { h: 18, label: "18:00 Dusk" }, { h: 0, label: "00:00 Night" }].map((p) => (
-            <button key={p.h} type="button" onClick={() => applyHours(p.h)} style={{ height: "24px", padding: "0 4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "10px", cursor: "pointer" }}>{p.label}</button>
+            <button key={p.h} type="button" onClick={() => applyHours(p.h)} style={{ height: "24px", padding: "0 4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontFamily: "inherit", fontSize: "10px", cursor: "pointer" }}>{p.label}</button>
           ))}
         </div>
         <VerraCalendarDateModifierSection draftDayOfYear={draftDayOfYear} draftYear={draftYear} onChangeDate={(d, y) => { setDraftDayOfYear(d); setDraftYear(y); }} onApplyPresetDate={(d, y) => applyHours(draftHours, d, y)} />
@@ -356,15 +347,15 @@ function renderMapHeader(
 ): React.ReactElement {
   const counts = computeLayerEntityCounts(storeSnap);
   return (
-    <header style={{ position: "relative", zIndex: 60, display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "8px", padding: "8px 14px", background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}` }}>
+    <header style={{ position: "relative", zIndex: 60, display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "8px", padding: "8px 14px", background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, fontFamily: '"Segoe UI", system-ui, -apple-system, sans-serif' }}>
       <StreamStatus />
       <div style={{ position: "relative", minWidth: "240px" }}>
-        <input type="search" aria-label="Search online players on map" data-testid="verra-map-search-input" value={searchText} onChange={(e) => onSearchChange(e.currentTarget.value)} placeholder="Search online players on map..." style={{ width: "100%", minHeight: "32px", padding: "5px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "12px" }} />
+        <input type="search" aria-label="Search online players on map" data-testid="verra-map-search-input" value={searchText} onChange={(e) => onSearchChange(e.currentTarget.value)} placeholder="Search online players on map..." style={{ width: "100%", minHeight: "32px", padding: "5px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontFamily: "inherit", fontSize: "12px" }} />
         {searchResults.length > 0 ? (
           <ul role="listbox" aria-label="Player search results" data-testid="verra-map-search-results" style={{ position: "absolute", top: "36px", left: 0, right: 0, maxHeight: "240px", overflowY: "auto", zIndex: 40, margin: 0, padding: "4px", listStyle: "none", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100 }}>
             {searchResults.map((hit) => (
               <li key={hit.id}>
-                <button type="button" onClick={() => onSelectHit(hit)} style={{ width: "100%", minHeight: "32px", padding: "4px 8px", textAlign: "left", border: "none", background: "transparent", color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, fontSize: "12px", cursor: "pointer" }}>{hit.label}</button>
+                <button type="button" onClick={() => onSelectHit(hit)} style={{ width: "100%", minHeight: "32px", padding: "4px 8px", textAlign: "left", border: "none", background: "transparent", color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, fontFamily: "inherit", fontSize: "12px", cursor: "pointer" }}>{hit.label}</button>
               </li>
             ))}
           </ul>
@@ -373,22 +364,27 @@ function renderMapHeader(
       <GmActionModalsDock />
       <div role="toolbar" aria-label="Map layer visibility toggles" style={{ display: "flex", gap: "5px", flexWrap: "wrap", alignItems: "center" }}>
         {OVERLAY_LAYER_KEYS.map((layerKey) => (
-          <button key={layerKey} type="button" data-testid={`layer-toggle-${layerKey}`} aria-pressed={storeSnap.layers[layerKey]} onClick={() => storeSnap.toggleLayer(layerKey)} style={{ minHeight: "32px", padding: "4px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: storeSnap.layers[layerKey] ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: storeSnap.layers[layerKey] ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
+          <button key={layerKey} type="button" data-testid={`layer-toggle-${layerKey}`} aria-pressed={storeSnap.layers[layerKey]} onClick={() => storeSnap.toggleLayer(layerKey)} style={{ minHeight: "32px", padding: "4px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: storeSnap.layers[layerKey] ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: storeSnap.layers[layerKey] ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontFamily: "inherit", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
             {formatOverlayLayerLabel(layerKey, counts)}
           </button>
         ))}
-        <button type="button" data-testid="layer-toggle-zoiBorders" aria-pressed={storeSnap.layers.zoiBorders} onClick={() => storeSnap.toggleLayer("zoiBorders")} style={{ minHeight: "32px", padding: "4px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: storeSnap.layers.zoiBorders ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: storeSnap.layers.zoiBorders ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>ZOI Borders</button>
-        <div data-testid="map-entity-legend" aria-label="Map Entity Color Legend" style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "3px 8px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, fontSize: "10px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
-          {ENTITY_MAP_LEGEND_SWATCHES.map((sw) => (
-            <span key={sw.id} data-testid={`legend-swatch-${sw.id}`} style={{ display: "inline-flex", alignItems: "center", gap: "3px", whiteSpace: "nowrap" }}>
-              <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "50%", backgroundColor: sw.color, display: "inline-block" }} />
-              <span>{sw.label}</span>
-            </span>
-          ))}
-        </div>
+        <button type="button" data-testid="layer-toggle-zoiBorders" aria-pressed={storeSnap.layers.zoiBorders} onClick={() => storeSnap.toggleLayer("zoiBorders")} style={{ minHeight: "32px", padding: "4px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: storeSnap.layers.zoiBorders ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: storeSnap.layers.zoiBorders ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontFamily: "inherit", fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>ZOI Borders</button>
         <ServerTimeOfDayControl storeSnap={storeSnap} />
       </div>
     </header>
+  );
+}
+
+function renderBottomLeftMapEntityLegend(): React.ReactElement {
+  return (
+    <div data-testid="map-entity-legend" aria-label="Map Entity Color Legend" style={{ position: "absolute", left: "12px", bottom: "12px", zIndex: 18, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "5px", padding: "8px 10px", borderRadius: "6px", border: "1px solid rgba(140, 108, 66, 0.47)", backgroundColor: "rgba(11, 14, 23, 0.86)", backdropFilter: "blur(12px)", fontSize: "11px", color: "#B8C4D4" }}>
+      {ENTITY_MAP_LEGEND_SWATCHES.map((sw) => (
+        <span key={sw.id} data-testid={`legend-swatch-${sw.id}`} style={{ display: "inline-flex", alignItems: "center", gap: "6px", whiteSpace: "nowrap" }}>
+          <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "50%", backgroundColor: sw.color, display: "inline-block" }} />
+          <span>{sw.label}</span>
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -444,15 +440,16 @@ function renderBottomRightToastAndWorkersDock(storeSnap: WorldStreamState, canva
         </div>
         <div data-testid="visible-server-workers-scroll" style={{ height: "176px", minHeight: "176px", maxHeight: "176px", boxSizing: "border-box", overflowY: "auto", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: "4px", padding: "6px" }}>
           {visibleWorkers.map((w) => {
-            const curHz = normalizeWorkerTickHz(w.tick_hz, w.tick_mode);
+            const resolved = resolveWorkerTickFields(w), targetHz = resolved.target_tick_hz ?? -1, currentHz = Math.round(resolved.current_tick_hz ?? resolved.tick_hz ?? 45);
             return (
               <div key={w.worker_id} role="button" tabIndex={0} data-testid={`visible-worker-row-${w.worker_id}`} onClick={() => zoomToWorkerArea(w, storeSnap)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") zoomToWorkerArea(w, storeSnap); }} style={{ width: "100%", height: "30px", minHeight: "30px", maxHeight: "30px", flexShrink: 0, overflow: "hidden", whiteSpace: "nowrap", padding: "4px 6px", boxSizing: "border-box", textAlign: "left", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontSize: "11px", fontWeight: 600, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
                 <span>{formatCanonicalWorkerName(w.scope_kind, w.scope_key)}</span>
                 <span style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontWeight: 400, fontSize: "10px" }}>
                   <span>{w.region_label}</span>
-                  <select aria-label={`Tick rate for ${w.worker_id}`} data-testid={`worker-tick-rate-select-${w.worker_id}`} value={curHz} onClick={(e) => e.stopPropagation()} onChange={(e) => { e.stopPropagation(); void storeSnap.executeSetWorkerTickRateAction(w.worker_id, Number(e.currentTarget.value)); }} style={{ height: "20px", padding: "0 4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "10px", fontWeight: 700, cursor: "pointer" }}>
+                  <select aria-label={`Tick rate for ${w.worker_id}`} data-testid={`worker-tick-rate-select-${w.worker_id}`} value={targetHz} onClick={(e) => e.stopPropagation()} onChange={(e) => { e.stopPropagation(); void storeSnap.executeSetWorkerTickRateAction(w.worker_id, Number(e.currentTarget.value)); }} style={{ height: "20px", padding: "0 4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "10px", fontWeight: 700, cursor: "pointer" }}>
                     {WORKER_TICK_HZ_OPTIONS.map((hz) => (<option key={hz} value={hz}>{formatWorkerTickHzOptionLabel(hz, true)}</option>))}
                   </select>
+                  <span aria-readonly="true" title="Read-only live actual worker tick rate (Hz)" data-testid={`visible-worker-current-hz-${w.worker_id}`} style={{ height: "20px", padding: "0 6px", display: "inline-flex", alignItems: "center", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: "rgba(6, 8, 14, 0.72)", color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontVariantNumeric: "tabular-nums", fontWeight: 700, cursor: "default", userSelect: "none" }}>{currentHz} Hz</span>
                 </span>
               </div>
             );
@@ -467,14 +464,15 @@ function handleCanvasLeftClick(
   e: React.MouseEvent<HTMLCanvasElement>,
   storeSnap: WorldStreamState,
   onCoordinatePick?: (point: VerraUnrealPoint) => void,
+  onEntitySelect?: (entity: WorldEntity | null) => void,
 ): void {
   const rect = e.currentTarget.getBoundingClientRect();
-  const sx = e.clientX - rect.left;
-  const sy = e.clientY - rect.top;
-  const viewport = { width: rect.width || 960, height: rect.height || 540 };
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const viewport = { width: Math.max(320, Math.round(rect.width || e.currentTarget.width || 960)), height: Math.max(240, Math.round(rect.height || e.currentTarget.height || 540)) };
   const hit = findNearestEntityOrNodeAtScreen(sx, sy, viewport, storeSnap);
   if (hit?.entity) {
     storeSnap.selectEntity(hit.entity.guid);
+    onEntitySelect?.(hit.entity);
     return;
   }
   if (hit?.node) {
@@ -483,6 +481,7 @@ function handleCanvasLeftClick(
   }
   if (hit?.poi) {
     storeSnap.selectPoi(hit.poi.guid);
+    onEntitySelect?.(poiOverlayToInspectedEntity(hit.poi, storeSnap.workers));
     return;
   }
   const pt = screenOffsetToWorldCm(sx, sy, viewport, storeSnap.camera);
@@ -496,6 +495,7 @@ function renderInteractiveMapCanvas(
   storeSnap: WorldStreamState,
   activeLayerCount: number,
   onCoordinatePick?: (point: VerraUnrealPoint) => void,
+  onEntitySelect?: (entity: WorldEntity | null) => void,
 ): React.ReactElement {
   return (
     <canvas
@@ -515,10 +515,15 @@ function renderInteractiveMapCanvas(
         if (e.button === 0) dragRef.current = { active: true, x: e.clientX, y: e.clientY, moved: false };
       }}
       onMouseMove={(e) => {
-        if (!dragRef.current.active) return;
-        const dx = e.clientX - dragRef.current.x;
-        const dy = e.clientY - dragRef.current.y;
-        if (Math.hypot(dx, dy) > 3) dragRef.current.moved = true;
+        if (!dragRef.current.active) {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const vp = { width: Math.max(320, Math.round(rect.width || e.currentTarget.width || 960)), height: Math.max(240, Math.round(rect.height || e.currentTarget.height || 540)) };
+          e.currentTarget.style.cursor = findNearestEntityOrNodeAtScreen(e.clientX - rect.left, e.clientY - rect.top, vp, storeSnap) ? "pointer" : "grab";
+          return;
+        }
+        const dx = e.clientX - dragRef.current.x, dy = e.clientY - dragRef.current.y;
+        if (!dragRef.current.moved && Math.hypot(dx, dy) <= 3) return;
+        dragRef.current.moved = true;
         dragRef.current.x = e.clientX;
         dragRef.current.y = e.clientY;
         const cmPerPx = (VERRA_MAP_SOURCE_CM / VERRA_MAP_SOURCE_PX) / Math.pow(2, storeSnap.camera.zoom - 5);
@@ -527,7 +532,7 @@ function renderInteractiveMapCanvas(
       onMouseUp={(e) => {
         const wasMoved = dragRef.current.moved;
         dragRef.current.active = false;
-        if (e.button === 0 && !wasMoved) handleCanvasLeftClick(e, storeSnap, onCoordinatePick);
+        if (e.button === 0 && !wasMoved) handleCanvasLeftClick(e, storeSnap, onCoordinatePick, onEntitySelect);
       }}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -678,7 +683,7 @@ function renderUnifiedInspectorSlot(
   const inspectedEntity: WorldEntity | null = selectedEntity
     ? selectedEntity
     : selectedPoi
-      ? { guid: selectedPoi.guid, name: selectedPoi.display_name || selectedPoi.name, kind: "poi", xCm: selectedPoi.x_cm, yCm: selectedPoi.y_cm, zCm: selectedPoi.z_cm, yawDeg: 0, level: 1, healthPct: 100 }
+      ? poiOverlayToInspectedEntity(selectedPoi, storeSnap.workers)
       : null;
   if (!selectedCityNode && !inspectedEntity && !pin) return null;
   return (
@@ -751,8 +756,9 @@ export function VerraMapCanvas(props: VerraMapCanvasProps): React.ReactElement {
         setSearchText("");
       })}
       <div style={{ position: "relative", zIndex: 1, flex: 1, minHeight: "460px" }}>
-        {renderInteractiveMapCanvas(canvasRef, dragRef, storeSnap, deckLayers.filter((l) => l.visible).length, props.onCoordinatePick)}
+        {renderInteractiveMapCanvas(canvasRef, dragRef, storeSnap, deckLayers.filter((l) => l.visible).length, props.onCoordinatePick, props.onEntitySelect)}
         {renderZoomAndNodeControls(storeSnap, cityFilterText, setCityFilterText)}
+        {renderBottomLeftMapEntityLegend()}
         {renderUnifiedInspectorSlot(storeSnap, viewState, props.onEntitySelect)}
         {renderBottomRightToastAndWorkersDock(storeSnap, canvasRef)}
         <GmCommandPalette isOpen={Boolean(props.isCommandPaletteOpen)} query={props.commandQuery ?? ""} role={props.gmRole ?? "GM_OPERATOR"} />

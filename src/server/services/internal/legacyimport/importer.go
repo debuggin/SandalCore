@@ -61,7 +61,7 @@ type legacyCharacter struct {
 //     gender and class, the file's race_name, gender_name and class_name when
 //     they are enum names) is an error: nothing is guessed.
 //
-// A record's level above the game's maximum (character.MaxLevel, 25) is imported as 25. CreateInfo keeps the client's bytes whole.
+// A record's level above the game's maximum (character.MaxLevel, 50) is imported as 50. CreateInfo keeps the client's bytes whole.
 //
 // Parse is strict, and fails before returning anything (so before any database
 // write): the file must be one JSON array (a leading UTF-8 byte order mark and

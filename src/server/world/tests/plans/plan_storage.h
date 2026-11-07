@@ -32,8 +32,20 @@ inline int32_t count_vault_item_qty(const CityNodeWarehouseVault& vault, int64_t
     return total;
 }
 
-inline bool deposit_storage_item(bots::PlayerBot& bot, CityNodeWarehouseVault& vault, int64_t item_guid, int32_t qty) {
-    if (qty <= 0) return false;
+inline bool send_live_warehouse_storage_bunches(bots::LiveSession& s) {
+    if (!send_live_equip_storage_event(s, s.scroll_slot, 35)) return false;
+    bots::drain_live_udp_nonblocking(s);
+    return true;
+}
+
+inline bool deposit_storage_item(
+    bots::LiveSession& s,
+    bots::PlayerBot& bot,
+    CityNodeWarehouseVault& vault,
+    int64_t item_guid,
+    int32_t qty) {
+    if (qty <= 0 || item_guid == 0) return false;
+    if (!send_live_warehouse_storage_bunches(s)) return false;
     for (auto& item : bot.inventory) {
         if (item.item_guid == item_guid && item.quantity >= qty) {
             item.quantity -= qty;
@@ -44,8 +56,14 @@ inline bool deposit_storage_item(bots::PlayerBot& bot, CityNodeWarehouseVault& v
     return false;
 }
 
-inline bool withdraw_storage_item(bots::PlayerBot& bot, CityNodeWarehouseVault& vault, int64_t item_guid, int32_t qty) {
-    if (qty <= 0) return false;
+inline bool withdraw_storage_item(
+    bots::LiveSession& s,
+    bots::PlayerBot& bot,
+    CityNodeWarehouseVault& vault,
+    int64_t item_guid,
+    int32_t qty) {
+    if (qty <= 0 || item_guid == 0) return false;
+    if (!send_live_warehouse_storage_bunches(s)) return false;
     for (auto& item : vault.stored_items) {
         if (item.item_guid == item_guid && item.quantity >= qty) {
             item.quantity -= qty;
@@ -74,20 +92,20 @@ inline bool withdraw_storage_currency(bots::PlayerBot& bot, CityNodeWarehouseVau
     return true;
 }
 
-inline bool run_plan_storage(std::vector<bots::PlayerBot>& roster) {
-    if (roster.size() < 16) return false;
-    constexpr int64_t kStorageTimberGuid = 606463110000000001LL;
-    return bots::run_all_64_archetype_combinations_all_envs(
-        roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
-            bots::add_inventory_item(actor, kStorageTimberGuid, "Oak Timber", 10, bots::ResourceKind::Tree);
+inline bool run_plan_storage(bots::LiveSession& s, std::vector<bots::PlayerBot>& roster) {
+    if (roster.size() < 16 || s.catalog.resource_nodes.empty()) return false;
+    const int64_t timber_guid = s.catalog.resource_nodes[0].yield_item_guid;
+    const bool ok = bots::run_all_64_archetype_combinations_all_envs(
+        s, roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
+            bots::add_inventory_item(actor, timber_guid, "Oak Timber", 10, bots::ResourceKind::Tree);
             CityNodeWarehouseVault vault{actor.bot_id, "Winstead", 0, 0, {}};
-            const int32_t initial_qty = count_bot_item_qty(actor, kStorageTimberGuid);
-            if (!deposit_storage_item(actor, vault, kStorageTimberGuid, 6)) return false;
-            if (count_bot_item_qty(actor, kStorageTimberGuid) + count_vault_item_qty(vault, kStorageTimberGuid) != initial_qty) {
+            const int32_t initial_qty = count_bot_item_qty(actor, timber_guid);
+            if (!deposit_storage_item(s, actor, vault, timber_guid, 6)) return false;
+            if (count_bot_item_qty(actor, timber_guid) + count_vault_item_qty(vault, timber_guid) != initial_qty) {
                 return false;
             }
-            if (!withdraw_storage_item(actor, vault, kStorageTimberGuid, 4)) return false;
-            if (count_bot_item_qty(actor, kStorageTimberGuid) + count_vault_item_qty(vault, kStorageTimberGuid) != initial_qty) {
+            if (!withdraw_storage_item(s, actor, vault, timber_guid, 4)) return false;
+            if (count_bot_item_qty(actor, timber_guid) + count_vault_item_qty(vault, timber_guid) != initial_qty) {
                 return false;
             }
 
@@ -100,8 +118,10 @@ inline bool run_plan_storage(std::vector<bots::PlayerBot>& roster) {
             }
             if (!withdraw_storage_currency(actor, vault, 1000, 5)) return false;
             if (actor.copper_balance != total_copper || vault.stored_copper != 0 || vault.stored_glint != 0) return false;
-            return bots::assert_partner_visible_and_updating(actor, observer);
+            return bots::assert_partner_visible_and_updating(s, actor, observer);
         });
+    pump_udp(s, 25);
+    return ok;
 }
 
 }  // namespace aoc::world::tests::plans

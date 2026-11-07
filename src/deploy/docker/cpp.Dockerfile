@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
-COPY src/vcpkg.json src/CMakeLists.txt src/CMakePresets.json ./src/
+COPY src/CMakeLists.txt src/CMakePresets.json ./src/
 COPY build/gen/ ./build/gen/
 COPY build/third_party/ ./build/third_party/
 COPY scripts/wsl/gen-node-constants.sh ./scripts/wsl/gen-node-constants.sh
@@ -55,26 +55,24 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
         -DCMAKE_C_COMPILER_LAUNCHER=ccache \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
         -DCMAKE_BUILD_TYPE=Release \
-        -DAOC_BUILD_TESTS=OFF \
+        -DAOC_BUILD_TESTS=ON \
         -DAOC_PROTO_GEN_DIR=/workspace/build/gen/proto \
         -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/workspace/build/bin && \
-    cmake --build build/linux --target world test_world_live_e2e test_world_loop test_mesh_handover_hysteresis --parallel && \
-    mkdir -p /workspace/build/bin && \
-    WORLD_BIN="$(find /workspace/dist /workspace/build -type f -name world | head -n 1)" && \
-    if [ "${WORLD_BIN}" != "/workspace/build/bin/world" ]; then cp "${WORLD_BIN}" /workspace/build/bin/world; fi && \
-    LIVE_E2E_BIN="$(find /workspace/dist /workspace/build -type f -name test_world_live_e2e | head -n 1)" && \
-    if [ -n "${LIVE_E2E_BIN}" ] && [ "${LIVE_E2E_BIN}" != "/workspace/build/bin/test_world_live_e2e" ]; then cp "${LIVE_E2E_BIN}" /workspace/build/bin/test_world_live_e2e; fi && \
-    LOOP_TEST_BIN="$(find /workspace/dist /workspace/build -type f -name test_world_loop | head -n 1)" && \
-    if [ -n "${LOOP_TEST_BIN}" ] && [ "${LOOP_TEST_BIN}" != "/workspace/build/bin/test_world_loop" ]; then cp "${LOOP_TEST_BIN}" /workspace/build/bin/test_world_loop; fi && \
-    HANDOVER_TEST_BIN="$(find /workspace/dist /workspace/build -type f -name test_mesh_handover_hysteresis | head -n 1)" && \
-    if [ -n "${HANDOVER_TEST_BIN}" ] && [ "${HANDOVER_TEST_BIN}" != "/workspace/build/bin/test_mesh_handover_hysteresis" ]; then cp "${HANDOVER_TEST_BIN}" /workspace/build/bin/test_mesh_handover_hysteresis; fi && \
-    llvm-strip-18 --strip-unneeded /workspace/build/bin/world /workspace/build/bin/test_world_live_e2e /workspace/build/bin/test_world_loop /workspace/build/bin/test_mesh_handover_hysteresis && \
-    mkdir -p /workspace/build/linux/bin && \
-    cp /workspace/build/bin/world /workspace/build/linux/bin/world && \
-    cp /workspace/build/bin/world /workspace/build/linux/bin/service && \
-    cp /workspace/build/bin/test_world_live_e2e /workspace/build/linux/bin/test_world_live_e2e && \
-    cp /workspace/build/bin/test_world_loop /workspace/build/linux/bin/test_world_loop && \
-    cp /workspace/build/bin/test_mesh_handover_hysteresis /workspace/build/linux/bin/test_mesh_handover_hysteresis
+    cmake --build build/linux --target world test_world_live_e2e test_world_loop test_mesh_handover_hysteresis test_world_area test_world_region test_world_gather test_world_foliage test_world_foliage_cells test_world_spawn_filter test_world_bootstrap test_world_move_checker test_world_movement test_world_combat test_world_ability_pipeline test_world_ability_pipeline_chains test_world_ability_pipeline_casts --parallel && \
+    mkdir -p /workspace/build/bin /workspace/build/linux/bin && \
+    for bin in world test_world_live_e2e test_world_loop test_mesh_handover_hysteresis test_world_area test_world_region test_world_gather test_world_foliage test_world_foliage_cells test_world_spawn_filter test_world_bootstrap test_world_move_checker test_world_movement test_world_combat test_world_ability_pipeline test_world_ability_pipeline_chains test_world_ability_pipeline_casts; do \
+        FOUND_BIN="$(find /workspace/dist /workspace/build -type f -name "${bin}" | head -n 1)"; \
+        if [ -z "${FOUND_BIN}" ] && [ "${bin}" = "test_world_foliage_cells" ] && [ -f "/workspace/build/bin/test_world_foliage" ]; then \
+            cp /workspace/build/bin/test_world_foliage /workspace/build/bin/test_world_foliage_cells; \
+            FOUND_BIN="/workspace/build/bin/test_world_foliage_cells"; \
+        fi; \
+        if [ -n "${FOUND_BIN}" ] && [ "${FOUND_BIN}" != "/workspace/build/bin/${bin}" ]; then \
+            cp "${FOUND_BIN}" "/workspace/build/bin/${bin}"; \
+        fi; \
+        llvm-strip-18 --strip-unneeded "/workspace/build/bin/${bin}"; \
+        cp "/workspace/build/bin/${bin}" "/workspace/build/linux/bin/${bin}"; \
+    done && \
+    cp /workspace/build/bin/world /workspace/build/linux/bin/service
 
 ARG TARGET_BINARY=world
 
@@ -111,6 +109,32 @@ COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_loop /ap
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_loop /usr/local/bin/test_world_loop
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_mesh_handover_hysteresis /app/test_mesh_handover_hysteresis
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_mesh_handover_hysteresis /usr/local/bin/test_mesh_handover_hysteresis
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_area /app/test_world_area
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_area /usr/local/bin/test_world_area
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_region /app/test_world_region
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_region /usr/local/bin/test_world_region
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_gather /app/test_world_gather
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_gather /usr/local/bin/test_world_gather
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_foliage /app/test_world_foliage
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_foliage /usr/local/bin/test_world_foliage
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_foliage_cells /app/test_world_foliage_cells
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_foliage_cells /usr/local/bin/test_world_foliage_cells
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_spawn_filter /app/test_world_spawn_filter
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_spawn_filter /usr/local/bin/test_world_spawn_filter
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_bootstrap /app/test_world_bootstrap
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_bootstrap /usr/local/bin/test_world_bootstrap
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_move_checker /app/test_world_move_checker
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_move_checker /usr/local/bin/test_world_move_checker
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_movement /app/test_world_movement
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_movement /usr/local/bin/test_world_movement
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_combat /app/test_world_combat
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_combat /usr/local/bin/test_world_combat
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_ability_pipeline /app/test_world_ability_pipeline
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_ability_pipeline /usr/local/bin/test_world_ability_pipeline
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_ability_pipeline_chains /app/test_world_ability_pipeline_chains
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_ability_pipeline_chains /usr/local/bin/test_world_ability_pipeline_chains
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_ability_pipeline_casts /app/test_world_ability_pipeline_casts
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_ability_pipeline_casts /usr/local/bin/test_world_ability_pipeline_casts
 COPY --from=builder --chown=65532:65532 /workspace/build/linux/bin/service /usr/local/bin/service
 USER 65532:65532
 EXPOSE 7777/udp 50061/tcp

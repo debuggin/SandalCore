@@ -93,7 +93,7 @@ function Get-DoctorPortChecks {
         $inUse = if ($spec.Protocol -eq 'UDP') { $activeUdp.Contains($spec.Port) } else { $activeTcp.Contains($spec.Port) }
         $stackActive = $inUse -and $runningContainers.Contains($spec.Container)
         $results.Add([pscustomobject]@{
-            tier      = 6
+            tier      = 5
             name      = "$($spec.Protocol):$($spec.Port)"
             category  = 'port'
             port      = [int]$spec.Port
@@ -125,10 +125,9 @@ if (-not $useDryRun) {
 
 $toolchains = @(
     (Test-DoctorPwsh),
-    (Test-DoctorBinary -Tier 2 -BinaryName 'cmake'),
-    (Test-DoctorBinary -Tier 3 -BinaryName 'dotnet'),
-    (Test-DoctorBinary -Tier 4 -BinaryName 'go'),
-    (Test-DoctorBinary -Tier 5 -BinaryName 'docker')
+    (Test-DoctorBinary -Tier 2 -BinaryName 'dotnet'),
+    (Test-DoctorBinary -Tier 3 -BinaryName 'go'),
+    (Test-DoctorBinary -Tier 4 -BinaryName 'docker')
 )
 $portChecks = @(Get-DoctorPortChecks -DryRunMode $useDryRun)
 $allChecks = [System.Collections.Generic.List[object]]::new()
@@ -141,7 +140,7 @@ $payload = [ordered]@{
     command    = 'doctor'
     dry_run    = $useDryRun
     no_color   = $useNoColor
-    tier_count = 6
+    tier_count = 5
     toolchains = $toolchains
     ports      = $portChecks
     checks     = $allChecks.ToArray()

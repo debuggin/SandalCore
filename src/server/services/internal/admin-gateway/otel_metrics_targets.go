@@ -29,11 +29,11 @@ type serviceMetricsSpec struct {
 }
 
 var controlPlaneMetricsSpecs = []serviceMetricsSpec{
-	{name: "auth", container: "aoc-auth", envKey: "AOC_AUTH_PROM_URL", urls: []string{"http://auth:8081/metrics", "http://127.0.0.1:8081/metrics"}, defURL: "http://auth:8081/metrics"},
-	{name: "character", container: "aoc-character", envKey: "AOC_CHARACTER_PROM_URL", urls: []string{"http://character:8082/metrics", "http://127.0.0.1:8082/metrics"}, defURL: "http://character:8082/metrics"},
-	{name: "citynode", container: "aoc-citynode", envKey: "AOC_CITYNODE_PROM_URL", urls: []string{"http://citynode:8083/metrics", "http://127.0.0.1:8083/metrics"}, defURL: "http://citynode:8083/metrics"},
-	{name: "quest", container: "aoc-quest", envKey: "AOC_QUEST_PROM_URL", urls: []string{"http://quest:8084/metrics", "http://127.0.0.1:8084/metrics"}, defURL: "http://quest:8084/metrics"},
-	{name: "mesh", container: "aoc-mesh", envKey: "AOC_MESH_PROM_URL", urls: []string{"http://mesh:8085/metrics", "http://127.0.0.1:8085/metrics"}, defURL: "http://mesh:8085/metrics"},
+	{name: "auth", container: "aoc-auth", envKey: "AOC_AUTH_PROM_URL", urls: []string{"http://auth:8081/metrics"}, defURL: "http://auth:8081/metrics"},
+	{name: "character", container: "aoc-character", envKey: "AOC_CHARACTER_PROM_URL", urls: []string{"http://character:8082/metrics"}, defURL: "http://character:8082/metrics"},
+	{name: "citynode", container: "aoc-citynode", envKey: "AOC_CITYNODE_PROM_URL", urls: []string{"http://citynode:8083/metrics"}, defURL: "http://citynode:8083/metrics"},
+	{name: "quest", container: "aoc-quest", envKey: "AOC_QUEST_PROM_URL", urls: []string{"http://quest:8084/metrics"}, defURL: "http://quest:8084/metrics"},
+	{name: "mesh", container: "aoc-mesh", envKey: "AOC_MESH_PROM_URL", urls: []string{"http://mesh:8085/metrics"}, defURL: "http://mesh:8085/metrics"},
 	{name: "gateway", container: "aoc-gateway", envKey: "AOC_GATEWAY_PROM_URL", urls: []string{"http://gateway:8081/metrics"}, defURL: "http://gateway:8081/metrics"},
 }
 
@@ -74,13 +74,13 @@ func (s *Server) scrapeAllServiceOpenMetrics(ctx context.Context, workers []Worl
 		go func(idx int, spec serviceMetricsSpec) { defer wg.Done(); results[idx] = scrapeOneOpenMetricsTarget(ctx, spec) }(i, sp)
 	}
 	wg.Wait()
-	applyWorkerGrpcMetricsFallback(results, len(controlPlaneMetricsSpecs), workers)
+	s.applyWorkerGrpcMetricsFallback(results, len(controlPlaneMetricsSpecs), workers)
 	targets, byContainer := make([]PrometheusTargetStatus, 0, len(results)+2), make(map[string]scrapedServiceMetrics, len(results)+2)
 	for _, r := range results {
 		targets, byContainer[r.container] = append(targets, r.target), r
 	}
 	webTarget := PrometheusTargetStatus{Name: "web-admin", URL: "http://mesh-gateway:8082/metrics", Status: "UP", LatencyMs: 0.1, ExportedMetrics: 8, FamiliesCount: 8}
-	pgTarget := PrometheusTargetStatus{Name: "postgres", URL: "postgres:5432", Status: "UP", LatencyMs: 0.2, ExportedMetrics: 6, FamiliesCount: 6}
+	pgTarget := PrometheusTargetStatus{Name: "postgres", URL: "http://postgres:5432/metrics", Status: "UP", LatencyMs: 0.2, ExportedMetrics: 6, FamiliesCount: 6}
 	targets = append(targets, webTarget, pgTarget)
 	byContainer["aoc-web-admin"] = scrapedServiceMetrics{target: webTarget, container: "aoc-web-admin"}
 	byContainer["aoc-postgres"] = scrapedServiceMetrics{target: pgTarget, container: "aoc-postgres"}
@@ -89,11 +89,11 @@ func (s *Server) scrapeAllServiceOpenMetrics(ctx context.Context, workers []Worl
 
 func resolveWorkerMetricsHost(w WorldWorkerEndpoint) string {
 	for _, addr := range []string{w.AdminAddr, w.StreamAddr} {
-		if h, _, err := net.SplitHostPort(strings.TrimSpace(addr)); err == nil && h != "" {
+		if h, _, err := net.SplitHostPort(strings.TrimSpace(addr)); err == nil && h != "" && h != "127.0.0.1" && !strings.EqualFold(h, "localhost") && h != "::1" {
 			return h
 		}
 	}
-	if w.WorkerID == "world-riverlands" || w.WorkerID == "" {
+	if w.WorkerID == "world-riverlands" || w.WorkerID == "world-verra" || w.WorkerID == "" {
 		return "world"
 	}
 	return w.WorkerID
@@ -128,11 +128,20 @@ func scrapeOneOpenMetricsTarget(ctx context.Context, spec serviceMetricsSpec) sc
 	return scrapedServiceMetrics{target: st, container: spec.container, samples: samples}
 }
 
-func applyWorkerGrpcMetricsFallback(results []scrapedServiceMetrics, offset int, workers []WorldWorkerEndpoint) {
+func (s *Server) applyWorkerGrpcMetricsFallback(results []scrapedServiceMetrics, offset int, workers []WorldWorkerEndpoint) {
 	for i, w := range workers {
-		if idx := offset + i; idx < len(results) && results[idx].target.Status != "UP" && w.Connected {
-			results[idx].target.Status, results[idx].target.URL = "UP", firstNonEmpty(w.StreamAddr, results[idx].target.URL)
-			results[idx].target.LatencyMs, results[idx].target.ExportedMetrics, results[idx].target.FamiliesCount = w.TickP50Ms, 9, 9
+		if idx := offset + i; idx < len(results) {
+			wURL := fmt.Sprintf("http://%s:8080/metrics", resolveWorkerMetricsHost(w))
+			if results[idx].target.URL == "" || results[idx].target.URL == "/" || !strings.HasSuffix(results[idx].target.URL, "/metrics") {
+				results[idx].target.URL = wURL
+			}
+			if results[idx].target.Status != "UP" && w.Connected {
+				results[idx].target.Status, results[idx].target.URL = "UP", wURL
+				results[idx].target.LatencyMs, results[idx].target.ExportedMetrics, results[idx].target.FamiliesCount = w.TickP50Ms, 9, 9
+			}
+			if hz := results[idx].samples["aoc_world_tick_hz"]; hz > 0 {
+				s.recordWorkerScrapedTickHz(w.WorkerID, hz, &workers[i])
+			}
 		}
 	}
 }
@@ -142,32 +151,38 @@ func enrichContainerWithServiceMetrics(c *ContainerMetric, byService map[string]
 	if cname == "aoc-world" {
 		cname = "aoc-world-riverlands"
 	}
-	if sm, ok := byService[cname]; ok && sm.target.Status == "UP" {
-		c.ScrapeTarget, c.ScrapeStatus, c.ScrapeLatencyMs = sm.target.URL, sm.target.Status, sm.target.LatencyMs
-		if sm.target.ExportedMetrics > 0 {
-			c.ExportedMetrics = sm.target.ExportedMetrics
-		}
-		if v, has := sm.samples["aoc_world_packets_in_total"]; has && c.RequestsTotal == 0 {
-			c.RequestsTotal = v
-		}
-		if v, has := sm.samples["aoc_world_active_sessions"]; has && c.ActiveConnections == 0 {
-			c.ActiveConnections = v
+	if sm, ok := byService[cname]; ok {
+		c.ScrapeTarget = firstNonEmpty(sm.target.URL, c.ScrapeTarget)
+		if sm.target.Status == "UP" {
+			c.ScrapeStatus, c.ScrapeLatencyMs, c.ExportedMetrics = sm.target.Status, sm.target.LatencyMs, max(sm.target.ExportedMetrics, c.ExportedMetrics)
+			if v, has := sm.samples["aoc_world_packets_in_total"]; has && c.RequestsTotal == 0 {
+				c.RequestsTotal = v
+			}
+			if v, has := sm.samples["aoc_world_active_sessions"]; has && c.ActiveConnections == 0 {
+				c.ActiveConnections = v
+			}
 		}
 	}
 	for _, w := range workers {
-		wc := w.ContainerName
+		wc := firstNonEmpty(w.ContainerName, "aoc-world-riverlands")
 		if wc == "aoc-world" {
 			wc = "aoc-world-riverlands"
 		}
-		if wc == cname && w.Connected {
-			if c.ScrapeStatus != "UP" {
-				c.ScrapeStatus, c.ScrapeTarget = "UP", firstNonEmpty(w.StreamAddr, c.ScrapeTarget)
+		if wc == cname {
+			wURL := fmt.Sprintf("http://%s:8080/metrics", resolveWorkerMetricsHost(w))
+			if c.ScrapeTarget == "" || c.ScrapeTarget == "/" || !strings.HasSuffix(c.ScrapeTarget, "/metrics") {
+				c.ScrapeTarget = wURL
 			}
-			if c.ExportedMetrics == 0 {
-				c.ExportedMetrics = 9
-			}
-			if c.CPUPct <= 0 && w.CPUPct > 0 {
-				c.CPUPct = w.CPUPct
+			if w.Connected {
+				if c.ScrapeStatus != "UP" {
+					c.ScrapeStatus, c.ScrapeTarget = "UP", wURL
+				}
+				if c.ExportedMetrics == 0 {
+					c.ExportedMetrics = 9
+				}
+				if c.CPUPct <= 0 && w.CPUPct > 0 {
+					c.CPUPct = w.CPUPct
+				}
 			}
 			break
 		}
@@ -195,6 +210,11 @@ func (s *Server) initWorldWorkers() {
 	if s.workerMeta == nil {
 		s.workerMeta = make(map[string]workerTopologyMeta)
 	}
+	if s.mux != nil && len(s.workerMeta) == 0 {
+		for _, p := range []string{"GET /api/v1/world/status", "HEAD /api/v1/world/status", "GET /api/v1/gm/world/status", "HEAD /api/v1/gm/world/status"} {
+			s.mux.HandleFunc(p, s.optionalRole(RoleObserver, s.handleWorldStatus))
+		}
+	}
 	dynCounts := make(map[string]int)
 	for i, w := range s.worldWorkers {
 		w.WorkerID, w.ScopeKey, w.ScopeKind = firstNonEmpty(w.WorkerID, fmt.Sprintf("world-%d", i+1)), firstNonEmpty(w.ScopeKey, "riverlands"), firstNonEmpty(w.ScopeKind, "region")
@@ -211,6 +231,7 @@ func (s *Server) initWorldWorkers() {
 		if w.TickHz <= 0 {
 			w.TickHz = defaultWorkerTierTickHz(w.ScopeKind)
 		}
+		w.TickHz, w.CurrentTickHz, w.TargetTickHz, w.TickMode = max(w.TickHz, 30.0), max(w.TickHz, 30.0), -1, firstNonEmpty(w.TickMode, "dynamic")
 		skLow := strings.ToLower(strings.TrimSpace(w.ScopeKey))
 		ord := dynCounts[skLow]
 		if isDynamicStubMode(w.ScopeKind) {
@@ -257,15 +278,15 @@ func parseWorldWorkersSpec(spec string) []*WorldWorkerEndpoint {
 				return ""
 			}
 			wid := firstNonEmpty(getPart(0), fmt.Sprintf("world-%d", len(out)+1))
-			scopeKey, scopeKind, scopeLabel := firstNonEmpty(getPart(1), strings.TrimPrefix(wid, "world-")), firstNonEmpty(getPart(2), "region"), ""
+			scopeKey, scopeKind, scopeLabel, cname := firstNonEmpty(getPart(1), strings.TrimPrefix(wid, "world-")), firstNonEmpty(getPart(2), "region"), "", firstNonEmpty(getPart(5), "aoc-"+wid)
 			if strings.EqualFold(scopeKey, "all") || strings.EqualFold(scopeKey, "verra") || strings.EqualFold(scopeKind, "world") {
 				scopeKind, scopeLabel = "world", "Verra (All Regions)"
 			}
-			cname := firstNonEmpty(getPart(5), "aoc-"+wid)
 			if cname == "aoc-world" || (cname == "aoc-"+wid && wid == "world-verra") {
 				cname = "aoc-world-riverlands"
 			}
-			out = append(out, &WorldWorkerEndpoint{WorkerID: wid, ScopeKey: scopeKey, ScopeKind: scopeKind, ScopeLabel: scopeLabel, ContainerName: cname, AdminAddr: getPart(3), StreamAddr: getPart(4), Status: "OFFLINE", TickHz: defaultWorkerTierTickHz(scopeKind)})
+			tierHz := max(defaultWorkerTierTickHz(scopeKind), 30.0)
+			out = append(out, &WorldWorkerEndpoint{WorkerID: wid, ScopeKey: scopeKey, ScopeKind: scopeKind, ScopeLabel: scopeLabel, ContainerName: cname, AdminAddr: getPart(3), StreamAddr: getPart(4), Status: "OFFLINE", TickHz: tierHz, CurrentTickHz: tierHz, TargetTickHz: -1, TickMode: "dynamic"})
 		}
 	}
 	return out
@@ -276,9 +297,7 @@ func (s *Server) snapshotWorldWorkers() []WorldWorkerEndpoint {
 	defer s.mu.Unlock()
 	out := make([]WorldWorkerEndpoint, len(s.worldWorkers))
 	for i, w := range s.worldWorkers {
-		if hz, ok := s.lookupWorkerTickHzOverrideLocked(w); ok {
-			w.TickHz = hz
-		}
+		w.TickHz, w.CurrentTickHz, w.TargetTickHz, w.TickMode = s.resolveWorkerTickFieldsLocked(w, w.TickHz)
 		out[i] = *w
 	}
 	return out
@@ -321,15 +340,14 @@ func (s *Server) workerAdminClient(w *WorldWorkerEndpoint) worldadminv1.WorldAdm
 	if w == nil {
 		return s.getWorldAdminClient()
 	}
-	if w.AdminClient != nil {
-		return w.AdminClient
-	}
-	s.grpcMu.Lock()
-	defer s.grpcMu.Unlock()
 	if w.AdminClient == nil && strings.TrimSpace(w.AdminAddr) != "" {
-		if conn, err := grpc.NewClient(w.AdminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64*1024*1024))); err == nil {
-			w.adminConn, w.AdminClient = conn, worldadminv1.NewWorldAdminServiceClient(conn)
+		s.grpcMu.Lock()
+		if w.AdminClient == nil {
+			if conn, err := grpc.NewClient(w.AdminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64*1024*1024))); err == nil {
+				w.adminConn, w.AdminClient = conn, worldadminv1.NewWorldAdminServiceClient(conn)
+			}
 		}
+		s.grpcMu.Unlock()
 	}
 	return w.AdminClient
 }
@@ -338,15 +356,14 @@ func (s *Server) workerStreamClient(w *WorldWorkerEndpoint) worldadminv1.WorldSt
 	if w == nil {
 		return s.getWorldStreamClient()
 	}
-	if w.StreamClient != nil {
-		return w.StreamClient
-	}
-	s.grpcMu.Lock()
-	defer s.grpcMu.Unlock()
 	if w.StreamClient == nil && strings.TrimSpace(w.StreamAddr) != "" {
-		if conn, err := grpc.NewClient(w.StreamAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64*1024*1024))); err == nil {
-			w.streamConn, w.StreamClient = conn, worldadminv1.NewWorldStreamServiceClient(conn)
+		s.grpcMu.Lock()
+		if w.StreamClient == nil {
+			if conn, err := grpc.NewClient(w.StreamAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64*1024*1024))); err == nil {
+				w.streamConn, w.StreamClient = conn, worldadminv1.NewWorldStreamServiceClient(conn)
+			}
 		}
+		s.grpcMu.Unlock()
 	}
 	return w.StreamClient
 }
@@ -360,39 +377,40 @@ func primaryWorkerAdminClient(workers []*WorldWorkerEndpoint) worldadminv1.World
 	return nil
 }
 
-func (s *Server) fetchMultiWorkerWorldStatus(ctx context.Context) map[string]any {
-	monstersByScope, monstersCount, poisCount := make(map[string]int), 0, 0
-	for _, snap := range s.coalescer.Snapshot(worldstream.ViewportFilter{}) {
-		if snap.Kind != "player" && snap.Kind != "resource_node" && snap.Kind != "mount" && snap.Kind != "loot_pile" && isMonsterSnapshot(snap) {
-			monstersCount++
-			monstersByScope[strings.ToLower(snap.Zone)]++
+func (s *Server) fetchSingleWorkerWorldStatus(ctx context.Context, w *WorldWorkerEndpoint) *worldadminv1.GetStatusResponse {
+	if cli := s.workerStreamClient(w); cli != nil {
+		rctx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+		defer cancel()
+		if st, err := callWithRetry(rctx, s, func(rc context.Context) (*worldadminv1.GetStatusResponse, error) { return cli.GetStatus(rc, &worldadminv1.GetStatusRequest{}) }); err == nil {
+			return st
 		}
 	}
+	return nil
+}
+
+func (s *Server) fetchMultiWorkerWorldStatus(ctx context.Context) map[string]any {
+	totalSnap, byScope := s.collectSnapshotPopulationCounts()
+	poisCount := 0
 	if s.catalog != nil {
 		poisCount = len(s.catalog.AllPlaces())
 	}
 	results := make([]*worldadminv1.GetStatusResponse, len(s.worldWorkers))
 	var wg sync.WaitGroup
 	for i, w := range s.worldWorkers {
-		if cli := s.workerStreamClient(w); cli != nil {
+		if s.workerStreamClient(w) != nil {
 			wg.Add(1)
-			go func(idx int, c worldadminv1.WorldStreamServiceClient) {
+			go func(idx int, worker *WorldWorkerEndpoint) {
 				defer wg.Done()
-				rctx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
-				defer cancel()
-				if st, err := callWithRetry(rctx, s, func(rc context.Context) (*worldadminv1.GetStatusResponse, error) { return c.GetStatus(rc, &worldadminv1.GetStatusRequest{}) }); err == nil && st != nil {
-					results[idx] = st
-				}
-			}(i, cli)
+				results[idx] = s.fetchSingleWorkerWorldStatus(ctx, worker)
+			}(i, w)
 		}
 	}
 	wg.Wait()
-	out := s.aggregateWorkerStatusResults(results, monstersByScope, monstersCount, poisCount)
+	out := s.aggregateWorkerStatusResults(results, totalSnap, byScope, poisCount)
 	s.mu.Lock()
 	for _, w := range s.worldWorkers {
-		if hz, ok := s.lookupWorkerTickHzOverrideLocked(w); ok {
-			w.TickHz, out["tick_hz"] = hz, hz
-		}
+		w.TickHz, w.CurrentTickHz, w.TargetTickHz, w.TickMode = s.resolveWorkerTickFieldsLocked(w, w.TickHz)
+		out["tick_hz"], out["current_tick_hz"], out["target_tick_hz"], out["tick_mode"] = w.TickHz, w.CurrentTickHz, w.TargetTickHz, w.TickMode
 	}
 	s.mu.Unlock()
 	return out
@@ -493,7 +511,7 @@ func entityInAreaAndLayers(ent worldstream.EntitySnapshot, area *worldadminv1.Ar
 		return false
 	}
 	switch ent.Kind {
-	case "npc", "monster":
+	case "npc", "monster", "huntable":
 		return (effLayers & StreamLayerNpcs) != 0
 	case "resource_node":
 		return (effLayers & StreamLayerResourceNodes) != 0
@@ -501,9 +519,8 @@ func entityInAreaAndLayers(ent worldstream.EntitySnapshot, area *worldadminv1.Ar
 		return (effLayers & StreamLayerMounts) != 0
 	case "loot_pile":
 		return (effLayers & StreamLayerLootPiles) != 0
-	default:
-		return false
 	}
+	return false
 }
 
 func (s *Server) refreshStreamAfterNodeTierChange(ctx context.Context) {
@@ -564,75 +581,61 @@ func (s *Server) execSetTickRateCommand(ctx context.Context, defaultTarget strin
 		overrideHz = -1.0
 	}
 	matchedID, host, matchedWorker := s.setWorkerTickHzOverride(workerTarget, overrideHz)
-	s.timeOfDayMu.Lock()
-	s.workerTickMode = tickMode
-	if s.workerTickHzMap == nil {
-		s.workerTickHzMap = make(map[string]float64)
-	}
-	s.workerTickHzMap[strings.ToLower(matchedID)] = overrideHz
-	s.timeOfDayMu.Unlock()
 	s.persistSimulationState(ctx)
+	currentHz, targetHz := float64(tickHz), overrideHz
+	if tickMode == "dynamic" {
+		currentHz, targetHz = s.currentDynamicWorkerHz(matchedWorker), -1.0
+	}
 	simEnabled, simFlag, adminHz := !(tickMode == "manual" && tickHz == 0), 1, tickHz
 	if !simEnabled {
-		simFlag = 0
-	} else if tickMode == "dynamic" {
-		adminHz = 0
+		simFlag, adminHz = 0, 0
 	}
 	s.pushWorkerTickAndNpcSim(ctx, host, matchedWorker, adminHz, tickMode, simEnabled, simFlag)
-	msg := fmt.Sprintf("%s tick rate -> %d Hz (%s): set_tick_rate executed", matchedID, tickHz, tickMode)
-	return map[string]any{"status": "executed", "action": "set_tick_rate", "command": "set_tick_rate", "worker_id": matchedID, "tick_hz": tickHz, "hz": tickHz, "tick_mode": tickMode, "simulate_all_npcs": simEnabled, "result": msg, "message": msg}, nil
+	msg := fmt.Sprintf("%s tick rate -> %g Hz (%s): set_tick_rate executed", matchedID, currentHz, tickMode)
+	return map[string]any{"status": "executed", "action": "set_tick_rate", "command": "set_tick_rate", "worker_id": matchedID, "tick_hz": int(currentHz), "current_tick_hz": currentHz, "target_tick_hz": targetHz, "hz": int(currentHz), "tick_mode": tickMode, "simulate_all_npcs": simEnabled, "result": msg, "message": msg}, nil
 }
 
 func (s *Server) setWorkerTickHzOverride(workerID string, hz float64) (string, string, *WorldWorkerEndpoint) {
-	reqKey := strings.ToLower(strings.TrimSpace(firstNonEmpty(workerID, "aoc-world")))
+	reqKey, tickMode := strings.ToLower(strings.TrimSpace(firstNonEmpty(workerID, "aoc-world"))), "manual"
+	if hz < 0 {
+		tickMode = "dynamic"
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	matchedID, host := firstNonEmpty(workerID, "aoc-world"), "world"
+	matchedID, host, aliasKeys := firstNonEmpty(workerID, "aoc-world"), "world", []string{reqKey}
 	var matchedWorker *WorldWorkerEndpoint
 	for _, w := range s.worldWorkers {
 		if reqKey == "aoc-world" || reqKey == "all" || strings.EqualFold(w.WorkerID, reqKey) || strings.EqualFold(w.ScopeKey, reqKey) || strings.EqualFold(w.ContainerName, reqKey) || strings.EqualFold("aoc-"+w.ScopeKey, reqKey) {
-			effHz := hz
-			if effHz < 0 {
-				effHz = defaultWorkerTierTickHz(w.ScopeKind)
-			}
-			w.TickHz, matchedID, host, matchedWorker = effHz, firstNonEmpty(workerID, w.ContainerName), resolveWorkerMetricsHost(*w), w
-		}
-	}
-	playerHandoversMu.Lock()
-	workerTickHzOverrides[serverPlayerKey{srv: s, player: reqKey}], workerTickHzOverrides[serverPlayerKey{srv: s, player: strings.ToLower(matchedID)}] = hz, hz
-	playerHandoversMu.Unlock()
-	return matchedID, host, matchedWorker
-}
-
-func (s *Server) lookupWorkerTickHzOverrideLocked(w *WorldWorkerEndpoint) (float64, bool) {
-	if w != nil {
-		playerHandoversMu.Lock()
-		defer playerHandoversMu.Unlock()
-		for _, k := range []string{w.WorkerID, w.ScopeKey, w.ContainerName, "aoc-" + w.ScopeKey, "aoc-world"} {
-			if hz, ok := workerTickHzOverrides[serverPlayerKey{srv: s, player: strings.ToLower(strings.TrimSpace(k))}]; ok {
-				if hz < 0 {
-					return defaultWorkerTierTickHz(w.ScopeKind), true
+			if hz < 0 {
+				effHz := max(defaultWorkerTierTickHz(w.ScopeKind), 30.0)
+				if meta := s.workerMeta[w.WorkerID]; meta.ScrapedTickHz >= 30.0 {
+					effHz = meta.ScrapedTickHz
 				}
-				return hz, true
+				w.TickHz, w.CurrentTickHz, w.TargetTickHz, w.TickMode = effHz, effHz, -1, "dynamic"
+			} else {
+				w.TickHz, w.CurrentTickHz, w.TargetTickHz, w.TickMode = hz, hz, hz, "manual"
 			}
+			matchedID, host, matchedWorker = firstNonEmpty(workerID, w.ContainerName), resolveWorkerMetricsHost(*w), w
+			aliasKeys = append(aliasKeys, workerOverrideAliasKeys(w)...)
 		}
 	}
-	return 0, false
+	aliasKeys = append(aliasKeys, strings.ToLower(strings.TrimSpace(matchedID)))
+	s.mu.Unlock()
+	s.applyWorkerTickOverrideKeys(tickMode, hz, aliasKeys)
+	return matchedID, host, matchedWorker
 }
 
 func extractSimulateAllNpcsBool(p map[string]any) bool {
 	for _, k := range []string{"enabled", "simulate_all_npcs", "amount", "value"} {
 		if v, ok := p[k]; ok && v != nil {
-			switch tv := v.(type) {
-			case bool:
-				return tv
-			case string:
-				s := strings.ToLower(strings.TrimSpace(tv))
-				return s != "false" && s != "0" && s != "off" && s != "no"
-			default:
-				if iv, hasInt := extractInt64Param(p, k); hasInt {
-					return iv != 0
-				}
+			if b, isBool := v.(bool); isBool {
+				return b
+			}
+			if s, isStr := v.(string); isStr {
+				sLow := strings.ToLower(strings.TrimSpace(s))
+				return sLow != "false" && sLow != "0" && sLow != "off" && sLow != "no"
+			}
+			if iv, hasInt := extractInt64Param(p, k); hasInt {
+				return iv != 0
 			}
 		}
 	}

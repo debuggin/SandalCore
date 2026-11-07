@@ -88,7 +88,7 @@ function Test-SandalGitTrackedAssets {
         if ($norm -match '^(?:dist|deploy|\.aoc)/') {
             $Violations.Add("Forbidden runtime or extracted path tracked in git: $norm")
         }
-        if ($norm -match '(?:^|/)(?:content\.db|area_geom\.bin|area_nav\.bin|town_platforms\.bin|town_layouts\.bin|region_foliage\.tsv|npc_motion\.tsv|npc_abilities\.tsv|npc_montages\.tsv|npc_targeting\.tsv|npc_senses\.tsv|npc_aggro_curves\.tsv|npc_looks\.tsv|npc_appearances\.tsv|npc_names\.tsv|npc_trees\.tsv|mount_speeds\.tsv|mount_riders\.tsv|artisan_curves\.tsv|item_names\.tsv|roads\.tsv|roads_raw\.tsv|roads_levels\.tsv|town_layout_items\.tsv|DefaultCombat\.ini|DefaultAoCRecordConstants\.ini)$' -and $norm -notmatch '^src/server/services/cmd/contentc/') {
+        if ($norm -match '(?:^|/)(?:content\.db|area_geom\.bin|area_nav\.bin|town_platforms\.bin|town_layouts\.bin|region_foliage\.tsv|pcap_resource_spawners\.tsv|npc_motion\.tsv|npc_abilities\.tsv|npc_montages\.tsv|npc_targeting\.tsv|npc_senses\.tsv|npc_aggro_curves\.tsv|npc_looks\.tsv|npc_appearances\.tsv|npc_names\.tsv|npc_trees\.tsv|mount_speeds\.tsv|mount_riders\.tsv|artisan_curves\.tsv|item_names\.tsv|roads\.tsv|roads_raw\.tsv|roads_levels\.tsv|town_layout_items\.tsv|DefaultCombat\.ini|DefaultAoCRecordConstants\.ini)$' -and $norm -notmatch '^src/server/services/cmd/contentc/') {
             $Violations.Add("Forbidden extracted game data file tracked in git: $norm")
         }
         if ($norm -match '\.(pak|utoc|ucas|pdb|dmp|pcapng)$') {
@@ -159,7 +159,7 @@ function Test-SandalEnvSchemaTemplates {
         return
     }
     $exampleText = [System.IO.File]::ReadAllText($examplePath)
-    $expectedCount = 130
+    $expectedCount = 99
     $schemaKeys = @([regex]::Matches($exampleText, '(?m)^(?:AOC|SANDAL)_[A-Z0-9_]+(?==)') | ForEach-Object { $_.Value })
     if ($schemaKeys.Count -ne $expectedCount) {
         $Violations.Add("sandal.env.example expected $expectedCount keys, found $($schemaKeys.Count)")
@@ -348,6 +348,25 @@ function Test-SandalDocumentationRealityHygiene {
     }
 }
 
+function Test-SandalNoVcpkgRemnants {
+    param(
+        [Parameter(Mandatory)][string]$RootPath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Violations
+    )
+    if (Test-Path -LiteralPath (Join-Path $RootPath 'src\vcpkg.json')) {
+        $Violations.Add('NoVcpkgRemnants: forbidden src/vcpkg.json file must not exist')
+    }
+    foreach ($rel in @('src\CMakeLists.txt', 'src\CMakePresets.json', 'src\deploy\docker\cpp.Dockerfile')) {
+        $p = Join-Path $RootPath $rel
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
+        $text = [System.IO.File]::ReadAllText($p)
+        if ($text -match '(?i)\bvcpkg\b') {
+            $norm = $rel.Replace('\', '/')
+            $Violations.Add("NoVcpkgRemnants: forbidden vcpkg reference in $norm")
+        }
+    }
+}
+
 function Invoke-SandalPublicCheck {
     [CmdletBinding()]
     [Alias('Invoke-SandalPublicChecks')]
@@ -364,6 +383,7 @@ function Invoke-SandalPublicCheck {
     $null = Test-SandalRootDirectoryHierarchy -RepoRoot $Root -Violations $violations
     Test-SandalGitIdentityHygiene -RootPath $Root -Violations $violations
     Test-SandalDocumentationRealityHygiene -RootPath $Root -Violations $violations
+    Test-SandalNoVcpkgRemnants -RootPath $Root -Violations $violations
 
     if ($violations.Count -gt 0) {
         foreach ($violation in $violations) {

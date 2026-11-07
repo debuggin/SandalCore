@@ -68,7 +68,6 @@ set(SANDAL_DOMAIN_TEST_TARGETS
     test_protocol_bitstream_bounds
     test_character_inventory_and_glint
     test_character_mounts_and_talents
-    test_mesh_handover_hysteresis
     test_chaos_fault_seams
     fuzz_farchive_langsec
     test_move_packed_inline_base
@@ -148,7 +147,18 @@ add_sandal_domain_test_exe(test_quests_objectives_and_commissions quests/test_qu
 add_sandal_domain_test_exe(test_protocol_bitstream_bounds protocol/test_protocol_bitstream_bounds.cpp)
 add_sandal_domain_test_exe(test_character_inventory_and_glint character/test_character_inventory_and_glint.cpp)
 add_sandal_domain_test_exe(test_character_mounts_and_talents character/test_character_mounts_and_talents.cpp)
-add_sandal_domain_test_exe(test_mesh_handover_hysteresis mesh/test_mesh_handover_hysteresis.cpp)
+if(NOT TARGET test_mesh_handover_hysteresis)
+    add_sandal_domain_test_exe(test_mesh_handover_hysteresis mesh/test_mesh_handover_hysteresis.cpp)
+    list(APPEND SANDAL_DOMAIN_TEST_TARGETS test_mesh_handover_hysteresis)
+endif()
+if(NOT TARGET test_world_foliage_cells AND TARGET test_world_foliage)
+    add_custom_target(test_world_foliage_cells
+        DEPENDS test_world_foliage
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:test_world_foliage>
+            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/test_world_foliage_cells$<TARGET_FILE_SUFFIX:test_world_foliage>"
+    )
+endif()
 add_sandal_domain_test_exe(test_chaos_fault_seams chaos/test_chaos_fault_seams.cpp)
 add_sandal_domain_test_exe(fuzz_farchive_langsec protocol/fuzz_farchive_langsec.cpp)
 target_include_directories(fuzz_farchive_langsec PRIVATE "${PROJECT_SOURCE_DIR}/libs/aocnet")
@@ -407,9 +417,11 @@ add_sandal_domain_case_test(chaos.v4_live_rcu_load test_v4_live_rcu_load v4_live
 add_sandal_domain_case_test(chaos.v5_sigkill_handover test_v5_sigkill_handover v5_sigkill_handover)
 add_sandal_domain_case_test(chaos.v6_dst_buggify test_v6_dst_buggify v6_dst_buggify)
 
-find_program(SANDAL_PWSH_EXECUTABLE NAMES pwsh powershell REQUIRED)
-add_test(
-    NAME powershell.public_check
-    COMMAND "${SANDAL_PWSH_EXECUTABLE}" -NoProfile -File "${PROJECT_SOURCE_DIR}/tests/powershell/public_check.Tests.ps1"
-    WORKING_DIRECTORY "${SANDAL_REPO_ROOT}"
-)
+find_program(SANDAL_PWSH_EXECUTABLE NAMES pwsh powershell)
+if(SANDAL_PWSH_EXECUTABLE)
+    add_test(
+        NAME powershell.public_check
+        COMMAND "${SANDAL_PWSH_EXECUTABLE}" -NoProfile -File "${PROJECT_SOURCE_DIR}/tests/powershell/public_check.Tests.ps1"
+        WORKING_DIRECTORY "${SANDAL_REPO_ROOT}"
+    )
+endif()

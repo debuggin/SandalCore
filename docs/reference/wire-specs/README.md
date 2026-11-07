@@ -1,38 +1,46 @@
-# Clean-Room Wire Protocol Specifications (`docs/reference/wire-specs/`)
+# Wire Protocol Specifications
 
-> **Diátaxis Quadrant**: Technical Reference
+**Related Guides**: [Root Overview](../../README.md) | [Wire Protocol Library (`libaocnet`)](../../src/libs/aocnet/README.md) | [World Server](../../src/server/world/README.md) | [Contributing Guide](../CONTRIBUTING.md)
 
-This directory indexes the clean-room bit-stream wire specifications for Unreal Engine 5.6 replication and RPC codecs implemented in `src/libs/aocnet/protocol/`. Every specification enforces the Chinese-Wall Specification Firewall (`CS-13`, `SEC-06`, `SEC-08`): documents MUST record normalized module-relative RVAs, bit-level field layouts, subtraction-safe bounds predicates, and synthetic hex test vectors, and MUST NOT contain proprietary source code, raw PE32+ virtual addresses, or decompiler auto-symbols.
+This directory contains the clean-room wire protocol specifications for Unreal Engine 5.6 UDP bit-stream framing, property replication, RPC serialization, the `127.0.0.1:19021` launcher tether protocol, and the `:50061` ICS TLS 1.3 lobby protocol implemented in [`src/libs/aocnet/`](../../src/libs/aocnet/README.md).
 
-## 1. Clean-Room 3-Way Wire Protocol Verification Pipeline
+Every specification records normalized module-relative RVAs, bit-level field layouts, overflow-safe bounds checks, and synthetic hex test vectors, with zero proprietary source code or decompiler output.
 
-The reverse-engineering workbench (`scripts/re_workbench.ps1`) reconciles three independent sources before a codec enters `src/libs/aocnet/`:
+---
 
-1. **Static Schema (`S` — Rizin CFG + USMAP)**: Extracts `UScriptStruct::ICppStructOps` trait flags (`WithNetSerializer`, `WithNetSharedSerialization`) and property handles pinned by `(ExecSHA256, PdbGUID, EngineNetVer, GameNetVer)` via `scripts/re_workbench.ps1` (`static_rizin_usmap` and `manifest_verifier` stages).
-2. **Runtime Instrumentation (`R` — Frida `CModule` Ring Hook)**: Captures pre- and post-call `FArchive` bit-cursor positions (`BitTraceSlot`, `< 150 ns` hot-path budget) via a 65,536-slot lock-free SPSC ring buffer in `src/tools/re-workbench/cmodule/ring_hook.c` and the Frida agent in `src/tools/re-workbench/agent/index.ts` (`frida_session` stage in `scripts/re_workbench.ps1`).
-3. **Differential Bit-Oracle & 3-Way Reconciler (`I` — `0`-Residue Verification)**: Cross-joins static schemas, runtime bit deltas, and server codecs via `scripts/re_workbench.ps1` (`bit_oracle`, `reconcile_3way`, `gap_correlator`, and `spec_generator` stages), requiring `is_error == False` and `leftover_bits == 0` across all captured bunches.
+## Three-Way Wire Verification Pipeline
 
-## 2. P0 `NetSerializeStruct` Wire Codecs & `PropType::Unknown` Guard
+The reverse-engineering workbench (`scripts/re_workbench.ps1`) verifies every wire codec across three sources before it enters `src/libs/aocnet/`:
 
-| Priority | Struct / Guard Target | Schema & Codec Location | Wire Framing Contract |
-| :--- | :--- | :--- | :--- |
-| `P0-01` | `FEssentialCitizenshipWindowData` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Node citizenship status modal bit-stream |
-| `P0-02` | `FNodeInventoryData` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Warehouse and node storage synchronization |
+1. **Static Schema Extraction (`static_rizin_usmap`)**: Extracts struct serialization flags (`WithNetSerializer`, `WithNetSharedSerialization`) and property handles from `.usmap` mappings pinned by executable `SHA-256`, `PDB GUID`, `EngineNetVer`, and `GameNetVer`.
+2. **Runtime Bit-Cursor Tracing (`frida_session`)**: Records pre- and post-call `FArchive` bit-cursor positions through a 65,536-slot lock-free ring buffer in `src/tools/re-workbench/cmodule/ring_hook.c` and `src/tools/re-workbench/agent/index.ts`.
+3. **Differential Bit-Oracle Reconciliation (`bit_oracle` and `reconcile_3way`)**: Replays captured packets through the wire codecs in `src/libs/aocnet/` and verifies zero read errors (`is_error == false`) and zero trailing bits (`leftover_bits == 0`).
+
+---
+
+## Core Struct Codecs and Guards
+
+| ID | Struct or Guard | Implementation File | Wire Purpose |
+|:---|:---|:---|:---|
+| `P0-01` | `FEssentialCitizenshipWindowData` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Node citizenship window bit-stream |
+| `P0-02` | `FNodeInventoryData` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Settlement warehouse and node storage sync |
 | `P0-03` | `FClientBuyOrderData` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Construction and material buy-order entries |
 | `P0-04` | `FNetLevelVisibilityTransactionId` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Packed `uint32` sub-level visibility transaction ID |
-| `P0-05` | `FCommissionBoardList` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Settlement commission board offering array |
+| `P0-05` | `FCommissionBoardList` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Settlement commission board task array |
 | `P0-06` | `FUpdateLevelVisibilityLevelInfo` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Streaming sub-level visibility handshake |
 | `P0-07` | `FRootMotionSourceGroup` | `AAutonomousPlayerCharacter.h` / `codecs_containers.cpp` | Ability root-motion source group state |
-| `P0-08` | `FSharedRepMaster` | `AAutonomousPlayerCharacter.h` / `codecs_containers.cpp` | Shared movement replication master block |
-| `P0-09` | `FClientSpawnDeployableData` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Camp, siege engine, and mobile station spawn data |
+| `P0-08` | `FSharedRepMaster` | `AAutonomousPlayerCharacter.h` / `codecs_containers.cpp` | Shared movement replication state block |
+| `P0-09` | `FClientSpawnDeployableData` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Camp, siege engine, and mobile station spawn payload |
 | `P0-10` | `FMapMarkerOverrideWrapper` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Dynamic event and caravan map marker override |
 | `P0-11` | `FPlayerCommodityCounts` | `AAoCPlayerController.h` / `codecs_containers.cpp` | Glint, scrip, and regional commodity counters |
 | `P0-12` | `FCharacterMoveResponsePackedBits` | `AAutonomousPlayerCharacter.h` / `move_packed.cpp` | Server-to-client movement correction bit-stream |
-| `Guard` | `PropType::Unknown` (`TOptional` / `TSet`) | `src/libs/aocnet/protocol/repl/rep_block.h` | Optional presence-bit and sparse-set command guard |
+| `Guard` | `PropType::Unknown` (`TOptional` / `TSet`) | `src/libs/aocnet/protocol/repl/rep_block.h` | Presence-bit and sparse-set bounds guard |
 
-## 3. Reproducible CLI Verification
+---
 
-Run the hermetic workbench and clean-room firewall verification suite from the repository root:
+## Running Protocol Verification
+
+Run the protocol workbench and clean-room safety checks from PowerShell 7:
 
 ```powershell
 pwsh -NoProfile -File scripts/re_workbench.ps1

@@ -185,7 +185,7 @@ static void test_map_real() {
     if (!m) {
         return;
     }
-    CHECK(m->rows().size() == 84218 && m->def_names().size() == 73 && m->owners().size() == 671 && m->components() == 10613, "84,218 instances, 73 defs, 671 owners and 10,613 components");
+    CHECK(m->rows().size() == 588362 && m->def_names().size() == 97 && m->owners().size() == 3761 && m->components() == 42267, "588,362 instances, 97 defs, 3,761 owners and 42,267 components");
     size_t pillars = 0;
     size_t max_comps = 0;
     for (const auto &o : m->owners()) {
@@ -325,8 +325,8 @@ static void check_data_reach(World &w, uint32_t oak_row) {
 
 static void test_data(World &w) {
     std::printf("the data: the map's defs against content.db's foliage tables\n");
-    CHECK(w.f->defs() == 73 && w.f->unresolved_defs() == 0, "all 73 defs of the map resolve to a foliage_def");
-    CHECK(w.f->harvestable_defs() == 69, "69 can be harvested (the four Riverlands_ pillars have no interaction)");
+    CHECK(w.f->defs() == 97 && w.f->unresolved_defs() == 0, "all 97 defs of the map resolve to a foliage_def");
+    CHECK(w.f->harvestable_defs() == 93, "93 can be harvested (the four Riverlands_ pillars have no interaction)");
     CHECK(w.f->duplicated_names() == 0, "no def of the map has two records in the design data (the one repeated name, Stone_Limestone_Large_2, is no def of the Riverlands)");
     CHECK(w.g->interactions() == 236, "Gathering holds all 236 interactions");
     const uint32_t oak_row = w.row_of(kCell41_19, "IntrepidGatherableFISMC_0", 0);
@@ -466,7 +466,7 @@ int main() {
     const char *db = db_path();
     const char *tsv = tsv_path();
     if (!db || !tsv) {
-        std::printf("\n[skip] the world checks need dist/content/content.db (version 15) and dist/content/region_foliage.tsv\n");
+        std::printf("\n[skip] the world checks need dist/content/content.db (version 41) and dist/content/region_foliage.tsv\n");
     } else {
         World w;
         if (w.open(db, tsv)) {

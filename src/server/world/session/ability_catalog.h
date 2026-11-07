@@ -27,6 +27,11 @@
 
 namespace aoc::worldd::abilities {
 
+struct BreakOnDamage {
+    std::vector<int64_t> except_hits;
+    bool leaves(int64_t hit_guid) const { return hit_guid != 0 && std::find(except_hits.begin(), except_hits.end(), hit_guid) != except_hits.end(); }
+};
+
 struct EffectDef {
     content::EffectRow                          row;
     std::vector<content::ModRow>                mods;   // the effect's stat mods
@@ -34,6 +39,7 @@ struct EffectDef {
     /// The reactions the effect carries while it is on its holder (extra's ReactionsIds, in the listed order; contentc version 35).
     std::vector<int64_t>                        reactions;
     std::optional<content::CrowdControlRow>     cc;
+    std::optional<BreakOnDamage>                breaks_on_damage;
 };
 
 struct HitDef {

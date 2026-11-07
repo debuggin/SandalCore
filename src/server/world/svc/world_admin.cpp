@@ -464,16 +464,24 @@ struct WorldAdminServer::Service final : adminv1::WorldAdminService::Service {
             const bool is_cal = (req->npc() == "gm.SetWorldCalendar" || req->npc() == "set_world_calendar" || req->npc() == "world_calendar");
             double hours = req->has_point() ? req->point().x() : (req->yaw_degrees() != 0.0 ? req->yaw_degrees() : static_cast<double>(req->level()));
             if (!req->place().empty()) hours = std::strtod(req->place().c_str(), nullptr);
-            const int32_t req_year = req->has_point() && req->point().y() >= 1.0 ? static_cast<int32_t>(req->point().y()) : 0;
-            const int32_t req_day = req->has_point() && req->point().has_z() && req->point().z() >= 1.0
-                                        ? static_cast<int32_t>(req->point().z())
+            const int32_t req_year = req->has_point() && req->point().y() > 0.0
+                                         ? static_cast<int32_t>(std::lround(req->point().y()))
+                                         : 0;
+            const int32_t req_day = req->has_point() && req->point().has_z() && req->point().z() >= 0.0
+                                        ? static_cast<int32_t>(std::lround(req->point().z()))
                                         : (is_cal && req->level() >= 1 ? req->level() : 0);
             status_out = on_net_thread([&] {
-                if (req_year > 0 || req_day > 0) {
-                    bootstrap::set_global_calendar_date(req_year > 0 ? req_year : bootstrap::global_calendar_year(),
-                                                        req_day > 0 ? req_day : bootstrap::global_calendar_day_of_year());
+                if (req->has_point() && req->point().y() > 0.0 && req->point().has_z() && req->point().z() >= 0.0) {
+                    bootstrap::set_global_calendar_date(static_cast<int32_t>(std::lround(req->point().y())),
+                                                        static_cast<int32_t>(std::lround(req->point().z())));
+                    bootstrap::set_global_time_of_day_hours(req->point().x());
+                } else {
+                    if (req_year > 0 || req_day > 0) {
+                        bootstrap::set_global_calendar_date(req_year > 0 ? req_year : bootstrap::global_calendar_year(),
+                                                            req_day > 0 ? req_day : bootstrap::global_calendar_day_of_year());
+                    }
+                    if (!is_cal || req->has_point() || !req->place().empty()) bootstrap::set_global_time_of_day_hours(hours);
                 }
-                if (!is_cal || req->has_point() || !req->place().empty()) bootstrap::set_global_time_of_day_hours(hours);
             });
             if (status_out.ok()) {
                 resp->set_npc(req->npc());

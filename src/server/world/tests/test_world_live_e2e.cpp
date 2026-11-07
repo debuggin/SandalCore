@@ -17,6 +17,7 @@ using aoc::world::tests::bots::strip_hyphens_lower;
 using aoc::world::tests::bots::UdpSocket;
 using aoc::world::tests::plans::attach_service_auth;
 using aoc::world::tests::plans::encode_hex_guid_words;
+using aoc::world::tests::plans::load_dynamic_world_catalog;
 using aoc::world::tests::plans::parse_spawn_actor_guid;
 using aoc::world::tests::plans::pump_udp;
 using aoc::world::tests::plans::run_all_26_bot_patterns_of_life;
@@ -238,18 +239,18 @@ int main(int argc, char** argv) {
     (void)class_named("PlayerPawn_C");
     (void)class_named("UAoCAbilityComponent");
 
-    if (!run_all_26_bot_patterns_of_life()) {
-        std::fprintf(stderr, "[FAIL] 32-bot 64-archetype-pair 26-plan player-bot suite failed\n");
-        return 1;
-    }
-
     LiveSession s;
     s.cfg = parse_args(argc, argv);
     if (s.cfg.char_id.empty() || s.cfg.ticket.empty()) {
+        (void)load_dynamic_world_catalog(s);
         uint8_t words[16]{};
         if (!encode_hex_guid_words("bbec5c86eb101fe5f38c87f0fa22e7d0", words)) return 1;
         std::printf("[skip] test_world_live_e2e: AOC_LIVE_CHAR_ID and AOC_LIVE_TICKET not set (hermetic self-check ok)\n");
         return 0;
+    }
+    if (!load_dynamic_world_catalog(s)) {
+        std::fprintf(stderr, "[FAIL] test_world_live_e2e: failed to load dynamic catalog from content.db\n");
+        return 1;
     }
 
     const auto parsed = aoc::worldd::parse_address(s.cfg.host + ":" + std::to_string(s.cfg.port));
@@ -268,10 +269,11 @@ int main(int argc, char** argv) {
     if (!run_stage1_handshake(s) || !run_stage2_control_login(s) || !run_stage3_bootstrap(s) ||
         !run_stage4_phase_in(s) || !run_stage5_movement(s) || !run_stage6_inventory_scrolls(s) ||
         !run_stage7_talents_actionbar(s) || !run_stage8_combat_abilities(s) ||
-        !run_stage9_world_interactions(s) || !run_stage10_close(s)) {
+        !run_stage9_world_interactions(s) || !run_all_26_bot_patterns_of_life(s) ||
+        !run_stage10_close(s)) {
         return 1;
     }
 
-    std::printf("[PASS] test_world_live_e2e completed all 10 stages\n");
+    std::printf("[PASS] test_world_live_e2e completed all 10 stages + 26 live UDP bot patterns of life\n");
     return 0;
 }

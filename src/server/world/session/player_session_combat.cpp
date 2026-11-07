@@ -227,6 +227,18 @@ std::optional<ParsedTriggerInput> read_trigger_input(const repl::ClientRpc& rpc,
   return std::nullopt;
 }
 
+bool trigger_runtime_ability(AbilityRuntime& runtime, std::optional<AbilityPipeline>& pipeline,
+                             std::optional<Clock::time_point>& crate_drop_due,
+                             const ParsedTriggerInput& parsed, double now_seconds) {
+  const Refusal ran = runtime.trigger(parsed.ability, parsed.instance, now_seconds, parsed.info);
+  if (ran != Refusal::None) return false;
+  if (parsed.ability == content::kGuidDodge && pipeline) {
+    pipeline->end_by_dodge(now_seconds);
+    crate_drop_due.reset();
+  }
+  return true;
+}
+
 std::map<int64_t, double> current_stat_map(bootstrap::PlayerBootstrap& pb) {
   std::map<int64_t, double> stats;
   for (const auto& [record, value] : pb.current_stats()) stats[record] = value;
@@ -637,8 +649,7 @@ void PlayerSession::on_ability_trigger(Connection& conn, const repl::ClientRpc& 
       crate_drop_instance_ = parsed->instance;
     }
   } else {
-    runtime->trigger(parsed->ability, parsed->instance, ability_seconds(now), parsed->info);
-    accepted_cast = true;
+    accepted_cast = trigger_runtime_ability(*runtime, pipeline_, crate_drop_due_, *parsed, ability_seconds(now));
   }
   take_ability_events();
   flush_abilities(conn);

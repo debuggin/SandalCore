@@ -22,6 +22,7 @@
 #include "world/places.h"
 #include "world/town_floor.h"
 #include "world/town_platform.h"
+#include "world/world_clock.h"
 
 #include <chrono>
 #include <cstdint>
@@ -127,6 +128,8 @@ public:
     void set_generic_npcs(spawns::GenericConfig config) { generic_config_ = std::move(config); }
     void set_spawn_context(spawns::SpawnContext context) { spawn_context_ = std::move(context); }
     const spawns::SpawnContext& spawn_context() const { return spawn_context_; }
+    void set_day_clock(world::WorldClock clock) { day_clock_ = clock; }
+    const world::WorldClock& day_clock() const { return day_clock_; }
     const npc::MotionTable&     blueprints() const { return motion_; }
     const spawns::GenericNpcs*  generic_npcs() const { return generic_ ? &*generic_ : nullptr; }
     const spawns::AreaReport*   area_report() const { return area_report_ ? &*area_report_ : nullptr; }
@@ -545,6 +548,7 @@ private:
     mutable std::map<int64_t, items::ItemRarityFacts> rarity_cache_;
     mutable std::map<int64_t, std::string>     name_cache_;
     double                                     world_clock_ = 0;
+    world::WorldClock                          day_clock_ = world::default_world_clock();
     std::unordered_map<uint64_t, bool>         outside_;
     std::unordered_map<uint64_t, double>       outside_logged_at_;
     std::unordered_map<uint64_t, bool>         exit_loud_;

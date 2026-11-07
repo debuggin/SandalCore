@@ -23,7 +23,7 @@ export interface WorldWorkerInfo {
   readonly status: string; readonly npc_count?: number; readonly npcs_count?: number; readonly monster_count?: number;
   readonly resource_node_count?: number; readonly player_count?: number; readonly players_count?: number;
   readonly npcs?: number; readonly monsters?: number; readonly resource_nodes?: number; readonly active_players?: number;
-  readonly tick_hz?: number; readonly tick_mode?: string; readonly simulate_npcs?: boolean;
+  readonly tick_hz?: number; readonly current_tick_hz?: number; readonly target_tick_hz?: number; readonly tick_mode?: string; readonly simulate_npcs?: boolean;
   readonly tick_p50_ms?: number; readonly tick_p99_ms?: number;
 }
 
@@ -46,21 +46,15 @@ function slugifyWorkerKey(raw: string): string {
   return raw.trim().replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-export function formatCanonicalWorkerName(
-  scopeKind: string,
-  scopeKey: string,
-  options?: { readonly dynamic?: boolean; readonly dynamicOrdinal?: number },
-): string {
+export function formatCanonicalWorkerName(scopeKind: string, scopeKey: string, options?: { readonly dynamic?: boolean; readonly dynamicOrdinal?: number }): string {
   const kind = scopeKind.trim().toLowerCase();
   if (kind === "world") return "aoc-world";
   if (kind === "polygon_cutout") return `aoc-poly-${slugifyWorkerKey(scopeKey) || "cutout"}`;
   const isNode = kind === "node_plug" || kind === "node" || kind === "node_plug_zoi" || kind === "dynamic_node_plug_zoi";
   const stripped = isNode ? scopeKey.replace(/^Verra_[A-Za-z0-9]+_(?:Node_)?/i, "") : scopeKey;
   const base = `aoc-${slugifyWorkerKey(stripped || scopeKey) || (isNode ? "node" : "world")}`;
-  const isDynamic = options?.dynamic === true || kind === "dynamic_zoi" || kind === "dynamic_node_plug_zoi";
-  if (!isDynamic) return base;
-  const ord = Math.max(0, Math.min(MAX_DYNAMIC_WORKERS_PER_SCOPE - 1, Math.trunc(options?.dynamicOrdinal ?? 0)));
-  return `${base}-${DYNAMIC_WORKER_NATO_SUFFIXES[ord]}`;
+  if (!(options?.dynamic === true || kind === "dynamic_zoi" || kind === "dynamic_node_plug_zoi")) return base;
+  return `${base}-${DYNAMIC_WORKER_NATO_SUFFIXES[Math.max(0, Math.min(MAX_DYNAMIC_WORKERS_PER_SCOPE - 1, Math.trunc(options?.dynamicOrdinal ?? 0)))]}`;
 }
 
 const REGIONAL_WORKER_TABLE: Readonly<Record<string, ResolvedWorkerAuthority>> = Object.freeze({
@@ -76,7 +70,7 @@ export const DEFAULT_REGIONAL_WORLD_WORKERS: readonly WorldWorkerInfo[] = Object
     worker_id: w.worker_id, worker_index: w.worker_index ?? idx, canonical_name: w.canonical_name ?? formatCanonicalWorkerName(w.scope_kind, w.scope_key),
     scope_key: w.scope_key, scope_kind: w.scope_kind, region_label: w.region_label, container_name: w.container_name, dynamic_scaling_stub: false,
     status: "UP", npc_count: 0, monster_count: 0, resource_node_count: 0, player_count: 0, npcs: 0, monsters: 0, resource_nodes: 0, active_players: 0,
-    tick_hz: 0, tick_p50_ms: 0.5, tick_p99_ms: 2.0,
+    tick_hz: 45, current_tick_hz: 45, target_tick_hz: -1, tick_mode: "dynamic", simulate_npcs: true, tick_p50_ms: 0.5, tick_p99_ms: 2.0,
   })),
 );
 
@@ -215,20 +209,29 @@ export function formatWorkerTickHzOptionLabel(hz: number, compact = false): stri
   return `${hz} Hz`;
 }
 
-export const VERRA_CALENDAR_MONTH_NAMES = ["Newbloom", "Verdant", "Blossom", "Suncrest", "Highsun", "Goldleaf", "Emberfall", "Harvest", "Duskwind", "Frostwane", "Deepcold", "Starfall"] as const;
+export function resolveWorkerTickFields(w: WorldWorkerInfo): WorldWorkerInfo {
+  const override = MANUAL_WORKER_TICK_OVERRIDES.get(w.worker_id) ?? (w.canonical_name ? MANUAL_WORKER_TICK_OVERRIDES.get(w.canonical_name) : undefined) ?? (w.container_name ? MANUAL_WORKER_TICK_OVERRIDES.get(w.container_name) : undefined);
+  const isManual = override !== undefined ? override >= 0 : String(w.tick_mode ?? "").trim().toLowerCase() === "manual" && (w.target_tick_hz === undefined || Number(w.target_tick_hz) >= 0);
+  const tickMode = isManual ? "manual" : "dynamic", targetHz = override !== undefined ? override : isManual ? normalizeWorkerTickHz(w.target_tick_hz ?? w.tick_hz, "manual") : -1;
+  const rawCur = Number(w.current_tick_hz ?? w.tick_hz), kind = String(w.scope_kind ?? "").toLowerCase();
+  const defCur = kind === "world" ? 30 : kind === "zoi" || kind === "dynamic_zoi" ? 60 : kind.includes("node") ? 100 : 45;
+  const currentHz = isManual ? targetHz : Math.max(30, Math.round(Number.isFinite(rawCur) && rawCur >= 30 ? rawCur : defCur));
+  return { ...w, tick_mode: tickMode, target_tick_hz: targetHz, current_tick_hz: currentHz, tick_hz: currentHz, simulate_npcs: currentHz !== 0 };
+}
+
 export const VERRA_CALENDAR_SEASON_NAMES = ["Spring", "Summer", "Autumn", "Winter"] as const;
 
 export interface VerraCalendarSnapshot {
   readonly calendarYear: number; readonly calendarDayOfYear: number; readonly calendarSeason: string;
-  readonly calendarMonth: number; readonly calendarMonthName: string; readonly calendarDayOfMonth: number; readonly calendarFormatted: string;
+  readonly calendarSeasonIndex: number; readonly calendarDayOfSeason: number; readonly calendarFormatted: string;
 }
 
 export function computeVerraCalendar(dayOfYear: number, year: number): VerraCalendarSnapshot {
   const baseYear = Number.isFinite(year) && year >= 1 ? Math.trunc(year) : 1, rawDay = Number.isFinite(dayOfYear) ? Math.trunc(dayOfYear) - 1 : 0;
   const calendarYear = Math.max(1, baseYear + Math.floor(rawDay / 360)), zeroIdx = ((rawDay % 360) + 360) % 360, calendarDayOfYear = zeroIdx + 1;
-  const monthIdx = Math.floor(zeroIdx / 30), calendarMonth = monthIdx + 1, calendarDayOfMonth = (zeroIdx % 30) + 1;
-  const calendarMonthName = VERRA_CALENDAR_MONTH_NAMES[monthIdx] ?? "Newbloom", seasonBase = VERRA_CALENDAR_SEASON_NAMES[Math.floor(monthIdx / 3)] ?? "Spring";
-  return { calendarYear, calendarDayOfYear, calendarSeason: `${seasonBase} (${calendarMonthName})`, calendarMonth, calendarMonthName, calendarDayOfMonth, calendarFormatted: `Year ${calendarYear} AE · ${calendarDayOfMonth} ${calendarMonthName} · ${seasonBase} (Day ${calendarDayOfYear}/360)` };
+  const seasonIdx = Math.floor(zeroIdx / 90), calendarSeasonIndex = seasonIdx + 1, calendarDayOfSeason = (zeroIdx % 90) + 1;
+  const calendarSeason = VERRA_CALENDAR_SEASON_NAMES[seasonIdx] ?? "Spring";
+  return { calendarYear, calendarDayOfYear, calendarSeason, calendarSeasonIndex, calendarDayOfSeason, calendarFormatted: `Year ${calendarYear} · ${calendarSeason} · Day ${calendarDayOfSeason}` };
 }
 
 export interface CommandReceipt {
@@ -288,9 +291,7 @@ export function resolveWorkerSpatialArea(worker: WorldWorkerInfo): WorkerSpatial
 }
 
 export function getVisibleWorkersForViewport(workers: readonly WorldWorkerInfo[], viewportBoundsCm?: ViewportWorldBoundsCm | null): readonly WorldWorkerInfo[] {
-  const list = expandViewportWorkerCatalog(workers).map((w) =>
-    MANUAL_WORKER_TICK_OVERRIDES.has(w.worker_id) ? { ...w, tick_hz: MANUAL_WORKER_TICK_OVERRIDES.get(w.worker_id) } : w,
-  );
+  const list = expandViewportWorkerCatalog(workers).map((w) => resolveWorkerTickFields(w));
   if (!viewportBoundsCm || list.length === 0) return list;
   const visible = list.filter((w) => {
     const a = resolveWorkerSpatialArea(w);
@@ -327,15 +328,17 @@ export interface WorldEntity {
   readonly level: number; readonly healthPct: number; readonly npc_subkind?: string; readonly npcSubkind?: string;
   readonly resourceType?: string; readonly resource_type?: string; readonly quality?: string;
   readonly inCombat?: boolean; readonly dead?: boolean; readonly mounted?: boolean; readonly zoneId?: string;
+  readonly recordName?: string; readonly poiCategory?: string; readonly regionZoi?: string;
+  readonly radiusCm?: number; readonly nodeAssociation?: string; readonly levelRange?: string; readonly description?: string;
 }
 
 export function inferResourceNodeType(rawName: string, rawType?: string, rawSubkind?: string): string {
   if (typeof rawType === "string" && rawType.trim().length > 0) return rawType.trim();
   const s = `${rawSubkind ?? ""} ${rawName ?? ""}`.toLowerCase();
   if (rawSubkind?.toLowerCase() === "huntable" || /hunting|husbandry|^hunting_/i.test(s)) return "Hunting / Animal Husbandry";
-  if (/stonecutting|rock|stone|granite|slate|basalt|limestone|sandstone/i.test(s)) return "Stonecutting / Rock";
-  if (/mining|ore|vein|copper|iron|zinc|tin|rividium|ruby|sapphire|emerald|geode|crystal|halcyonite|lumadon/i.test(s)) return "Mining / Ore";
-  if (/herbalism|plant|herb|daffodil|moonbell|snowdrop|spiritbloom|flax|yarrow/i.test(s)) return "Herbalism / Plant";
+  if (/(?:^|[\s_/]|\b)(mining|metal|gem|ore|vein|copper|iron|zinc|tin|rividium|ruby|sapphire|emerald|geode|crystal|halcyonite|lumadon|wyrdstone|resonite|coveglass|obsidian|gold|silver|mythril|cobalt|diamond|amethyst|topaz|quartz)(?:$|[\s_/]|\b)/i.test(s)) return "Mining / Ore";
+  if (/rock|stone|granite|slate|basalt|limestone|sandstone|marble|boulder|deadcoral|dead_coral/i.test(s)) return "Mining / Stone";
+  if (/herbalism|coral|plant|herb|flower|daffodil|moonbell|snowdrop|spiritbloom|flax|yarrow|mushroom|moss|root|berry|banana|birdofparadise|dracaena|elephantear|anemone|bluebell|fern|pross|poppy|salvewort|spindlevine|shrub|bush|leaf|lily|lotus|aloe|sage|thistle/i.test(s)) return "Herbalism / Plant";
   if (/lumberjacking|tree|wood|oak|ash|cedar|willow|lumber/i.test(s)) return "Lumberjacking / Tree";
   return "Gathering Resource";
 }
@@ -642,14 +645,18 @@ async function executeTriggerNodeElectionAction(setState: WorldStreamStoreApi["s
 
 async function runSetWorkerTickRateAction(setState: WorldStreamStoreApi["setState"], workerId: string, tickHz: number | string, fetchImpl: typeof fetch = typeof fetch === "function" ? fetch : (undefined as unknown as typeof fetch)): Promise<void> {
   const normalizedHz = normalizeWorkerTickHz(tickHz);
-  const tickMode = normalizedHz === -1 ? "dynamic" : "manual", wireHz = normalizedHz === -1 ? 60 : normalizedHz, simNpcs = normalizedHz !== 0;
+  const tickMode = normalizedHz === -1 ? "dynamic" : "manual", wireHz = normalizedHz === -1 ? -1 : normalizedHz, simNpcs = normalizedHz !== 0;
   MANUAL_WORKER_TICK_OVERRIDES.set(workerId, normalizedHz);
-  setSubpartitionWorkerTickHz(workerId, normalizedHz);
-  setState((prev) => ({ workers: prev.workers.map((w) => (w.worker_id === workerId || w.canonical_name === workerId || w.container_name === workerId ? { ...w, tick_hz: normalizedHz, tick_mode: tickMode, simulate_npcs: simNpcs } : w)) }));
+  setSubpartitionWorkerTickHz(workerId, normalizedHz === -1 ? 45 : normalizedHz);
+  setState((prev) => ({ workers: prev.workers.map((w) => {
+    if (w.worker_id !== workerId && w.canonical_name !== workerId && w.container_name !== workerId) return w;
+    MANUAL_WORKER_TICK_OVERRIDES.set(w.worker_id, normalizedHz);
+    return resolveWorkerTickFields({ ...w, tick_mode: tickMode, target_tick_hz: normalizedHz, simulate_npcs: simNpcs });
+  }) }));
   let ok = true, errDetail = "";
   if (typeof fetchImpl === "function") {
     try {
-      const payload = { worker_id: workerId, tick_hz: wireHz, tick_mode: tickMode, simulate_npcs: simNpcs };
+      const payload = { worker_id: workerId, tick_hz: wireHz, target_tick_hz: normalizedHz, tick_mode: tickMode, simulate_npcs: simNpcs };
       const res = await fetchImpl("/api/v1/gm/command", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ command: "set_tick_rate", target: workerId, ...payload, args: payload, params: payload }) });
       ok = res.ok;
       if (!res.ok) { const d = (await res.json().catch(() => ({}))) as Record<string, unknown>; errDetail = String(d.detail ?? d.title ?? `HTTP ${res.status}`); }
@@ -691,6 +698,7 @@ function syncWindowUrlHash(tab: AdminTabId, modal: GmModalId): void {
 let suppressSessionPersist = false;
 
 function buildInitialWorldStreamState(setState: WorldStreamStoreApi["setState"], getState: () => WorldStreamState, overrides?: Partial<WorldStreamState>): WorldStreamState {
+  if (overrides?.workers) MANUAL_WORKER_TICK_OVERRIDES.clear();
   const h = loadPersistedWebAdminState(), defaultCal = computeVerraCalendar(1, 1);
   return {
     ...DEFAULT_SESSION_UI_EXTRA_STATE, ...defaultCal, ...h,
@@ -723,7 +731,7 @@ function buildInitialWorldStreamState(setState: WorldStreamStoreApi["setState"],
     restoreForAuthenticatedSession: (storage) => { const restored = loadPersistedWebAdminState(storage, "", true); const cur = getState(); setState({ ...restored, timeOfDayHours: cur.timeOfDayHours, timeOfDaySyncedAtMs: cur.timeOfDaySyncedAtMs, timeOfDayLabel: cur.timeOfDayLabel, simulateAllNpcs: cur.simulateAllNpcs, cityNodes: cur.cityNodes.length > 0 ? cur.cityNodes : DEFAULT_VERRA_CITY_NODES, workers: cur.workers, connectionState: "connecting" }); },
     setSimulateAllNpcs: async (enabled, fetchImpl = typeof fetch === "function" ? fetch : undefined) => { const nextVal = enabled !== undefined ? enabled : !getState().simulateAllNpcs; setState({ simulateAllNpcs: nextVal }); if (typeof fetchImpl === "function") await fetchImpl("/api/v1/gm/commands", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ command: "set_simulate_all_npcs", params: { enabled: nextVal }, action: "set_simulate_all_npcs", enabled: nextVal }) }).catch(() => {}); return nextVal; },
     setCityNodes: (cityNodes) => setState({ cityNodes }), setPois: (pois) => setState({ pois }),
-    setWorkers: (workers) => { const prev = getState().workers; if (workers.some((w) => (w.status === "UP" || w.status === "ONLINE") && prev.some((p) => p.worker_id === w.worker_id && p.status !== "UP" && p.status !== "ONLINE"))) resetAllRetryTimersAndCircuits("worker-ready"); setState({ workers }); },
+    setWorkers: (workers) => { const prev = getState().workers, next = workers.map((w) => resolveWorkerTickFields(w)); if (next.some((w) => (w.status === "UP" || w.status === "ONLINE") && prev.some((p) => p.worker_id === w.worker_id && p.status !== "UP" && p.status !== "ONLINE"))) resetAllRetryTimersAndCircuits("worker-ready"); setState({ workers: next }); },
     updateCityNodeLevel: (name, level) => setState((prev) => ({ cityNodes: updateNodeLevelInList(prev.cityNodes, name, level) })),
     setScopedReceipt: (scope, receiptOrMessage, tone) => setState((prev) => { const receipt = typeof receiptOrMessage === "string" ? { ok: tone !== "error", message: receiptOrMessage } : receiptOrMessage; const toastTone = tone ?? (receipt?.ok ? "success" : "error"); return { lastReceiptsByScope: { ...prev.lastReceiptsByScope, [scope]: receipt ? { scope, ok: receipt.ok, message: receipt.message, timestampMs: receipt.timestampMs ?? Date.now(), correlationId: receipt.correlationId } : null }, ...(receipt?.message ? { toasts: appendToastToList(prev.toasts, receipt.message, toastTone, setState).nextList } : {}) }; }),
     clearScopedReceipt: (scope) => setState((prev) => ({ lastReceiptsByScope: { ...prev.lastReceiptsByScope, [scope]: null } })),

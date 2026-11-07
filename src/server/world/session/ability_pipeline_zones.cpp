@@ -106,8 +106,10 @@ struct AbilityPipeline::Host::Zones {
       src.guid = h.owner_guid;
       src.confirm = true;
       self.zone_owner_ = active_zone_id_for_hit(self, cast, h.owner_guid);
-      if (const HitDef *hit = self.catalog_->hit(h.hit_guid))
+      if (const HitDef *hit = self.catalog_->hit(h.hit_guid)) {
+        self.mark_launched(cast.client_id);
         self.apply_hit(c, *hit, t, true, src);
+      }
       self.zone_owner_ = 0;
     }
   }
@@ -396,8 +398,8 @@ struct AbilityPipeline::Host::Zones {
              g->second.charges < cast.charge_cost);
   }
 
-  static bool spend_cast_costs(AbilityPipeline &self, AbilityChange &c,
-                               const Cast &cast) {
+  static void spend_cast_costs(AbilityPipeline &self, AbilityChange &c,
+                               Cast &cast, double t) {
     bool spent_mana = false;
     for (const auto &[stat, amount] : cast.stat_costs) {
       self.take_stat(c, stat, amount);
@@ -406,7 +408,18 @@ struct AbilityPipeline::Host::Zones {
     for (const auto &[effect, n] : cast.effect_costs)
       self.remove_stacks(c, effect, n);
     self.drop_evaluation();
-    return spent_mana;
+    cast.resource_added = 0;
+    if (self.resource_ && spent_mana) {
+      const int held = self.stacks_of(self.resource_->row.guid);
+      self.apply_effect(c, *self.resource_, 1, std::nullopt, t);
+      cast.resource_added =
+          std::max(0, self.stacks_of(self.resource_->row.guid) - held);
+    }
+  }
+
+  static bool is_cost_launched_cast(const Cast &cast) {
+    return cast.def->hits.empty() && cast.def->zones.empty() &&
+           cast.own_effects.empty() && !cast.toggle_off;
   }
 
   static std::set<int64_t>
@@ -522,14 +535,15 @@ void AbilityPipeline::step_cost(Cast &cast, double t) {
       Host::Zones::abort_unpaid_cast(*this, cast, t);
     return;
   }
+  cast.paid = true;
   Host::Zones::schedule_server_self_use_slots(*this, cast, t);
-  if (Host::Zones::spend_cast_costs(*this, c, cast) && resource_)
-    apply_effect(c, *resource_, 1, std::nullopt, t);
+  Host::Zones::spend_cast_costs(*this, c, cast, t);
   if (!cast.toggle_off)
     raise_ability_event(c, def, t);
   else
     Host::Zones::finish_toggle_off_cast(*this, c, def.row.guid, t);
   use_charge(c, cast, t);
+  if (Host::Zones::is_cost_launched_cast(cast)) mark_launched(cast.client_id);
   if (!cast.loop) Host::Zones::apply_initial_zone_hits(*this, c, cast, t);
   if (cast.looped) Host::Zones::advance_looped_shot(*this, cast, t);
   recompute(c);
@@ -541,13 +555,16 @@ void AbilityPipeline::step_own(Cast &cast, double t) {
   const ConsumedScope consumed(*this, cast.item_cast);
   const AbilityDef &def = *cast.def;
   AbilityChange c;
+  bool started = false;
   for (const EffectDef *e : cast.own_effects) {
     bool applies = true;
     std::string why;
     if (!eval_bool(e->row.requirement_expr, true, applies, why) || !applies)
       continue;
     apply_effect(c, *e, 1, std::nullopt, t, false, def.row.guid);
+    started = true;
   }
+  if (started) mark_launched(cast.client_id);
   sync_engine_effects();
   if (def.row.hold_animation &&
       !(cast.held_release_due && *cast.held_release_due <= t)) {

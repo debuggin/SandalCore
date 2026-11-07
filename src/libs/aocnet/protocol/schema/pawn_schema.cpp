@@ -148,10 +148,9 @@ ActorSchema SchemaRegistry::build_pawn_schema() {
     s.type = ActorType::Pawn;
     s.class_name = "AAoCCharacter";
     s.default_blueprint_path = "/Game/ThirdPersonCPP/Blueprints/PlayerPawn";
-    // Archetype/Level NetGUIDs for Pawn — not same as PC; need to be
-    // confirmed via Session C byte-identity testing against a captured Pawn.
-    s.archetype_netguid = 0;  // TODO(Session-C): confirm from pkt 79/104
-    s.level_netguid     = 10; // shared level
+    // Archetype NetGUID is resolved dynamically per pawn spawn; level NetGUID 10 is shared.
+    s.archetype_netguid = 0;
+    s.level_netguid     = 10;
 
     // ── Root Pawn properties (on the actor itself, not components) ──
     // Most character state lives on the 6 subobject components.

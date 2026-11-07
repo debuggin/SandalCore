@@ -11,40 +11,40 @@
 
 namespace aoc::world::tests::plans {
 
-constexpr double kRiverlandsSandsquallBorderXCm = -420000.0;
-constexpr double kWinsteadMiralethZoiBorderXCm = -618000.0;
-
-inline bool verify_ping_pong_and_zig_zag_hysteresis(bots::PlayerBot& bot) {
+inline bool verify_ping_pong_and_zig_zag_hysteresis(bots::LiveSession& s, bots::PlayerBot& bot) {
     bot.worker_id = "aoc-world-riverlands";
     bot.zone_key = "riverlands";
     const uint64_t start_epoch = bot.authority_epoch;
     const uint32_t start_suppressed = bot.suppressed_oscillations;
+    const double bx = bots::border_x_cm(s);
+    const double zoi_bx = bx - 5000.0;
+    const double gz = bots::ground_z_cm(s);
 
     for (int hop = 0; hop < 3; ++hop) {
-        const double inside_band_x = kRiverlandsSandsquallBorderXCm + 1200.0;
-        bots::step_bot_along_navmesh(bot, {inside_band_x, 520000.0 + hop * 300.0, bots::kDefaultGroundTerrainZCm}, 2);
-        if (std::abs(bot.pos_cm.x - kRiverlandsSandsquallBorderXCm) < bots::kBorderHysteresisMarginCm) {
+        const double inside_band_x = bx + 1200.0;
+        bots::step_bot_along_navmesh(s, bot, {inside_band_x, s.spawn[1] + hop * 300.0, gz}, 1);
+        if (std::abs(bot.pos_cm.x - bx) < bots::kBorderHysteresisMarginCm) {
             ++bot.suppressed_oscillations;
         }
-        bots::step_bot_along_navmesh(bot, {kRiverlandsSandsquallBorderXCm - 900.0, 520000.0 + hop * 300.0, bots::kDefaultGroundTerrainZCm}, 2);
+        bots::step_bot_along_navmesh(s, bot, {bx - 900.0, s.spawn[1] + hop * 300.0, gz}, 1);
     }
     if (bot.authority_epoch != start_epoch || bot.suppressed_oscillations < start_suppressed + 3) return false;
 
-    bots::step_bot_along_navmesh(bot, {kRiverlandsSandsquallBorderXCm + 2800.0, 521500.0, bots::kDefaultGroundTerrainZCm}, 3);
+    bots::step_bot_along_navmesh(s, bot, {bx + 2800.0, s.spawn[1] + 1500.0, gz}, 1);
     bot.dwell_ticks_across_border = bots::kBorderMinDwellTicks;
     bot.worker_id = "aoc-world-sandsquall";
     bot.zone_key = "sandsquall";
     ++bot.authority_epoch;
     ++bot.completed_handovers;
 
-    bots::step_bot_along_navmesh(bot, {kWinsteadMiralethZoiBorderXCm - 2600.0, 360000.0, bots::kDefaultGroundTerrainZCm}, 3);
+    bots::step_bot_along_navmesh(s, bot, {zoi_bx - 2600.0, s.spawn[1] - 1200.0, gz}, 1);
     bot.dwell_ticks_across_border = bots::kBorderMinDwellTicks;
     bot.worker_id = "aoc-verra-rvr-node-winstead";
     bot.zone_key = "verra_rvr_node_winstead";
     ++bot.authority_epoch;
     ++bot.completed_handovers;
 
-    bots::step_bot_along_navmesh(bot, {kWinsteadMiralethZoiBorderXCm + 2600.0, 360000.0, bots::kDefaultGroundTerrainZCm}, 3);
+    bots::step_bot_along_navmesh(s, bot, {zoi_bx + 2600.0, s.spawn[1] - 1200.0, gz}, 1);
     bot.dwell_ticks_across_border = bots::kBorderMinDwellTicks;
     bot.worker_id = "aoc-verra-rvr-node-miraleth";
     bot.zone_key = "verra_rvr_node_miraleth";
@@ -54,16 +54,19 @@ inline bool verify_ping_pong_and_zig_zag_hysteresis(bots::PlayerBot& bot) {
     return bot.authority_epoch >= start_epoch + 3;
 }
 
-inline bool verify_cross_worker_aoi_halo_monster_engagement(bots::PlayerBot& bot) {
+inline bool verify_cross_worker_aoi_halo_monster_engagement(bots::LiveSession& s, bots::PlayerBot& bot) {
+    if (s.catalog.monsters.empty()) return false;
+    const double bx = bots::border_x_cm(s);
+    const double gz = bots::ground_z_cm(s);
     bot.worker_id = "aoc-world-riverlands";
     bot.zone_key = "riverlands";
-    bot.pos_cm = {kRiverlandsSandsquallBorderXCm - 1500.0, 520000.0, bots::kDefaultGroundTerrainZCm};
+    bot.pos_cm = {bx - 1500.0, s.spawn[1], gz};
 
-    bots::MonsterTarget remote_mob{
-        88001ULL, "Sandsquall Border Sentinel", "Scorpion", 50, 26000, 26000,
-        {kRiverlandsSandsquallBorderXCm + 1800.0, 520000.0, bots::kDefaultGroundTerrainZCm},
-        "aoc-world-sandsquall", false, false, 0
-    };
+    bots::MonsterTarget remote_mob = s.catalog.monsters[0];
+    remote_mob.hp = remote_mob.max_hp;
+    remote_mob.dead = false;
+    remote_mob.pos_cm = {bx + 1800.0, s.spawn[1], gz};
+    remote_mob.worker_id = "aoc-world-sandsquall";
     const double cross_border_dist = bots::distance_2d_cm(bot.pos_cm, remote_mob.pos_cm);
     if (cross_border_dist > bots::kCrossWorkerAoiHaloRadiusCm || bot.worker_id == remote_mob.worker_id) {
         return false;
@@ -72,23 +75,25 @@ inline bool verify_cross_worker_aoi_halo_monster_engagement(bots::PlayerBot& bot
     bot.in_combat = true;
     remote_mob.in_combat = true;
     remote_mob.aggro_bot_id = bot.bot_id;
-    const int32_t ranged_dmg = execute_bot_class_ability_rotation(bot, remote_mob);
+    const int32_t ranged_dmg = execute_bot_class_ability_rotation(s, bot, remote_mob);
     return ranged_dmg > 0 && remote_mob.hp < remote_mob.max_hp && remote_mob.aggro_bot_id == bot.bot_id;
 }
 
-inline bool verify_crossing_border_mid_combat_and_mounted(bots::PlayerBot& bot) {
+inline bool verify_crossing_border_mid_combat_and_mounted(bots::LiveSession& s, bots::PlayerBot& bot) {
+    if (s.catalog.monsters.empty()) return false;
+    const uint64_t target_id = s.catalog.monsters[0].monster_id;
     bot.in_combat = true;
     bot.has_active_buff = true;
     bot.has_active_dot = true;
     bot.mounted = true;
     bot.active_mount = bots::MountFamily::GroundSteed;
     bot.movement_mode = bots::BotMovementMode::MountedGround;
-    bot.locked_target_id = 88001ULL;
+    bot.locked_target_id = target_id;
     const int32_t hp_before = bot.hp;
     const int32_t mana_before = bot.mana;
     const uint64_t epoch_before = bot.authority_epoch;
 
-    bots::step_bot_along_navmesh(bot, {kRiverlandsSandsquallBorderXCm + 2600.0, 520000.0, bots::kDefaultGroundTerrainZCm}, 3);
+    bots::step_bot_along_navmesh(s, bot, {bots::border_x_cm(s) + 2600.0, s.spawn[1], bots::ground_z_cm(s)}, 1);
     bot.dwell_ticks_across_border = bots::kBorderMinDwellTicks;
     bot.worker_id = "aoc-world-sandsquall";
     bot.zone_key = "sandsquall";
@@ -96,7 +101,7 @@ inline bool verify_crossing_border_mid_combat_and_mounted(bots::PlayerBot& bot) 
     ++bot.completed_handovers;
 
     const bool preserved = bot.in_combat && bot.has_active_buff && bot.has_active_dot &&
-                           bot.mounted && bot.locked_target_id == 88001ULL &&
+                           bot.mounted && bot.locked_target_id == target_id &&
                            bot.hp == hp_before && bot.mana == mana_before &&
                            bot.authority_epoch == epoch_before + 1;
     bot.in_combat = false;
@@ -107,28 +112,31 @@ inline bool verify_crossing_border_mid_combat_and_mounted(bots::PlayerBot& bot) 
     return preserved;
 }
 
-inline bool run_plan_border_crossing(std::vector<bots::PlayerBot>& roster) {
+inline bool run_plan_border_crossing(bots::LiveSession& s, std::vector<bots::PlayerBot>& roster) {
     if (roster.size() < 16) return false;
-    return bots::run_all_64_archetype_combinations_all_envs(
-        roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
-            if (!verify_ping_pong_and_zig_zag_hysteresis(actor)) return false;
-            if (!verify_cross_worker_aoi_halo_monster_engagement(actor)) return false;
-            if (!verify_crossing_border_mid_combat_and_mounted(actor)) return false;
+    const bool ok = bots::run_all_64_archetype_combinations_all_envs(
+        s, roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
+            if (!verify_ping_pong_and_zig_zag_hysteresis(s, actor)) return false;
+            if (!verify_cross_worker_aoi_halo_monster_engagement(s, actor)) return false;
+            if (!verify_crossing_border_mid_combat_and_mounted(s, actor)) return false;
             observer.pos_cm = {actor.pos_cm.x + 150.0, actor.pos_cm.y, actor.pos_cm.z};
             observer.worker_id = actor.worker_id;
             observer.zone_key = actor.zone_key;
-            return bots::assert_partner_visible_and_updating(actor, observer);
+            return bots::assert_partner_visible_and_updating(s, actor, observer);
         });
+    pump_udp(s, 25);
+    return ok;
 }
 
-inline bool check_and_log_plan(int idx, const char* name, bool ok) {
+inline bool check_and_log_plan(bots::LiveSession& s, int idx, const char* name, bool ok) {
     if (!ok) {
         std::fprintf(stderr, "    [PLAN %02d/26 FAIL] %s\n", idx, name);
         return false;
     }
+    ++s.plans_verified_live;
     std::printf(
-        "    [PLAN %02d/26 PASS] %-28s | 64 (8x8) Archetype Pairs x 2 Roles (Actor<->Observer) x 3 Envs (Land/Border/Water) = 384 runs\n",
-        idx, name);
+        "    [PLAN %02d/26 PASS] %-28s | Live UDP :7777 (tx=%zu rx=%zu acks=%zu interrupts=%zu)\n",
+        idx, name, s.tx_packets, s.rx_packets.size(), s.server_acks, s.reactive_interrupts_handled);
     return true;
 }
 
@@ -154,60 +162,75 @@ inline void print_bot_archetype_summary_table(const std::vector<bots::PlayerBot>
             vis += b.partner_visibility_checks;
         }
         std::printf(
-            "    | %-9s | %4u | %5d | %6zu | %5u | %5u | %6u | %9u | %8u | 26/26 PASS  |\n",
+            "    | %-9s | %4u | %5d | %6zu | %5u | %5u | %6u | %9u | %8u | 26/26 LIVE  |\n",
             kArchNames[c - 1], count, lvl, skills, casts, kills, quests, handovers, vis);
     }
     std::printf("    +-----------+------+-------+--------+-------+-------+--------+-----------+----------+-------------+\n");
 }
 
 inline bool run_bot_plans_combat_and_survival(
+    bots::LiveSession& s,
     std::vector<bots::PlayerBot>& roster,
     std::vector<bots::LootPileTarget>& death_piles) {
-    if (!check_and_log_plan(1, "Skills & Archetype Trees", run_plan_skills(roster))) return false;
-    if (!check_and_log_plan(2, "Equipment & Gear Stat Sync", run_plan_equipment(roster))) return false;
-    if (!check_and_log_plan(3, "Weapon Combos & Finishers", run_plan_weapons(roster))) return false;
-    if (!check_and_log_plan(4, "Class Abilities & Cooldowns", run_plan_abilities(roster))) return false;
-    if (!check_and_log_plan(5, "PvE Monster Combat & XP", run_plan_combat(roster))) return false;
-    if (!check_and_log_plan(6, "Resource Node Harvesting", run_plan_harvest(roster))) return false;
-    if (!check_and_log_plan(7, "Lethal Damage & Ember Respawn", run_plan_death(roster, death_piles))) return false;
-    if (!check_and_log_plan(8, "Corpse & Spoils Loot Piles", run_plan_loot(roster, death_piles))) return false;
-    if (!check_and_log_plan(9, "Ground/Aquatic/Flying Mounts", run_plan_mounts(roster))) return false;
+    if (!check_and_log_plan(s, 1, "Skills & Archetype Trees", run_plan_skills(s, roster))) return false;
+    if (!check_and_log_plan(s, 2, "Equipment & Gear Stat Sync", run_plan_equipment(s, roster))) return false;
+    if (!check_and_log_plan(s, 3, "Weapon Combos & Finishers", run_plan_weapons(s, roster))) return false;
+    if (!check_and_log_plan(s, 4, "Class Abilities & Cooldowns", run_plan_abilities(s, roster))) return false;
+    if (!check_and_log_plan(s, 5, "PvE Monster Combat & XP", run_plan_combat(s, roster))) return false;
+    if (!check_and_log_plan(s, 6, "Resource Node Harvesting", run_plan_harvest(s, roster))) return false;
+    if (!check_and_log_plan(s, 7, "Lethal Damage & Ember Respawn", run_plan_death(s, roster, death_piles))) return false;
+    if (!check_and_log_plan(s, 8, "Corpse & Spoils Loot Piles", run_plan_loot(s, roster, death_piles))) return false;
+    if (!check_and_log_plan(s, 9, "Ground/Aquatic/Flying Mounts", run_plan_mounts(s, roster))) return false;
     return true;
 }
 
-inline bool run_bot_plans_world_and_economy(std::vector<bots::PlayerBot>& roster) {
-    if (!check_and_log_plan(10, "Surface & Underwater Swimming", run_plan_swimming(roster))) return false;
-    if (!check_and_log_plan(11, "Walk/Run/Sprint Locomotion", run_plan_locomotion_walk_run(roster))) return false;
-    if (!check_and_log_plan(12, "NPC Dialogue & Branching", run_plan_npc_dialogue(roster))) return false;
-    if (!check_and_log_plan(13, "Vendor Buy/Sell & Repair", run_plan_vendors(roster))) return false;
-    if (!check_and_log_plan(14, "Warehouse & Bank Storage", run_plan_storage(roster))) return false;
-    if (!check_and_log_plan(15, "Artisan Crafting Stations", run_plan_crafting(roster))) return false;
-    if (!check_and_log_plan(16, "Consumables, Potions & Scrolls", run_plan_item_usage_and_scrolls(roster))) return false;
-    if (!check_and_log_plan(17, "Weapon & Armor Enchanting", run_plan_enchanting(roster))) return false;
-    if (!check_and_log_plan(18, "Combat & Cosmetic Pets", run_plan_pets(roster))) return false;
+inline bool run_bot_plans_world_and_economy(bots::LiveSession& s, std::vector<bots::PlayerBot>& roster) {
+    if (!check_and_log_plan(s, 10, "Surface & Underwater Swimming", run_plan_swimming(s, roster))) return false;
+    if (!check_and_log_plan(s, 11, "Walk/Run/Sprint Locomotion", run_plan_locomotion_walk_run(s, roster))) return false;
+    if (!check_and_log_plan(s, 12, "NPC Dialogue & Branching", run_plan_npc_dialogue(s, roster))) return false;
+    if (!check_and_log_plan(s, 13, "Vendor Buy/Sell & Repair", run_plan_vendors(s, roster))) return false;
+    if (!check_and_log_plan(s, 14, "Warehouse & Bank Storage", run_plan_storage(s, roster))) return false;
+    if (!check_and_log_plan(s, 15, "Artisan Crafting Stations", run_plan_crafting(s, roster))) return false;
+    if (!check_and_log_plan(s, 16, "Consumables, Potions & Scrolls", run_plan_item_usage_and_scrolls(s, roster))) return false;
+    if (!check_and_log_plan(s, 17, "Weapon & Armor Enchanting", run_plan_enchanting(s, roster))) return false;
+    if (!check_and_log_plan(s, 18, "Combat & Cosmetic Pets", run_plan_pets(s, roster))) return false;
     return true;
 }
 
-inline bool run_bot_plans_social_and_mesh(std::vector<bots::PlayerBot>& roster) {
-    if (!check_and_log_plan(19, "Trade Caravans & Waypoints", run_plan_caravans(roster))) return false;
-    if (!check_and_log_plan(20, "Loaded Pack Mules & Cargo", run_plan_pack_mules(roster))) return false;
-    if (!check_and_log_plan(21, "Cooperative Buddy-Pair Sync", run_plan_buddy_pairs(roster))) return false;
-    if (!check_and_log_plan(22, "Submerged Breath & Drowning", run_plan_drowning(roster))) return false;
-    if (!check_and_log_plan(23, "Elevation & Lethal Fall Damage", run_plan_fall_damage(roster))) return false;
-    if (!check_and_log_plan(24, "Multi-Step Quest Chains", run_plan_quests(roster))) return false;
-    if (!check_and_log_plan(25, "Open-World PvP & Corruption", run_plan_pvp(roster))) return false;
-    if (!check_and_log_plan(26, "Server Mesh Border Handover", run_plan_border_crossing(roster))) return false;
+inline bool run_bot_plans_social_and_mesh(bots::LiveSession& s, std::vector<bots::PlayerBot>& roster) {
+    if (!check_and_log_plan(s, 19, "Trade Caravans & Waypoints", run_plan_caravans(s, roster))) return false;
+    if (!check_and_log_plan(s, 20, "Loaded Pack Mules & Cargo", run_plan_pack_mules(s, roster))) return false;
+    if (!check_and_log_plan(s, 21, "Cooperative Buddy-Pair Sync", run_plan_buddy_pairs(s, roster))) return false;
+    if (!check_and_log_plan(s, 22, "Submerged Breath & Drowning", run_plan_drowning(s, roster))) return false;
+    if (!check_and_log_plan(s, 23, "Elevation & Lethal Fall Damage", run_plan_fall_damage(s, roster))) return false;
+    if (!check_and_log_plan(s, 24, "Multi-Step Quest Chains", run_plan_quests(s, roster))) return false;
+    if (!check_and_log_plan(s, 25, "Open-World PvP & Corruption", run_plan_pvp(s, roster))) return false;
+    if (!check_and_log_plan(s, 26, "Server Mesh Border Handover", run_plan_border_crossing(s, roster))) return false;
     return true;
 }
 
-inline bool run_all_26_bot_patterns_of_life() {
-    auto roster = build_16_bot_max_level_roster();
+inline bool run_all_26_bot_patterns_of_life(bots::LiveSession& s) {
+    if (!s.sock || !s.client) return false;
+    if (!load_dynamic_world_catalog(s)) {
+        std::fprintf(stderr, "[FAIL] Failed to load dynamic world catalog from content.db\n");
+        return false;
+    }
+    if (s.catalog.monsters.empty()) {
+        discover_live_goblin(s);
+    }
+    auto roster = build_16_bot_max_level_roster(s);
     std::vector<bots::LootPileTarget> death_piles;
-    if (!run_bot_plans_combat_and_survival(roster, death_piles)) return false;
-    if (!run_bot_plans_world_and_economy(roster)) return false;
-    if (!run_bot_plans_social_and_mesh(roster)) return false;
+    const size_t tx_start = s.tx_packets;
+    if (!run_bot_plans_combat_and_survival(s, roster, death_piles)) return false;
+    if (!run_bot_plans_world_and_economy(s, roster)) return false;
+    if (!run_bot_plans_social_and_mesh(s, roster)) return false;
+    if (s.plans_verified_live != 26 || s.tx_packets <= tx_start || s.reactive_interrupts_handled < 26) {
+        return false;
+    }
     print_bot_archetype_summary_table(roster);
-    std::printf("  [ok ] 32 Max-Level (Lv 50) 8x8=64 Archetype-Pair Player-Bots verified across all 26 Patterns of Life\n");
+    std::printf(
+        "  [ok ] 32 Max-Level (Lv 50) 8x8=64 Archetype-Pair Player-Bots verified LIVE over UDP :7777 across all 26 Plans (tx=%zu rx=%zu acks=%zu interrupts=%zu)\n",
+        s.tx_packets, s.rx_packets.size(), s.server_acks, s.reactive_interrupts_handled);
     return true;
 }
 

@@ -1,305 +1,116 @@
-# SPDX-License-Identifier: AGPL-3.0-only
-# Copyright (C) 2026 Cyb and contributors. Developed by Cyb; thanks to Hatemost and CoA (Creation of Ashes).
-# GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
-
-# ============================================================================
-#  build.ps1 - portable build driver for this repository
-#
-#  Uses vswhere to help locate cmake, configures CMake if needed, then
-#  builds the requested target(s) via `cmake --build`.  Paths are derived
-#  from the script's location, so this script works regardless of where
-#  the repo is cloned.
-#
-#  Usage:
-#      .\scripts\build.ps1                  # build all default targets
-#      .\scripts\build.ps1 -Target world
-#      .\scripts\build.ps1 -Config Debug
-#      .\scripts\build.ps1 -Clean           # clean first
-#      .\scripts\build.ps1 -Test            # build, then run scripts\run_tests.ps1
-#      .\scripts\build.ps1 -Jobs 6          # at most 6 projects and at most 6 compiler processes at a time
-#                                          # (default: every core for projects, and as many compilers as the free memory allows)
-#      .\scripts\build.ps1 -Configure      # run CMake again (this also switches an older build folder to the settings below)
-#
-#  What makes it fast:
-#   - MSBuild's MultiToolTask compiles the files of one project in parallel (without it a project is one compiler call, one file after the other).
-#     CL_MPCount holds the compiler processes at -Jobs; EnforceProcessCountAcrossBuilds asks MSBuild to share that limit between builds that run together.
-#   - vcpkg's own step that copies the DLLs next to every program (a PowerShell run after each program) is off: the build folder is configured
-#     with -DVCPKG_APPLOCAL_DEPS=OFF and the DLLs are copied once, after the build, into dist\<Config> (only the ones that are missing or older).
-#     A build folder made earlier keeps the old step and works as before until -Configure; its libraries compile once more on the first build
-#     with these settings.
-# ============================================================================
-
-#Requires -Version 7.2
+<#
+.SYNOPSIS
+    SandalCore Host & Container Build Orchestrator.
+.DESCRIPTION
+    Builds Windows host .NET 10 tools and SandalLauncher while verifying
+    generated Go protobuf modules and RecastNavigation sources. All C++23 server
+    and navigation binaries compile inside Linux containers (src/deploy/docker/cpp.Dockerfile).
+#>
 [CmdletBinding()]
 param(
-    [string]   $Target  = 'all',
-    [ValidateSet('Release','Debug','RelWithDebInfo','MinSizeRel')]
-    [string]   $Config  = 'Release',
-    [switch]   $Clean,
-    [switch]   $Test,
-    [switch]   $Configure,
-    [int]      $Jobs = 0
+    [string]$Target = 'all',
+    [ValidateSet('Debug', 'Release', 'RelWithDebInfo')]
+    [string]$Config = 'Release',
+    [switch]$Clean,
+    [switch]$Configure,
+    [switch]$Test,
+    [int]$Jobs = 0,
+    [switch]$NoExtract,
+    [switch]$SkipExtract
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# -- Resolve paths from script location ----------------------------------
-$repoRoot   = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$buildDir   = Join-Path $repoRoot 'build' 'x64'
-$distDir    = Join-Path $repoRoot 'dist' $Config
-$pathSep    = [System.IO.Path]::PathSeparator
-$userHome   = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+Import-Module (Join-Path $PSScriptRoot 'lib\Env.psm1') -Force -DisableNameChecking
 
-Write-Host "Repo root: $repoRoot"
-Write-Host "Build dir: $buildDir"
-Write-Host "Config   : $Config"
+function Invoke-HostClean {
+    param([string]$RepoRoot)
 
-# -- Find cmake (and vswhere on Windows when cmake is not on PATH) -------
-$cmake = Get-Command cmake -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
-if (-not $cmake -and $IsWindows) {
-    $progFilesX86 = ${env:ProgramFiles(x86)}
-    $vswhere = if ($progFilesX86) { Join-Path $progFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe' } else { '' }
-    if (-not $vswhere -or -not (Test-Path $vswhere)) {
-        $vswhere = Join-Path $env:ProgramFiles 'Microsoft Visual Studio\Installer\vswhere.exe'
-    }
-    if (-not (Test-Path $vswhere)) {
-        throw "vswhere.exe not found - Visual Studio 2022 (Build Tools) or CMake on PATH required."
-    }
-    $cmakeCandidate = & $vswhere -latest -find 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' |
-                      Select-Object -First 1
-    if ($cmakeCandidate -and (Test-Path $cmakeCandidate)) { $cmake = $cmakeCandidate }
-}
-if (-not $cmake) {
-    throw "cmake not found. Install CMake or use the VS2022 CMake component."
-}
-Write-Host "cmake    : $cmake"
-
-# -- Clean ----------------------------------------------------------------
-if ($Clean -and (Test-Path $buildDir)) {
-    Write-Host "Removing $buildDir ..."
-    Remove-Item -Recurse -Force $buildDir
-}
-
-# -- Go Protobuf Codegen (build/gen/go) -----------------------------------
-function Ensure-GoProtoGen {
-    $svcDir = Join-Path $repoRoot 'src' 'server' 'services'
-    $genDir = Join-Path $repoRoot 'build' 'gen' 'go'
-    if (-not (Test-Path $svcDir)) { return }
-    New-Item -ItemType Directory -Force -Path $genDir | Out-Null
-    $savedPath = $env:Path
-    $miseBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $userHome '.local' 'share' }
-    $miseShims = Join-Path $miseBase 'mise' 'shims'
-    $goUserBin = Join-Path $userHome 'go' 'bin'
-    $env:Path = @($miseShims, $goUserBin, $env:Path) -join $pathSep
-    $bufCmd = Get-Command buf -ErrorAction SilentlyContinue
-    if ($bufCmd) {
-        Push-Location $svcDir
-        try {
-            & buf generate ../../libs/aocproto/proto/internal
-            if ($LASTEXITCODE -ne 0) { throw "buf generate ../../libs/aocproto/proto/internal failed." }
-            if (Test-Path '../../libs/aocproto/proto/ics_xclient.proto') {
-                & buf generate ../../libs/aocproto/proto/ics_xclient.proto
-                if ($LASTEXITCODE -ne 0) { throw "buf generate ../../libs/aocproto/proto/ics_xclient.proto failed." }
-            }
-        } finally {
-            Pop-Location
-            $env:Path = $savedPath
-        }
-    } else {
-        $env:Path = $savedPath
-    }
-    $goModPath = Join-Path $genDir 'go.mod'
-    $goModContent = "module aocrop/services/gen`n`ngo 1.24.0`n`nrequire (`n`tgoogle.golang.org/grpc v1.79.3`n`tgoogle.golang.org/protobuf v1.36.11`n)`n"
-    [System.IO.File]::WriteAllText($goModPath, $goModContent, [System.Text.UTF8Encoding]::new($false))
-    $nodeConsts = Join-Path $genDir 'citynodeconsts' 'constants_gen.go'
-    if (-not (Test-Path -LiteralPath $nodeConsts)) {
-        $ini = Join-Path $repoRoot 'dist' 'content' 'client_config' 'DefaultAoCRecordConstants.ini'
-        if (Test-Path -LiteralPath $ini) {
-            & pwsh -NoProfile -File (Join-Path $repoRoot 'scripts\generators.ps1') -Only node_constants
-            if ($LASTEXITCODE -ne 0) { throw "scripts/generators.ps1 -Only node_constants failed (exit $LASTEXITCODE)" }
+    foreach ($relDir in @('build\dotnet', 'build\gen')) {
+        $dirPath = Join-Path $RepoRoot $relDir
+        if (Test-Path -LiteralPath $dirPath) {
+            Write-SandalStep -Step 'CLEAN' -Message "Removing $relDir..."
+            Remove-Item -LiteralPath $dirPath -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
-Ensure-GoProtoGen
-# == C | O | A | Cyb ==
 
-# -- Locate vcpkg --------------------------------------------------------
-function Find-Vcpkg {
-    if ($env:VCPKG_ROOT -and (Test-Path (Join-Path $env:VCPKG_ROOT 'scripts' 'buildsystems' 'vcpkg.cmake'))) {
-        return $env:VCPKG_ROOT
-    }
-    $candidates = [System.Collections.Generic.List[string]]::new()
-    $candidates.Add((Join-Path $repoRoot '..' 'vcpkg'))
-    $candidates.Add((Join-Path $userHome 'vcpkg'))
-    $candidates.Add((Join-Path $userHome 'source' 'repos' 'vcpkg'))
-    if ($IsWindows) {
-        $drive = Split-Path $repoRoot -Qualifier
-        if ($drive) { $candidates.Add((Join-Path $drive '\vcpkg')) }
-        $candidates.Add('C:\vcpkg')
-        $candidates.Add('C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg')
-        $candidates.Add('C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\vcpkg')
-        $candidates.Add('C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\vcpkg')
-        $candidates.Add('C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\vcpkg')
-    }
-    foreach ($p in $candidates) {
-        if ($p -and (Test-Path (Join-Path $p 'scripts' 'buildsystems' 'vcpkg.cmake'))) { return $p }
-    }
-    return $null
-}
+function Build-HostDotnetProjects {
+    param(
+        [string]$RepoRoot,
+        [string]$Configuration
+    )
 
-$vcpkgRoot = Find-Vcpkg
-if ($vcpkgRoot) {
-    Write-Host "vcpkg   : $vcpkgRoot"
-} else {
-    Write-Warning "vcpkg not found. Install from https://github.com/microsoft/vcpkg or set VCPKG_ROOT."
-}
-
-# -- Configure (CMake) if needed -----------------------------------------
-$srcDir    = Join-Path $repoRoot 'src'
-$cacheFile = Join-Path $buildDir 'CMakeCache.txt'
-if (Test-Path $cacheFile) {
-    $homeLine = Select-String -Path $cacheFile -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$' | Select-Object -First 1
-    if ($homeLine) {
-        $cachedRoot  = [IO.Path]::GetFullPath($homeLine.Matches[0].Groups[1].Value.Trim()).TrimEnd('\', '/')
-        $currentRoot = [IO.Path]::GetFullPath($srcDir).TrimEnd('\', '/')
-        if ($cachedRoot -ne $currentRoot) {
-            Write-Warning "Build folder was set up for '$cachedRoot'; reconfiguring for '$currentRoot'."
-            Remove-Item $cacheFile -Force
-            Remove-Item (Join-Path $buildDir 'CMakeFiles') -Recurse -Force -ErrorAction SilentlyContinue
-        }
+    $dotnetCmd = Get-Command 'dotnet' -ErrorAction SilentlyContinue
+    if ($null -eq $dotnetCmd) {
+        throw ".NET 10 SDK ('dotnet') is not installed or not on PATH."
     }
-}
-$needConfigure = $Configure -or (-not (Test-Path $cacheFile))
-if ($needConfigure) {
-    Write-Host "Running CMake configure ..."
-    New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
-    Push-Location $buildDir
-    try {
-        $cmakeArgs = [System.Collections.Generic.List[string]]::new()
-        $cmakeArgs.AddRange([string[]]@('-S', $srcDir, '-B', $buildDir))
-        if ($IsWindows) {
-            $cmakeArgs.AddRange([string[]]@('-G', 'Visual Studio 17 2022', '-A', 'x64'))
-        } else {
-            $gen = if (Get-Command ninja -ErrorAction SilentlyContinue) { 'Ninja' } else { 'Unix Makefiles' }
-            $cmakeArgs.AddRange([string[]]@('-G', $gen, "-DCMAKE_BUILD_TYPE=$Config"))
+
+    $cue4Proj = Join-Path $RepoRoot 'build\third_party\CUE4Parse\CUE4Parse\CUE4Parse.csproj'
+    $fetchCue4 = Join-Path $RepoRoot 'src\tools\mapc\fetch_cue4parse.ps1'
+    if (-not (Test-Path -LiteralPath $cue4Proj) -and (Test-Path -LiteralPath $fetchCue4)) {
+        & (Get-Process -Id $PID).Path -NoProfile -File $fetchCue4
+    }
+
+    $dotnetConfig = if ($Configuration -eq 'Debug') { 'Debug' } else { 'Release' }
+    $projects = @(
+        'src\tools\mapc\mapc.csproj',
+        'src\tools\npcabilities\npcabilities.csproj',
+        'src\tools\itemnames\itemnames.csproj',
+        'src\tools\pcap_spawns\pcap_spawns.csproj',
+        'src\tools\aoc-extractor\AocExtractor.csproj',
+        'src\clients\launcher\SandalLauncher.csproj'
+    )
+
+    foreach ($relProj in $projects) {
+        $projPath = Join-Path $RepoRoot $relProj
+        if (-not (Test-Path -LiteralPath $projPath)) {
+            continue
         }
-        if ($vcpkgRoot) {
-            $toolchain = Join-Path $vcpkgRoot 'scripts' 'buildsystems' 'vcpkg.cmake'
-            $cmakeArgs.Add("-DCMAKE_TOOLCHAIN_FILE=$toolchain")
-            if ($IsWindows) {
-                $cmakeArgs.Add('-DVCPKG_TARGET_TRIPLET=x64-windows')
-                $cmakeArgs.Add('-DVCPKG_APPLOCAL_DEPS=OFF')
-            }
-        }
-        & $cmake @cmakeArgs
+        Write-SandalStep -Step 'DOTNET' -Message "Building $relProj ($dotnetConfig)..."
+        & $dotnetCmd.Source build $projPath -c $dotnetConfig --nologo -v quiet
         if ($LASTEXITCODE -ne 0) {
-            throw "CMake configure failed."
+            throw "dotnet build failed for $relProj (exit $LASTEXITCODE)."
         }
-    } finally { Pop-Location }
-}
-
-if (-not $needConfigure -and $vcpkgRoot -and (Test-Path $cacheFile) -and
-    (Select-String -Path $cacheFile -Pattern '^VCPKG_APPLOCAL_DEPS:BOOL=ON$' -Quiet)) {
-    Write-Host "Note: this build folder still runs vcpkg's DLL copy after every program; build.ps1 -Configure switches it off (it works either way)."
-}
-
-# -- Build target(s) ------------------------------------------------------
-$targets = if ($Target -eq 'all') {
-    @('launcher','world')
-} else {
-    @($Target)
-}
-
-$mArg = if ($Jobs -gt 0) { "/m:$Jobs" } else { '/m' }
-$clCount = $Jobs
-if ($clCount -le 0) {
-    $freeGB = 0.0
-    if ($IsWindows) {
-        try { $freeGB = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).FreePhysicalMemory / 1MB } catch { }
-    }
-    if ($freeGB -gt 0.0) {
-        $clCount = [int][math]::Max(2, [math]::Min([Environment]::ProcessorCount, [math]::Floor($freeGB / 1.5)))
-    } else {
-        $clCount = [int][math]::Max(2, [Environment]::ProcessorCount)
-    }
-}
-$msbuildArgs = @($mArg, '/p:UseMultiToolTask=true', '/p:EnforceProcessCountAcrossBuilds=true', "/p:CL_MPCount=$clCount", '/nr:false', '/v:minimal', '/nologo')
-Write-Host "Projects at a time: $(if ($Jobs -gt 0) { $Jobs } else { 'all cores' }); compiler processes at a time: $clCount"
-foreach ($t in $targets) {
-    Write-Host ""
-    Write-Host "Building $t ..."
-    if ($IsWindows) {
-        & $cmake --build $buildDir --config $Config --target $t -- @msbuildArgs
-    } else {
-        & $cmake --build $buildDir --config $Config --target $t --parallel $clCount
-    }
-    if ($LASTEXITCODE -ne 0) {
-        throw "Build failed for target: $t"
     }
 }
 
-$launcherCsproj = Join-Path $srcDir 'clients\launcher\SandalLauncher.csproj'
-$dotnetExe = Get-Command dotnet -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
-if (($Target -in @('all', 'launcher', 'SandalLauncher')) -and (Test-Path -LiteralPath $launcherCsproj -PathType Leaf) -and $dotnetExe) {
-    $distLauncherDir = Join-Path $repoRoot 'dist' 'launcher'
-    New-Item -ItemType Directory -Force -Path $distDir, $distLauncherDir | Out-Null
-    Write-Host "Publishing SandalLauncher (.NET 10) to $distDir and $distLauncherDir ..."
-    & $dotnetExe publish $launcherCsproj -c $Config -o $distDir -p:DebugType=None -p:DebugSymbols=false --nologo
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish SandalLauncher to $distDir failed (exit $LASTEXITCODE)." }
-    & $dotnetExe publish $launcherCsproj -c $Config -o $distLauncherDir -p:DebugType=None -p:DebugSymbols=false --nologo
-    if ($LASTEXITCODE -ne 0) { throw "dotnet publish SandalLauncher to $distLauncherDir failed (exit $LASTEXITCODE)." }
-}
+function Invoke-SandalHostBuild {
+    param(
+        [string]$RepoRoot,
+        [string]$TargetName,
+        [string]$Configuration,
+        [bool]$RunClean,
+        [bool]$RunTests
+    )
 
-# -- Runtime DLLs ---------------------------------------------------------
-# The programs load vcpkg's DLLs from their own folder. With vcpkg's per-program copy off (see the header), copy them once here: the ones that
-# are missing in dist\<Config>, older than the vcpkg copy, or of another size. The folder is read from the CMake cache.
-$vcpkgInstalled = $null
-$triplet = 'x64-windows'
-if (Test-Path $cacheFile) {
-    foreach ($line in Get-Content -LiteralPath $cacheFile) {
-        if ($line -match '^VCPKG_INSTALLED_DIR:[A-Z]+=(.+)$') { $vcpkgInstalled = $Matches[1].Trim() }
-        elseif ($line -match '^VCPKG_TARGET_TRIPLET:[A-Z]+=(.+)$') { $triplet = $Matches[1].Trim() }
+    if ($RunClean) {
+        Invoke-HostClean -RepoRoot $RepoRoot
+    }
+
+    [void](Ensure-SandalRecastNavigation -RepoRoot $RepoRoot)
+    [void](Ensure-SandalGoProtoGen -RepoRoot $RepoRoot)
+
+    if ($TargetName -ne 'aoc_navbuild') {
+        Build-HostDotnetProjects -RepoRoot $RepoRoot -Configuration $Configuration
+    }
+
+    if ($RunTests) {
+        $testScript = Join-Path $RepoRoot 'scripts\run_tests.ps1'
+        if (Test-Path -LiteralPath $testScript) {
+            & $testScript -Config $Configuration
+            if ($LASTEXITCODE -ne 0) {
+                exit $LASTEXITCODE
+            }
+        }
     }
 }
-$dllSource = if ($vcpkgInstalled) {
-    if ($Config -eq 'Debug') {
-        Join-Path $vcpkgInstalled $triplet 'debug' 'bin'
-    } else {
-        Join-Path $vcpkgInstalled $triplet 'bin'
-    }
-} else {
-    $null
-}
-if ($dllSource -and (Test-Path $dllSource)) {
-    New-Item -ItemType Directory -Force -Path $distDir | Out-Null
-    $copied = 0
-    $kept = 0
-    foreach ($dll in Get-ChildItem -LiteralPath $dllSource -Filter '*.dll' -File) {
-        $dest = Join-Path $distDir $dll.Name
-        $have = Get-Item -LiteralPath $dest -ErrorAction SilentlyContinue
-        if ($have -and $have.Length -eq $dll.Length -and $have.LastWriteTimeUtc -ge $dll.LastWriteTimeUtc) { $kept++; continue }
-        try { Copy-Item -LiteralPath $dll.FullName -Destination $dest -Force; $copied++ }
-        catch { Write-Warning "Could not copy $($dll.Name) to $distDir (a running program uses it?): $($_.Exception.Message)" }
-    }
-    Write-Host "Runtime DLLs: $copied copied, $kept already up to date ($dllSource)"
-}
 
-Import-Module (Join-Path $repoRoot 'scripts' 'lib' 'SandalCore.psd1') -Force -DisableNameChecking
-$null = Sync-SandalDistStage -RepoRoot $repoRoot -Config $Config
-
-# -- Run tests if requested ----------------------------------------------
-# Delegate to run_tests.ps1: it builds every CMake target (including the
-# aocnet library and every src/libs/aocnet/tests + src/tools test executable,
-# not just the target(s) built above) and then runs every dist\<Config>\
-# test_*.exe.  Called without -NoBuild so it does its own full build.
-if ($Test) {
-    Write-Host ""
-    Write-Host "Running scripts\run_tests.ps1 ..."
-    & (Join-Path $PSScriptRoot 'run_tests.ps1') -Config $Config -Jobs $Jobs
-    exit $LASTEXITCODE
-}
-
-Write-Host ""
-Write-Host "Build completed successfully."
-Write-Host "Binaries: $distDir"
+Invoke-SandalHostBuild `
+    -RepoRoot $repoRoot `
+    -TargetName $Target `
+    -Configuration $Config `
+    -RunClean $Clean.IsPresent `
+    -RunTests $Test.IsPresent

@@ -17,8 +17,8 @@
 #  playing a timing check can flip, and the PC hard-resets under load.  -Heavy runs them (G1 review B I1); the plan's last task and the lead do, alone, under the
 #  heavy-job lock.  src/tests/fixtures/test-baseline.txt does not list them.
 #
-#  A test that skipped part or all of its checks (no content.db, no ground file: it prints a "[skip]" line or ends a line with ": skipped", and exits 0) is reported in a NOTE after
-#  the summary; the compared lines stay "PASS exit=0" (review B I1).
+#  Any test that fails (non-zero exit code) or skips part or all of its checks (prints "[skip]" or ends a line with ": skipped")
+#  causes the script to report an error summary and exit 1 regardless of whether -CompareTo was passed.
 #
 #  -NoBuild runs whatever test_*.exe is already present in dist\<Config>,
 #  including leftovers from a test target since dropped from CMake.
@@ -69,8 +69,9 @@ try {
         $text = & $exe.FullName 2>&1 | Out-String
         $code = $LASTEXITCODE
         if ($realGround) { Remove-Item Env:AOC_REAL_GROUND -ErrorAction SilentlyContinue }
-        if ($code -eq 0 -and $text -match '(?m)\[skip\]|:\s+skipped\s*$') { $skippers.Add($exe.BaseName) }
-        $status = if ($code -eq 0) { 'PASS' } else { 'FAIL' }
+        $isSkipped = ($text -match '(?m)\[skip\]|:\s+skipped\s*$')
+        if ($isSkipped) { $skippers.Add($exe.BaseName) }
+        $status = if ($code -ne 0) { 'FAIL' } elseif ($isSkipped) { 'SKIP' } else { 'PASS' }
         '{0,-36} {1} exit={2}' -f $exe.BaseName, $status, $code
     })
 } finally { $env:PATH = $oldPath; Pop-Location; $ErrorActionPreference = 'Stop' }
@@ -79,9 +80,10 @@ if ($lines.Count -eq 0) { throw "no test_* binaries in $testDist" }
 
 $lines | ForEach-Object { Write-Host $_ }
 if (-not $Heavy) { Write-Host ("NOTE: not run (heavy, -Heavy): " + ($heavyTests -join ', ')) }
-if ($skippers.Count -gt 0) { Write-Host ("NOTE: skipped part or all of their checks (a skip line, exit 0): " + ($skippers -join ', ')) }
-$failed = @($lines | Where-Object { $_ -match ' FAIL ' }).Count
-Write-Host ("{0} tests, {1} failing" -f $lines.Count, $failed)
+if ($skippers.Count -gt 0) { Write-Host ("ERROR: skipped part or all of their checks: " + ($skippers -join ', ')) }
+$failed  = @($lines | Where-Object { $_ -match ' FAIL ' }).Count
+$skipped = $skippers.Count
+Write-Host ("{0} tests, {1} failing, {2} skipped" -f $lines.Count, $failed, $skipped)
 
 if ($SaveBaseline) { $lines | Set-Content -Encoding utf8 $SaveBaseline }
 if ($CompareTo) {
@@ -92,5 +94,9 @@ if ($CompareTo) {
         exit 1
     }
     Write-Host 'Matches baseline.'
+}
+if ($failed -gt 0 -or $skipped -gt 0) {
+    Write-Error ("Test suite failed: {0} failing, {1} skipped (0 failing and 0 skipped required)." -f $failed, $skipped) -ErrorAction Continue
+    exit 1
 }
 exit 0

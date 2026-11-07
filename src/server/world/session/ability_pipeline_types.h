@@ -254,6 +254,7 @@ struct CastRecord {
     double                                    hit_delay = 0.035;
     int                                       max_requests = 8;
     double                                    min_gap = 0.100;
+    bool                                      launched = false;
     std::vector<HitSlot>                      slots;
     std::set<int64_t>                         reach;
     std::map<int64_t, std::pair<int, double>> asked;
@@ -292,6 +293,9 @@ struct Cast {
     int64_t                                  charged_projectile = 0;
     bool                                     held = false;
     bool                                     charged = false;
+    bool                                     released = false;
+    bool                                     paid = false;
+    int                                      resource_added = 0;
     int                                      shots = 0;
     int64_t                                  shot_projectile = 0;
     bool                                     montage_branch = false;

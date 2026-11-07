@@ -672,6 +672,37 @@ void test_fury_lands_only_inside_its_cone(TestHarness& h) {
     }
 }
 
+combat::CondToken make_cond_token(char operand, int delta, combat::CondAtom::Kind kind, double value = 0.0) {
+    combat::CondToken t;
+    t.operand = operand;
+    t.delta = delta;
+    t.atom.kind = kind;
+    t.atom.value = value;
+    return t;
+}
+
+void test_eval_group_keeps_inner_brackets(TestHarness& h) {
+    std::printf("condition groups: inner brackets stay grouped across conjunctions, nested deltas and timer-only checks\n");
+    using K = combat::CondAtom::Kind;
+    combat::CondContext ctx{};
+    ctx.health_fraction = 0.40;
+    ctx.surface_distance = 500.0;
+    ctx.sees = [] { return false; };
+    CHECK(combat::eval_group({}, ctx), "an empty condition group holds");
+    const combat::CondGroup outer_and = {make_cond_token('c', 0, K::False), make_cond_token('a', 1, K::False), make_cond_token('o', -1, K::True)};
+    const combat::CondGroup outer_true = {make_cond_token('c', 0, K::True), make_cond_token('a', 1, K::False), make_cond_token('o', -1, K::True)};
+    CHECK(!combat::eval_group(outer_and, ctx) && combat::eval_group(outer_true, ctx), "a bracketed (False or True) after False and stays inside its bracket");
+    const combat::CondGroup nested_shut = {make_cond_token('c', 0, K::True), make_cond_token('a', 2, K::True), make_cond_token('o', -1, K::False), make_cond_token('a', -1, K::False)};
+    const combat::CondGroup nested_open = {make_cond_token('c', 0, K::True), make_cond_token('a', 2, K::True), make_cond_token('o', -1, K::False), make_cond_token('a', -1, K::True)};
+    CHECK(!combat::eval_group(nested_shut, ctx) && combat::eval_group(nested_open, ctx), "inner brackets with delta +2 keep the outer conjunction intact when each bracket closes");
+    combat::CondContext timers = ctx;
+    timers.timers_only = true;
+    const combat::CondGroup gated_hp = {make_cond_token('c', 1, K::Sees), make_cond_token('o', -1, K::Out, 800.0), make_cond_token('a', 0, K::HealthUnder, 0.50)};
+    const combat::CondGroup shut_hp = {make_cond_token('c', 1, K::Sees), make_cond_token('o', -1, K::Out, 800.0), make_cond_token('a', 0, K::HealthUnder, 0.25)};
+    CHECK(!combat::eval_group(gated_hp, ctx) && combat::eval_group(gated_hp, timers) && !combat::eval_group(shut_hp, timers),
+          "timers_only ignores sight and range inside brackets while enforcing health gates");
+}
+
 }  // namespace
 
 void run_combat_gates_tests(TestHarness& h, const sandal::worldd::content::ContentDb& db) {
@@ -682,6 +713,7 @@ void run_combat_gates_tests(TestHarness& h, const sandal::worldd::content::Conte
     test_bite_lands_wherever_the_player_stands(h);
     test_hit_area_rules(h);
     test_fury_lands_only_inside_its_cone(h);
+    test_eval_group_keeps_inner_brackets(h);
 }
 
 }  // namespace sandal::worldd::tests

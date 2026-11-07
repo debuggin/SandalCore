@@ -589,7 +589,7 @@ func TestPurgeStaleTemporaryAccounts(t *testing.T) {
 	s := newStoreOrMem(t)
 	ctx := context.Background()
 
-	staleNames := []string{"tmp_1234abcd", "temp_9999", "e2e_deadbeef", "ephem_hero"}
+	staleNames := []string{"tmp_1234abcd", "TMP_AlphaBravoCharlie", "tst_5678efgh", "TST_AlphaBravo", "temp_9999", "e2e_deadbeef", "ephem_hero"}
 	realNames := []string{"tester", "player_one"}
 	tokens := make(map[string]string, len(staleNames)+len(realNames))
 

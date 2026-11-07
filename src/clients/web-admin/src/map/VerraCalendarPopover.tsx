@@ -9,17 +9,17 @@ import {
   formatTimePhaseLabel,
   isUnauthenticatedViewOnly,
   parseTimeOfDayInput,
-  VERRA_CALENDAR_MONTH_NAMES,
+  VERRA_CALENDAR_SEASON_NAMES,
   type VerraCalendarSnapshot,
   type WorldStreamState,
 } from "../state/worldStreamStore";
 import { SANDAL_LAUNCHER_TOKENS } from "../components/PlayersAndSpawnerTab";
 
 export const VERRA_SEASON_PRESETS = Object.freeze([
-  { id: "spring", label: "Spring (D1)", dayOfYear: 1 },
-  { id: "summer", label: "Summer (D91)", dayOfYear: 91 },
-  { id: "autumn", label: "Autumn (D181)", dayOfYear: 181 },
-  { id: "winter", label: "Winter (D271)", dayOfYear: 271 },
+  { id: "spring", label: "Spring", dayOfYear: 1, tooltip: "Starts on Day 1 of 360" },
+  { id: "summer", label: "Summer", dayOfYear: 91, tooltip: "Starts on Day 91 of 360" },
+  { id: "autumn", label: "Autumn", dayOfYear: 181, tooltip: "Starts on Day 181 of 360" },
+  { id: "winter", label: "Winter", dayOfYear: 271, tooltip: "Starts on Day 271 of 360" },
 ] as const);
 
 export interface LiveVerraClockState {
@@ -122,42 +122,42 @@ export function VerraCalendarDateModifierSection(props: VerraCalendarDateModifie
   const { draftDayOfYear, draftYear, onChangeDate, onApplyPresetDate } = props;
   const draftCal = computeVerraCalendar(draftDayOfYear, draftYear);
   const inputStyle: React.CSSProperties = {
-    height: "26px", padding: "0 6px", borderRadius: "4px",
+    width: "100%", height: "26px", padding: "0 6px", boxSizing: "border-box", borderRadius: "4px",
     border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
     backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush,
     color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100,
-    fontFamily: "ui-monospace, monospace", fontSize: "11px",
+    colorScheme: "dark", fontFamily: "inherit", fontSize: "11px", outline: "none",
   };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "6px", paddingTop: "6px", borderTop: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px" }}>
-        <strong style={{ color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, letterSpacing: "0.04em", textTransform: "uppercase" }}>Verra Calendar (360d)</strong>
-        <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontSize: "10px", fontWeight: 700 }}>{draftCal.calendarFormatted}</span>
+        <strong title="360-day year divided into four 90-day seasons" style={{ color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, letterSpacing: "0.04em", textTransform: "uppercase" }}>Verra Calendar</strong>
+        <span title={`Day ${draftCal.calendarDayOfSeason} of 90 in ${draftCal.calendarSeason} (Day ${draftCal.calendarDayOfYear} of 360 in Year ${draftCal.calendarYear})`} style={{ color: "#38bdf8", fontWeight: 600, whiteSpace: "nowrap" }}>{draftCal.calendarFormatted}</span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "4px" }}>
         {VERRA_SEASON_PRESETS.map((s) => (
-          <button key={s.id} type="button" data-testid={`verra-season-preset-${s.id}`} onClick={() => onApplyPresetDate(s.dayOfYear, draftCal.calendarYear)} style={{ height: "24px", padding: "0 4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "10px", cursor: "pointer" }}>
+          <button key={s.id} type="button" title={s.tooltip} data-testid={`verra-season-preset-${s.id}`} onClick={() => onApplyPresetDate(s.dayOfYear, draftCal.calendarYear)} style={{ height: "24px", padding: "0 4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontFamily: "inherit", fontSize: "10px", cursor: "pointer" }}>
             {s.label}
           </button>
         ))}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "74px 1fr 68px", gap: "6px", alignItems: "center" }}>
-        <label style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "10px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
-          Year (AE)
-          <input type="number" min={1} max={9999} aria-label="Verra Calendar Year (AE)" data-testid="verra-calendar-year-input" value={draftCal.calendarYear} onChange={(e) => onChangeDate(draftCal.calendarDayOfYear, Math.max(1, Number(e.currentTarget.value) || 1))} style={inputStyle} />
+      <div style={{ display: "grid", gridTemplateColumns: "74px 1fr 78px", gap: "6px", alignItems: "center" }}>
+        <label title="Calendar year (1 or higher)" style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "10px", whiteSpace: "nowrap", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
+          Year
+          <input type="number" min={1} max={9999} aria-label="Verra Calendar Year" data-testid="verra-calendar-year-input" value={draftCal.calendarYear} onChange={(e) => onChangeDate(draftCal.calendarDayOfYear, Math.max(1, Number(e.currentTarget.value) || 1))} style={inputStyle} />
         </label>
-        <label style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "10px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
-          Month (1-12)
-          <select aria-label="Verra Calendar Month" data-testid="verra-calendar-month-select" value={draftCal.calendarMonth} onChange={(e) => onChangeDate((Math.max(1, Math.min(12, Number(e.currentTarget.value))) - 1) * 30 + draftCal.calendarDayOfMonth, draftCal.calendarYear)} style={inputStyle}>
-            {VERRA_CALENDAR_MONTH_NAMES.map((mName, idx) => (<option key={mName} value={idx + 1}>{idx + 1}. {mName}</option>))}
+        <label title="90-day Verra season" style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "10px", whiteSpace: "nowrap", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
+          Season
+          <select aria-label="Verra Calendar Season" data-testid="verra-calendar-season-select" value={draftCal.calendarSeasonIndex} onChange={(e) => onChangeDate((Math.max(1, Math.min(4, Number(e.currentTarget.value))) - 1) * 90 + draftCal.calendarDayOfSeason, draftCal.calendarYear)} style={inputStyle}>
+            {VERRA_CALENDAR_SEASON_NAMES.map((sName, idx) => (<option key={sName} value={idx + 1} title={`Days ${idx * 90 + 1}-${(idx + 1) * 90}`}>{sName}</option>))}
           </select>
         </label>
-        <label style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "10px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
-          Day (1-30)
-          <input type="number" min={1} max={30} aria-label="Verra Calendar Day of Month" data-testid="verra-calendar-day-of-month-input" value={draftCal.calendarDayOfMonth} onChange={(e) => onChangeDate((draftCal.calendarMonth - 1) * 30 + Math.max(1, Math.min(30, Number(e.currentTarget.value) || 1)), draftCal.calendarYear)} style={inputStyle} />
+        <label title="Day within current season (1 to 90)" style={{ display: "flex", flexDirection: "column", gap: "2px", fontSize: "10px", whiteSpace: "nowrap", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
+          Day
+          <input type="number" min={1} max={90} aria-label="Verra Calendar Day of Season" data-testid="verra-calendar-day-of-season-input" value={draftCal.calendarDayOfSeason} onChange={(e) => onChangeDate((draftCal.calendarSeasonIndex - 1) * 90 + Math.max(1, Math.min(90, Number(e.currentTarget.value) || 1)), draftCal.calendarYear)} style={inputStyle} />
         </label>
       </div>
-      <input type="range" min={1} max={360} step={1} aria-label="Verra Calendar Day of Year (1-360)" data-testid="verra-calendar-day-slider" value={draftCal.calendarDayOfYear} onChange={(e) => onChangeDate(Number(e.currentTarget.value), draftCal.calendarYear)} style={{ width: "100%", height: "6px", cursor: "pointer" }} />
+      <input type="range" min={1} max={360} step={1} title={`Day ${draftCal.calendarDayOfYear} of 360`} aria-label="Verra Calendar Day of Year (1-360)" data-testid="verra-calendar-day-slider" value={draftCal.calendarDayOfYear} onChange={(e) => onChangeDate(Number(e.currentTarget.value), draftCal.calendarYear)} style={{ width: "100%", height: "6px", cursor: "pointer" }} />
     </div>
   );
 }

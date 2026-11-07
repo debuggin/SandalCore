@@ -26,6 +26,8 @@ namespace aoc::worldd::combat {
 
 inline bool notices_players(bool hostile_to_players, const world::NpcInfo& npc) { return hostile_to_players && !npc.aggro_off; }
 
+inline constexpr double kHumanoidTurnGain = 1.2;
+
 struct IncomingHit {
     uint64_t                 instigator = 0;
     int64_t                  hit_guid = 0;
@@ -287,6 +289,7 @@ public:
 
     void add_player(PlayerPort* port);
     void remove_player(PlayerPort* port);
+    void player_died(uint64_t actor_id);
     PlayerPort* find_player(uint64_t actor_id) { return player(actor_id); }
     const std::vector<PlayerPort*>& players() const { return players_; }
 
@@ -452,6 +455,7 @@ private:
     bool  faces(const Npc& n, const Vec3& at, double tolerance_degrees) const;
     void  start_attack(Npc& n, uint64_t target, double now, const Attack* picked = nullptr);
     void  stop_cast(Npc& n);
+    void  drop_attack(Npc& n);
     void  resolve_pending(double now);
     bool  animates(const Npc& n, const abilities::AbilityDef& def) const;
     bool  can_animate(const Npc& n) const;
@@ -495,7 +499,7 @@ private:
     void  pet_land_on_self(Npc& pet, uint64_t owner, const abilities::HitDef& hit, double now);
     void  land_for_player(uint64_t by, uint64_t target, const abilities::HitDef& hit, const LandSource& src, double now, int depth = 0);
     void  land_children(uint64_t by, uint64_t target, const abilities::HitDef& hit, const LandSource& src, double now, int depth);
-    void  land_effects_of_hit(Npc& n, PlayerPort& port, const abilities::HitDef& hit, const HitMeta& meta, double now);
+    void  land_effects_of_hit(Npc& n, PlayerPort& port, const abilities::HitDef& hit, const HitMeta& meta, double now, uint64_t via_pet = 0);
     void  effect_hit_fires(Npc& n, uint64_t by, const abilities::HitDef& hit, int64_t effect_guid, double now);
     HolderEvent event_of_hit(const Npc& n, uint64_t attacker, const Resolved& r, const Delivery& d, bool lethal, const HitOrigin* origin) const;
     void  hit_reacts(uint64_t npc_actor, const HolderEvent& event, uint64_t threat_to, const HitOrigin* origin, double now);
@@ -506,7 +510,10 @@ private:
     uint64_t pet_of_owner(uint64_t owner) const;
     double flight_seconds(const content::AbilityHitRow& row, const Vec3& from, const Vec3& to) const;
 
-    void  land_effect(Npc& n, const effects::Applied& applied, uint64_t instigator, double now);
+    void  land_effect(Npc& n, const effects::Applied& applied, uint64_t instigator, double now, uint64_t via_pet = 0);
+    void  wake_on_damage(Npc& n, const Resolved& r, const HitOrigin* origin, double now);
+    void  drop_effects_of_pet(uint64_t pet);
+    static bool takes_crowd_control(const abilities::EffectDef& def);
     void  run_effect_hits(Npc& n, const effects::Instance& e, const char* const* phases, size_t count, double at);
     void  advance_effects(double now);
     void  send_effects(Npc& n, const effects::Book::Changes& changes);

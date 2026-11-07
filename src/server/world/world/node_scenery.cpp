@@ -9,6 +9,7 @@
 #include "bootstrap/constants.h"
 #include "protocol/repl/codecs.h"
 #include "protocol/schema/generated/index.h"
+#include "spawns/area.h"
 #include "spawns/spawn_util.h"
 #include "world/node_origins.h"
 
@@ -221,10 +222,12 @@ size_t NodeScenery::start() {
     if (started_ || !config_.enabled) return 0;
     started_ = true;
     seen_version_ = nodes_.version();   // before the levels: a change after this is seen by the next tick
+    const spawns::AreaConfig& area_ = spawns::AreaConfig::active_worker_area();
     size_t n = 0;
     for (const int rank : wire_.roster()) {
         const CityNodeInfo* info = nodes_.by_rank(rank);
         if (!info || !wire_.is_real_node(info->guid) || wire_.layout_of(info->guid) == 0) continue;
+        if (!area_.contains(info->x, info->y)) continue;
         Entry e;
         e.node = info->guid;
         e.rank = rank;

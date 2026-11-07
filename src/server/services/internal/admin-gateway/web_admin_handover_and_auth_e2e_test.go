@@ -5,12 +5,23 @@
 package admingateway
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	citynodev1 "aocrop/services/gen/aoc/citynode/v1"
+	worldadminv1 "aocrop/services/gen/aoc/worldadmin/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestTimeOfDayAndVerraCalendarSSoTPersistence(t *testing.T) {
@@ -68,8 +79,12 @@ func assertTimeAndCalendarPayload(t *testing.T, source string, payload map[strin
 		t.Fatalf("%s calendar_year = %d (ok=%v), want 2; payload=%v", source, year, hasYear, payload)
 	}
 	season := extractStringParam(payload, "calendar_season", "season")
-	if season != "Summer (Suncrest)" {
-		t.Fatalf("%s calendar_season = %q, want %q; payload=%v", source, season, "Summer (Suncrest)", payload)
+	if season != "Summer" {
+		t.Fatalf("%s calendar_season = %q, want %q; payload=%v", source, season, "Summer", payload)
+	}
+	month := extractStringParam(payload, "calendar_month", "month")
+	if month != "Season Day 5" {
+		t.Fatalf("%s calendar_month = %q, want %q; payload=%v", source, month, "Season Day 5", payload)
 	}
 }
 
@@ -177,4 +192,95 @@ func TestSetWorkerTickRateSupportsDynamicZeroHzPauseAndManualPresetsAndRealWorke
 			t.Fatalf("set_worker_tick_rate %d Hz returned tick_hz=%d (ok=%v); resp=%v", hz, gotHz, ok, resp)
 		}
 	}
+}
+
+func assertWorkerTickFields(t *testing.T, srv http.Handler, wantMode string, wantTarget, wantCur float64, minCur bool) {
+	t.Helper()
+	for _, ep := range []string{"/api/v1/world/state", "/api/v1/gm/containers"} {
+		rec := serveAuthed(srv, http.MethodGet, ep, "gm-observer-dev-token", map[string]string{"Accept": "application/json"}, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200", ep, rec.Code)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode %s: %v", ep, err)
+		}
+		workers, _ := payload["workers"].([]any)
+		if len(workers) == 0 {
+			t.Fatalf("%s returned 0 workers", ep)
+		}
+		w0, _ := workers[0].(map[string]any)
+		if gotMode := extractStringParam(w0, "tick_mode"); gotMode != wantMode {
+			t.Fatalf("%s worker[0].tick_mode = %q, want %q", ep, gotMode, wantMode)
+		}
+		if gotTarget, ok := extractFloatParam(w0, "target_tick_hz"); !ok || gotTarget != wantTarget {
+			t.Fatalf("%s worker[0].target_tick_hz = %v (ok=%v), want %v", ep, gotTarget, ok, wantTarget)
+		}
+		gotCur, ok := extractFloatParam(w0, "current_tick_hz")
+		if !ok || (minCur && gotCur < wantCur) || (!minCur && gotCur != wantCur) {
+			t.Fatalf("%s worker[0].current_tick_hz = %v (ok=%v), want %v (minCur=%v)", ep, gotCur, ok, wantCur, minCur)
+		}
+		if ep == "/api/v1/gm/containers" {
+			prom, _ := payload["prometheus"].(map[string]any)
+			mg, _ := prom["mesh_gateway_metrics"].(map[string]any)
+			if rx, ok := extractFloatParam(mg, "udp_frames_rx_total"); !ok || rx <= 0 {
+				t.Fatalf("/api/v1/gm/containers udp_frames_rx_total = %v (ok=%v), want > 0", rx, ok)
+			}
+		}
+	}
+}
+
+type fakeWorldStreamClient struct {
+	worldadminv1.WorldStreamServiceClient
+	lastLayers atomic.Uint32
+	entities   []*worldadminv1.Entity
+}
+type fakeStreamRecv struct {
+	grpc.ServerStreamingClient[worldadminv1.SubscribeResponse]
+	entities []*worldadminv1.Entity
+	sent     bool
+}
+
+func (s *fakeStreamRecv) Recv() (*worldadminv1.SubscribeResponse, error) {
+	if s.sent {
+		return nil, io.EOF
+	}
+	s.sent = true
+	return &worldadminv1.SubscribeResponse{Body: &worldadminv1.SubscribeResponse_Snapshot{Snapshot: &worldadminv1.EntitySnapshot{Entities: s.entities}}}, nil
+}
+func (f *fakeWorldStreamClient) Subscribe(_ context.Context, req *worldadminv1.SubscribeRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[worldadminv1.SubscribeResponse], error) {
+	f.lastLayers.Store(req.GetLayers())
+	if len(f.entities) > 0 {
+		return &fakeStreamRecv{entities: f.entities}, nil
+	}
+	return nil, status.Error(codes.Canceled, "snapshot complete")
+}
+func (f *fakeWorldStreamClient) GetStatus(context.Context, *worldadminv1.GetStatusRequest, ...grpc.CallOption) (*worldadminv1.GetStatusResponse, error) {
+	return &worldadminv1.GetStatusResponse{Stats: &worldadminv1.StreamStats{TickMs: 2.5, PublishMs: 0.2, Players: 1, Npcs: 14000}, Subscribers: 1}, nil
+}
+
+type fakeCityNodeClient struct {
+	citynodev1.CityNodeServiceClient
+	listNodesCalls atomic.Int32
+}
+
+func (f *fakeCityNodeClient) ListNodes(context.Context, *citynodev1.ListNodesRequest, ...grpc.CallOption) (*citynodev1.ListNodesResponse, error) {
+	f.listNodesCalls.Add(1)
+	return &citynodev1.ListNodesResponse{Nodes: []*citynodev1.Node{{Guid: 108646108518008, Name: "Verra_RVR_Winstead", DisplayName: "Winstead", Level: 3}}}, nil
+}
+func (f *fakeCityNodeClient) SetNodeLevel(_ context.Context, req *citynodev1.SetNodeLevelRequest, _ ...grpc.CallOption) (*citynodev1.SetNodeLevelResponse, error) {
+	name := req.GetNode().GetName()
+	return &citynodev1.SetNodeLevelResponse{Node: &citynodev1.Node{Guid: 108646108518008, Name: name, DisplayName: name, Level: uint32(req.GetLevel())}}, nil
+}
+func serveAuthed(h http.Handler, method, path, token string, hdrs map[string]string, body []byte) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for k, v := range hdrs {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
 }

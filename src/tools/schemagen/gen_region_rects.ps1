@@ -27,6 +27,13 @@ public sealed class RegionRectsResult
     public int RiverCellCount { get; set; }
     public int ZoiZoneCount { get; set; }
     public int TotalZoiRectCount { get; set; }
+    public string AllBiomesJson { get; set; }
+    public string AllBiomesZoiJson { get; set; }
+    public string AllBiomesMapcTsv { get; set; }
+    public int AllBiomesRectCount { get; set; }
+    public int AllBiomesCellCount { get; set; }
+    public int AllBiomesZoiCount { get; set; }
+    public int AllBiomesZoiRectCount { get; set; }
 }
 
 internal sealed class PyTupleSet
@@ -183,10 +190,6 @@ public static class AocRegionRectsGen
     private const int ChunkCm = Cells * CellCm;
     private const int Total = Cells * Cells * Cells;
     private const int SurfaceIz = Cells / 2;
-    private const int XMin = -44;
-    private const int XMax = -6;
-    private const int YMin = 3;
-    private const int YMax = 31;
 
     private static readonly int[] Spread = BuildSpread();
     private static readonly long[] Slab = BuildSlab();
@@ -381,122 +384,188 @@ public static class AocRegionRectsGen
         return res;
     }
 
-    public static RegionRectsResult Generate(
+    private static void LoadWorldGrid(
         string chunksDir,
-        Dictionary<ulong, string> names,
-        HashSet<ulong> riverSet)
+        out byte[][] rows,
+        out List<ulong> guids,
+        out int minCx,
+        out int minCy)
     {
-        int nx = (XMax - XMin + 1) * Cells;
-        int ny = (YMax - YMin + 1) * Cells;
-        var rows = new byte[ny][];
-        for (int j = 0; j < ny; j++) rows[j] = new byte[nx];
-
-        var guids = new List<ulong> { 0UL };
-        var ids = new Dictionary<ulong, byte> { [0UL] = 0 };
-
-        var chunkFiles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var chunkMap = new Dictionary<(int cx, int cy), string>();
+        minCx = int.MaxValue; int maxCx = int.MinValue;
+        minCy = int.MaxValue; int maxCy = int.MinValue;
         foreach (string f in Directory.EnumerateFiles(chunksDir, "C_*_*_0.uasset", SearchOption.AllDirectories))
         {
-            chunkFiles[Path.GetFileName(f)] = f;
+            string[] parts = Path.GetFileNameWithoutExtension(f).Split('_');
+            if (parts.Length != 4 || parts[0] != "C" || parts[3] != "0") continue;
+            int cx = int.Parse(parts[1], CultureInfo.InvariantCulture);
+            int cy = int.Parse(parts[2], CultureInfo.InvariantCulture);
+            chunkMap[(cx, cy)] = f;
+            if (cx < minCx) minCx = cx;
+            if (cx > maxCx) maxCx = cx;
+            if (cy < minCy) minCy = cy;
+            if (cy > maxCy) maxCy = cy;
         }
-
-        for (int cx = XMin; cx <= XMax; cx++)
+        int nx = (maxCx - minCx + 1) * Cells;
+        int ny = (maxCy - minCy + 1) * Cells;
+        rows = new byte[ny][];
+        for (int j = 0; j < ny; j++) rows[j] = new byte[nx];
+        guids = new List<ulong> { 0UL };
+        var ids = new Dictionary<ulong, byte> { [0UL] = 0 };
+        for (int cx = minCx; cx <= maxCx; cx++)
         {
-            for (int cy = YMin; cy <= YMax; cy++)
+            for (int cy = minCy; cy <= maxCy; cy++)
             {
-                string fileName = string.Format(CultureInfo.InvariantCulture, "C_{0}_{1}_0.uasset", cx, cy);
                 string p;
-                if (!chunkFiles.TryGetValue(fileName, out p)) continue;
-                ulong[] pal;
-                byte[] cells;
-                DecodeChunk(p, out pal, out cells);
-                var local = new byte[pal.Length];
-                for (int k = 0; k < pal.Length; k++)
-                {
-                    ulong g = pal[k];
-                    byte gid;
-                    if (!ids.TryGetValue(g, out gid))
-                    {
-                        gid = (byte)ids.Count;
-                        ids[g] = gid;
-                        guids.Add(g);
-                    }
-                    local[k] = gid;
-                }
-                int baseX = (cx - XMin) * Cells;
-                int baseY = (cy - YMin) * Cells;
-                for (int iy = 0; iy < Cells; iy++)
-                {
-                    byte[] dstRow = rows[baseY + iy];
-                    int srcOff = iy * Cells;
-                    for (int ix = 0; ix < Cells; ix++)
-                    {
-                        dstRow[baseX + ix] = local[cells[srcOff + ix]];
-                    }
-                }
+                if (!chunkMap.TryGetValue((cx, cy), out p)) continue;
+                DecodeAndBlitChunk(p, cx - minCx, cy - minCy, rows, ids, guids);
             }
         }
+    }
 
-        var riverIds = new bool[guids.Count];
-        for (int i = 0; i < guids.Count; i++)
+    private static void DecodeAndBlitChunk(
+        string path, int offCx, int offCy, byte[][] rows,
+        Dictionary<ulong, byte> ids, List<ulong> guids)
+    {
+        ulong[] pal;
+        byte[] cells;
+        DecodeChunk(path, out pal, out cells);
+        var local = new byte[pal.Length];
+        for (int k = 0; k < pal.Length; k++)
         {
-            riverIds[i] = riverSet.Contains(guids[i]);
+            ulong g = pal[k];
+            byte gid;
+            if (!ids.TryGetValue(g, out gid))
+            {
+                gid = (byte)ids.Count;
+                ids[g] = gid;
+                guids.Add(g);
+            }
+            local[k] = gid;
         }
+        int baseX = offCx * Cells;
+        int baseY = offCy * Cells;
+        for (int iy = 0; iy < Cells; iy++)
+        {
+            byte[] dstRow = rows[baseY + iy];
+            int srcOff = iy * Cells;
+            for (int ix = 0; ix < Cells; ix++)
+            {
+                dstRow[baseX + ix] = local[cells[srcOff + ix]];
+            }
+        }
+    }
 
-        var riverRows = new byte[ny][];
-        int riverCells = 0;
+    private static List<int[]> CutTargetSet(
+        byte[][] rows, List<ulong> guids, HashSet<ulong> targetSet,
+        int x0, int y0, out int totalCells)
+    {
+        int ny = rows.Length;
+        int nx = rows[0].Length;
+        var maskIds = new bool[guids.Count];
+        for (int i = 0; i < guids.Count; i++) maskIds[i] = targetSet.Contains(guids[i]);
+        var maskRows = new byte[ny][];
+        totalCells = 0;
         for (int j = 0; j < ny; j++)
         {
-            var rRow = new byte[nx];
+            var mRow = new byte[nx];
             byte[] src = rows[j];
             for (int i = 0; i < nx; i++)
             {
-                if (riverIds[src[i]])
-                {
-                    rRow[i] = 1;
-                    riverCells++;
-                }
+                if (maskIds[src[i]]) { mRow[i] = 1; totalCells++; }
             }
-            riverRows[j] = rRow;
+            maskRows[j] = mRow;
         }
-        int x0 = XMin * ChunkCm;
-        int y0 = YMin * ChunkCm;
-        var biomeRects = Cut(riverRows, x0, y0);
+        return Cut(maskRows, x0, y0);
+    }
 
+    private static List<(ulong guid, string name, int cells, List<int[]> rects, int order)> BuildZoiRectList(
+        byte[][] rows, List<ulong> guids, Dictionary<ulong, string> names,
+        HashSet<ulong> targetSet, int x0, int y0)
+    {
+        int ny = rows.Length;
+        int nx = rows[0].Length;
+        var minJ = new int[guids.Count]; var maxJ = new int[guids.Count];
+        var minI = new int[guids.Count]; var maxI = new int[guids.Count];
+        var counts = new int[guids.Count];
+        for (int k = 0; k < guids.Count; k++) { minJ[k] = ny; maxJ[k] = -1; minI[k] = nx; maxI[k] = -1; }
+        for (int j = 0; j < ny; j++)
+        {
+            byte[] src = rows[j];
+            for (int i = 0; i < nx; i++)
+            {
+                byte id = src[i];
+                if (id == 0) continue;
+                counts[id]++;
+                if (j < minJ[id]) minJ[id] = j;
+                if (j > maxJ[id]) maxJ[id] = j;
+                if (i < minI[id]) minI[id] = i;
+                if (i > maxI[id]) maxI[id] = i;
+            }
+        }
         var zois = new List<(ulong guid, string name, int cells, List<int[]> rects, int order)>();
         for (int idx = 1; idx < guids.Count; idx++)
         {
             ulong g = guids[idx];
             string zName;
-            if (!riverSet.Contains(g) || !names.TryGetValue(g, out zName)) continue;
-            var zRows = new byte[ny][];
-            int cCount = 0;
-            for (int j = 0; j < ny; j++)
-            {
-                var zRow = new byte[nx];
-                byte[] src = rows[j];
-                for (int i = 0; i < nx; i++)
-                {
-                    if (src[i] == idx)
-                    {
-                        zRow[i] = 1;
-                        cCount++;
-                    }
-                }
-                zRows[j] = zRow;
-            }
-            var zRects = cCount > 0 ? Cut(zRows, x0, y0) : new List<int[]>();
+            if (!targetSet.Contains(g) || !names.TryGetValue(g, out zName)) continue;
+            int cCount = counts[idx];
+            var zRects = cCount > 0
+                ? CutSingleZoiBox(rows, (byte)idx, minI[idx], maxI[idx], minJ[idx], maxJ[idx], x0, y0)
+                : new List<int[]>();
             zois.Add((g, zName, cCount, zRects, idx));
         }
-
         zois.Sort((a, b) =>
         {
             int c = b.cells.CompareTo(a.cells);
             return c != 0 ? c : a.order.CompareTo(b.order);
         });
+        return zois;
+    }
 
+    private static List<int[]> CutSingleZoiBox(
+        byte[][] rows, byte idx, int i0, int i1, int j0, int j1, int x0, int y0)
+    {
+        int subH = j1 - j0 + 1;
+        int subW = i1 - i0 + 1;
+        var zRows = new byte[subH][];
+        for (int j = 0; j < subH; j++)
+        {
+            var zRow = new byte[subW];
+            byte[] src = rows[j0 + j];
+            for (int i = 0; i < subW; i++)
+            {
+                if (src[i0 + i] == idx) zRow[i] = 1;
+            }
+            zRows[j] = zRow;
+        }
+        return Cut(zRows, x0 + i0 * CellCm, y0 + j0 * CellCm);
+    }
+
+    public static RegionRectsResult Generate(
+        string chunksDir,
+        Dictionary<ulong, string> names,
+        HashSet<ulong> riverSet,
+        HashSet<ulong> allBiomesSet)
+    {
+        byte[][] rows;
+        List<ulong> guids;
+        int minCx, minCy;
+        LoadWorldGrid(chunksDir, out rows, out guids, out minCx, out minCy);
+        int x0 = minCx * ChunkCm;
+        int y0 = minCy * ChunkCm;
+
+        int riverCells;
+        var biomeRects = CutTargetSet(rows, guids, riverSet, x0, y0, out riverCells);
+        var zois = BuildZoiRectList(rows, guids, names, riverSet, x0, y0);
         int totalZoiRects = 0;
         for (int i = 0; i < zois.Count; i++) totalZoiRects += zois[i].rects.Count;
+
+        int allCells;
+        var allRects = CutTargetSet(rows, guids, allBiomesSet, x0, y0, out allCells);
+        var allZois = BuildZoiRectList(rows, guids, names, allBiomesSet, x0, y0);
+        int allZoiRects = 0;
+        for (int i = 0; i < allZois.Count; i++) allZoiRects += allZois[i].rects.Count;
 
         return new RegionRectsResult
         {
@@ -505,8 +574,28 @@ public static class AocRegionRectsGen
             BiomeRectCount = biomeRects.Count,
             RiverCellCount = riverCells,
             ZoiZoneCount = zois.Count,
-            TotalZoiRectCount = totalZoiRects
+            TotalZoiRectCount = totalZoiRects,
+            AllBiomesJson = RenderBiomeJson(allCells, allRects),
+            AllBiomesZoiJson = RenderZoiJson(allZois),
+            AllBiomesMapcTsv = RenderMapcTsv(allCells, allRects),
+            AllBiomesRectCount = allRects.Count,
+            AllBiomesCellCount = allCells,
+            AllBiomesZoiCount = allZois.Count,
+            AllBiomesZoiRectCount = allZoiRects
         };
+    }
+
+    private static string RenderMapcTsv(int cells, List<int[]> rects)
+    {
+        var sb = new StringBuilder(rects.Count * 40 + 256);
+        sb.Append("# region_rects v1: the FullVerra all-biomes footprint as disjoint rectangles, world cm, [x0,x1) x [y0,y1) (tools/mapc reads it; GENERATED by gen_region_rects.ps1, do not edit)\n");
+        sb.AppendFormat(CultureInfo.InvariantCulture, "# cells\t{0}\tcell_cm\t{1}\tcount\t{2}\n", cells, CellCm, rects.Count);
+        for (int i = 0; i < rects.Count; i++)
+        {
+            int[] q = rects[i];
+            sb.AppendFormat(CultureInfo.InvariantCulture, "rect\t{0}\t{1}\t{2}\t{3}\n", q[0], q[1], q[2], q[3]);
+        }
+        return sb.ToString();
     }
 
     private static void AppendRectsJson(StringBuilder sb, List<int[]> rects)
@@ -582,22 +671,26 @@ function Parse-CliArgs {
         Join-Path $script:RepoRoot 'dist\content\content.db'
     }
     $opts = @{
-        Chunks    = $defaultChunks
-        ContentDb = $defaultDb
-        BiomeOut  = (Join-Path $script:RepoRoot 'build\gen\fixtures\region\riverlands_rects.json')
-        ZoiOut    = (Join-Path $script:RepoRoot 'build\gen\fixtures\region\riverlands_zoi_rects.json')
-        Check     = $false
+        Chunks          = $defaultChunks
+        ContentDb       = $defaultDb
+        BiomeOut        = (Join-Path $script:RepoRoot 'build\gen\fixtures\region\riverlands_rects.json')
+        ZoiOut          = (Join-Path $script:RepoRoot 'build\gen\fixtures\region\riverlands_zoi_rects.json')
+        AllBiomesOut    = (Join-Path $script:RepoRoot 'build\gen\fixtures\region\all_biomes_rects.json')
+        AllBiomesZoiOut = (Join-Path $script:RepoRoot 'build\gen\fixtures\region\all_biomes_zoi_rects.json')
+        AllBiomesTsvOut = (Join-Path $script:RepoRoot 'build\gen\nav\all_biomes_rects.tsv')
+        Check           = $false
     }
     $i = 0
     $count = if ($null -eq $ArgsList) { 0 } else { $ArgsList.Count }
     while ($i -lt $count) {
         switch ($ArgsList[$i]) {
-            '--chunks'     { $i++; $opts.Chunks = $ArgsList[$i] }
-            '--content-db' { $i++; $opts.ContentDb = $ArgsList[$i] }
-            '--biome-out'  { $i++; $opts.BiomeOut = $ArgsList[$i] }
-            '--zoi-out'    { $i++; $opts.ZoiOut = $ArgsList[$i] }
-            '--check'      { $opts.Check = $true }
-            default        { throw "Unknown argument: $($ArgsList[$i])" }
+            '--chunks'         { $i++; $opts.Chunks = $ArgsList[$i] }
+            '--content-db'     { $i++; $opts.ContentDb = $ArgsList[$i] }
+            '--biome-out'      { $i++; $opts.BiomeOut = $ArgsList[$i] }
+            '--zoi-out'        { $i++; $opts.ZoiOut = $ArgsList[$i] }
+            '--all-biomes-tsv' { $i++; $opts.AllBiomesTsvOut = $ArgsList[$i] }
+            '--check'          { $opts.Check = $true }
+            default            { throw "Unknown argument: $($ArgsList[$i])" }
         }
         $i++
     }
@@ -607,17 +700,23 @@ function Parse-CliArgs {
 function Read-ZoiDbMetadata {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ContentDb)
-    $rows = Invoke-SchemaGenSqliteQuery -DbPath $ContentDb -Query 'SELECT guid, name, biome FROM city_zoi'
+    $rows = Invoke-SchemaGenSqliteQuery -DbPath $ContentDb -Query 'SELECT guid, name, biome, environment FROM city_zoi'
     $names = [System.Collections.Generic.Dictionary[uint64, string]]::new()
     $river = [System.Collections.Generic.HashSet[uint64]]::new()
+    $allBiomes = [System.Collections.Generic.HashSet[uint64]]::new()
     foreach ($r in $rows) {
         $g = [uint64]$r['guid']
+        $biome = [string]$r['biome']
+        $envName = [string]$r['environment']
         $names[$g] = [string]$r['name']
-        if ([string]$r['biome'] -eq 'Riverlands') {
+        if ($biome -eq 'Riverlands') {
             [void]$river.Add($g)
         }
+        if ($envName -ne 'Ocean' -and $biome -notin @('Default', 'cCount', '')) {
+            [void]$allBiomes.Add($g)
+        }
     }
-    return @{ Names = $names; River = $river }
+    return @{ Names = $names; River = $river; AllBiomes = $allBiomes }
 }
 
 function Write-OutputOrCheck {
@@ -645,7 +744,7 @@ function Write-OutputOrCheck {
         return
     }
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-    foreach ($p in @($Opts.BiomeOut, $Opts.ZoiOut)) {
+    foreach ($p in @($Opts.BiomeOut, $Opts.ZoiOut, $Opts.AllBiomesOut, $Opts.AllBiomesZoiOut, $Opts.AllBiomesTsvOut)) {
         $parent = Split-Path -Parent $p
         if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
             [void](New-Item -ItemType Directory -Path $parent -Force)
@@ -653,8 +752,12 @@ function Write-OutputOrCheck {
     }
     [System.IO.File]::WriteAllText($Opts.BiomeOut, $Result.BiomeJson, $utf8NoBom)
     [System.IO.File]::WriteAllText($Opts.ZoiOut, $Result.ZoiJson, $utf8NoBom)
+    [System.IO.File]::WriteAllText($Opts.AllBiomesOut, $Result.AllBiomesJson, $utf8NoBom)
+    [System.IO.File]::WriteAllText($Opts.AllBiomesZoiOut, $Result.AllBiomesZoiJson, $utf8NoBom)
+    [System.IO.File]::WriteAllText($Opts.AllBiomesTsvOut, $Result.AllBiomesMapcTsv, $utf8NoBom)
     Write-Host "riverlands: $($Result.BiomeRectCount) rects covering $($Result.RiverCellCount) cells -> $($Opts.BiomeOut)"
     Write-Host "zois: $($Result.ZoiZoneCount) zones ($($Result.TotalZoiRectCount) rects total) -> $($Opts.ZoiOut)"
+    Write-Host "all-biomes: $($Result.AllBiomesRectCount) rects covering $($Result.AllBiomesCellCount) cells ($($Result.AllBiomesZoiCount) zones, $($Result.AllBiomesZoiRectCount) ZOI rects) -> $($Opts.AllBiomesTsvOut)"
 }
 
 function Invoke-Main {
@@ -665,7 +768,7 @@ function Invoke-Main {
         throw "ZOI chunks directory not found: $($opts.Chunks)"
     }
     $meta = Read-ZoiDbMetadata -ContentDb $opts.ContentDb
-    $res = [AocRegionRectsGen]::Generate($opts.Chunks, $meta.Names, $meta.River)
+    $res = [AocRegionRectsGen]::Generate($opts.Chunks, $meta.Names, $meta.River, $meta.AllBiomes)
     Write-OutputOrCheck -Opts $opts -Result $res
 }
 

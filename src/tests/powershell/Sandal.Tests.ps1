@@ -127,28 +127,32 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
         }
     }
 
-    Context 'Repository Manifest & Config Integrity (CMakePresets.json, vcpkg.json, server.json, realm.json)' {
-        It 'validates CMakePresets v6 C++23 presets, vcpkg baseline SHA, and server/realm JSON port parity' {
+    Context 'Repository Manifest & Config Integrity (CMakePresets.json, cpp.Dockerfile, server.json, realm.json)' {
+        It 'validates CMakePresets v6 Linux-only C++23 presets, containerized cpp.Dockerfile packages, and server/realm JSON port parity' {
             $presetsPath = Join-Path $script:RepoRoot 'src\CMakePresets.json'
             $presets = Get-Content -LiteralPath $presetsPath -Raw | ConvertFrom-Json
             if ($presets.version -ne 6 -or $presets.cmakeMinimumRequired.major -ne 3 -or $presets.cmakeMinimumRequired.minor -ne 28) {
                 throw 'CMakePresets.json must declare version 6 and cmakeMinimumRequired >= 3.28.0'
             }
             $cfgNames = @($presets.configurePresets | ForEach-Object { $_.name })
-            foreach ($req in @('windows-base', 'windows-rel', 'linux-base', 'linux-release', 'linux-asan-ubsan', 'linux-tsan')) {
+            foreach ($req in @('linux-base', 'linux-release', 'linux-asan-ubsan', 'linux-tsan')) {
                 if ($cfgNames -notcontains $req) {
                     throw "Missing required configurePreset '$req' in CMakePresets.json"
                 }
             }
-
-            $vcpkgPath = Join-Path $script:RepoRoot 'src\vcpkg.json'
-            $vcpkg = Get-Content -LiteralPath $vcpkgPath -Raw | ConvertFrom-Json
-            if ($vcpkg.'builtin-baseline' -notmatch '^[0-9a-f]{40}$') {
-                throw "Expected 40-char git commit SHA in vcpkg.json builtin-baseline, got '$($vcpkg.'builtin-baseline')'"
+            foreach ($forbidden in @('windows-base', 'windows-rel')) {
+                if ($cfgNames -contains $forbidden) {
+                    throw "Unexpected host Windows configurePreset '$forbidden' in CMakePresets.json"
+                }
             }
-            foreach ($dep in @('grpc', 'protobuf', 'openssl', 'spdlog', 'nlohmann-json', 'cli11', 'sqlite3')) {
-                if (@($vcpkg.dependencies) -notcontains $dep) {
-                    throw "Missing dependency '$dep' in vcpkg.json"
+
+            if (Test-Path -LiteralPath (Join-Path $script:RepoRoot 'src\vcpkg.json')) {
+                throw 'Unexpected host src/vcpkg.json present; C++ dependencies must be containerized in src/deploy/docker/cpp.Dockerfile'
+            }
+            $cppDockerfile = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'src\deploy\docker\cpp.Dockerfile') -Raw
+            foreach ($pkg in @('clang-18', 'libgrpc++-dev', 'libprotobuf-dev', 'libssl-dev', 'libspdlog-dev', 'nlohmann-json3-dev', 'libcli11-dev', 'libsqlite3-dev')) {
+                if (-not $cppDockerfile.Contains($pkg)) {
+                    throw "Missing required package '$pkg' in src/deploy/docker/cpp.Dockerfile"
                 }
             }
 
@@ -255,9 +259,14 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                     throw 'Expected 0 .env file in repo root'
                 }
                 $envMap = Get-SandalEnvMap -EnvPath $deployStage.EnvPath
-                foreach ($key in @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY', 'AOC_JWT_SECRET', 'NATS_PASSWORD', 'AOC_NATS_TOKEN')) {
+                foreach ($key in @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'AOC_JWT_SECRET')) {
                     if ($envMap[$key] -notmatch '^[a-zA-Z0-9_-]{12,128}$' -or $envMap[$key] -match '^(?:CHANGE_ME|aoc|postgres|dev-local-service-token|dev-only-jwt-secret)') {
                         throw "Expected valid non-default secret matching ^[a-zA-Z0-9_-]{12,128}$ for $key in deploy/.env, got '$($envMap[$key])'"
+                    }
+                }
+                foreach ($legacyKey in @('SANDAL_SECRET_KEY', 'NATS_PASSWORD', 'AOC_NATS_TOKEN')) {
+                    if ($envMap.Contains($legacyKey)) {
+                        throw "Expected retired secret key '$legacyKey' to be absent from deploy/.env"
                     }
                 }
                 $composeContent = [System.IO.File]::ReadAllText((Join-Path $script:RepoRoot 'src\deploy\compose.yml'))
@@ -366,19 +375,21 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
         }
     }
 
-    Context '.aoc/usmap Override Resolution & SHA-256 Extraction Stamp Verification' {
+    Context '.aoc/aoc.usmap Override Resolution & SHA-256 Extraction Stamp Verification' {
         It 'verifies Resolve-SandalUsmapPath, Sync-SandalUsmapOverride hardlink protection, and Test-SandalUsmapExtractionCurrent SHA-256 stamp matching' {
+            Import-Module (Join-Path $script:RepoRoot 'scripts\lib\Env.psm1') -Force -DisableNameChecking
             $tmpRepo = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-usmap-' + [guid]::NewGuid().ToString('N'))
             $prevUsmapPath = if (Test-Path Env:\SANDAL_USMAP_PATH) { $env:SANDAL_USMAP_PATH } else { $null }
             $prevOverrideDir = if (Test-Path Env:\SANDAL_USMAP_OVERRIDE_DIR) { $env:SANDAL_USMAP_OVERRIDE_DIR } else { $null }
+            $prevUserProfile = if (Test-Path Env:\USERPROFILE) { $env:USERPROFILE } else { $null }
             try {
-                foreach ($rel in @('src\config\layouts', 'dist\content', 'deploy\content', 'override_usmap')) {
+                foreach ($rel in @('src\config\layouts', 'dist\content', 'deploy\content', '.aoc')) {
                     $null = New-Item -ItemType Directory -Path (Join-Path $tmpRepo $rel) -Force
                 }
                 $repoUsmap = Join-Path $tmpRepo 'src\config\layouts\aoc.usmap'
                 $distUsmap = Join-Path $tmpRepo 'dist\content\aoc.usmap'
                 $deployUsmap = Join-Path $tmpRepo 'deploy\content\aoc.usmap'
-                $overrideDir = Join-Path $tmpRepo 'override_usmap'
+                $overrideDir = Join-Path $tmpRepo '.aoc'
                 $overrideUsmap = Join-Path $overrideDir 'aoc.usmap'
                 $stampPath = Join-Path $tmpRepo 'dist\content\aoc.usmap.extracted.sha256'
 
@@ -387,7 +398,8 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
                 [System.IO.File]::WriteAllText($overrideUsmap, 'custom-override-usmap-payload-5282010')
 
                 Remove-Item Env:\SANDAL_USMAP_PATH -ErrorAction SilentlyContinue
-                $env:SANDAL_USMAP_OVERRIDE_DIR = $overrideDir
+                Remove-Item Env:\SANDAL_USMAP_OVERRIDE_DIR -ErrorAction SilentlyContinue
+                $env:USERPROFILE = $tmpRepo
 
                 $resolved = Resolve-SandalUsmapPath -RepoRoot $tmpRepo
                 $resolved | Should -Be $overrideUsmap
@@ -409,6 +421,7 @@ Describe 'Sandal Repository Config Manifests, Public Hygiene Gate & Secret Redac
             } finally {
                 if ($null -eq $prevUsmapPath) { Remove-Item Env:\SANDAL_USMAP_PATH -ErrorAction SilentlyContinue } else { $env:SANDAL_USMAP_PATH = $prevUsmapPath }
                 if ($null -eq $prevOverrideDir) { Remove-Item Env:\SANDAL_USMAP_OVERRIDE_DIR -ErrorAction SilentlyContinue } else { $env:SANDAL_USMAP_OVERRIDE_DIR = $prevOverrideDir }
+                if ($null -eq $prevUserProfile) { Remove-Item Env:\USERPROFILE -ErrorAction SilentlyContinue } else { $env:USERPROFILE = $prevUserProfile }
                 if (Test-Path -LiteralPath $tmpRepo) {
                     Remove-Item -LiteralPath $tmpRepo -Recurse -Force -ErrorAction SilentlyContinue
                 }

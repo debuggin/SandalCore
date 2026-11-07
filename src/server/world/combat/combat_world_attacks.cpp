@@ -47,6 +47,42 @@ private:
 
 constexpr double kMinHitDelay = 0.1;
 
+struct AttackWalkSpeed {
+    const char* ability;
+    double      share;
+};
+constexpr AttackWalkSpeed kAttackWalkSpeeds[] = {
+    {"Bandit_Raider_Whirlwind", 0.45},
+    {"GoblinFlayer_SeveringSpin", 1.6},
+};
+
+double attack_walk_share(const std::string& ability) {
+    for (const AttackWalkSpeed& row : kAttackWalkSpeeds) {
+        if (ability == row.ability) return row.share;
+    }
+    return 1.0;
+}
+
+bool attack_keeps_its_stop(const std::string& ability) { return ability == "PitchfireRaider_PitchfireWhirlwind"; }
+
+constexpr const char* kAttacksThatKeepTurning[] = {
+    "Minotaur_Berserker_AxeStrike",
+};
+
+bool attack_keeps_turning(const std::string& ability) {
+    for (const char* name : kAttacksThatKeepTurning) {
+        if (ability == name) return true;
+    }
+    return false;
+}
+
+template <typename NpcT>
+void set_attack_walk_share(NpcT& n, double share) {
+    if constexpr (requires { n.attack_walk_share = share; }) {
+        n.attack_walk_share = share;
+    }
+}
+
 double angle_between_degrees(double a, double b) {
     double d = std::fmod(a - b, 360.0);
     if (d > 180.0) d -= 360.0;
@@ -218,10 +254,12 @@ void record_task_cooldowns(const CreatureAbility& task, double base_time, stats:
     }
 }
 
-void begin_task_rotation(npc::NpcWorld* npcs_world, uint64_t actor_id, const CreatureAbility* task, double until,
+template <typename AttackT>
+void begin_task_rotation(npc::NpcWorld* npcs_world, uint64_t actor_id, const AttackT& a, double until,
                          std::function<bool(nav::Vec3&)> target_pos) {
-    if (!task || !task->rotates || !npcs_world) return;
-    npcs_world->track_target(actor_id, std::move(target_pos), task->rotate_speed, until);
+    if (!a.task || !npcs_world || (!a.task->rotates && !attack_keeps_turning(a.ability->row.name))) return;
+    const double rate = a.task->rotates ? a.task->rotate_speed : 0.0;
+    npcs_world->track_target(actor_id, std::move(target_pos), rate, until);
 }
 
 double compute_unanimated_next_attack(const npc_kits::Kit* kit, const CombatWorldConfig& cfg, double now, stats::SplitMix& rng) {
@@ -247,9 +285,10 @@ void apply_animated_timing(NpcT& n, const AttackT& a, const PlanT& plan, double 
     const double done = plan.montage ? plan.montage->task_done_after(1.0) : 0.0;
     if (a.task) {
         record_task_cooldowns(*a.task, now + done, rng, n.cooldown_until);
-        n.hold_until = now + plan.seconds;
+        if (a.task->stop_movement || attack_keeps_its_stop(a.ability->row.name)) n.hold_until = now + plan.seconds;
     }
     n.next_attack_at = now + plan.seconds;
+    set_attack_walk_share(n, attack_walk_share(a.ability->row.name));
 }
 
 template <typename NpcT, typename AttackT, typename PlanT>
@@ -530,6 +569,7 @@ bool CombatWorld::plan_cast(Npc& n, const abilities::AbilityDef& def, CastPlan& 
 
 void CombatWorld::start_attack(Npc& n, uint64_t target, double now, const Attack* picked) {
     PlayerPort* port = player(target);
+    set_attack_walk_share(n, 1.0);
     Attack a = n.next;
     if (n.anim && port) {
         a = picked ? *picked : choose_animated(n, &port->fighter());
@@ -550,8 +590,8 @@ void CombatWorld::start_attack(Npc& n, uint64_t target, double now, const Attack
     }
     if (animated) {
         apply_animated_timing(n, a, plan, now, rng_);
-        const double rot_until = now + (a.task && a.task->rotate_seconds > 0 ? std::min(a.task->rotate_seconds, plan.seconds) : plan.seconds);
-        begin_task_rotation(npcs_world_, n.actor_id, a.task, rot_until, [this, target](nav::Vec3& out) {
+        const double rot_until = now + (a.task && a.task->rotates && a.task->rotate_seconds > 0 ? std::min(a.task->rotate_seconds, plan.seconds) : plan.seconds);
+        begin_task_rotation(npcs_world_, n.actor_id, a, rot_until, [this, target](nav::Vec3& out) {
             PlayerPort* q = player(target);
             if (!q || !q->fighter().alive()) return false;
             out = to_nav(q->fighter().position());

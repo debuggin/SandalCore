@@ -248,7 +248,7 @@ bool NpcWorld::face_toward(uint64_t id, double x, double y) {
     const double dx = x - a->x, dy = y - a->y;
     if (std::fabs(dx) < 1e-6 && std::fabs(dy) < 1e-6) return true;
     Npc& n = it->second;
-    if (n.rm) return false;
+    if (n.rm || n.lock_turn) return false;
     n.mover.face(std::atan2(dy, dx) * 180.0 / 3.14159265358979323846);
     commit(n, now_, true);
     return true;
@@ -262,7 +262,7 @@ bool NpcWorld::turn_toward(uint64_t id, double x, double y, double rate) {
     const double dx = x - a->x, dy = y - a->y;
     if (std::fabs(dx) < 1e-6 && std::fabs(dy) < 1e-6) return true;
     Npc& n = it->second;
-    if (n.rm) return false;
+    if (n.rm || n.lock_turn) return false;
     n.turning = true;
     n.turn_yaw = std::atan2(dy, dx) * 180.0 / 3.14159265358979323846;
     n.turn_rate = std::isfinite(rate) && rate > 0 ? rate : 0.0;
@@ -382,8 +382,8 @@ void NpcWorld::advance_root_motion(Npc& n, double t) {
     const double at = last ? carry_end : reached;
     constexpr double kPi = 3.14159265358979323846;
     const nav::Vec3 g = n.mover.ground();
-    if (n.track && n.track_until > 0 && t >= n.track_until) n.track = nullptr;
-    step_root_tracking(n.mover, n.track, n.track_rate, dt);
+    if (n.track && !track_running(n, t)) n.track = nullptr;
+    if (track_running(n, t)) step_root_tracking(n.mover, n.track, n.track_rate, dt);
     if (std::fabs(n.mover.yaw_degrees() - r.yaw) > 1e-9) {
         r.yaw = n.mover.yaw_degrees();
         r.ox = g.x - (std::cos(r.yaw * kPi / 180.0) * r.last_tx - std::sin(r.yaw * kPi / 180.0) * r.last_ty);

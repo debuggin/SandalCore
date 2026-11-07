@@ -4,7 +4,7 @@
 // ============================================================================
 //  protocol/schema/player_state_schema.cpp
 //
-//  PlayerState — per-player persistent session state.  In UE5 PlayerState is
+//  PlayerState -- per-player persistent session state.  In UE5 PlayerState is
 //  replicated to ALL clients so everyone can see other players' scores,
 //  names, teams, etc.  In AoC it also carries siege/node data from the RE.
 // ============================================================================
@@ -17,7 +17,7 @@ ActorSchema SchemaRegistry::build_player_state_schema() {
     s.type = ActorType::PlayerState;
     s.class_name = "AAoCPlayerState";
     s.default_blueprint_path = "/Game/ThirdPersonCPP/Blueprints/AoCPlayerStateBP";
-    s.archetype_netguid = 0;  // TODO(Session-C): extract from capture
+    s.archetype_netguid = 0;  // Resolved dynamically per session spawn
     s.level_netguid     = 10;
 
     s.root_properties = {

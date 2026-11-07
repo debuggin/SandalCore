@@ -6,10 +6,15 @@
 // ============================================================================
 #include "session/ability_catalog.h"
 
+#include "content/content_db.h"
+
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <set>
+#include <string>
 
 namespace aoc::worldd::abilities {
 
@@ -27,6 +32,39 @@ void ids_of(const std::string& extra_json, const char* key, std::vector<int64_t>
 }
 
 void reaction_ids_of(const std::string& extra_json, std::vector<int64_t>& out) { ids_of(extra_json, "ReactionsIds", out); }
+
+std::optional<BreakOnDamage> break_on_damage_of(const content::FragilityRow& f) {
+    if (f.fragility_type.find("FRAGILITY_Proc") == std::string::npos) return std::nullopt;
+    const nlohmann::json bound = nlohmann::json::parse(f.bindings, nullptr, false);
+    if (!bound.is_object()) return std::nullopt;
+    const auto hit_events = bound.find("HitEvents");
+    if (hit_events == bound.end() || !hit_events->is_number_integer() || (hit_events->get<int64_t>() & 2) == 0) return std::nullopt;
+    const std::string& text = f.break_immediately;
+    const std::string health = "GetStatModValue(HitEvent, GetOwner(), $#5365104778484440215:" + std::to_string(content::kGuidHealth) + "$) < 0";
+    if (text.find(health) == std::string::npos) return std::nullopt;
+    BreakOnDamage out;
+    const std::string left_out = "GetHitRecord(HitEvent) != $#";
+    for (size_t at = text.find(left_out); at != std::string::npos; at = text.find(left_out, at + left_out.size())) {
+        const size_t colon = text.find(':', at + left_out.size()), end = text.find('$', at + left_out.size());
+        if (colon == std::string::npos || end == std::string::npos || colon > end) continue;
+        const int64_t guid = std::strtoll(text.c_str() + colon + 1, nullptr, 10);
+        if (guid != 0) out.except_hits.push_back(guid);
+    }
+    return out;
+}
+
+std::optional<BreakOnDamage> load_effect_break_on_damage(const content::AbilityContent& db, int64_t effect_guid) {
+    std::vector<int64_t> fragilities;
+    std::string unread;
+    if (!db.effect_fragilities(effect_guid, fragilities, unread)) return std::nullopt;
+    std::optional<BreakOnDamage> out;
+    for (const int64_t fragility : fragilities) {
+        const auto record = db.fragility(fragility, unread);
+        if (!record) continue;
+        if (auto breaks = break_on_damage_of(*record)) out = std::move(*breaks);
+    }
+    return out;
+}
 
 void load_modify_cooldowns(const content::AbilityContent& db, std::map<int64_t, Catalog::ModifyCooldownDef>& out) {
     std::vector<content::ModifyCooldownRow> rows;
@@ -62,7 +100,9 @@ bool load_effects(const content::AbilityContent& db, std::map<int64_t, EffectDef
         if (d.row.crowd_control_guid != 0) {
             std::string skipped;
             if (auto cc = db.crowd_control(d.row.crowd_control_guid, skipped)) d.cc = std::move(*cc);
+            else spdlog::warn("[abilities] the effect {} names a crowd-control record the data does not have, so a creature will not take it: {}", d.row.name, skipped);
         }
+        d.breaks_on_damage = load_effect_break_on_damage(db, g);
         effect_names[d.row.name] = g;
         effects.emplace(g, std::move(d));
     }

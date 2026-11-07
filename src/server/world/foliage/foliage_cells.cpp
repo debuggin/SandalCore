@@ -7,15 +7,16 @@
 #include "foliage/foliage_cells.h"
 
 #include "bootstrap/constants.h"
-#include "protocol/repl/codecs.h"
 #include "protocol/repl/fast_array.h"
 #include "protocol/repl/fname.h"
 #include "protocol/schema/generated/index.h"
+#include "spawns/area.h"
 #include "spawns/spawn_util.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace aoc::worldd::foliage {
 
@@ -32,6 +33,34 @@ repl::ElementState item_values(uint32_t state, uint32_t index) {
     es.values[1] = repl::Value::u64(state);   // Items.Value.States
     es.values[2] = repl::Value::u64(index);   // Items.Key
     return es;
+}
+
+bool has_env_area_filter() noexcept {
+    constexpr const char* kKeys[] = {
+        "AOC_WORLD_REGION", "WORLD_REGION",
+        "AOC_WORLD_ZOI", "WORLD_ZOI", "AOC_WORLD_AREA_ZOIS",
+        "AOC_WORLD_EXCLUDE_ZOI", "WORLD_EXCLUDE_ZOI", "AOC_WORLD_AREA_CUTOUT_ZOIS",
+        "AOC_WORLD_NODE_PLUG", "WORLD_NODE_PLUG",
+        "AOC_WORLD_EXCLUDE_NODE_PLUG", "WORLD_EXCLUDE_NODE_PLUG",
+        "AOC_WORLD_POLYGON_CUTOUT", "WORLD_POLYGON_CUTOUT",
+        "AOC_WORLD_EXCLUDE_POLYGON_CUTOUT", "WORLD_EXCLUDE_POLYGON_CUTOUT",
+        "AOC_WORLD_POI_CUTOUT", "WORLD_POI_CUTOUT",
+        "AOC_WORLD_EXCLUDE_POI_CUTOUT", "WORLD_EXCLUDE_POI_CUTOUT",
+        "AOC_WORLD_AREA_MIN_X", "AOC_WORLD_AREA_CELLS",
+        "AOC_WORLD_AREA_BIOMES", "AOC_WORLD_AREA_CUTOUT_CELLS",
+    };
+    for (const char* k : kKeys) {
+        if (const char* v = std::getenv(k); v != nullptr && *v != '\0') return true;
+    }
+    return false;
+}
+
+bool is_unbounded_continent(const spawns::AreaConfig& a) noexcept {
+    return a.region && a.whole_world && a.region_mask == static_cast<uint8_t>(spawns::RegionBit::All) &&
+           a.zoi_guids.empty() && a.exclude_zoi_guids.empty() &&
+           a.include_node_plugs.empty() && a.exclude_node_plugs.empty() &&
+           a.node_boxes.empty() && a.polygon_cutout_cm.size() < 3 && a.excluded_polygons_cm.empty() &&
+           (!a.active_dynamic_worker_index || a.dynamic_peers.empty());
 }
 
 }  // namespace
@@ -127,9 +156,20 @@ bool FoliageCells::make_actor(uint16_t owner_index) {
 }
 
 size_t FoliageCells::make_all() {
+    const spawns::AreaConfig& active = spawns::AreaConfig::active_worker_area();
+    const bool env_filtered = has_env_area_filter();
+    const spawns::AreaConfig area = (is_unbounded_continent(active) && env_filtered)
+                                        ? spawns::AreaConfig::resolve_worker_area(spawns::WorkerAreaSpec{})
+                                        : active;
+    const bool filter_area = !is_unbounded_continent(area) || env_filtered;
     size_t made = 0;
     for (size_t o = 0; o < owners_.size(); ++o) {
         if (owners_[o].actor != 0) continue;
+        if (filter_area) {
+            double cx = 0.0, cy = 0.0;
+            map_.cell_center(static_cast<uint16_t>(o), cx, cy);
+            if (!area.contains(cx, cy)) continue;
+        }
         if (make_actor(static_cast<uint16_t>(o))) ++made;
     }
     return made;

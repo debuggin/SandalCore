@@ -8,6 +8,8 @@
 
 namespace aoc::worldd {
 
+bool gone_out_at_the_press(const content::AbilityRow& row);
+
 // Generic data-driven ability runtime operating alongside AbilityRuntime (Sprint/Dodge/Rest) on the session clock.
 class AbilityPipeline {
 public:
@@ -20,6 +22,7 @@ public:
     static constexpr double kConfirmDelay = 0.080;
     static constexpr double kRequestWindow = 5.0;
     static constexpr double kItemRequestWindow = 15.0;
+    static constexpr double kDodgeHold = 1.4;
     static constexpr double kItemCastDelay = 0.065;
     static constexpr int    kMaxRequestsPerHit = 8;
     static constexpr double kMinRequestGap = 0.100;
@@ -78,6 +81,8 @@ public:
     bool cancel(int32_t client_instance_id, double now, double held_seconds = 0);
     bool branch_request(int32_t client_instance_id, int64_t branch_guid, double now);
     bool end_request(int32_t server_instance_id, double now);
+    size_t end_cast_bars(double now, const char* why);
+    size_t end_by_dodge(double now);
 
     static const char* verdict_name(HitVerdict v);
     HitVerdict hit_request(int64_t ability, int64_t targeting_guid, int64_t hit_guid, size_t components, size_t own, double now,
@@ -205,8 +210,16 @@ private:
     void   fire_from_hit(const CastRecord& rec, const abilities::HitDef& hit, double t);
     bool   holds_skill(int64_t skill) const;
     void   reschedule_branch(Cast& cast, double branch_at, double cost_after);
-    void   abort_cast(size_t index, double t, const char* why);
+    void   abort_cast(size_t index, double t, const char* why, bool give_back = false);
     void   end_zones_of(const Cast& cast, double t);
+    bool   in_cast_bar(const Cast& cast) const;
+    void   refund(bootstrap::AbilityChange& c, Cast& cast);
+    void   give_back(bootstrap::AbilityChange& c, const Cast& cast);
+    size_t end_unlaunched(double t, const char* why);
+    size_t end_swings(double t, const char* why);
+    bool   dodge_cancels(const Cast& cast) const;
+    bool   gone_out(int32_t client_id, const Cast* cast = nullptr) const;
+    void   mark_launched(int32_t client_id);
     bool   can_pay(const Cast& cast) const;
     void   bring_sooner(Cast& cast, double earlier);
     void   land_by_flight(Cast& cast, double t);
@@ -251,6 +264,7 @@ private:
                         int64_t owner = 0);
     void   remove_instance(bootstrap::AbilityChange& c, size_t index);
     void   remove_stacks(bootstrap::AbilityChange& c, int64_t effect_guid, int stacks);
+    void   restore_stacks(bootstrap::AbilityChange& c, const abilities::EffectDef& def, int stacks, double t);
     bootstrap::EffectItem effect_item(const EffectInst& e) const;
     void   run_effect_hits(bootstrap::AbilityChange& c, const EffectInst& e, const char* const* phases, size_t n, double t);
     void   step_loop(Cast& cast, double t);
@@ -348,7 +362,7 @@ private:
     std::deque<CastRecord>    records_;
     std::vector<Held>         held_;
     std::deque<Instance>      instances_;
-    void   end_instance(size_t index, double t);
+    void   end_instance(size_t index, double t, const std::string& why = std::string());
     std::map<int64_t, int>    swing_steps_;
     int    swing_montage(const abilities::AbilityDef& def, int requested, int& step) const;
     void   stop_swing(int64_t instance);

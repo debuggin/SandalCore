@@ -294,23 +294,32 @@ func (s *Store) PurgeExpiredTokens(ctx context.Context) (int64, error) {
 }
 
 // PurgeStaleTemporaryAccounts deletes leftover temporary/test accounts
-// (tmp_*, temp_*, e2e_*, ephem_hero) and their cascading characters/tokens.
+// (tmp_*, tst_*, temp_*, e2e_*, ephem_hero) and their cascading characters/tokens.
 func (s *Store) PurgeStaleTemporaryAccounts(ctx context.Context) (int64, error) {
 	if s.pool == nil {
 		return s.mem.purgeTemporaryAccounts(), nil
 	}
-	const q = `DELETE FROM accounts
+	const qChars = `DELETE FROM characters
+		WHERE lower(name) LIKE 'tst\_%' ESCAPE '\'
+		   OR lower(name) LIKE 'tmp\_%' ESCAPE '\'
+		   OR lower(name) LIKE 'temp\_%' ESCAPE '\'
+		   OR lower(name) LIKE 'e2e\_%' ESCAPE '\'
+		   OR name ~ '^TST[A-Z][a-z]+[A-Z][a-z]+$'`
+	_, _ = s.pool.Exec(ctx, qChars)
+	const qAccounts = `DELETE FROM accounts
 		WHERE lower(username) LIKE 'tmp\_%' ESCAPE '\'
+		   OR lower(username) LIKE 'tst\_%' ESCAPE '\'
 		   OR lower(username) LIKE 'temp\_%' ESCAPE '\'
 		   OR lower(username) LIKE 'e2e\_%' ESCAPE '\'
 		   OR lower(username) = 'ephem_hero'`
-	tag, err := s.pool.Exec(ctx, q)
+	tag, err := s.pool.Exec(ctx, qAccounts)
 	return tag.RowsAffected(), err
 }
 
 func isTemporaryUsername(username string) bool {
 	u := strings.ToLower(strings.TrimSpace(username))
 	return strings.HasPrefix(u, "tmp_") ||
+		strings.HasPrefix(u, "tst_") ||
 		strings.HasPrefix(u, "temp_") ||
 		strings.HasPrefix(u, "e2e_") ||
 		u == "ephem_hero"

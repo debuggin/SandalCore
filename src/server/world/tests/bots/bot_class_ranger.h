@@ -8,7 +8,7 @@
 
 namespace aoc::world::tests::bots {
 
-inline PlayerBot make_level50_ranger_bot(uint32_t replica_idx) {
+inline PlayerBot make_level50_ranger_bot(const LiveSession& s, uint32_t replica_idx) {
     PlayerBot bot{};
     bot.bot_id = 4000ULL + replica_idx;
     bot.replica_index = replica_idx;
@@ -26,38 +26,24 @@ inline PlayerBot make_level50_ranger_bot(uint32_t replica_idx) {
     bot.phys_power = bot.base_phys_power;
     bot.mag_power = bot.base_mag_power;
     bot.armor = bot.base_armor;
-    bot.loadout_presets = {
-        {"MainHand", "Windrunner Greatbow", 606463110000000401LL, 510, 0, 20, 0},
-        {"OffHand", "Briarmoor Hunting Spear", 606463110000000402LL, 280, 0, 40, 0},
-        {"ChestArmor", "Strider Brigandine Coat", 606463110000000403LL, 95, 0, 360, 0},
-        {"GatheringTool", "Master Hunting Bowknife", 606463110000000404LL, 30, 0, 0, 45},
-    };
-    bot.skill_tree_presets = {
-        {"Ranger_HawkEye_Rank5", 606462910000000401LL, 606462980000000400LL, true, 210},
-        {"Ranger_SnipeShot_Unlock", 606462910000000402LL, 606462980000000400LL, false, 180},
-        {"Ranger_ArrowBarrage_Unlock", 606462910000000403LL, 606462980000000400LL, false, 160},
-        {"Ranger_WildStride_Passive", 606462910000000404LL, 606462980000000400LL, true, 150},
-    };
-    bot.abilities = {
-        {"PowershotArrow", 606463180000000401LL, 3500.0, 2900, 0, 140, 1200, true, false},
-        {"PrecisionSnipe", 606463180000000402LL, 4200.0, 4800, 0, 260, 5000, true, false},
-        {"TempestBarrage", 606463180000000403LL, 3200.0, 3500, 0, 220, 4000, true, false},
-        {"HawkAspectBuff", 606463180000000404LL, 100.0, 1200, 0, 150, 8000, false, true},
-    };
+    bot.pos_cm = {s.spawn[0], s.spawn[1], ground_z_cm(s)};
+    bot.loadout_presets = s.catalog.gear_items;
+    bot.skill_tree_presets = s.catalog.skill_nodes_by_class[3];
+    bot.abilities = s.catalog.abilities_by_class[3];
     return bot;
 }
 
-inline int32_t execute_ranger_rotation(PlayerBot& bot, MonsterTarget& target) {
+inline int32_t execute_ranger_rotation(LiveSession& s, PlayerBot& bot, MonsterTarget& target) {
     if (bot.dead || bot.level != kMaxBotLevel) return 0;
     int32_t total_dmg = 0;
     for (const auto& ab : bot.abilities) {
         if (bot.mana < ab.mana_cost) break;
+        if (!send_live_ability_trigger(s, bot, ab.ability_guid, bot.pvp_flagged)) return 0;
         bot.mana -= ab.mana_cost;
         if (ab.is_buff_or_summon) bot.has_active_buff = true;
         const int32_t hit = ab.base_damage + (bot.phys_power / 2);
         target.hp = std::max(0, target.hp - hit);
         total_dmg += hit;
-        ++bot.abilities_cast;
     }
     return total_dmg;
 }

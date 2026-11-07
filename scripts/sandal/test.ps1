@@ -94,6 +94,146 @@ function Resolve-SandalTestDotnetExe {
     return 'dotnet'
 }
 
+function Invoke-SandalTrackedCommand {
+    param([scriptblock]$Action, [bool]$AsJson = $false, [string]$ErrorMessage = 'Command failed.')
+    if ($AsJson) {
+        & $Action 2>&1 6>&1 | Out-Host
+    } else {
+        & $Action
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "$ErrorMessage (exit $LASTEXITCODE)."
+    }
+}
+
+function Invoke-SandalGoSuites {
+    param([string]$RootDir, [bool]$AsJson = $false)
+    Push-Location (Join-Path $RootDir 'src/server/services')
+    try {
+        Invoke-SandalTrackedCommand -AsJson $AsJson -ErrorMessage 'go test ./... in src/server/services failed' -Action {
+            & go test ./...
+        }
+        $goGroups = @(Get-ChildItem (Join-Path $RootDir 'src/tests/go/*_test.go') -ErrorAction SilentlyContinue) | Group-Object {
+            $m = Select-String -LiteralPath $_.FullName -Pattern '^package\s+(\S+)' | Select-Object -First 1
+            if ($null -ne $m) { $m.Matches[0].Groups[1].Value } else { $_.BaseName }
+        }
+        foreach ($grp in @($goGroups)) {
+            $pkgFiles = @($grp.Group | ForEach-Object { $_.FullName })
+            $pkgLabel = ($grp.Group | ForEach-Object { $_.Name }) -join ', '
+            Invoke-SandalTrackedCommand -AsJson $AsJson -ErrorMessage "go test failed for package $($grp.Name) ($pkgLabel)" -Action {
+                & go test @pkgFiles
+            }
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
+function Resolve-SandalDotnetTestProject {
+    param([string]$RootDir, [string]$PrimaryPath, [string]$FallbackPath = '')
+    $first = Join-Path $RootDir $PrimaryPath
+    if (Test-Path -LiteralPath $first -PathType Leaf) { return $first }
+    if ($FallbackPath) {
+        $second = Join-Path $RootDir $FallbackPath
+        if (Test-Path -LiteralPath $second -PathType Leaf) { return $second }
+    }
+    throw "Required .NET test project not found: $PrimaryPath ($FallbackPath)"
+}
+
+function Invoke-SandalDotnetSuites {
+    param([string]$RootDir, [string]$BuildConfig = 'Release', [bool]$AsJson = $false)
+    $dotnetExe = Resolve-SandalTestDotnetExe
+    $projs = @(
+        (Resolve-SandalDotnetTestProject -RootDir $RootDir -PrimaryPath 'src/clients/launcher/tests/SandalLauncher.Tests.csproj' -FallbackPath 'src/tests/dotnet/SandalLauncher.Tests/SandalLauncher.Tests.csproj'),
+        (Resolve-SandalDotnetTestProject -RootDir $RootDir -PrimaryPath 'src/tools/aoc-extractor/tests/SandalExtractor.Tests.csproj' -FallbackPath 'src/tests/dotnet/SandalExtractor.Tests.csproj'),
+        (Resolve-SandalDotnetTestProject -RootDir $RootDir -PrimaryPath 'src/tools/mapc/tests/Mapc.GeometryTests.csproj')
+    )
+    foreach ($proj in $projs) {
+        Invoke-SandalTrackedCommand -AsJson $AsJson -ErrorMessage "dotnet test failed for $proj" -Action {
+            & $dotnetExe test $proj -c $BuildConfig --nologo
+        }
+        if ($proj -like '*Mapc.GeometryTests.csproj') {
+            Invoke-SandalTrackedCommand -AsJson $AsJson -ErrorMessage "dotnet run failed for $proj" -Action {
+                & $dotnetExe run --project $proj -c $BuildConfig
+            }
+        }
+    }
+}
+
+function Invoke-SandalWebAdminSuite {
+    param([string]$RootDir, [bool]$AsJson = $false)
+    Push-Location (Join-Path $RootDir 'src/clients/web-admin')
+    try {
+        Invoke-SandalTrackedCommand -AsJson $AsJson -ErrorMessage 'npm test (vitest run) in src/clients/web-admin failed' -Action {
+            & npm test
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
+function Invoke-SandalPesterSuites {
+    param([string]$RootDir, [bool]$AsJson = $false)
+    $sandalSuite = Join-Path $RootDir 'src/tests/powershell/Sandal.Tests.ps1'
+    if (-not (Test-Path -LiteralPath $sandalSuite -PathType Leaf)) {
+        throw "Required PowerShell test suite missing: $sandalSuite"
+    }
+    $pesterPattern = Join-Path $RootDir 'src/tests/powershell/*.Tests.ps1'
+    $res = if ($AsJson) { Invoke-Pester -Path $pesterPattern -PassThru 6>$null } else { Invoke-Pester -Path $pesterPattern -PassThru }
+    if ($AsJson) { $res | Out-Host }
+    if ($res.FailedCount -gt 0) {
+        throw "Invoke-Pester failed with $($res.FailedCount) failed test(s)."
+    }
+}
+
+function Invoke-SandalContainerCppSuites {
+    param([string]$RootDir, [bool]$AsJson = $false)
+    $worldSt = ((& docker inspect --format '{{.State.Status}}' aoc-world 2>$null) -join '').Trim()
+    $global:LASTEXITCODE = 0
+    if ($worldSt -ne 'running') { return }
+    $cppBins = @(
+        '/app/test_world_area',
+        '/app/test_world_region',
+        '/app/test_world_gather',
+        '/app/test_world_foliage',
+        '/app/test_world_foliage_cells',
+        '/app/test_world_spawn_filter',
+        '/app/test_world_bootstrap',
+        '/app/test_world_move_checker',
+        '/app/test_world_movement',
+        '/app/test_world_combat',
+        '/app/test_world_ability_pipeline',
+        '/app/test_world_ability_pipeline_chains',
+        '/app/test_world_ability_pipeline_casts',
+        '/app/test_world_loop',
+        '/app/test_mesh_handover_hysteresis'
+    )
+    foreach ($bin in $cppBins) {
+        $null | & docker exec -i aoc-world test -x $bin *> $null
+        if ($LASTEXITCODE -ne 0) { throw "Required C++ test binary missing or not executable in aoc-world: $bin" }
+        Invoke-SandalTrackedCommand -AsJson $AsJson -ErrorMessage "Container C++ domain test $bin failed in aoc-world" -Action {
+            $null | & docker exec -i aoc-world $bin
+        }
+    }
+    $funcApiScript = Join-Path $RootDir 'scripts/test_functional_apis.ps1'
+    Invoke-SandalTrackedCommand -AsJson $AsJson -ErrorMessage 'scripts/test_functional_apis.ps1 (/app/test_world_live_e2e) failed' -Action {
+        if ($AsJson) { & pwsh -NoProfile -File $funcApiScript -Json } else { & pwsh -NoProfile -File $funcApiScript }
+    }
+}
+
+function Invoke-SandalHostCppSuites {
+    param([string]$RootDir, [string]$BuildConfig = 'Release', [bool]$AsJson = $false, [string]$ExeSuffix = '')
+    $testsDir = Join-Path (Join-Path $RootDir 'build/tests') $BuildConfig
+    $hasBuiltTests = [bool](@(Get-ChildItem -Path $testsDir -Filter "test_*$ExeSuffix" -File -ErrorAction SilentlyContinue | Where-Object {
+        $IsWindows -or [string]::IsNullOrEmpty($_.Extension)
+    }).Count -gt 0)
+    if (-not $hasBuiltTests) { return }
+    $runTestsScript = Join-Path $RootDir 'scripts/run_tests.ps1'
+    Invoke-SandalTrackedCommand -AsJson $AsJson -ErrorMessage 'scripts/run_tests.ps1 failed' -Action {
+        & $runTestsScript -Config $BuildConfig -NoBuild
+    }
+}
+
 $quiet = [bool]$opts.Json
 if ($quiet) { $env:SANDAL_QUIET = '1' }
 if (-not $opts.DryRun) {
@@ -113,65 +253,22 @@ if (-not $opts.DryRun) {
     try {
         $normFilter = if ([string]::IsNullOrWhiteSpace($opts.Filter)) { '' } else { $opts.Filter.Trim().ToLowerInvariant() }
         if ($normFilter -in @('', 'cpp')) {
-            $testsDir = Join-Path (Join-Path $rootPath 'build/tests') $opts.Config
-            $testFilter = "test_*$exeExt"
-            $hasBuiltTests = [bool](@(Get-ChildItem -Path $testsDir -Filter $testFilter -File -ErrorAction SilentlyContinue | Where-Object {
-                $IsWindows -or [string]::IsNullOrEmpty($_.Extension)
-            }).Count -gt 0)
-            $runTestsScript = Join-Path $rootPath 'scripts/run_tests.ps1'
-            if ($opts.Json) {
-                & $runTestsScript -Config $opts.Config -NoBuild:$hasBuiltTests 6>&1 | Out-Host
-            } else {
-                & $runTestsScript -Config $opts.Config -NoBuild:$hasBuiltTests
-            }
-            if ($LASTEXITCODE -ne 0) {
-                throw "scripts/run_tests.ps1 failed with exit code $LASTEXITCODE."
-            }
+            Invoke-SandalHostCppSuites -RootDir $rootPath -BuildConfig $opts.Config -AsJson $opts.Json -ExeSuffix $exeExt
+            Invoke-SandalContainerCppSuites -RootDir $rootPath -AsJson $opts.Json
         }
         if ($normFilter -in @('', 'go')) {
-            Push-Location (Join-Path $rootPath 'src\server\services')
-            try {
-                Get-ChildItem (Join-Path $rootPath 'src/tests/go/*_test.go') | ForEach-Object {
-                    if ($opts.Json) {
-                        & go test $_.FullName 6>&1 | Out-Host
-                    } else {
-                        & go test $_.FullName
-                    }
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "go test failed for $($_.Name)"
-                    }
-                }
-            } finally {
-                Pop-Location
-            }
+            Invoke-SandalGoSuites -RootDir $rootPath -AsJson $opts.Json
         }
         if ($normFilter -in @('', 'dotnet', 'csharp', 'launcher')) {
-            $dotnetTestProj = Join-Path $rootPath 'src/tests/dotnet/SandalLauncher.Tests/SandalLauncher.Tests.csproj'
-            if (Test-Path -LiteralPath $dotnetTestProj -PathType Leaf) {
-                $dotnetExe = Resolve-SandalTestDotnetExe
-                if ($opts.Json) {
-                    & $dotnetExe test $dotnetTestProj -c $opts.Config --nologo 6>&1 | Out-Host
-                } else {
-                    & $dotnetExe test $dotnetTestProj -c $opts.Config --nologo
-                }
-                if ($LASTEXITCODE -ne 0) {
-                    throw "dotnet test failed for $dotnetTestProj (exit $LASTEXITCODE)."
-                }
-            }
+            Invoke-SandalDotnetSuites -RootDir $rootPath -BuildConfig $opts.Config -AsJson $opts.Json
+        }
+        if ($normFilter -in @('', 'web', 'web-admin', 'vitest', 'npm')) {
+            Invoke-SandalWebAdminSuite -RootDir $rootPath -AsJson $opts.Json
         }
         if ($normFilter -in @('', 'powershell', 'pester')) {
-            $pesterPattern = Join-Path $rootPath 'src/tests/powershell/*.Tests.ps1'
-            if ($opts.Json) {
-                $res = Invoke-Pester -Path $pesterPattern -PassThru 6>$null
-                $res | Out-Host
-            } else {
-                $res = Invoke-Pester -Path $pesterPattern -PassThru
-            }
-            if ($res.FailedCount -gt 0) {
-                throw "Invoke-Pester failed with $($res.FailedCount) failed test(s)."
-            }
+            Invoke-SandalPesterSuites -RootDir $rootPath -AsJson $opts.Json
         }
-        if ($normFilter -notin @('', 'cpp', 'go', 'dotnet', 'csharp', 'launcher', 'powershell', 'pester')) {
+        if ($normFilter -notin @('', 'cpp', 'go', 'dotnet', 'csharp', 'launcher', 'web', 'web-admin', 'vitest', 'npm', 'powershell', 'pester')) {
             $pattern = if ($normFilter -in @('e2e', 'e2e_user_journey', 'e2euserjourney')) { 'E2EUserJourney' } else { $opts.Filter }
             Push-Location (Join-Path $rootPath 'src\server\services')
             try {

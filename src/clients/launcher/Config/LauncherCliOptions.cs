@@ -81,14 +81,14 @@ public sealed record LauncherCliOptions
         string w1 = EffAccountWords[RandomNumberGenerator.GetInt32(EffAccountWords.Count)];
         string w2 = EffAccountWords[RandomNumberGenerator.GetInt32(EffAccountWords.Count)];
         string w3 = EffAccountWords[RandomNumberGenerator.GetInt32(EffAccountWords.Count)];
-        return $"{normalizedPrefix} {w1}{w2}{w3}";
+        string candidate = $"{normalizedPrefix}_{w1}{w2}{w3}";
+        return candidate.Length <= 32 ? candidate : candidate[..32];
     }
 
     public static string ToEffAccountSlug(string? accountName)
     {
         if (string.IsNullOrWhiteSpace(accountName)) return "tmp_account";
         string trimmed = accountName.Trim();
-        if (!trimmed.Contains(' ', StringComparison.Ordinal)) return trimmed;
         var sb = new System.Text.StringBuilder(trimmed.Length);
         foreach (char c in trimmed)
         {

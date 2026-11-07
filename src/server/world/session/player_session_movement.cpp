@@ -26,7 +26,7 @@ struct PlayerSession::SessionInternal {
     static bool dispatch_pawn_actor_rpc(PlayerSession& s, Connection& conn, const repl::ClientRpc& rpc, const InBunch& bunch, Clock::time_point now);
     static bool check_stale_or_borderline_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict);
     static void accept_move(PlayerSession& s, Connection& conn, const repl::NetworkMove& move, const GoodPosition& before, Clock::time_point now);
-    static void refuse_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict);
+    static void refuse_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict, Clock::time_point now);
 };
 
 void PlayerSession::tally_speed(const GoodPosition& before, const GoodPosition& after, bool sprinting, bool evading) {
@@ -62,8 +62,8 @@ void PlayerSession::log_position(Clock::time_point) {
                  (nav->has_region() && !nav->in_region(at.x, at.y) ? ", outside the Riverlands" : "");
     }
     const double from_login = npc_world_ ? std::hypot(at.x - npc_world_->area().center_x, at.y - npc_world_->area().center_y) / 100.0 : 0.0;
-    spdlog::info("[session] {}: at ({:.0f}, {:.0f}, {:.0f}) cm, {:.0f} m from the login spot, movement mode {}{}; {} moves acknowledged, {} refused, {} dropped as stale{}; its view holds {} awake and {} dormant actors",
-                 name(), at.x, at.y, at.z, from_login, static_cast<unsigned>(at.movement_mode), mounted() ? " (mounted)" : "", moves_acked_, moves_refused_, moves_stale_, based_move_summary() + ground,
+    spdlog::info("[session] {}: at ({:.0f}, {:.0f}, {:.0f}) cm, {:.0f} m from the login spot, movement mode {}{}; {} moves acknowledged, {} refused ({} under the ground), {} dropped as stale{}; its view holds {} awake and {} dormant actors",
+                 name(), at.x, at.y, at.z, from_login, static_cast<unsigned>(at.movement_mode), mounted() ? " (mounted)" : "", moves_acked_, moves_refused_, moves_surface_refused_, moves_stale_, based_move_summary() + ground,
                  view_ ? view_->count(world::ClientState::Awake) : 0, view_ ? view_->count(world::ClientState::Dormant) : 0);
 }
 
@@ -371,22 +371,32 @@ void PlayerSession::SessionInternal::accept_move(PlayerSession& s, Connection& c
     if (!s.hold_move_ack(move.time_stamp, on_mount)) s.answer_move(conn, move.time_stamp, on_mount);
 }
 
-void PlayerSession::SessionInternal::refuse_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict) {
+void PlayerSession::SessionInternal::refuse_move(PlayerSession& s, const repl::NetworkMove& move, const MoveVerdict& verdict, Clock::time_point now) {
     ++s.moves_refused_;
     if (s.moves_refused_ == 10 || s.moves_refused_ == 100 || s.moves_refused_ == 1000 || s.moves_refused_ == 10000) {
         spdlog::info("[session] {}: {} moves refused so far", s.name(), s.moves_refused_);
     }
     const GoodPosition& good = s.checker_.good();
     const repl::Vec3d at = move.location_cm();
-    const spdlog::level::level_enum level = s.level_for(s.refused_logged_);
-    if (verdict.step > 0) {
-        spdlog::log(level, "[session] {}: the {}move at TimeStamp {} (movement mode {}) is refused ({}: {:.0f} cm in {:.3f} s, at most {:.0f}): put back at ({:.1f}, {:.1f}, {:.1f}) cm",
-                    s.name(), s.mounted() ? "mount's " : "", move.time_stamp, static_cast<unsigned>(move.movement_mode), fault_name(verdict.fault), verdict.step, verdict.dt,
-                    verdict.allowed, good.x, good.y, good.z);
+    if (verdict.fault == MoveFault::UnderGround) {
+        ++s.moves_surface_refused_;
+        if (!s.surface_refusal_logged_ || std::chrono::duration<double>(now - s.surface_refusal_log_).count() >= kSurfaceRefusalLogSeconds) {
+            s.surface_refusal_logged_ = true;
+            s.surface_refusal_log_ = now;
+            spdlog::info("[session] {}: the {}move at TimeStamp {} (movement mode {}) is refused (under the ground: {:.0f} cm below it, more than the {:.0f} allowed): put back at ({:.1f}, {:.1f}, {:.1f}) cm",
+                         s.name(), s.mounted() ? "mount's " : "", move.time_stamp, static_cast<unsigned>(move.movement_mode), verdict.step, verdict.allowed, good.x, good.y, good.z);
+        }
     } else {
-        spdlog::log(level, "[session] {}: the {}move at TimeStamp {} (movement mode {}) to ({:.1f}, {:.1f}, {:.1f}) cm is refused ({}): put back at ({:.1f}, {:.1f}, {:.1f}) cm",
-                    s.name(), s.mounted() ? "mount's " : "", move.time_stamp, static_cast<unsigned>(move.movement_mode), at.x, at.y, at.z, fault_name(verdict.fault), good.x, good.y,
-                    good.z);
+        const spdlog::level::level_enum level = s.level_for(s.refused_logged_);
+        if (verdict.step > 0) {
+            spdlog::log(level, "[session] {}: the {}move at TimeStamp {} (movement mode {}) is refused ({}: {:.0f} cm in {:.3f} s, at most {:.0f}): put back at ({:.1f}, {:.1f}, {:.1f}) cm",
+                        s.name(), s.mounted() ? "mount's " : "", move.time_stamp, static_cast<unsigned>(move.movement_mode), fault_name(verdict.fault), verdict.step, verdict.dt,
+                        verdict.allowed, good.x, good.y, good.z);
+        } else {
+            spdlog::log(level, "[session] {}: the {}move at TimeStamp {} (movement mode {}) to ({:.1f}, {:.1f}, {:.1f}) cm is refused ({}): put back at ({:.1f}, {:.1f}, {:.1f}) cm",
+                        s.name(), s.mounted() ? "mount's " : "", move.time_stamp, static_cast<unsigned>(move.movement_mode), at.x, at.y, at.z, fault_name(verdict.fault), good.x, good.y,
+                        good.z);
+        }
     }
     s.pending_fix_ = std::isfinite(move.time_stamp) ? move.time_stamp : 0.0f;
     s.held_move_ack_.reset();
@@ -412,31 +422,33 @@ void PlayerSession::on_move(Connection& conn, const repl::ClientRpc& rpc, const 
         }
         return;
     }
+    const bool old_based = moves->old && moves->old->has_base();
+    const bool pending_based = moves->pending && moves->pending->has_base();
+    const bool new_based = moves->new_move.has_base();
     if (!stand_on_bases(*moves)) return;
     if (!on_mount) scale_pawn_limits(now);
     const double allow = on_mount ? 0.0
                                   : std::max(dash_allowed(now) ? checker_.limits().dash_speed : 0.0,
                                              pipeline_ ? pipeline_->movement_allowance(ability_seconds(now)) : 0.0);
-    const auto judge = [&](const repl::NetworkMove& m) {
+    const auto judge = [&](const repl::NetworkMove& m, bool based) {
         if (on_mount) {
             checker_.set_max_speed(ride_->speed_limit(m.movement_mode, ability_seconds(now)));
             checker_.set_speed_mult(ride_->effective_mult(ability_seconds(now)));
         }
-        return checker_.check_allowing(m, now, allow);
+        return checker_.check_allowing(m, now, allow, based);
     };
-    for (const repl::NetworkMove* older : {moves->old ? &*moves->old : nullptr, moves->pending ? &*moves->pending : nullptr}) {
-        if (older && !checker_.is_stale(older->time_stamp)) judge(*older);
-    }
+    if (moves->old && !checker_.is_stale(moves->old->time_stamp)) judge(*moves->old, old_based);
+    if (moves->pending && !checker_.is_stale(moves->pending->time_stamp)) judge(*moves->pending, pending_based);
     const repl::NetworkMove& move = moves->new_move;
     const GoodPosition before = checker_.good();
-    const MoveVerdict verdict = judge(move);
+    const MoveVerdict verdict = judge(move, new_based);
     if (on_mount && ride_) {
         const GoodPosition& g = checker_.good();
         if (g.has_time_stamp) ride_->moved(g.x, g.y, g.z, g.yaw_degrees, ability_seconds(now), g.pitch16, g.movement_mode);
     }
     if (SessionInternal::check_stale_or_borderline_move(*this, move, verdict)) return;
     if (verdict.accepted) return SessionInternal::accept_move(*this, conn, move, before, now);
-    SessionInternal::refuse_move(*this, move, verdict);
+    SessionInternal::refuse_move(*this, move, verdict, now);
 }
 
 void PlayerSession::end_of_datagram(Connection& conn) {

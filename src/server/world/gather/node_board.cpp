@@ -184,6 +184,11 @@ size_t NodeBoard::advance(Clock::time_point now) {
             continue;
         }
         if (n.state == NodeState::Gathered && now >= n.until) {
+            if (world::WorldActor* cur = registry_.find(id); cur && cur->kind == world::ActorKind::Gatherable && cur->gather.area_points.size() > 1) {
+                cur->gather.next_point = (cur->gather.next_point + 1) % static_cast<uint32_t>(cur->gather.area_points.size());
+                const world::GatherCandidatePoint pt = cur->gather.area_points[cur->gather.next_point];
+                registry_.move(id, pt.x, pt.y, pt.z, cur->yaw_degrees);
+            }
             std::string error;
             bool wrote = false;
             registry_.modify(id, world::Change::State, [&](world::WorldActor& a) { wrote = a.kind == world::ActorKind::Npc ? corpse_reset(a, error) : node_reset(a, error); });

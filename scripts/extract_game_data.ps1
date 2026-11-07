@@ -32,8 +32,7 @@
                                                region_rects.tsv, the Riverlands' rectangles, and the test fixtures (listed in .gitignore)
     dist\content\aoc.usmap                     a copy of src\config\layouts\aoc.usmap, where the tools look for it
 
-  It needs: the game (Steam, or GAME_ROOT / -GameRoot), the .NET 10 SDK (mapc) and Go (contentc), plus CMake for aoc_navbuild (built by
-  scripts\build.ps1). The first run fetches CUE4Parse (src\tools\mapc\fetch_cue4parse.ps1) and restores mapc's NuGet packages, so it needs the network once.
+  It needs: the game (Steam, or GAME_ROOT / -GameRoot), the .NET 10 SDK (mapc) and Go (contentc). The first run fetches CUE4Parse (src\tools\mapc\fetch_cue4parse.ps1) and restores mapc's NuGet packages, so it needs the network once.
   A full run takes about 10 minutes on a fast PC (the longest step is the map read for the navigation mesh) and up to 4 GB of memory for any one program.
 
   Every step is skipped when what it reads is unchanged since the last run (a stamp per step in build\.extract), so scripts\build.ps1 and the launchers can call
@@ -78,7 +77,7 @@ $stampDir  = Join-Path $repoRoot 'build' '.extract'
 $toolsDir  = Join-Path $distDir 'tools'
 function Resolve-DefaultUsmapSrc([string]$root) {
     $uh = if ($HOME) { $HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { '' }
-    foreach ($cand in @($env:SANDAL_USMAP_PATH, $env:AOC_USMAP, $env:SANDAL_USMAP_OVERRIDE_DIR, $env:AOC_USMAP_OVERRIDE_DIR, $(if ($uh) { Join-Path $uh '.aoc\usmap' } else { '' }))) {
+    foreach ($cand in @($env:SANDAL_USMAP_PATH, $env:AOC_USMAP, $env:SANDAL_USMAP_OVERRIDE_DIR, $env:AOC_USMAP_OVERRIDE_DIR, $(if ($uh) { Join-Path $uh '.aoc\aoc.usmap' } else { '' }))) {
         if ([string]::IsNullOrWhiteSpace($cand)) { continue }
         $c = $cand.Trim().Trim('"')
         if ((Test-Path -LiteralPath $c -PathType Leaf) -and (Get-Item -LiteralPath $c -Force).Length -gt 0) { return $c }
@@ -92,14 +91,12 @@ function Resolve-DefaultUsmapSrc([string]$root) {
 }
 $usmapSrc  = Resolve-DefaultUsmapSrc $repoRoot
 function Resolve-DotnetToolRelPath([string]$tool) {
-    $net10Rel = "build\dotnet\bin\$tool\Release\net10.0\$tool.dll"
-    $net8Rel  = "build\dotnet\bin\$tool\Release\net8.0\$tool.dll"
-    if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $net10Rel)) -and (Test-Path -LiteralPath (Join-Path $repoRoot $net8Rel))) { return $net8Rel }
-    return $net10Rel
+    return "build\dotnet\bin\$tool\Release\net10.0\$tool.dll"
 }
 $mapcDll         = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'mapc')
 $npcAbilitiesDll = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'npcabilities')
 $itemNamesDll    = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'itemnames')
+$pcapSpawnsDll   = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'pcap_spawns')
 $pwshExe   = (Get-Process -Id $PID).Path
 if (-not $pwshExe) { $pwshExe = 'pwsh' }
 $exeExt    = if ($IsWindows) { '.exe' } else { '' }
@@ -431,7 +428,7 @@ function Get-CodeNpcAbilities { Get-CodeHash @('src\tools\npcabilities') }
 function Get-CodeItemNames { Get-CodeHash @('src\tools\itemnames') }
 # WHY: CMakeLists.txt is intentionally excluded from Get-CodeGens, Get-CodeNav, and Get-CodeLayouts so CMake topology edits never invalidate game data stamps.
 function Get-CodeGens     { Get-CodeHash @('src\tools\schemagen\gen_zoi_surface.ps1', 'src\tools\schemagen\gen_region_rects.ps1', 'src\tools\schemagen\gen_region.ps1', 'src\tools\schemagen\gen_gm_garden.ps1', 'src\tools\schemagen\gen_tooltips.ps1', 'src\tools\schemagen\gen_gear_fixture.ps1', 'src\tools\schemagen\gen_talent_fixture.ps1') }
-function Get-CodeNav      { Get-CodeHash @('src\libs\aocnav', 'src\tools\navbuild', 'build\third_party\recastnavigation', 'src\vcpkg.json') }
+function Get-CodeNav      { Get-CodeHash @('src\libs\aocnav', 'src\tools\navbuild', 'build\third_party\recastnavigation') }
 # The level each node starts at in the server's seed file (src\config\seeds\citynode_seed.json): the towns' buildings are listed at those levels (src\tools\schemagen\gen_town_layouts.ps1), so a change of a
 # level there changes the list and the navigation mesh.  Only "nodes" counts: the workshops and the comment do not change what the map holds.
 function Get-SeedLevels {
@@ -512,12 +509,44 @@ function Test-Current($s) {
     return $true
 }
 
+function Ensure-GoProtoGen {
+    $svcDir = Join-Path $repoRoot 'src\server\services'; $genDir = Join-Path $repoRoot 'build\gen\go'
+    if (-not (Test-Path -LiteralPath $svcDir -PathType Container)) { return }
+    New-Item -ItemType Directory -Force -Path $genDir | Out-Null
+    $goModPath = Join-Path $genDir 'go.mod'
+    $pbFiles = @(Get-ChildItem -LiteralPath $genDir -Recurse -Filter '*.pb.go' -File -Force -ErrorAction SilentlyContinue)
+    if (-not (Test-Path -LiteralPath $goModPath -PathType Leaf) -or $pbFiles.Count -eq 0) {
+        $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+        $miseBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $userHome '.local\share' }
+        $savedPath = $env:Path; $env:Path = @((Join-Path $miseBase 'mise\shims'), (Join-Path $userHome 'go\bin'), $env:Path) -join [System.IO.Path]::PathSeparator
+        try {
+            $bufCmd = Get-Command buf -ErrorAction SilentlyContinue
+            if ($bufCmd) {
+                Invoke-Checked $bufCmd.Source @('generate', '../../libs/aocproto/proto/internal') 'buf_generate_internal' $svcDir
+                if (Test-Path -LiteralPath (Join-Path $svcDir '../../libs/aocproto/proto/ics_xclient.proto') -PathType Leaf) {
+                    Invoke-Checked $bufCmd.Source @('generate', '../../libs/aocproto/proto/ics_xclient.proto') 'buf_generate_ics_xclient' $svcDir
+                }
+            }
+        } finally { $env:Path = $savedPath }
+        [System.IO.File]::WriteAllText($goModPath, "module aocrop/services/gen`n`ngo 1.24.0`n`nrequire (`n`tgoogle.golang.org/grpc v1.79.3`n`tgoogle.golang.org/protobuf v1.36.11`n)`n", [System.Text.UTF8Encoding]::new($false))
+    }
+    $nodeConsts = Join-Path $genDir 'citynodeconsts\constants_gen.go'; $ini = Join-Path $repoRoot 'dist\content\client_config\DefaultAoCRecordConstants.ini'
+    $genScript = Join-Path $repoRoot 'scripts\generators.ps1'
+    if (-not (Test-Path -LiteralPath $nodeConsts -PathType Leaf) -and (Test-Path -LiteralPath $ini -PathType Leaf) -and (Test-Path -LiteralPath $genScript -PathType Leaf)) {
+        Invoke-Checked $pwshExe @('-NoProfile', '-File', $genScript, '-ClientConfig', (Split-Path -Parent $ini), '-Only', 'node_constants') 'gen_node_constants_bootstrap'
+    }
+}
+
 $steps = @(
     @{ Name = 'tools'; Title = 'Build mapc (.NET) and contentc (Go)'; Always = $true; Outputs = @(); Run = {
         $fetch = Join-Path $repoRoot 'src\tools\mapc\fetch_cue4parse.ps1'
         if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'build\third_party\CUE4Parse\CUE4Parse\CUE4Parse.csproj'))) {
             if ($env:SANDAL_CUE4PARSE_DIR) { Say "Copying CUE4Parse from $($env:SANDAL_CUE4PARSE_DIR) ..." } else { Say 'Fetching CUE4Parse (the pinned commit; needs git and the network) ...' }
             Invoke-Checked $pwshExe @('-NoProfile', '-File', $fetch) 'fetch_cue4parse'
+        }
+        $fetchRecast = Join-Path $repoRoot 'scripts\lib\fetch_recastnavigation.ps1'
+        if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'build\third_party\recastnavigation\Recast\Include\Recast.h')) -and (Test-Path -LiteralPath $fetchRecast -PathType Leaf)) {
+            Invoke-Checked $pwshExe @('-NoProfile', '-File', $fetchRecast) 'fetch_recastnavigation'
         }
         $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'; $env:DOTNET_NOLOGO = '1'
         Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\mapc'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build'
@@ -529,7 +558,15 @@ $steps = @(
         Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\itemnames'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build_itemnames'
         $script:itemNamesDll = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'itemnames')
         Assert-Files @((Resolve-DotnetToolRelPath 'itemnames')) 'the itemnames build did not produce it'
+        Invoke-Checked $dotnet @('build', '-c', 'Release', (Join-Path $repoRoot 'src\tools\pcap_spawns\pcap_spawns.csproj'), '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build_pcap_spawns'
+        $script:pcapSpawnsDll = Join-Path $repoRoot (Resolve-DotnetToolRelPath 'pcap_spawns')
+        Assert-Files @((Resolve-DotnetToolRelPath 'pcap_spawns')) 'the pcap_spawns build did not produce it'
+        $aocExtProj = Join-Path $repoRoot 'src\tools\aoc-extractor\AocExtractor.csproj'
+        if (Test-Path -LiteralPath $aocExtProj -PathType Leaf) {
+            Invoke-Checked $dotnet @('build', '-c', 'Release', $aocExtProj, '-v', 'q', '-nologo', '-nodeReuse:false', '-p:UseSharedCompilation=false') 'dotnet_build_aoc_extractor'
+        }
         New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+        Ensure-GoProtoGen
         $svc = Join-Path $repoRoot 'src\server\services'
         Invoke-Checked $go @('build', '-trimpath', '-buildvcs=false', '-o', $contentc, './cmd/contentc') 'go_build_contentc' $svc
         Invoke-Checked $go @('build', '-trimpath', '-buildvcs=false', '-o', $statprog, './internal/statprog/cmd/statprog') 'go_build_statprog' $svc
@@ -563,7 +600,7 @@ $steps = @(
                 '--artisan-curves', (Join-Path $outDir 'artisan_curves.tsv'), '--item-names', (Join-Path $outDir 'item_names.tsv'), '--out', (Join-Path $outDir 'content.db')) 'contentc'
         } finally { $env:GOMEMLIMIT = $savedLimit }
     } },
-    @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'build\gen\fixtures\region\riverlands_rects.json', 'build\gen\fixtures\region\riverlands_zoi_rects.json', 'build\gen\world\spawns\region_data.h', 'build\gen\nav\region_rects.tsv'); Run = {
+    @{ Name = 'region'; Title = "Read the zone-of-influence grid and cut the Riverlands' rectangles"; Outputs = @('dist\content\zoi_chunks', 'build\gen\fixtures\region\riverlands_rects.json', 'build\gen\fixtures\region\riverlands_zoi_rects.json', 'build\gen\world\spawns\region_data.h', 'build\gen\nav\region_rects.tsv', 'build\gen\nav\all_biomes_rects.tsv'); Run = {
         Assert-Files @('dist\content\content.db', (Resolve-DotnetToolRelPath 'mapc')) 'run the earlier steps first'
         Invoke-Checked $dotnet @($mapcDll, 'export-zoi', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'mapc_export_zoi'
         $gen = Join-Path $repoRoot 'src\tools\schemagen'
@@ -589,6 +626,10 @@ $steps = @(
     } },
     @{ Name = 'navbuild'; Title = 'Build aoc_navbuild, the navigation mesh builder (C++ navigation mesh builder)'; Outputs = @("dist\Release\aoc_navbuild$exeExt"); Run = {
         Assert-Files @('build\gen\world\world\zoi_surface_table.h', 'build\gen\world\spawns\region_data.h', 'build\gen\world\spawns\garden_defs.h') 'run the earlier steps first'
+        $fetchRecast = Join-Path $repoRoot 'scripts\lib\fetch_recastnavigation.ps1'
+        if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'build\third_party\recastnavigation\Recast\Include\Recast.h')) -and (Test-Path -LiteralPath $fetchRecast -PathType Leaf)) {
+            Invoke-Checked $pwshExe @('-NoProfile', '-File', $fetchRecast) 'fetch_recastnavigation'
+        }
         if (-not (Test-Path -LiteralPath $navbuild -PathType Leaf)) {
             Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'scripts\build.ps1'), '-Target', 'aoc_navbuild', '-Jobs', "$Jobs") 'build_navbuild'
         } else {
@@ -638,22 +679,34 @@ $steps = @(
         try { Invoke-Checked $dotnet @($npcAbilitiesDll, 'looks', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir) 'npcabilities_looks' } finally { $env:DOTNET_GCHeapHardLimit = $savedHeap }
         Invoke-Checked $pwshExe @('-NoProfile', '-File', (Join-Path $repoRoot 'src\tools\npcabilities\looks.ps1'), '--content-db', (Join-Path $outDir 'content.db'), '--out-dir', $outDir) 'npcabilities_names'
     } },
-    @{ Name = 'navmesh'; Title = 'Read the map and build the navigation mesh, the NPC motion table and the foliage (mapc; the longest step)'; Outputs = @('dist\content\npc_motion.tsv', 'dist\content\region_foliage.tsv', 'dist\content\area_geom.bin', 'dist\content\area_nav.bin'); Run = {
-        Assert-Files @('build\gen\nav\region_rects.tsv', "dist\Release\aoc_navbuild$exeExt", (Resolve-DotnetToolRelPath 'mapc'), 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'
+    @{ Name = 'navmesh'; Title = 'Read the map and build the navigation mesh, the NPC motion table, the all-biome foliage and the resource spawners (mapc + pcap_spawns; the longest step)'; Outputs = @('dist\content\npc_motion.tsv', 'dist\content\region_foliage.tsv', 'dist\content\pcap_resource_spawners.tsv', 'dist\content\area_geom.bin', 'dist\content\area_nav.bin'); Run = {
+        Assert-Files @('build\gen\nav\region_rects.tsv', 'build\gen\nav\all_biomes_rects.tsv', "dist\Release\aoc_navbuild$exeExt", (Resolve-DotnetToolRelPath 'mapc'), (Resolve-DotnetToolRelPath 'pcap_spawns'), 'dist\content\town_platforms.bin', 'dist\content\town_layouts.bin', 'dist\content\content.db') 'run the earlier steps first'
         $geomPath = Join-Path $outDir 'area_geom.bin'
         $motionPath = Join-Path $outDir 'npc_motion.tsv'
         $foliagePath = Join-Path $outDir 'region_foliage.tsv'
+        $spawnersPath = Join-Path $outDir 'pcap_resource_spawners.tsv'
         $navPath = Join-Path $outDir 'area_nav.bin'
+        $allBiomesTsv = Join-Path $repoRoot 'build\gen\nav\all_biomes_rects.tsv'
         if (-not $Force -and (Test-Path -LiteralPath $geomPath -PathType Leaf) -and (Test-Path -LiteralPath $motionPath -PathType Leaf) -and (Test-Path -LiteralPath $foliagePath -PathType Leaf)) {
-            Say "    Reusing extracted $geomPath, $motionPath, $foliagePath; running aoc_navbuild directly" 'DarkGray'
-            $threads = if ($NavThreads -gt 0) { $NavThreads } else { [Math]::Max(2, [int]([Environment]::ProcessorCount / 2)) }
-            Invoke-Checked $navbuild @('--geometry', $geomPath, '--out', $navPath, '--town-floors', (Join-Path $outDir 'town_platforms.bin'), '--content', (Join-Path $outDir 'content.db'), '--threads', "$threads") 'aoc_navbuild'
+            if (-not (Test-Path -LiteralPath $navPath -PathType Leaf)) {
+                Say "    Reusing extracted $geomPath, $motionPath, $foliagePath; running aoc_navbuild directly" 'DarkGray'
+                $threads = if ($NavThreads -gt 0) { $NavThreads } else { [Math]::Max(2, [int]([Environment]::ProcessorCount / 2)) }
+                Invoke-Checked $navbuild @('--geometry', $geomPath, '--out', $navPath, '--town-floors', (Join-Path $outDir 'town_platforms.bin'), '--content', (Join-Path $outDir 'content.db'), '--threads', "$threads") 'aoc_navbuild'
+            }
+        } elseif (-not $Force -and (Test-Path -LiteralPath $geomPath -PathType Leaf) -and (Test-Path -LiteralPath $motionPath -PathType Leaf) -and (Test-Path -LiteralPath $navPath -PathType Leaf) -and -not (Test-Path -LiteralPath $foliagePath -PathType Leaf)) {
+            Invoke-Checked $dotnet @($mapcDll, 'foliage', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir, '--region', $allBiomesTsv) 'mapc_foliage'
         } else {
             $savedHeap = $env:DOTNET_GCHeapHardLimit
             if (-not $env:DOTNET_GCHeapHardLimit) { $env:DOTNET_GCHeapHardLimit = '0x100000000' }     # the NPC Blueprint pass peaks at 7.7 GB without this limit and at 4.0 GB with it, in the same time; the map read's child programs set their own
             try {
                 Invoke-Checked $dotnet @($mapcDll, 'build', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir, '--navbuild', $navbuild, '--threads', "$NavThreads") 'mapc_build'
             } finally { $env:DOTNET_GCHeapHardLimit = $savedHeap }
+            if (-not (Test-Path -LiteralPath $foliagePath -PathType Leaf)) {
+                Invoke-Checked $dotnet @($mapcDll, 'foliage', '--paks', $gamePaks, '--usmap', $usmapSrc, '--out-dir', $outDir, '--region', $allBiomesTsv) 'mapc_foliage'
+            }
+        }
+        if ($Force -or -not (Test-Path -LiteralPath $spawnersPath -PathType Leaf) -or (Get-Item -LiteralPath $spawnersPath).Length -le 0) {
+            Invoke-Checked $dotnet @($pcapSpawnsDll, '--repo-root', $repoRoot, '--out', $spawnersPath) 'pcap_spawns'
         }
     } }
 )
@@ -728,12 +781,16 @@ $total.Stop()
 if ($Only.Count -eq 0 -and $Skip.Count -eq 0 -and (Test-Path -LiteralPath $outDir -PathType Container)) {
     [System.IO.File]::WriteAllText((Join-Path $outDir 'aoc.usmap.extracted.sha256'), "$(Get-FileSha $usmapSrc)`n", [System.Text.UTF8Encoding]::new($false))
 }
-$srcPmtiles = Join-Path $outDir 'verra.pmtiles'
 $deployContentDir = Join-Path $repoRoot 'deploy\content'
-if ((Test-Path -LiteralPath $srcPmtiles -PathType Leaf) -and (Test-Path -LiteralPath $deployContentDir -PathType Container)) {
-    $dstPmtiles = Join-Path $deployContentDir 'verra.pmtiles'
-    if (Test-Path -LiteralPath $dstPmtiles -PathType Leaf) { Remove-Item -LiteralPath $dstPmtiles -Force }
-    try { $null = New-Item -ItemType HardLink -Path $dstPmtiles -Target $srcPmtiles -ErrorAction Stop } catch { Copy-Item -LiteralPath $srcPmtiles -Destination $dstPmtiles -Force }
+if (Test-Path -LiteralPath $deployContentDir -PathType Container) {
+    foreach ($syncName in @('verra.pmtiles', 'region_foliage.tsv', 'pcap_resource_spawners.tsv')) {
+        $srcSync = Join-Path $outDir $syncName
+        if (Test-Path -LiteralPath $srcSync -PathType Leaf) {
+            $dstSync = Join-Path $deployContentDir $syncName
+            if (Test-Path -LiteralPath $dstSync -PathType Leaf) { Remove-Item -LiteralPath $dstSync -Force }
+            try { $null = New-Item -ItemType HardLink -Path $dstSync -Target $srcSync -ErrorAction Stop } catch { Copy-Item -LiteralPath $srcSync -Destination $dstSync -Force }
+        }
+    }
 }
 
 Say ''

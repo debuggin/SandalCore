@@ -127,18 +127,6 @@ bootstrap::LoginIdentity make_login_identity(const std::optional<LoginMessage>& 
 
 inline constexpr std::string_view kCombatEchoPrefix = "CharacterInGameSettings.";
 
-inline constexpr std::array<std::string_view, 9> kCombatEchoPaths = {
-    "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.MayHarmAngle",
-    "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.ProximityRadius",
-    "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.MaxDistance",
-    "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.ForwardOffset",
-    "CharacterInGameSettings.CombatSettings.Targeting.TabTarget.TabTargetMethod",
-    "CharacterInGameSettings.CombatSettings.Targeting.bEnableHoverCasting",
-    "CharacterInGameSettings.CombatSettings.Targeting.SoftLock.VisualsMask",
-    "CharacterInGameSettings.CombatSettings.Input.BufferDuration",
-    "CharacterInGameSettings.CombatSettings.Rendering.PartyVFX",
-};
-
 struct GmMoveResult {
     enum class Status : uint8_t { Moved, Dead, OutsideWorld, Busy } status = Status::Moved;
     GoodPosition from, to;

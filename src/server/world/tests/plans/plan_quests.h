@@ -20,47 +20,76 @@ struct QuestStepChainSpec {
     uint32_t required_harvests = 2;
     int64_t reward_xp = 12000;
     int64_t reward_copper = 1500;
-    int64_t reward_item_guid = 0;
+    int64_t quest_reward_guid = 0;
 };
 
-inline std::array<QuestStepChainSpec, 4> build_verra_quest_chains() {
+inline std::array<QuestStepChainSpec, 4> build_verra_quest_chains(const bots::LiveSession& s) {
+    const auto& q = s.catalog.quest_guids;
+    const auto& c = s.catalog.consumable_item_guids;
+    const double gz = bots::ground_z_cm(s);
+    const bots::Vec3Cm p0{s.spawn[0], s.spawn[1], gz};
     return {{
-        {5001ULL, "Defense of Winstead Crossroads", {-644519.0, 376773.0, 11400.0}, {-642000.0, 378500.0, 11400.0}, 2, 2, 15000, 1800, 606463410000000001LL},
-        {5002ULL, "Relics of Miraleth Sanctum", {-592000.0, 342000.0, 11200.0}, {-589500.0, 344200.0, 11200.0}, 2, 2, 16500, 2100, 606463410000000002LL},
-        {5003ULL, "Sandsquall Caravan Escort", {-418000.0, 682000.0, 9800.0}, {-415200.0, 684500.0, 9800.0}, 2, 2, 18000, 2400, 606463410000000003LL},
-        {5004ULL, "Lionhold Bastion Requisition", {-685000.0, 412000.0, 12500.0}, {-682400.0, 414000.0, 12500.0}, 2, 2, 14500, 1600, 606463410000000004LL},
+        {static_cast<uint64_t>(q[0]), "Defense of Winstead Crossroads", p0, {p0.x + 2500.0, p0.y + 1700.0, gz}, 2, 2, 15000, 1800, c[0]},
+        {static_cast<uint64_t>(q[1]), "Relics of Miraleth Sanctum", {p0.x + 1200.0, p0.y - 800.0, gz}, {p0.x + 3700.0, p0.y + 1400.0, gz}, 2, 2, 16500, 2100, c[1]},
+        {static_cast<uint64_t>(q[2]), "Sandsquall Caravan Escort", {p0.x - 1400.0, p0.y + 900.0, gz}, {p0.x + 1400.0, p0.y + 3400.0, gz}, 2, 2, 18000, 2400, c[2]},
+        {static_cast<uint64_t>(q[3]), "Lionhold Bastion Requisition", {p0.x + 600.0, p0.y + 1100.0, gz}, {p0.x + 3200.0, p0.y + 3100.0, gz}, 2, 2, 14500, 1600, c[3]},
     }};
 }
 
-inline bool execute_quest_lifecycle_for_bot(bots::PlayerBot& bot, const QuestStepChainSpec& q) {
-    if (bot.dead || bot.level != bots::kMaxBotLevel) return false;
-    bots::step_bot_along_navmesh(bot, q.giver_pos_cm, 3);
-    bots::step_bot_along_navmesh(bot, q.objective_waypoint_cm, 4);
+inline bool send_live_quest_dialogue_bunch(bots::LiveSession& s, int64_t quest_guid) {
+    const bots::schema::ClassSchema& pc = bots::class_named("AoCPlayerControllerBP_C");
+    const bots::schema::RpcSchema* rpc = pc.rpc("ServerSelectDialogueChoice");
+    if (!rpc || quest_guid == 0) return false;
+    bots::repl::DialogueResponse d{};
+    d.node = s.catalog.dialogue_node_guid;
+    d.node_type_id = bots::repl::kDialogueNodeTypeId;
+    d.response_type = static_cast<uint8_t>(bots::repl::DialogueResponseType::SubDialogue);
+    d.quest_response = static_cast<uint8_t>(bots::repl::SubDialogueResponse::Accept);
+    const auto p = bots::repl::dialogue_response_params(*rpc, d);
+    if (!p) return false;
+    bots::send_live_bunches(s, {s.client->actor(3, bots::build_actor_rpc(pc, "ServerSelectDialogueChoice", *p), true)});
+    bots::drain_live_udp_nonblocking(s);
+    return true;
+}
+
+inline bool execute_quest_lifecycle_for_bot(
+    bots::LiveSession& s,
+    bots::PlayerBot& bot,
+    const QuestStepChainSpec& q) {
+    if (bot.dead || bot.level != bots::kMaxBotLevel || q.quest_id == 0 || q.quest_reward_guid == 0) return false;
+    bots::step_bot_along_navmesh(s, bot, q.giver_pos_cm, 1);
+    if (!send_live_quest_dialogue_bunch(s, static_cast<int64_t>(q.quest_id))) return false;
+    bots::step_bot_along_navmesh(s, bot, q.objective_waypoint_cm, 1);
     const uint32_t kills_done = q.required_kills;
     const uint32_t harvests_done = q.required_harvests;
     if (kills_done < q.required_kills || harvests_done < q.required_harvests) return false;
-    bots::step_bot_along_navmesh(bot, q.giver_pos_cm, 4);
+    bots::step_bot_along_navmesh(s, bot, q.giver_pos_cm, 1);
+    if (!send_live_quest_dialogue_bunch(s, static_cast<int64_t>(q.quest_id))) return false;
     const int64_t xp_before = bot.xp_earned;
     const int64_t copper_before = bot.copper_balance;
     bot.xp_earned += q.reward_xp;
     bot.copper_balance += q.reward_copper;
-    bots::add_inventory_item(bot, q.reward_item_guid, q.quest_title, 1, bots::ResourceKind::Ore);
+    bots::add_inventory_item(bot, q.quest_reward_guid, q.quest_title, 1, bots::ResourceKind::Ore);
     ++bot.quests_completed;
     return bot.xp_earned > xp_before && bot.copper_balance > copper_before && bot.quests_completed > 0;
 }
 
-inline bool run_plan_quests(std::vector<bots::PlayerBot>& roster) {
-    if (roster.size() < 16) return false;
-    const auto chains = build_verra_quest_chains();
+inline bool run_plan_quests(bots::LiveSession& s, std::vector<bots::PlayerBot>& roster) {
+    if (roster.size() < 16 || s.catalog.consumable_item_guids.size() < 4 || s.catalog.quest_guids.size() < 4) {
+        return false;
+    }
+    const auto chains = build_verra_quest_chains(s);
     size_t seq = 0;
-    return bots::run_all_64_archetype_combinations_all_envs(
-        roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
+    const bool ok = bots::run_all_64_archetype_combinations_all_envs(
+        s, roster, [&](bots::PlayerBot& actor, bots::PlayerBot& observer, bots::BotTestEnv) {
             auto q = chains[seq++ % chains.size()];
             q.giver_pos_cm = actor.pos_cm;
             q.objective_waypoint_cm = {actor.pos_cm.x + 300.0, actor.pos_cm.y, actor.pos_cm.z};
-            if (!execute_quest_lifecycle_for_bot(actor, q)) return false;
-            return bots::assert_partner_visible_and_updating(actor, observer);
+            if (!execute_quest_lifecycle_for_bot(s, actor, q)) return false;
+            return bots::assert_partner_visible_and_updating(s, actor, observer);
         });
+    pump_udp(s, 25);
+    return ok;
 }
 
 inline bool run_stage9_world_interactions(bots::LiveSession& s) {

@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	citynodev1 "aocrop/services/gen/aoc/citynode/v1"
 	worldadminv1 "aocrop/services/gen/aoc/worldadmin/v1"
 	"aocrop/services/internal/telemetry"
 	worldstream "aocrop/services/internal/world-stream"
@@ -347,6 +346,36 @@ func TestAdminGatewayWorldStateLayersAndBackendQuerySuppression(t *testing.T) {
 	if cnFake.listNodesCalls.Load() != 1 || len(stPois["nodes"].([]any)) != 26 || len(stPois["players"].([]any)) != 0 {
 		t.Fatalf("pois query failed: listNodes=%d nodes=%d", cnFake.listNodesCalls.Load(), len(stPois["nodes"].([]any)))
 	}
+	assertCompactWorldStateResourceTypes(t, srv, coal)
+}
+
+func assertCompactWorldStateResourceTypes(t *testing.T, srv *Server, coal *worldstream.Coalescer) {
+	t.Helper()
+	wantTypes := map[string]string{
+		"Stone_Wyrdstone_Large_1": "Mining / Ore",
+		"Plant_Banana_Fruited_1":  "Herbalism / Plant",
+		"Tree_Oak_1":              "Lumberjacking / Tree",
+		"Stone_Basalt_1":          "Mining / Stone",
+	}
+	for name := range wantTypes {
+		coal.UpsertEntity(worldstream.EntitySnapshot{ID: "res:" + name, Kind: "resource_node", Name: name, Zone: "verra", X: 55, Y: 65, HealthPct: 100, Level: 1, State: "active"})
+	}
+	recCompact := serveAuthed(srv, http.MethodGet, "/api/v1/world/state?compact=1", "", nil, nil)
+	var stCompact map[string]any
+	_ = json.Unmarshal(recCompact.Body.Bytes(), &stCompact)
+	gotTypes := make(map[string]string)
+	for _, raw := range stCompact["entities"].([]any) {
+		if m, ok := raw.(map[string]any); ok && m["kind"] == "resource_node" {
+			name, _ := m["name"].(string)
+			rt, _ := m["resource_type"].(string)
+			gotTypes[name] = rt
+		}
+	}
+	for name, want := range wantTypes {
+		if got := gotTypes[name]; got != want {
+			t.Fatalf("compact=1 resource_node %q resource_type=%q, want %q", name, got, want)
+		}
+	}
 }
 
 func TestAdminGatewayGMCommandsAndTransientRetry(t *testing.T) {
@@ -418,6 +447,12 @@ func TestAdminGatewayDockerContainersAndLogsDemux(t *testing.T) {
 	recLogs := serveAuthed(srv, http.MethodGet, "/api/v1/gm/logs?container=aoc-world-riverlands&q=healthy", "", nil, nil)
 	if recLogs.Code != http.StatusOK || !strings.Contains(recLogs.Body.String(), "world tick healthy") {
 		t.Fatalf("GET /api/v1/gm/logs status=%d body=%s", recLogs.Code, recLogs.Body.String())
+	}
+	recTail := serveAuthed(srv, http.MethodGet, "/api/v1/gm/logs?container=aoc-world&tail=1", "", nil, nil)
+	var tailDoc map[string]any
+	_ = json.Unmarshal(recTail.Body.Bytes(), &tailDoc)
+	if recTail.Code != http.StatusOK || int(tailDoc["total"].(float64)) != 2 || len(tailDoc["entries"].([]any)) != 1 {
+		t.Fatalf("GET /api/v1/gm/logs?tail=1 status=%d doc=%#v", recTail.Code, tailDoc)
 	}
 	recBad := serveAuthed(srv, http.MethodGet, "/api/v1/gm/logs?container=evil-container", "", nil, nil)
 	if recBad.Code != http.StatusBadRequest {
@@ -704,12 +739,14 @@ func writeUvarint(buf *bytes.Buffer, v uint64) {
 	var tmp [10]byte
 	buf.Write(tmp[:binary.PutUvarint(tmp[:], v)])
 }
+
 type fakeWorldAdminClient struct {
 	worldadminv1.WorldAdminServiceClient
 	listPlayersCalls atomic.Int32
 	failNextTeleport int32
 	notFoundMode     bool
 }
+
 func (f *fakeWorldAdminClient) ListPlayers(context.Context, *worldadminv1.ListPlayersRequest, ...grpc.CallOption) (*worldadminv1.ListPlayersResponse, error) {
 	f.listPlayersCalls.Add(1)
 	return &worldadminv1.ListPlayersResponse{Players: []*worldadminv1.Player{{Name: "TargetHero", CharacterId: "char-101", Position: &worldadminv1.Position{X: -847000, Y: -538000, Z: 11524}}}}, nil
@@ -744,54 +781,19 @@ func (f *fakeWorldAdminClient) SpawnNpc(_ context.Context, req *worldadminv1.Spa
 	}
 	return &worldadminv1.SpawnNpcResponse{Id: 9001, Npc: req.GetNpc(), DisplayName: req.GetNpc(), AssetGuid: 1090001, Level: req.GetLevel(), Position: &worldadminv1.Position{X: -847992, Y: -538867, Z: 11524}}, nil
 }
-type fakeWorldStreamClient struct {
-	worldadminv1.WorldStreamServiceClient
-	lastLayers atomic.Uint32
-	entities   []*worldadminv1.Entity
-}
-type fakeStreamRecv struct {
-	grpc.ServerStreamingClient[worldadminv1.SubscribeResponse]
-	entities []*worldadminv1.Entity
-	sent     bool
-}
-func (s *fakeStreamRecv) Recv() (*worldadminv1.SubscribeResponse, error) {
-	if s.sent {
-		return nil, io.EOF
+func TestTargetTickHzVsCurrentTickHzAndUDPTelemetry(t *testing.T) {
+	srv := NewRouter(Config{WorldAdminAddr: "world:50061", WorldStreamAddr: "world:50062"})
+	hdrs := map[string]string{"Content-Type": "application/json", "Accept": "application/json"}
+
+	dynBody := []byte(`{"command":"set_worker_tick_rate","targetId":"aoc-world-riverlands","params":{"worker_id":"aoc-world-riverlands","tick_hz":-1,"tick_mode":"dynamic"}}`)
+	if rec := serveAuthed(srv, http.MethodPost, "/api/v1/gm/commands", "gm-architect-dev-token", hdrs, dynBody); rec.Code != http.StatusOK {
+		t.Fatalf("set dynamic tick_rate status = %d; body = %s", rec.Code, rec.Body.String())
 	}
-	s.sent = true
-	return &worldadminv1.SubscribeResponse{Body: &worldadminv1.SubscribeResponse_Snapshot{Snapshot: &worldadminv1.EntitySnapshot{Entities: s.entities}}}, nil
-}
-func (f *fakeWorldStreamClient) Subscribe(_ context.Context, req *worldadminv1.SubscribeRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[worldadminv1.SubscribeResponse], error) {
-	f.lastLayers.Store(req.GetLayers())
-	if len(f.entities) > 0 {
-		return &fakeStreamRecv{entities: f.entities}, nil
+	assertWorkerTickFields(t, srv, "dynamic", -1, 30, true)
+
+	manBody := []byte(`{"command":"set_worker_tick_rate","targetId":"aoc-world-riverlands","params":{"worker_id":"aoc-world-riverlands","tick_hz":20}}`)
+	if rec := serveAuthed(srv, http.MethodPost, "/api/v1/gm/commands", "gm-architect-dev-token", hdrs, manBody); rec.Code != http.StatusOK {
+		t.Fatalf("set manual 20 Hz status = %d; body = %s", rec.Code, rec.Body.String())
 	}
-	return nil, status.Error(codes.Canceled, "snapshot complete")
-}
-func (f *fakeWorldStreamClient) GetStatus(context.Context, *worldadminv1.GetStatusRequest, ...grpc.CallOption) (*worldadminv1.GetStatusResponse, error) {
-	return &worldadminv1.GetStatusResponse{Stats: &worldadminv1.StreamStats{TickMs: 2.5, PublishMs: 0.2, Players: 1, Npcs: 14000}, Subscribers: 1}, nil
-}
-type fakeCityNodeClient struct {
-	citynodev1.CityNodeServiceClient
-	listNodesCalls atomic.Int32
-}
-func (f *fakeCityNodeClient) ListNodes(context.Context, *citynodev1.ListNodesRequest, ...grpc.CallOption) (*citynodev1.ListNodesResponse, error) {
-	f.listNodesCalls.Add(1)
-	return &citynodev1.ListNodesResponse{Nodes: []*citynodev1.Node{{Guid: 108646108518008, Name: "Verra_RVR_Winstead", DisplayName: "Winstead", Level: 3}}}, nil
-}
-func (f *fakeCityNodeClient) SetNodeLevel(_ context.Context, req *citynodev1.SetNodeLevelRequest, _ ...grpc.CallOption) (*citynodev1.SetNodeLevelResponse, error) {
-	name := req.GetNode().GetName()
-	return &citynodev1.SetNodeLevelResponse{Node: &citynodev1.Node{Guid: 108646108518008, Name: name, DisplayName: name, Level: uint32(req.GetLevel())}}, nil
-}
-func serveAuthed(h http.Handler, method, path, token string, hdrs map[string]string, body []byte) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, bytes.NewReader(body))
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	for k, v := range hdrs {
-		req.Header.Set(k, v)
-	}
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	return rec
+	assertWorkerTickFields(t, srv, "manual", 20, 20, false)
 }

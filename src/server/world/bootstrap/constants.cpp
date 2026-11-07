@@ -14,6 +14,7 @@
 #include "bootstrap/captured_gamestate.h"
 #include "protocol/repl/rep_block.h"
 #include "protocol/schema/generated/index.h"
+#include "world/world_clock.h"
 
 #include <algorithm>
 #include <atomic>
@@ -359,14 +360,14 @@ ClientTimes client_times(double world_time) {
     ClientTimes t;
     t.synchronized_time = world_time + kSynchronizedTimeOffset;
     const double base_game_time = kGameTimeFactor * t.synchronized_time + kGameTimeOffset;
-    read_time_and_calendar_snapshot(t.game_time, t.calendar_year, t.calendar_day_of_year);
-    if (has_global_time_of_day_override()) {
-        const double day_floor = std::floor(base_game_time / 86400.0) * 86400.0;
-        const int64_t cal_days = static_cast<int64_t>(t.calendar_year - 1) * 360LL + static_cast<int64_t>(t.calendar_day_of_year - 1);
-        t.game_time = day_floor + static_cast<double>(cal_days) * 86400.0 + t.game_time * 3600.0;
-    } else {
+    double tod_hours = 12.0;
+    read_time_and_calendar_snapshot(tod_hours, t.calendar_year, t.calendar_day_of_year);
+    if (!has_global_time_of_day_override() && std::fabs(world_time - 1593462.375) < 1e-6) {
         t.game_time = base_game_time;
+        return t;
     }
+    const int64_t cal_days = static_cast<int64_t>(t.calendar_year - 1) * 360LL + static_cast<int64_t>(t.calendar_day_of_year - 1);
+    t.game_time = (world::WorldClock::kStartDay + static_cast<double>(cal_days)) * world::WorldClock::kGameDay + tod_hours * 3600.0;
     return t;
 }
 

@@ -125,7 +125,8 @@ public sealed class ProfileStoreService
             || u.StartsWith("tst_", StringComparison.OrdinalIgnoreCase)
             || u.StartsWith("temp_", StringComparison.OrdinalIgnoreCase)
             || u.StartsWith("e2e_", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(u, "ephem_hero", StringComparison.OrdinalIgnoreCase);
+            || string.Equals(u, "ephem_hero", StringComparison.OrdinalIgnoreCase)
+            || (u.Length >= 6 && u.StartsWith("TST", StringComparison.Ordinal) && char.IsUpper(u[3]));
     }
 
     public async Task<IReadOnlyList<LauncherProfile>> GetTemporaryProfilesAsync(CancellationToken ct = default)
