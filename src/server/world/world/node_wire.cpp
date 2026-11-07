@@ -177,7 +177,8 @@ std::unique_ptr<NodeWire> NodeWire::load(const std::string& path, const CityNode
 bool NodeWire::in_roster(int rank) const { return std::binary_search(roster_.begin(), roster_.end(), rank); }
 
 const std::vector<PlotRow>& NodeWire::plot_rows(int64_t layout, int level) const {
-    const auto it = plots_.find({layout, level});
+    const int lookup_level = std::min(level, 4);
+    const auto it = plots_.find({layout, lookup_level});
     return it == plots_.end() ? none_ : it->second;
 }
 

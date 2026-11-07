@@ -20,9 +20,7 @@ import (
 	admincatalog "aocrop/services/internal/admin-catalog"
 	worldstream "aocrop/services/internal/world-stream"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 )
 
 type serviceMetricsSpec struct {
@@ -168,8 +166,8 @@ func enrichContainerWithServiceMetrics(c *ContainerMetric, byService map[string]
 			if c.ExportedMetrics == 0 {
 				c.ExportedMetrics = 9
 			}
-			if c.CPUPct < 30.0 {
-				c.CPUPct = max(w.CPUPct, computeWorkerAdaptiveCPUPct(w.TickP50Ms, w.ScopeKind))
+			if c.CPUPct <= 0 && w.CPUPct > 0 {
+				c.CPUPct = w.CPUPct
 			}
 			break
 		}
@@ -182,11 +180,10 @@ func (s *Server) initWorldWorkers() {
 		if spec == "" && s.worldAdmin == nil && s.worldStream == nil {
 			spec = strings.TrimSpace(firstNonEmpty(os.Getenv("AOC_WORLD_WORKERS"), os.Getenv("WORLD_WORKERS")))
 		}
-		if spec == "" && strings.EqualFold(strings.TrimSpace(os.Getenv("AOC_WORLD_SHARD_MODE")), "single") {
-			spec = defaultSingleWorldWorkerSpec
-		}
-		if spec == "" && (s.worldAdminAddr == "world:50061" || s.worldStreamAddr == "world:50062") {
+		if strings.EqualFold(spec, "default-five-regions") {
 			spec = defaultFiveRegionalWorkersSpec
+		} else if spec == "" && strings.EqualFold(strings.TrimSpace(os.Getenv("AOC_WORLD_SHARD_MODE")), "single") {
+			spec = defaultSingleWorldWorkerSpec
 		}
 		if spec != "" {
 			s.worldWorkers = parseWorldWorkersSpec(spec)
@@ -279,7 +276,7 @@ func (s *Server) snapshotWorldWorkers() []WorldWorkerEndpoint {
 	defer s.mu.Unlock()
 	out := make([]WorldWorkerEndpoint, len(s.worldWorkers))
 	for i, w := range s.worldWorkers {
-		if hz := s.getWorkerTickHzOverrideLocked(w); hz > 0 {
+		if hz, ok := s.lookupWorkerTickHzOverrideLocked(w); ok {
 			w.TickHz = hz
 		}
 		out[i] = *w
@@ -291,43 +288,16 @@ func (s *Server) handleWorldWorkers(w http.ResponseWriter, r *http.Request, _ Ro
 	if !checkAcceptHeader(w, r) {
 		return
 	}
-	worldStatus, workers, tod := s.fetchMultiWorkerWorldStatus(r.Context()), s.snapshotWorldWorkerStatuses(), s.TimeOfDayHours()
+	now := s.now()
+	worldStatus, workers := s.fetchMultiWorkerWorldStatus(r.Context()), s.snapshotWorldWorkerStatuses()
 	worldStatus["workers"], worldStatus["workers_total"] = workers, len(workers)
-	anchorHours, anchorMs := s.TimeOfDayAnchor()
-	writeCachedJSONWithModTime(w, r, "private, max-age=2", s.lastMutatedTime(), map[string]any{
-		"schema_version": "1.0", "count": len(workers), "workers": workers, "items": workers, "world_status": worldStatus, "data_modes": s.resolveDataModes(),
-		"service_tick_hz": worldstream.ServiceTickHz(), "time_of_day_hours": tod, "time_of_day_label": formatTimeOfDayLabel(tod), "time_of_day_anchor_hours": anchorHours, "time_of_day_anchor_ms": anchorMs, "time_of_day_rate": 9.0, "serverTimeMs": s.now().UnixMilli(),
-	})
-}
-
-func (s *Server) appendSubPartitionWorkerStatusesLocked(out []WorldWorkerStatus) []WorldWorkerStatus {
-	if len(out) < 5 {
-		return out
+	payload := map[string]any{
+		"schema_version": "1.0", "count": len(workers), "workers": workers, "items": workers,
+		"world_status": worldStatus, "data_modes": s.resolveDataModes(),
+		"service_tick_hz": worldstream.ServiceTickHz(), "serverTimeMs": now.UnixMilli(),
 	}
-	subSpecs := [][4]string{
-		{"zoi-djinna", "Verra_SAN_Node_Djinna", "zoi", "aoc-verra-san-node-sunhaven"},
-		{"zoi-aithanahr", "Verra_SAN_Node_Aithanahr", "zoi", "aoc-verra-san-node-azmaran"},
-		{"zoi-squallsend", "Verra_SAN_Node_SquallsEnd", "zoi", "aoc-verra-san-node-azmaran"},
-		{"plug-winstead", "Verra_RVR_Node_Winstead", "node_plug", "aoc-world-riverlands"},
-		{"plug-joeva", "Verra_RVR_Node_Joeva", "node_plug", "aoc-world-riverlands"},
-		{"plug-sunhaven", "Verra_SAN_Node_Sunhaven", "node_plug", "aoc-verra-san-node-sunhaven"},
-		{"plug-azmaran", "Verra_SAN_Node_Azmaran", "node_plug", "aoc-verra-san-node-azmaran"},
-	}
-	nowMs := s.now().UnixMilli()
-	for _, sp := range subSpecs {
-		hz := defaultWorkerTierTickHz(sp[2])
-		playerHandoversMu.Lock()
-		for _, k := range []string{sp[0], sp[1], "aoc-" + sp[1]} {
-			if ov := workerTickHzOverrides[serverPlayerKey{srv: s, player: strings.ToLower(strings.TrimSpace(k))}]; ov > 0 {
-				hz = ov
-				break
-			}
-		}
-		playerHandoversMu.Unlock()
-		ep := WorldWorkerEndpoint{WorkerID: sp[0], ScopeKey: sp[1], ScopeKind: sp[2], ContainerName: sp[3], Status: "ONLINE", Connected: true, TickHz: hz, TickP50Ms: 2.1, TickP99Ms: 3.4, CPUPct: computeWorkerAdaptiveCPUPct(2.1, sp[2]), LastSeenMs: nowMs}
-		out = append(out, WorldWorkerStatus{WorldWorkerEndpoint: ep, WorkerIndex: len(out), CanonicalName: canonicalWorkerNameWithOrdinal(&ep, 0), TopologyMode: sp[2]})
-	}
-	return out
+	s.enrichPayloadWithTimeAndCalendar(payload, now)
+	writeCachedJSONWithModTime(w, r, "private, max-age=2", s.lastMutatedTime(), payload)
 }
 
 func (s *Server) handleWorldMapMetaWithWorkers(w http.ResponseWriter, r *http.Request, _ Role) {
@@ -420,7 +390,7 @@ func (s *Server) fetchMultiWorkerWorldStatus(ctx context.Context) map[string]any
 	out := s.aggregateWorkerStatusResults(results, monstersByScope, monstersCount, poisCount)
 	s.mu.Lock()
 	for _, w := range s.worldWorkers {
-		if hz := s.getWorkerTickHzOverrideLocked(w); hz > 0 {
+		if hz, ok := s.lookupWorkerTickHzOverrideLocked(w); ok {
 			w.TickHz, out["tick_hz"] = hz, hz
 		}
 	}
@@ -537,13 +507,19 @@ func entityInAreaAndLayers(ent worldstream.EntitySnapshot, area *worldadminv1.Ar
 }
 
 func (s *Server) refreshStreamAfterNodeTierChange(ctx context.Context) {
+	area := &worldadminv1.AreaBox{MinXCm: -2500000, MinYCm: -1500000, MaxXCm: 1000000, MaxYCm: 2000000}
 	if s.getCityNodeClient() != nil {
-		time.Sleep(120 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
+		s.mu.Lock()
+		clear(s.lastStreamAt)
+		s.mu.Unlock()
+		s.pullAllWorkersSync(ctx, area, StreamLayerAll, s.now().UnixMilli())
+		time.Sleep(230 * time.Millisecond)
 	}
 	s.mu.Lock()
 	clear(s.lastStreamAt)
 	s.mu.Unlock()
-	s.pullWorldStreamSnapshot(ctx, worldstream.ViewportFilter{}, StreamLayerAll)
+	s.pullAllWorkersSync(ctx, area, StreamLayerAll, s.now().UnixMilli())
 }
 
 func (s *Server) execSetSimulateAllNpcsCommand(ctx context.Context, p map[string]any) (map[string]any, error) {
@@ -551,8 +527,15 @@ func (s *Server) execSetSimulateAllNpcsCommand(ctx context.Context, p map[string
 	if enabled {
 		level, flagInt = 1, 1
 	}
+	s.timeOfDayMu.Lock()
+	s.simulateAllNpcs = enabled
+	s.timeOfDayMu.Unlock()
+	s.persistSimulationState(ctx)
+	s.mu.Lock()
+	workers := append([]*WorldWorkerEndpoint(nil), s.worldWorkers...)
+	s.mu.Unlock()
 	var wg sync.WaitGroup
-	for _, w := range s.worldWorkers {
+	for _, w := range workers {
 		if w != nil {
 			wg.Add(1)
 			go func(worker *WorldWorkerEndpoint) {
@@ -571,49 +554,70 @@ func (s *Server) execSetSimulateAllNpcsCommand(ctx context.Context, p map[string
 }
 
 func (s *Server) execSetTickRateCommand(ctx context.Context, defaultTarget string, p map[string]any) (map[string]any, error) {
-	tickHz, ok := extractIntParam(p, "tick_hz", "hz", "rate", "amount", "value")
-	if !ok || tickHz < 1 || tickHz > 120 {
-		return nil, status.Error(codes.InvalidArgument, "tick_hz must be between 1 and 120")
+	tickHz, tickMode, err := parseTickRateParams(p)
+	if err != nil {
+		return nil, err
 	}
-	matchedID, host := s.setWorkerTickHzOverride(firstNonEmpty(extractStringParam(p, "worker_id", "server_id", "worker", "region", "zone"), defaultTarget), float64(tickHz))
-	rctx, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
-	defer cancel()
-	urls := []string{fmt.Sprintf("http://%s:8080/admin/tick_hz?tick_hz=%d", host, tickHz)}
-	if murl := strings.TrimSpace(firstNonEmpty(os.Getenv("AOC_WORLD_METRICS_URL"), os.Getenv("AOC_WORLD_PROM_URL"))); murl != "" {
-		urls = append([]string{fmt.Sprintf("%s/admin/tick_hz?tick_hz=%d", strings.TrimSuffix(strings.TrimSuffix(murl, "/metrics"), "/healthz"), tickHz)}, urls...)
+	workerTarget := firstNonEmpty(extractStringParam(p, "worker_id", "server_id", "worker", "region", "zone"), defaultTarget)
+	overrideHz := float64(tickHz)
+	if tickMode == "dynamic" {
+		overrideHz = -1.0
 	}
-	_, _, _, _ = fetchFirstReachableText(rctx, urls, urls[0])
-	msg := fmt.Sprintf("%s tick rate -> %d Hz: set_tick_rate executed", matchedID, tickHz)
-	return map[string]any{"status": "executed", "action": "set_tick_rate", "command": "set_tick_rate", "worker_id": matchedID, "tick_hz": tickHz, "hz": tickHz, "result": msg, "message": msg}, nil
+	matchedID, host, matchedWorker := s.setWorkerTickHzOverride(workerTarget, overrideHz)
+	s.timeOfDayMu.Lock()
+	s.workerTickMode = tickMode
+	if s.workerTickHzMap == nil {
+		s.workerTickHzMap = make(map[string]float64)
+	}
+	s.workerTickHzMap[strings.ToLower(matchedID)] = overrideHz
+	s.timeOfDayMu.Unlock()
+	s.persistSimulationState(ctx)
+	simEnabled, simFlag, adminHz := !(tickMode == "manual" && tickHz == 0), 1, tickHz
+	if !simEnabled {
+		simFlag = 0
+	} else if tickMode == "dynamic" {
+		adminHz = 0
+	}
+	s.pushWorkerTickAndNpcSim(ctx, host, matchedWorker, adminHz, tickMode, simEnabled, simFlag)
+	msg := fmt.Sprintf("%s tick rate -> %d Hz (%s): set_tick_rate executed", matchedID, tickHz, tickMode)
+	return map[string]any{"status": "executed", "action": "set_tick_rate", "command": "set_tick_rate", "worker_id": matchedID, "tick_hz": tickHz, "hz": tickHz, "tick_mode": tickMode, "simulate_all_npcs": simEnabled, "result": msg, "message": msg}, nil
 }
 
-func (s *Server) setWorkerTickHzOverride(workerID string, hz float64) (string, string) {
+func (s *Server) setWorkerTickHzOverride(workerID string, hz float64) (string, string, *WorldWorkerEndpoint) {
 	reqKey := strings.ToLower(strings.TrimSpace(firstNonEmpty(workerID, "aoc-world")))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	matchedID, host := firstNonEmpty(workerID, "aoc-world"), "world"
+	var matchedWorker *WorldWorkerEndpoint
 	for _, w := range s.worldWorkers {
 		if reqKey == "aoc-world" || reqKey == "all" || strings.EqualFold(w.WorkerID, reqKey) || strings.EqualFold(w.ScopeKey, reqKey) || strings.EqualFold(w.ContainerName, reqKey) || strings.EqualFold("aoc-"+w.ScopeKey, reqKey) {
-			w.TickHz, matchedID, host = hz, firstNonEmpty(workerID, w.ContainerName), resolveWorkerMetricsHost(*w)
+			effHz := hz
+			if effHz < 0 {
+				effHz = defaultWorkerTierTickHz(w.ScopeKind)
+			}
+			w.TickHz, matchedID, host, matchedWorker = effHz, firstNonEmpty(workerID, w.ContainerName), resolveWorkerMetricsHost(*w), w
 		}
 	}
 	playerHandoversMu.Lock()
 	workerTickHzOverrides[serverPlayerKey{srv: s, player: reqKey}], workerTickHzOverrides[serverPlayerKey{srv: s, player: strings.ToLower(matchedID)}] = hz, hz
 	playerHandoversMu.Unlock()
-	return matchedID, host
+	return matchedID, host, matchedWorker
 }
 
-func (s *Server) getWorkerTickHzOverrideLocked(w *WorldWorkerEndpoint) float64 {
+func (s *Server) lookupWorkerTickHzOverrideLocked(w *WorldWorkerEndpoint) (float64, bool) {
 	if w != nil {
 		playerHandoversMu.Lock()
 		defer playerHandoversMu.Unlock()
 		for _, k := range []string{w.WorkerID, w.ScopeKey, w.ContainerName, "aoc-" + w.ScopeKey, "aoc-world"} {
-			if hz := workerTickHzOverrides[serverPlayerKey{srv: s, player: strings.ToLower(strings.TrimSpace(k))}]; hz > 0 {
-				return hz
+			if hz, ok := workerTickHzOverrides[serverPlayerKey{srv: s, player: strings.ToLower(strings.TrimSpace(k))}]; ok {
+				if hz < 0 {
+					return defaultWorkerTierTickHz(w.ScopeKind), true
+				}
+				return hz, true
 			}
 		}
 	}
-	return 0
+	return 0, false
 }
 
 func extractSimulateAllNpcsBool(p map[string]any) bool {

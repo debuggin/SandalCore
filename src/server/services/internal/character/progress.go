@@ -374,10 +374,40 @@ func (s *Store) GrantMissingStarterSets(ctx context.Context, sets StarterSetMake
 	return res, nil
 }
 
+func queryAllItemsTx(ctx context.Context, tx pgx.Tx, characterID string) ([]Item, error) {
+	rows, err := tx.Query(ctx, allItemsSQL, characterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var existing []Item
+	for rows.Next() {
+		var it Item
+		if err := rows.Scan(&it.Container, &it.Slot, &it.ItemRecordID, &it.InstanceGUID, &it.Quantity, &it.Quality, &it.Durability, &it.CreatedAt,
+			&it.PersistedHealth, &it.PersistedMana, &it.LockExpiration); err != nil {
+			return nil, err
+		}
+		existing = append(existing, it)
+	}
+	return existing, rows.Err()
+}
+
+func filterMissingItems(existing, set []Item) []Item {
+	held := map[int64]bool{}
+	for _, it := range existing {
+		held[it.ItemRecordID] = true
+	}
+	var missing []Item
+	for _, it := range set {
+		if !held[it.ItemRecordID] {
+			missing = append(missing, it)
+		}
+	}
+	return missing
+}
+
 // grantBag places `set` in the character's bag and marks the character (`mark` is the SET clause), under its row lock; placed is -1
-// when the character's `guard` column was set meanwhile (or the character is gone) and nothing was written.  With onlyMissing an item of
-// the set whose record the character already holds anywhere (bag, worn, quest storage) is left out of it; when nothing is missing the
-// character is only marked (a grant that is given once is spent whether or not anything had to be placed).  An empty guard asks nothing.
+// when the character's `guard` column was set meanwhile (or the character is gone) and nothing was written.
 func (s *Store) grantBag(ctx context.Context, characterID string, set []Item, guard, mark string, onlyMissing bool) (placed, noRoom int, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -406,43 +436,18 @@ func (s *Store) grantBag(ctx context.Context, characterID string, set []Item, gu
 			return -1, 0, nil
 		}
 	}
-	rows, err := tx.Query(ctx, allItemsSQL, characterID)
+	existing, err := queryAllItemsTx(ctx, tx, characterID)
 	if err != nil {
 		return 0, 0, err
 	}
-	var existing []Item
-	for rows.Next() {
-		var it Item
-		if err := rows.Scan(&it.Container, &it.Slot, &it.ItemRecordID, &it.InstanceGUID, &it.Quantity, &it.Quality, &it.Durability, &it.CreatedAt,
-			&it.PersistedHealth, &it.PersistedMana, &it.LockExpiration); err != nil {
-			rows.Close()
-			return 0, 0, err
-		}
-		existing = append(existing, it)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, 0, err
-	}
 	if onlyMissing {
-		held := map[int64]bool{}
-		for _, it := range existing {
-			held[it.ItemRecordID] = true
-		}
-		var missing []Item
-		for _, it := range set {
-			if !held[it.ItemRecordID] {
-				missing = append(missing, it)
-			}
-		}
-		if len(missing) == 0 {
-			// nothing to give: the character holds them all; it is marked all the same, so a mount it throws away later is not given again
+		set = filterMissingItems(existing, set)
+		if len(set) == 0 {
 			if _, err := tx.Exec(ctx, `UPDATE characters SET `+mark+`, updated_at = now() WHERE id = $1`, characterID); err != nil {
 				return 0, 0, err
 			}
 			return 0, 0, tx.Commit(ctx)
 		}
-		set = missing
 	}
 	items, skipped := PlaceInBackpack(existing, set)
 	all := append(append([]Item(nil), existing...), items...)

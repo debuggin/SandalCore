@@ -80,6 +80,10 @@ func keys(n Info) []string {
 	out := []string{norm(n.Name), norm(n.DisplayName)}
 	if short := strings.TrimPrefix(n.Name, "Verra_"); short != n.Name {
 		out = append(out, norm(short))
+		if idx := strings.IndexByte(short, '_'); idx > 0 && idx+1 < len(short) {
+			withNode := short[:idx+1] + "Node_" + short[idx+1:]
+			out = append(out, norm("Verra_"+withNode), norm(withNode))
+		}
 	}
 	return out
 }
@@ -125,6 +129,9 @@ func (r *Roster) Resolve(guid int64, name string) (Info, error) {
 		return Info{}, fmt.Errorf("%w: a node needs a guid or a name", ErrInvalid)
 	}
 	if i, ok := r.byName[norm(name)]; ok {
+		return r.nodes[i], nil
+	}
+	if i, ok := r.byName[norm(strings.ReplaceAll(strings.ToLower(name), "node", ""))]; ok {
 		return r.nodes[i], nil
 	}
 	if g, err := strconv.ParseInt(name, 10, 64); err == nil {

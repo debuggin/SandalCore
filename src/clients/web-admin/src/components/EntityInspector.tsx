@@ -2,6 +2,7 @@
 
 import React from "react";
 import {
+  inferResourceNodeType,
   resolveWorkerForCoordinateOrZone,
   useWorldStreamStore,
   verraUnrealToLngLat,
@@ -133,10 +134,12 @@ function buildEntityAttributeRows(
     useWorldStreamStore.getState().workers,
     entity.name,
   );
+  const rawResType = entity.resourceType ?? entity.resource_type;
+  const rawSubkind = entity.npcSubkind ?? entity.npc_subkind;
   const resourceRows: InspectorGridRow[] =
-    entity.kind === "resource_node"
+    entity.kind === "resource_node" || Boolean(rawResType) || rawSubkind === "huntable"
       ? [
-          { rowId: "resource_type", label: "Resource Type", value: entity.resourceType || "Gathering Resource" },
+          { rowId: "resource_type", label: "Resource Type", value: inferResourceNodeType(entity.name, rawResType, rawSubkind) },
           { rowId: "resource_quality", label: "Quality / Rarity", value: entity.quality || "Common · Tier 1 (Novice)" },
         ]
       : [];

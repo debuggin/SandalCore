@@ -50,9 +50,14 @@ struct RegionalHandoverState {
     spawns::RegionBit authoritative_region = spawns::RegionBit::Riverlands;
     spawns::RegionBit candidate_region = spawns::RegionBit::Riverlands;
     uint32_t          dwell_samples = 0;
+    uint32_t          dwell_ticks_beyond_hysteresis = 0;
     int64_t           last_handover_ms = 0;
+    int64_t           last_handover_commit_ms = 0;
     uint64_t          handover_count = 0;
     uint64_t          lease_epoch = 1;
+    float             last_signed_border_distance_cm = 0.0f;
+    AuthorityState    authority_state = AuthorityState::Local;
+    uint32_t          suppressed_oscillations = 0;
     bool              last_suppressed_by_hysteresis = false;
     bool              outside_worker_area = false;
 };
@@ -135,9 +140,14 @@ struct RegionalHandoverState {
     RegionalHandoverState& state,
     int64_t now_ms) noexcept {
     state.dwell_samples = 0;
-    if (now_ms > 0) state.last_handover_ms = now_ms;
+    state.dwell_ticks_beyond_hysteresis = 0;
+    if (now_ms > 0) {
+        state.last_handover_ms = now_ms;
+        state.last_handover_commit_ms = now_ms;
+    }
     ++state.handover_count;
     ++state.lease_epoch;
+    state.authority_state = AuthorityState::HandoverCommitted;
     state.last_suppressed_by_hysteresis = false;
     return AuthorityState::HandoverCommitted;
 }
@@ -147,41 +157,52 @@ struct RegionalHandoverState {
     spawns::RegionBit target_region,
     float signed_dist_cm,
     int64_t now_ms,
-    bool is_explicit_teleport = false) noexcept {
-    const float hyst_cm = runtime_handover_hysteresis_cm();
+    bool is_explicit_teleport = false,
+    float hysteresis_override_cm = -1.0f) noexcept {
+    const float hyst_cm = (hysteresis_override_cm >= 0.0f) ? hysteresis_override_cm : runtime_handover_hysteresis_cm();
     const uint32_t req_dwell = runtime_handover_dwell_samples();
     const int64_t cooldown_ms = runtime_handover_cooldown_ms();
+    state.last_signed_border_distance_cm = signed_dist_cm;
     if (target_region == spawns::RegionBit::None ||
         target_region == state.authoritative_region ||
         signed_dist_cm < hyst_cm) {
         state.candidate_region = state.authoritative_region;
         state.dwell_samples = 0;
+        state.dwell_ticks_beyond_hysteresis = 0;
         if (target_region != spawns::RegionBit::None &&
             target_region != state.authoritative_region) {
             state.last_suppressed_by_hysteresis = true;
+            ++state.suppressed_oscillations;
         } else if (signed_dist_cm < -hyst_cm) {
             state.last_suppressed_by_hysteresis = false;
+            state.authority_state = AuthorityState::Local;
         }
         return BorderDecision::StayLocal;
     }
     if (state.last_handover_ms > 0 &&
         (now_ms - state.last_handover_ms) < cooldown_ms) {
         state.last_suppressed_by_hysteresis = true;
+        ++state.suppressed_oscillations;
         return BorderDecision::StayLocal;
     }
     if (state.candidate_region != target_region) {
         state.candidate_region = target_region;
         state.dwell_samples = 0;
+        state.dwell_ticks_beyond_hysteresis = 0;
     }
     state.dwell_samples = is_explicit_teleport ? req_dwell
                                                : (state.dwell_samples + 1);
+    state.dwell_ticks_beyond_hysteresis = state.dwell_samples;
     if (state.dwell_samples >= req_dwell) {
         state.authoritative_region = target_region;
         state.candidate_region = target_region;
         state.dwell_samples = 0;
+        state.dwell_ticks_beyond_hysteresis = 0;
         state.last_handover_ms = now_ms;
+        state.last_handover_commit_ms = now_ms;
         ++state.handover_count;
         ++state.lease_epoch;
+        state.authority_state = AuthorityState::HandoverPending;
         state.last_suppressed_by_hysteresis = false;
         return BorderDecision::HandoverPending;
     }
@@ -233,6 +254,18 @@ struct RegionalHandoverState {
     const spawns::RegionBit target = spawns::resolve_point_region_bit(x_cm, y_cm);
     const float dist = spawns::signed_region_border_distance_cm(x_cm, y_cm, state.authoritative_region);
     return evaluate_regional_handover_sample(state, target, dist, now_ms, is_explicit_teleport);
+}
+
+[[nodiscard]] inline BorderDecision evaluate_regional_handover(
+    RegionalHandoverState& state,
+    double x_cm,
+    double y_cm,
+    int64_t now_ms,
+    float hysteresis_cm,
+    bool is_explicit_teleport = false) noexcept {
+    const spawns::RegionBit target = spawns::resolve_point_region_bit(x_cm, y_cm);
+    const float dist = spawns::signed_region_border_distance_cm(x_cm, y_cm, state.authoritative_region);
+    return evaluate_regional_handover_sample(state, target, dist, now_ms, is_explicit_teleport, hysteresis_cm);
 }
 
 }  // namespace aoc::worldd::world

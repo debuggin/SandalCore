@@ -471,6 +471,38 @@ struct WorldStreamServer::Impl final : wsv1::WorldStreamService::Service {
         return grpc::Status::OK;
     }
 
+    void fill_actor_combat_and_corpse_detail(uint64_t id, const world::WorldActor& a, wsv1::ActorDetail* d) {
+        namespace sd = stream_detail;
+        combat::CombatWorld* cw = world.combat();
+        const npc::ai::NpcAi* ai = cw ? cw->ai_of(id) : nullptr;
+        if (ai) {
+            d->set_combatant(true);
+            d->set_health(cw->health_of(id));
+            d->set_max_health(cw->max_health_of(id));
+            d->set_ai_state(sd::ai_state_name(ai->state()));
+            d->set_target(ai->target());
+            std::vector<npc::ai::ThreatTable::Entry> threat = ai->threat().entries();
+            std::sort(threat.begin(), threat.end(), [](const auto& x, const auto& y) { return x.threat > y.threat; });
+            for (const auto& t : threat) {
+                wsv1::ThreatEntry* out = d->add_threat();
+                out->set_id(t.id);
+                out->set_threat(t.threat);
+            }
+        } else {
+            d->set_ai_state("none");
+        }
+        d->set_leash_radius_cm(ai ? ai->params().leash_radius_cm : a.npc.leash_radius_cm);
+        if (const combat::Aftermath* after = world.aftermath()) {
+            const double now = world.world_clock();
+            if (const combat::Corpse* c = after->corpse_of(id); c && !c->living && !c->is_pile) {
+                d->set_corpse(true);
+                d->set_corpse_loot_stacks(static_cast<uint32_t>(c->remaining()));
+                d->set_corpse_closes_in_seconds(std::max(0.0, c->close_at - now));
+            }
+            d->set_respawn_in_seconds(after->respawn_in(id, now));
+        }
+    }
+
     /// Network thread: fills the answer for the non-player actor `a`; false when its kind is not mapped.
     bool inspect_actor(uint64_t id, const world::WorldActor& a, wsv1::InspectResponse* resp) {
         namespace sd = stream_detail;
@@ -490,30 +522,11 @@ struct WorldStreamServer::Impl final : wsv1::WorldStreamService::Service {
         d->set_archetype(a.npc.archetype);
         d->set_source(sd::source_name(a.npc.source));
         d->set_level(static_cast<uint32_t>(std::max(0, a.npc.level)));
-        combat::CombatWorld* cw = world.combat();
-        const npc::ai::NpcAi* ai = cw ? cw->ai_of(id) : nullptr;
-        if (ai) {
-            d->set_combatant(true);
-            d->set_health(cw->health_of(id));
-            d->set_max_health(cw->max_health_of(id));
-            d->set_ai_state(sd::ai_state_name(ai->state()));
-            d->set_target(ai->target());
-            std::vector<npc::ai::ThreatTable::Entry> threat = ai->threat().entries();
-            std::sort(threat.begin(), threat.end(), [](const auto& x, const auto& y) { return x.threat > y.threat; });
-            for (const auto& t : threat) {
-                wsv1::ThreatEntry* out = d->add_threat();
-                out->set_id(t.id);
-                out->set_threat(t.threat);
-            }
-        } else {
-            d->set_ai_state("none");
-        }
         d->set_home_x_cm(mstream::to_cm(a.npc.home_x));
         d->set_home_y_cm(mstream::to_cm(a.npc.home_y));
         d->set_home_z_cm(mstream::to_cm(a.npc.home_z));
         d->set_distance_from_home_cm(std::hypot(a.x - a.npc.home_x, a.y - a.npc.home_y));
         d->set_aggro_radius_cm(a.npc.aggro_radius_cm);
-        d->set_leash_radius_cm(ai ? ai->params().leash_radius_cm : a.npc.leash_radius_cm);
         d->set_respawn_seconds(a.npc.respawn_seconds);
         d->set_respawn_rule(a.npc.respawn_rule);
         for (const int64_t t : a.npc.loot_tables) d->add_loot_tables(t);
@@ -524,15 +537,7 @@ struct WorldStreamServer::Impl final : wsv1::WorldStreamService::Service {
         d->set_spawn_x_cm(mstream::to_cm(spawn_ai.x));
         d->set_spawn_y_cm(mstream::to_cm(spawn_ai.y));
         d->set_spawn_z_cm(mstream::to_cm(spawn_ai.z));
-        if (const combat::Aftermath* after = world.aftermath()) {
-            const double now = world.world_clock();
-            if (const combat::Corpse* c = after->corpse_of(id); c && !c->living && !c->is_pile) {
-                d->set_corpse(true);
-                d->set_corpse_loot_stacks(static_cast<uint32_t>(c->remaining()));
-                d->set_corpse_closes_in_seconds(std::max(0.0, c->close_at - now));
-            }
-            d->set_respawn_in_seconds(after->respawn_in(id, now));
-        }
+        fill_actor_combat_and_corpse_detail(id, a, d);
         return true;
     }
 

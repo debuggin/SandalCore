@@ -179,15 +179,6 @@ inline std::string leaf_of(const std::string& path) {
     return leaf;
 }
 
-inline std::string actor_display_name(const WorldActor& a) {
-    if (!a.npc.name.empty()) return a.npc.name;
-    std::string name = a.label.empty() ? leaf_of(a.npc.archetype) : a.label;
-    constexpr char kDefault[] = "Default__";
-    if (name.compare(0, sizeof kDefault - 1, kDefault) == 0) name.erase(0, sizeof kDefault - 1);
-    if (name.size() > 2 && name.compare(name.size() - 2, 2, "_C") == 0) name.resize(name.size() - 2);
-    return name;
-}
-
 inline bool ci_has_token(std::string_view hay, std::string_view needle) noexcept {
     if (needle.empty() || hay.size() < needle.size()) return false;
     const size_t limit = hay.size() - needle.size();
@@ -199,8 +190,27 @@ inline bool ci_has_token(std::string_view hay, std::string_view needle) noexcept
     return false;
 }
 
+inline bool is_huntable_npc(const WorldActor& a) noexcept {
+    if (a.kind != ActorKind::Npc || a.npc.is_gm_vendor || a.npc.vendor_guid != 0 || a.npc.dialogue_root != 0) return false;
+    if (ci_has_token(a.label, "[hunting") || ci_has_token(a.npc.name, "[hunting") || ci_has_token(a.npc.archetype, "hunting_")) return true;
+    return a.npc.interact_def > 1000000;
+}
+
+inline std::string actor_display_name(const WorldActor& a) {
+    if (!a.label.empty() && ci_has_token(a.label, "[hunting")) return a.label;
+    std::string name = !a.npc.name.empty() ? a.npc.name : (a.label.empty() ? leaf_of(a.npc.archetype) : a.label);
+    constexpr char kDefault[] = "Default__";
+    if (name.compare(0, sizeof kDefault - 1, kDefault) == 0) name.erase(0, sizeof kDefault - 1);
+    if (name.size() > 2 && name.compare(name.size() - 2, 2, "_C") == 0) name.resize(name.size() - 2);
+    if (is_huntable_npc(a) && !ci_has_token(name, "[hunting")) {
+        name += " [Hunting / Animal Husbandry | Common | Tier 1 Novice]";
+    }
+    return name;
+}
+
 inline bool is_hostile_npc(const WorldActor& a) {
     if (a.kind != ActorKind::Npc || a.npc.is_gm_vendor || a.npc.vendor_guid != 0 || a.npc.dialogue_root != 0) return false;
+    if (is_huntable_npc(a)) return false;
     const std::string name = actor_display_name(a);
     const std::string& p = a.npc.archetype;
     static constexpr std::string_view kFriendlyRoles[] = {
@@ -212,7 +222,7 @@ inline bool is_hostile_npc(const WorldActor& a) {
     }
     if (a.npc.aggro_radius_cm > 0.0 || !a.npc.loot_tables.empty()) return true;
     static constexpr std::string_view kMonsterTokens[] = {
-        "/npc/monster/", "/npc/beast/", "/npc/humanoid/", "/bandits", "/cultists", "hunting_",
+        "/npc/monster/", "/npc/beast/", "/npc/humanoid/", "/bandits", "/cultists",
         "raven", "mycel", "rabid", "wolf", "goblin", "spider", "skeleton", "zombie", "bandit", "bear",
         "elemental", "dragon", "raider", "cultist", "minotaur", "orc", "troll", "demon", "undead", "slime",
         "boar", "scorpion", "wyvern", "golem", "stalker", "brute", "grem", "gryphon", "raptor", "bullywog",

@@ -25,20 +25,39 @@ func ServiceTickHz() float64 {
 }
 
 type EntitySnapshot struct {
-	ID           string  `json:"id"`
-	Kind         string  `json:"kind"`
-	Name         string  `json:"name"`
-	Zone         string  `json:"zone"`
-	X            float64 `json:"x"`
-	Y            float64 `json:"y"`
-	Z            float64 `json:"z"`
-	Yaw          float64 `json:"yaw"`
-	HealthPct    float64 `json:"healthPct"`
-	Level        int     `json:"level"`
-	State        string  `json:"state,omitempty"`
-	ResourceType string  `json:"resource_type,omitempty"`
-	Quality      string  `json:"quality,omitempty"`
-	UpdatedAt    int64   `json:"updatedAtMs"`
+	ID                string  `json:"id"`
+	Kind              string  `json:"kind"`
+	Name              string  `json:"name"`
+	Zone              string  `json:"zone"`
+	X                 float64 `json:"x"`
+	Y                 float64 `json:"y"`
+	Z                 float64 `json:"z"`
+	Yaw               float64 `json:"yaw"`
+	HealthPct         float64 `json:"healthPct"`
+	Level             int     `json:"level"`
+	State             string  `json:"state,omitempty"`
+	ResourceType      string  `json:"resource_type,omitempty"`
+	ResourceTypeCamel string  `json:"resourceType,omitempty"`
+	Quality           string  `json:"quality,omitempty"`
+	NpcSubkind        string  `json:"npc_subkind,omitempty"`
+	NpcSubkindCamel   string  `json:"npcSubkind,omitempty"`
+	UpdatedAt         int64   `json:"updatedAtMs"`
+}
+
+func normalizeEntitySnapshot(e EntitySnapshot) EntitySnapshot {
+	if e.ResourceType == "" && e.ResourceTypeCamel != "" {
+		e.ResourceType = e.ResourceTypeCamel
+	}
+	if e.ResourceTypeCamel == "" && e.ResourceType != "" {
+		e.ResourceTypeCamel = e.ResourceType
+	}
+	if e.NpcSubkind == "" && e.NpcSubkindCamel != "" {
+		e.NpcSubkind = e.NpcSubkindCamel
+	}
+	if e.NpcSubkindCamel == "" && e.NpcSubkind != "" {
+		e.NpcSubkindCamel = e.NpcSubkind
+	}
+	return e
 }
 
 type ViewportFilter struct {
@@ -125,6 +144,7 @@ func (c *Coalescer) UpsertEntity(e EntitySnapshot) {
 	if e.ID == "" {
 		return
 	}
+	e = normalizeEntitySnapshot(e)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	prev, exists := c.entities[e.ID]
@@ -155,6 +175,7 @@ func (c *Coalescer) ReplaceBatch(upserts []EntitySnapshot, shouldPrune func(Enti
 		if e.ID == "" {
 			continue
 		}
+		e = normalizeEntitySnapshot(e)
 		prev, exists := c.entities[e.ID]
 		if e.UpdatedAt == 0 {
 			if exists && sameEntityPayload(prev, e) {

@@ -91,12 +91,23 @@ func runTickRate(ctx context.Context, args []string, out, errw io.Writer) int {
 		fmt.Fprintf(out, "%s: tick_hz=%g Hz\n", srv, payload.TickHz)
 		return 0
 	}
-	hz, perr := strconv.Atoi(strings.TrimSpace(pos[0]))
-	if perr != nil || hz < 1 || hz > 120 {
-		fmt.Fprintf(errw, "worldctl tick-rate: %q is not a whole number of Hz from 1 to 120\n", pos[0])
-		return 2
+	rawArg := strings.ToLower(strings.TrimSpace(pos[0]))
+	hz, tickMode, simFlag := 60, "manual", 1
+	switch rawArg {
+	case "dynamic", "auto", "-1":
+		hz, tickMode, simFlag = 0, "dynamic", 1
+	case "0":
+		hz, tickMode, simFlag = 0, "manual", 0
+	default:
+		parsedHz, perr := strconv.Atoi(rawArg)
+		if perr != nil || parsedHz < 1 || parsedHz > 120 {
+			fmt.Fprintf(errw, "worldctl tick-rate: %q is not 'dynamic' (-1), 0 (pause worker NPCs), or a whole number of Hz from 1 to 120\n", pos[0])
+			return 2
+		}
+		hz = parsedHz
 	}
-	if err := fetchWorkerAdminJSON(ctx, fmt.Sprintf("%s/admin/tick_hz?tick_hz=%d", metricsURL, hz), &payload); err != nil {
+	_ = fetchWorkerAdminJSON(ctx, fmt.Sprintf("%s/admin/simulate_all_npcs?simulate_all_npcs=%d", metricsURL, simFlag), &struct{}{})
+	if err := fetchWorkerAdminJSON(ctx, fmt.Sprintf("%s/admin/tick_hz?tick_hz=%d&tick_mode=%s", metricsURL, hz, tickMode), &payload); err != nil {
 		fmt.Fprintf(errw, "worldctl tick-rate: %v\n", err)
 		return 1
 	}

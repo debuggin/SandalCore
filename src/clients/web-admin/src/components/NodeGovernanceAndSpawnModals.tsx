@@ -4,6 +4,7 @@ import React from "react";
 import {
   buildWorldStatePollUrl,
   getCityNodeCenterCm,
+  inferResourceNodeType,
   NODE_STAGE_NAMES,
   type NodeElectionAction,
   resolveWorkerForCoordinateOrZone,
@@ -147,8 +148,8 @@ export async function dispatchAuxiliaryGmAction(
       await refreshWorldEntitiesAfterNodeTierChange(storeSnap, fetchImpl);
     }
     return { ok: res.ok, message: msg };
-  } catch {
-    return { ok: true, message: `${action} executed` };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : `${action} failed` };
   }
 }
 
@@ -319,7 +320,9 @@ export async function refreshWorldEntitiesAfterNodeTierChange(
   fetchImpl: typeof fetch = typeof fetch === "function" ? fetch : (undefined as unknown as typeof fetch),
 ): Promise<void> {
   if (typeof fetchImpl !== "function") return;
-  const pollUrl = buildWorldStatePollUrl(storeSnap.layers) ?? "/api/v1/world/state?zone=verra&min_x=-2000000&max_x=2000000&min_y=-2000000&max_y=2000000";
+  if (typeof fetch === "function" && fetchImpl === fetch) await new Promise((resolve) => setTimeout(resolve, 400));
+  const basePollUrl = buildWorldStatePollUrl(storeSnap.layers) ?? "/api/v1/world/state?zone=verra&min_x=-2000000&max_x=2000000&min_y=-2000000&max_y=2000000";
+  const pollUrl = `${basePollUrl}${basePollUrl.includes("?") ? "&" : "?"}fresh=1`;
   try {
     const res = await fetchWithTransientRetry(pollUrl, { headers: { Accept: "application/json" } }, { fetchImpl });
     if (!res.ok) return;
@@ -329,11 +332,16 @@ export async function refreshWorldEntitiesAfterNodeTierChange(
     const added: WorldEntity[] = rawEntities.map((e) => {
       const rawKind = String(e.kind ?? (e.hostile ? "monster" : "npc"));
       const kind = rawKind === "player" || rawKind === "monster" || rawKind === "resource_node" || rawKind === "mount" || rawKind === "loot_pile" || rawKind === "poi" ? rawKind : "npc";
+      const rawName = String(e.name ?? kind);
+      const rawSubkind = typeof e.npc_subkind === "string" && e.npc_subkind.length > 0 ? e.npc_subkind : typeof e.npcSubkind === "string" && e.npcSubkind.length > 0 ? e.npcSubkind : undefined;
+      const rawResType = typeof e.resourceType === "string" && e.resourceType.length > 0 ? e.resourceType : typeof e.resource_type === "string" && e.resource_type.length > 0 ? e.resource_type : undefined;
+      const resType = kind === "resource_node" || rawSubkind === "huntable" || Boolean(rawResType) ? inferResourceNodeType(rawName, rawResType, rawSubkind) : undefined;
+      const qual = typeof e.quality === "string" && e.quality.length > 0 ? e.quality : typeof e.rarity === "string" && e.rarity.length > 0 ? e.rarity : kind === "resource_node" ? "Common · Tier 1 (Novice)" : undefined;
       return {
-        guid: String(e.id ?? e.guid ?? e.name ?? "entity"), name: String(e.name ?? kind), kind,
+        guid: String(e.id ?? e.guid ?? e.name ?? "entity"), name: rawName, kind,
         xCm: Number(e.x_cm ?? e.x ?? 0), yCm: Number(e.y_cm ?? e.y ?? 0), zCm: Number(e.z_cm ?? e.z ?? 0),
         yawDeg: Number(e.yaw_deg ?? 0), level: Number(e.level ?? 1), healthPct: Number(e.health_pct ?? e.hp ?? 100),
-        npc_subkind: typeof e.npc_subkind === "string" ? e.npc_subkind : undefined,
+        npc_subkind: rawSubkind, npcSubkind: rawSubkind, resourceType: resType, resource_type: resType, quality: qual,
         zoneId: typeof e.zone === "string" ? e.zone : typeof e.zone_id === "string" ? e.zone_id : undefined,
       };
     });
@@ -370,9 +378,9 @@ export function NodeGovernanceModalCard(props: { readonly storeSnap: WorldStream
           <button key={stageName} type="button" data-testid={`set-node-level-${lvl}`} onClick={() => {
             storeSnap.updateCityNodeLevel(node.name, lvl);
             const prose = `Set ${node.display_name} to Stage Lv ${lvl} (${stageName})`;
-            void sendGmCommand({ ...buildSetNodeLevelCommand(node.name, lvl), zone: nodeWorker.scope_key, worker_id: nodeWorker.worker_id } as never)
-              .catch(() => ({ ok: true, message: prose, correlationId: "" }))
-              .then((r) => { storeSnap.setScopedReceipt("nodeLevel", { ok: r.ok, message: r.ok ? prose : `${prose}: ${r.message}`, correlationId: r.correlationId }); void refreshWorldEntitiesAfterNodeTierChange(storeSnap); });
+            void sendGmCommand({ ...buildSetNodeLevelCommand(node.name, lvl), node_guid: node.guid, zone: nodeWorker.scope_key, worker_id: nodeWorker.worker_id } as never)
+              .catch((err: unknown) => ({ ok: false, message: err instanceof Error ? err.message : "Network error", correlationId: "" }))
+              .then((r) => { storeSnap.setScopedReceipt("nodeLevel", { ok: r.ok, message: r.ok ? prose : `${prose}: ${r.message}`, correlationId: r.correlationId }); if (r.ok) void refreshWorldEntitiesAfterNodeTierChange(storeSnap); });
           }} style={{ ...CHIP_STYLE, backgroundColor: node.level === lvl ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: node.level === lvl ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>
             Lv {lvl} {stageName.slice(0, 6)}
           </button>
@@ -380,7 +388,7 @@ export function NodeGovernanceModalCard(props: { readonly storeSnap: WorldStream
       </div>
       <div style={{ display: "flex", gap: "6px", marginBottom: "8px", alignItems: "center", flexWrap: "wrap" }}>
         {[1000, 10000].map((xp) => (
-          <button key={xp} type="button" data-testid={`add-node-xp-${xp}`} onClick={() => void dispatchAuxiliaryGmAction({ action: "add_node_xp", node_name: node.name, xp, zone: nodeWorker.scope_key, worker_id: nodeWorker.worker_id }).then((r) => { const prose = `Added +${xp.toLocaleString()} XP to ${node.display_name}`; storeSnap.setScopedReceipt("nodeXp", { ok: r.ok, message: r.ok ? prose : `${prose}: ${r.message}` }); })} style={CHIP_STYLE}>+{xp.toLocaleString()} XP</button>
+          <button key={xp} type="button" data-testid={`add-node-xp-${xp}`} onClick={() => void dispatchAuxiliaryGmAction({ action: "add_node_xp", node_name: node.name, node_guid: node.guid, xp, zone: nodeWorker.scope_key, worker_id: nodeWorker.worker_id }).then((r) => { const prose = `Added +${xp.toLocaleString()} XP to ${node.display_name}`; storeSnap.setScopedReceipt("nodeXp", { ok: r.ok, message: r.ok ? prose : `${prose}: ${r.message}` }); })} style={CHIP_STYLE}>+{xp.toLocaleString()} XP</button>
         ))}
         <button type="button" data-testid="city-node-teleport-here-btn" onClick={() => { const c = getCityNodeCenterCm(node); storeSnap.openCommandModal("teleport", { xCm: c.xCm, yCm: c.yCm, zCm: c.zCm }); }} style={BTN_STYLE}>Teleport Player Here...</button>
         <button type="button" data-testid="city-node-spawn-here-btn" onClick={() => { const c = getCityNodeCenterCm(node); storeSnap.openCommandModal("spawn", { xCm: c.xCm, yCm: c.yCm, zCm: c.zCm }); }} style={CHIP_STYLE}>Spawn NPC / Monster Here...</button>

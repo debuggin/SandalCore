@@ -58,11 +58,11 @@ flowchart TB
     end
 
     subgraph Tier3Web["Tier 3A: aoc-web-admin Operational Studio (React 19 + HTML5 Canvas)"]
-        TopBar["Top Bar (Brand + 3 Workspace Tab Pills: World Map / Players & Spawner / Logs & Analytics + StreamStatus 30 Hz + Sim All NPCs + End Session)"]
+        TopBar["Top Bar (Brand + Workspace Tab Pills: Map / Observability + StreamStatus 30 Hz + Sim All NPCs + END SESSION)"]
         TopLeft["Top-Left Cluster (top: 12px, left: 12px, width: 220px -- Zoom +/-/Reset + 30 Hz Badge + Searchable City Quick-Jump Combobox)"]
         TopRightInspector["Top-Right unified-map-inspector-slot (top: 12px, right: 12px, width: 360px -- City Node Governance / Entity-POI Inspector / Picked Coordinate Readout)"]
-        WorkersAndToasts["Visible Server Workers Panel (fixed width: 320px, height: 208px, 176px scroll body) & Action Feedback Toasts"]
-        Analytics4Zone["4-Zone Analytics & Logs (Golden Signals KPIs + Worker Shards + USE/RED + Structured Logs)"]
+        WorkersAndToasts["Visible Server Workers Panel (fixed width: 450px, height: 208px, 176px scroll body + Per-Worker 0 Hz/Dynamic/10..60 Hz) & Action Feedback Toasts"]
+        Analytics4Zone["4-Zone Observability Tab (Golden Signals KPIs + Worker Shards + USE/RED + Structured Logs)"]
     end
 
     subgraph Tier3Desktop["Tier 3B: SandalLauncher Desktop Client (.NET 10 + Avalonia 11.2)"]
@@ -166,7 +166,7 @@ The **World Map & GM Studio** viewport (`src/clients/web-admin/src/map/VerraMapC
 
 ```text
 +----------------------------------------------------------------------------------------------------------+
-| SANDALCORE   [ World Map ] [ Players & Spawner ] [ Logs & Analytics ]   [30 Hz] [Sim All NPCs] [End Sess]|
+| SANDALCORE   [ Map ] [ Observability ]                            [Admin] [30 Hz] [Sim All] [END SESSION]|
 +----------------------------------------------------------------------------------------------------------+
 | [Search online players on map...]     [Players] [NPCs] [Monsters] [Resources] [Mounts] [POIs] [ZOI] [Grid]|
 +----------------------------------------------------------------------------------------------------------+
@@ -182,29 +182,29 @@ The **World Map & GM Studio** viewport (`src/clients/web-admin/src/map/VerraMapC
 |                                                                      +---------------------------------+ |
 |                                                                                                          |
 | +--------------------------------------------+                       +---------------------------------+ |
-| | Visible Server Workers (fixed 320px x 208px)|                      | Action Feedback Toasts          | |
+| | Visible Server Workers (fixed 450px x 208px)|                      | Action Feedback Toasts          | |
 | | (176px scrollable body, stable gutter)     |                       | (gm-action-toast-stack)         | |
-| | [aoc-riverlands        Riverlands [20 Hz]] |                       | [Duunhold -> Lv 6: executed  x] | |
-| | [aoc-winstead            Winstead [30 Hz]] |                       +---------------------------------+ |
+| | [aoc-riverlands   Riverlands [Dynamic v]]  |                       | [Duunhold -> Lv 6: executed  x] | |
+| | [aoc-winstead    Winstead [0 Hz (Off) v]]  |                       +---------------------------------+ |
 | +--------------------------------------------+                                                           |
 +----------------------------------------------------------------------------------------------------------+
 ```
 
 | HUD Surface / Slot | DOM `data-testid` & Position | Fixed Dimensions & Layout Contract | Primary Controls & Behavior |
 |:---|:---|:---|:---|
-| **Top Navigation & Stream Bar** | `web-admin-tab-bar` + `verra-stream-status` | Full-width top header (`padding: 8px 18px`, `backdropFilter: blur(16px)`) | Contains **Brand** (`SANDALCORE`) + **3 workspace tab pills** (`World Map`, `Players & Spawner`, `Logs & Analytics`) + **`StreamStatus`** (`30 Hz` constant tick rate badge + `Sim All NPCs` toggle + `End Session` button). Has **`0` top-bar `Teleport`/`Spawn` modal dock buttons** and **`0` `2D/3D` toggle**. |
-| **Map Filter & Layer Strip** | `verra-map-search-input` + `layer-toggle-*` | Full-width sub-header (`padding: 8px 14px`) | Online player search box + independent layer toggle pills (`Players`, `NPCs`, `Monsters`, `Resource Nodes`, `Mounts`, `Loot Piles`, `POIs`, `City Nodes`, `ZOI Borders`, `Worker Grid`) with live count badges. |
+| **Top Navigation & Stream Bar** | `web-admin-tab-bar` + `verra-stream-status` | Full-width top header (`padding: 8px 18px`, `backdropFilter: blur(16px)`) | Contains **Brand** (`SANDALCORE`) + **Workspace tab pills** (`Map`, **`Observability`**) + `AdminAuthSessionBadge` (default username **`Admin`** + **`END SESSION`** button) + **`StreamStatus`** (`30 Hz` constant tick rate badge + `Sim All NPCs` toggle). |
+| **Map Filter & Layer Strip** | `verra-map-search-input` + `layer-toggle-*` | Full-width sub-header (`padding: 8px 14px`) | Online player search box + independent layer toggle pills (`Players`, `NPCs`, `Monsters`, `Resource Nodes`, `Mounts`, `Loot Piles`, `POIs`, `City Nodes`, `ZOI Borders`, `Worker Grid`) with live count badges + `ServerTimeOfDayControl` (`VerraCalendarPopover`). |
 | **Top-Left Control Cluster** | `map-zoom-*` + `city-quick-jump-combobox` (`top: 12px, left: 12px, zIndex: 18`) | `width: 220px` | Zoom controls (`+`, `-`, `Reset` / `1:1`, `Zoom / 30 Hz` badge) + Searchable City Quick-Jump filtering combobox (`city-quick-jump-search` + `city-node-quick-select` for 26 City Nodes). Never occluded by the right-side inspector or modals. |
 | **Top-Right Unified Inspector Slot** | `unified-map-inspector-slot` (`top: 12px, right: 12px, zIndex: 25`) | `width: 360px` (`display: flex; flexDirection: column; gap: 8px`) | Hosts the mutually exclusive **City Node Governance card** (with `Stage 0..6`, `+1,000`/`+10,000 XP`, `Teleport Player Here...`, and `Spawn NPC / Monster Here...` buttons), **Entity/POI Inspector** (`EntityInspector` + `selected-entity-quick-actions`), or **`Picked Coordinate Readout` card** (`picked-coordinate-readout`). |
-| **Visible Server Workers Panel** | `visible-server-workers-panel` + `visible-server-workers-scroll` | Fixed `width: 320px`, `height: 208px` (`176px` scrollable body, `overflowY: "scroll"`, `scrollbarGutter: "stable"`) | Bottom-left / lower-dock viewport worker list. Fixed `320px x 208px` outer card and `176px` scrollable body (`max 6` rows at `26px` height) ensure worker count changes never resize the card. Clicking a row zooms to that worker's spatial area; per-row `<select>` adjusts worker tick rate (`10..60 Hz`). |
-| **Action Feedback Toasts** | `gm-action-toast-stack` (`flex-direction: column`) | `width: 320px` (stacked directly above the worker list) | Displays recent GM action confirmations (`Duunhold -> Lv 6: executed`, `Duunhold +10000 XP: add_node_xp executed`) with emerald (`#20D8CE` / `#10b981`) or crimson (`#E05258` / `#ef4444`) borders and auto-dismisses after `4,500 ms`. |
+| **Visible Server Workers Panel** | `visible-server-workers-panel` + `visible-server-workers-scroll` | Fixed `width: 450px`, `height: 208px` (`176px` scrollable body, `overflowY: "auto"`, `scrollbarGutter: "stable"`) | Bottom-right / lower-dock viewport worker list. Fixed `450px x 208px` outer card and `176px` scrollable body ensure worker count changes never resize the card. Clicking a row zooms to that worker's spatial area; per-row `<select>` adjusts worker tick rate (`Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)`, and manual `10, 15, 20, 25, 30, 40, 50, 60 Hz`). |
+| **Action Feedback Toasts** | `gm-action-toast-stack` (`flex-direction: column`) | `width: 450px` (stacked directly above the worker list) | Displays recent GM action confirmations (`Duunhold -> Lv 6: executed`, `Duunhold +10000 XP: add_node_xp executed`) with emerald (`#20D8CE` / `#10b981`) or crimson (`#E05258` / `#ef4444`) borders and auto-dismisses after `4,500 ms`. |
 
 ```mermaid
 flowchart TB
     subgraph MapViewport["VerraMapCanvas Workspace (position: relative, #000000 / #060a12)"]
-        subgraph TopHeader["Top Bar & Layer Strip (0 Top-Bar Teleport/Spawn Dock Buttons, 0 2D/3D Toggle)"]
-            BrandAndTabs["Brand (SANDALCORE) + 3 Workspace Tab Pills (World Map | Players & Spawner | Logs & Analytics)"]
-            StreamBar["StreamStatus (Constant 30 Hz Tick Rate Badge + Sim All NPCs Toggle + End Session Button)"]
+        subgraph TopHeader["Top Bar & Layer Strip"]
+            BrandAndTabs["Brand (SANDALCORE) + Workspace Tab Pills (Map | Observability) + Admin / END SESSION"]
+            StreamBar["StreamStatus (Constant 30 Hz Tick Rate Badge + Sim All NPCs Toggle + 9x Time & 360d Verra Calendar)"]
             LayerBar["Search Input + Layer Toggles (Players, NPCs, Monsters, Resource Nodes, Mounts, POIs, City Nodes, ZOI Borders, Worker Grid)"]
         end
 
@@ -218,9 +218,9 @@ flowchart TB
             SearchableModals["Searchable Modals (Teleport Player Here... | Spawn NPC / Monster Here... | Give Item/Gold | AdminLoginModal)"]
         end
 
-        subgraph WorkerAndToastDock["Visible Server Workers & Toast Stack (width: 320px, flex-direction: column)"]
+        subgraph WorkerAndToastDock["Visible Server Workers & Toast Stack (width: 450px, flex-direction: column)"]
             ToastStack["Upper Element: Action Feedback Toasts (gm-action-toast-stack)"]
-            VisibleWorkers["Lower Element: Visible Server Workers Panel (fixed width: 320px, height: 208px, 176px scrollable body, scrollbarGutter: stable)"]
+            VisibleWorkers["Lower Element: Visible Server Workers Panel (fixed width: 450px, height: 208px, 176px scrollable body, Dynamic/0 Hz/10..60 Hz)"]
         end
     end
 
@@ -231,8 +231,8 @@ flowchart TB
 ### 4.2 Top Bar, Constant `30 Hz` Stream Status & Layer Filter Strip
 
 - **Top Navigation Bar (`web-admin-tab-bar`)**:
-  - Contains the relic-gold **`SANDALCORE`** brand title (`web-admin-brand-title`), the **3 workspace tab pills** (`World Map`, `Players & Spawner`, `Logs & Analytics`), and **`StreamStatus`** (`verra-stream-status`).
-  - `StreamStatus` displays the connection health indicator, the **constant `30 Hz` (`33 ms` interval) tick rate badge** across all zoom levels, the **`Sim All NPCs`** toggle (`toggle-simulate-all-npcs`), and the **`End Session`** button (`admin-logout-btn`). There are **`0` top-bar `Teleport`/`Spawn` modal dock buttons** and **`0` `2D/3D` toggle** in the top bar; all spatial GM actions launch contextually from the selected CityNode, Entity, or Picked Coordinate card inside `unified-map-inspector-slot`.
+  - Contains the relic-gold **`SANDALCORE`** brand title (`web-admin-brand-title`), the workspace tab pills (**`Map`** and **`Observability`**), `AdminAuthSessionBadge` (default username **`Admin`** and **`END SESSION`** button), and **`StreamStatus`** (`verra-stream-status`).
+  - `StreamStatus` displays the connection health indicator, the **constant `30 Hz` (`33 ms` interval) tick rate badge** across all zoom levels, the **`Sim All NPCs`** toggle (`toggle-simulate-all-npcs`), and the **`END SESSION`** button (`END_SESSION_BUTTON_LABEL = "END SESSION"`).
 - **Layer Toggle Pills with Live Count Badges**:
   - Horizontal flex toolbar providing independent visibility toggles for **`Players`**, **`NPCs`**, **`Monsters`**, **`Resource Nodes`**, **`Mounts`**, **`Loot Piles`**, **`POIs`**, **`City Nodes`**, **`ZOI Borders`**, and **`Worker Grid`**.
 
@@ -258,20 +258,20 @@ Renders at `top: 12px, right: 12px, width: 360px` and hosts exactly one mutually
 4. **Searchable Action & Authentication Modals**:
    - Triggering **`Teleport Player Here...`** (`TeleportCard`) or **`Spawn NPC / Monster Here...`** (`SpawnNpcCard`) opens a searchable catalog modal over the workspace. **`AdminLoginModal`** (`zIndex: 9999`) handles `HS256` JWT passphrase exchange when unauthenticated or when `boot_id` rotates.
 
-### 4.5 Fixed-Size `Visible Server Workers` Panel (`320px x 208px`) & Action Feedback Toasts
+### 4.5 Fixed-Size `Visible Server Workers` Panel (`450px x 208px`) & Action Feedback Toasts
 
 - **Visible Server Workers Panel (`visible-server-workers-panel`)**:
-  - Enforces a strict fixed outer geometry of **`width: 320px` (`minWidth: 320px, maxWidth: 320px`)** and **`height: 208px` (`minHeight: 208px, maxHeight: 208px`)**, with a fixed **`176px` scrollable body (`visible-server-workers-scroll`, `height: 176px, minHeight: 176px, maxHeight: 176px, overflowY: "scroll", scrollbarGutter: "stable"`)**.
-  - Because both the outer card (`320px x 208px`) and inner scroll viewport (`176px`) are locked to fixed pixel heights with `scrollbarGutter: "stable"`, changes in visible worker count as the operator pans or zooms **never resize or shift the card**.
-  - Clicking any `26px`-tall worker row zooms the map camera to that worker's spatial authority bounds (`zoomToWorkerArea`), while the inline `<select>` (`worker-tick-rate-select-<id>`) adjusts that worker's live tick rate (`10 Hz / 15 Hz / 20 Hz / 30 Hz / 60 Hz`).
+  - Enforces a strict fixed outer geometry of **`width: 450px` (`minWidth: 450px, maxWidth: 450px`)** and **`height: 208px` (`minHeight: 208px, maxHeight: 208px`)**, with a fixed **`176px` scrollable body (`visible-server-workers-scroll`, `height: 176px, minHeight: 176px, maxHeight: 176px, overflowY: "auto", scrollbarGutter: "stable"`)**.
+  - Because both the outer card (`450px x 208px`) and inner scroll viewport (`176px`) are locked to fixed pixel heights with `scrollbarGutter: "stable"`, changes in visible worker count as the operator pans or zooms **never resize or shift the card**.
+  - Clicking any `30px`-tall worker row zooms the map camera to that worker's spatial authority bounds (`zoomToWorkerArea`), while the inline `<select>` (`worker-tick-rate-select-<id>`) adjusts that worker's live tick rate (`Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)` pausing NPC simulation on just that worker, and manual `10, 15, 20, 25, 30, 40, 50, 60 Hz`).
 - **Action Feedback Toasts (`gm-action-toast-stack`)**:
-  - Stacked directly above `visible-server-workers-panel` via `flex-direction: column` (`width: 320px`), rendering non-blocking execution receipts (`Duunhold -> Lv 6: executed`, `Duunhold +10000 XP: add_node_xp executed`) that auto-dismiss after `4,500 ms`.
+  - Stacked directly above `visible-server-workers-panel` via `flex-direction: column` (`width: 450px`), rendering non-blocking execution receipts (`Duunhold -> Lv 6: executed`, `Duunhold +10000 XP: add_node_xp executed`) that auto-dismiss after `4,500 ms`.
 
 ---
 
-## 5. Analytics & Structured Logs Four-Zone Layout (Golden Signals, USE, RED & Canonical Logs)
+## 5. `Observability` Tab Four-Zone Layout (Golden Signals, USE, RED & Canonical Logs)
 
-The **Analytics & Logs** workspace (`src/clients/web-admin/src/components/LogsAndContainersTab.tsx`) eliminates duplicate metric widgets by organizing all cluster telemetry into **four strictly partitioned vertical zones** (`display: flex; flex-direction: column; gap: 16px`):
+The **Observability** workspace (`src/clients/web-admin/src/components/LogsAndContainersTab.tsx`) eliminates duplicate metric widgets by organizing all cluster telemetry into **four strictly partitioned vertical zones** (`display: flex; flex-direction: column; gap: 16px`):
 
 | Zone | DOM Test ID & Container Card | Visual Anatomy & Styling Contract |
 |:---:|:---|:---|

@@ -110,7 +110,8 @@ function Update-SandalAdminBootSecrets {
     $null = New-Item -ItemType Directory -Path $DeployDir -Force
     $envPath = Join-Path $DeployDir '.env'; $passFile = Join-Path $DeployDir '.admin_passphrase'
     $envMap = Get-SandalEnvMap -EnvPath $envPath
-    $adminUser = if ($envMap.Contains('AOC_ADMIN_USERNAME') -and -not [string]::IsNullOrWhiteSpace([string]$envMap['AOC_ADMIN_USERNAME'])) { [string]$envMap['AOC_ADMIN_USERNAME'] } else { 'admin' }
+    $rawUser = if ($envMap.Contains('AOC_ADMIN_USERNAME')) { [string]$envMap['AOC_ADMIN_USERNAME'] } else { '' }
+    $adminUser = if (-not [string]::IsNullOrWhiteSpace($rawUser) -and $rawUser -cne 'admin') { $rawUser } else { 'Admin' }
     $passphrase = New-SandalPassphrase; $jwtSecret = New-SandalCsprngSecret; $bootId = [guid]::NewGuid().ToString('N')
     $updates = [ordered]@{ AOC_ADMIN_USERNAME = $adminUser; AOC_ADMIN_PASSPHRASE = $passphrase; AOC_ADMIN_JWT_SECRET = $jwtSecret; AOC_ADMIN_BOOT_ID = $bootId }
     $lines = [System.Collections.Generic.List[string]]::new()
@@ -153,9 +154,9 @@ function Merge-SandalExtraEnvKeys {
 
 function Merge-SandalLocalEnvIntoExisting {
     param([System.Collections.IDictionary]$ExistingMap, [System.Collections.IDictionary]$LocalMap, [string[]]$SecretKeys)
-    $legacyHz = @{ AOC_WORLD_TICK_HZ_WORLD = @('10', '30'); AOC_WORLD_TICK_HZ_REGION = @('20', '45'); AOC_WORLD_TICK_HZ_ZOI = @('30', '60') }
+    $legacyHz = @{ AOC_WORLD_TICK_HZ_WORLD = @('10', '30'); AOC_WORLD_TICK_HZ_REGION = @('20', '45'); AOC_WORLD_TICK_HZ_ZOI = @('30', '60'); AOC_ADMIN_USERNAME = @('admin', 'Admin') }
     foreach ($hk in $legacyHz.Keys) {
-        if ($LocalMap.Contains($hk) -and [string]$LocalMap[$hk] -eq $legacyHz[$hk][0]) { $LocalMap[$hk] = $legacyHz[$hk][1] }
+        if ($LocalMap.Contains($hk) -and [string]$LocalMap[$hk] -ceq $legacyHz[$hk][0]) { $LocalMap[$hk] = $legacyHz[$hk][1] }
     }
     foreach ($lk in $LocalMap.Keys) {
         if ($lk -in $SecretKeys -and (Test-SandalDefaultSecretValue ([string]$LocalMap[$lk])) -and $ExistingMap.Contains($lk) -and -not (Test-SandalDefaultSecretValue ([string]$ExistingMap[$lk]))) { continue }

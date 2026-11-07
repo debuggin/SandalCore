@@ -371,7 +371,7 @@ services:
       AOC_DATA_MODE_POIS: ${AOC_DATA_MODE_POIS:-memory}
       AOC_DATA_MODE_NPCS: ${AOC_DATA_MODE_NPCS:-memory}
       AOC_DATA_MODE_ITEMS: ${AOC_DATA_MODE_ITEMS:-memory}
-      AOC_ADMIN_USERNAME: ${AOC_ADMIN_USERNAME:-admin}
+      AOC_ADMIN_USERNAME: ${AOC_ADMIN_USERNAME:-Admin}
       AOC_ADMIN_PASSPHRASE: ${AOC_ADMIN_PASSPHRASE:-}
       AOC_ADMIN_JWT_SECRET: ${AOC_ADMIN_JWT_SECRET:-}
       AOC_ADMIN_BOOT_ID: ${AOC_ADMIN_BOOT_ID:-}
@@ -424,7 +424,7 @@ services:
       AOC_DATA_MODE_POIS: ${AOC_DATA_MODE_POIS:-memory}
       AOC_DATA_MODE_NPCS: ${AOC_DATA_MODE_NPCS:-memory}
       AOC_DATA_MODE_ITEMS: ${AOC_DATA_MODE_ITEMS:-memory}
-      AOC_ADMIN_USERNAME: ${AOC_ADMIN_USERNAME:-admin}
+      AOC_ADMIN_USERNAME: ${AOC_ADMIN_USERNAME:-Admin}
       AOC_ADMIN_PASSPHRASE: ${AOC_ADMIN_PASSPHRASE:-}
       AOC_ADMIN_JWT_SECRET: ${AOC_ADMIN_JWT_SECRET:-}
       AOC_ADMIN_BOOT_ID: ${AOC_ADMIN_BOOT_ID:-}
@@ -560,7 +560,6 @@ services:
     pull_policy: never
     cpus: 2.0
     mem_limit: ${AOC_WORLD_WORKER_MEM_LIMIT:-2560M}
-    deploy: { resources: { limits: { memory: "${AOC_WORLD_WORKER_MEM_LIMIT:-2560M}" } } }
     entrypoint: ["/app/world"]
     command: *world_cmd
     environment:

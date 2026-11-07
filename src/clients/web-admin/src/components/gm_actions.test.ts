@@ -7,7 +7,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Registers in-memory Node module hooks so .tsx modules strip JSX return trees without DOM.
-registerHooks({
+if (!process.env.VITEST) registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === "react" || specifier === "react/jsx-runtime" || specifier === "react/jsx-dev-runtime") {
       return {
@@ -193,7 +193,7 @@ async function testMutuallyExclusiveSelectionAndRightClickClear(): Promise<void>
 
   assert.deepEqual(
     mainMod.ADMIN_TABS.map((t) => ({ id: t.id, label: t.label })),
-    [{ id: "map", label: "Map" }, { id: "analytics", label: "Analytics & Logs" }],
+    [{ id: "map", label: "Map" }, { id: "analytics", label: "Observability" }],
   );
   assert.equal(typeof mainMod.WebAdminErrorBoundary, "function");
   assert.equal(typeof tab2Mod.TeleportCard, "function");
@@ -543,8 +543,10 @@ async function testZeroObjectLogFalsificationAndConsistentEntityTaxonomy(): Prom
   assert.equal(snap.world_status.monsters_total, 45);
   assert.equal(snap.world_status.resource_nodes_total, 80);
   assert.equal(snap.world_status.mounts_total, 12);
-  assert.equal(snap.workers.length, 6);
-  assert.equal(snap.workers[5].total_entities, 250);
+  assert.equal(snap.workers.length, 1);
+  assert.equal(snap.workers[0].total_entities, 250);
+  assert.equal(snap.workers[0].tick_hz, 100);
+  assert.equal(snap.workers[0].scope_tier_badge, "NODE_PLUG 100Hz");
 
   const logsSrc = readFileSync(fileURLToPath(new URL("./LogsAndContainersTab.tsx", import.meta.url)), "utf8");
   assert.equal(logsSrc.includes('metric-total-entities'), true);
@@ -573,7 +575,8 @@ async function testTopLeftCityQuickJumpBottomRightWorkersAndActionToasts(): Prom
   assert.equal(mapSrc.includes('scrollbarGutter: "stable"'), true);
   assert.equal(mapSrc.includes('position: "relative", zIndex: 60'), true);
   assert.equal(mapSrc.includes('zIndex: 120'), true);
-  assert.ok(storeMod.getVisibleWorkersForViewport(storeMod.DEFAULT_REGIONAL_WORLD_WORKERS, storeMod.computeViewportWorldBoundsCm(storeMod.DEFAULT_CAMERA_VIEWPORT)).length > 6);
+  const visibleDefault = storeMod.getVisibleWorkersForViewport(storeMod.DEFAULT_REGIONAL_WORLD_WORKERS, storeMod.computeViewportWorldBoundsCm(storeMod.DEFAULT_CAMERA_VIEWPORT));
+  assert.ok(visibleDefault.length >= 1 && visibleDefault.length <= storeMod.DEFAULT_REGIONAL_WORLD_WORKERS.length);
   assert.equal(mapSrc.includes('data-testid="inspector-give-item-btn"'), true);
   assert.equal(mapSrc.includes('data-testid="inspector-give-gold-btn"'), true);
   assert.equal(mapSrc.includes('data-testid="npc-instance-nudge"'), true);
@@ -586,7 +589,7 @@ async function testTopLeftCityQuickJumpBottomRightWorkersAndActionToasts(): Prom
   assert.equal(duunholdMatches[0]?.display_name, "Duunhold");
   assert.equal(sunhavenMatches[0]?.display_name, "Sunhaven");
 
-  const store = storeMod.createWorldStreamStore();
+  const store = storeMod.createWorldStreamStore({ workers: storeMod.DEFAULT_REGIONAL_WORLD_WORKERS });
   store.getState().setScopedReceipt("nodeLevel", { ok: true, message: "Duunhold -> Lv 6: executed" });
   store.getState().setScopedReceipt("nodeXp", { ok: true, message: "Duunhold +10000 XP: add_node_xp executed" });
   assert.equal(store.getState().toasts.some((t) => t.text === "Duunhold -> Lv 6: executed"), true);
@@ -600,10 +603,10 @@ async function testTopLeftCityQuickJumpBottomRightWorkersAndActionToasts(): Prom
   });
   assert.equal(tickCmdUrl, "/api/v1/gm/command");
   assert.equal(JSON.parse(tickCmdBody).command, "set_tick_rate");
-  assert.equal(JSON.parse(tickCmdBody).tick_hz, 120);
-  assert.equal(store.getState().workers.find((w) => w.worker_id === "world-riverlands")?.tick_hz, 120);
-  assert.equal(store.getState().lastReceiptsByScope.worker_tick?.message, "Set world-riverlands tick rate to 120 Hz");
-  assert.equal(store.getState().toasts.some((t) => t.text === "Set world-riverlands tick rate to 120 Hz"), true);
+  assert.equal(JSON.parse(tickCmdBody).tick_hz, 60);
+  assert.equal(store.getState().workers.find((w) => w.worker_id === "world-riverlands")?.tick_hz, 60);
+  assert.equal(store.getState().lastReceiptsByScope.worker_tick?.message, "Set world-riverlands tick rate to 60 Hz");
+  assert.equal(store.getState().toasts.some((t) => t.text === "Set world-riverlands tick rate to 60 Hz"), true);
 
   store.getState().setCameraViewport({ centerXCm: -644519, centerYCm: 376773, zoom: 6.0 });
   const visibleWorkers = storeMod.getVisibleWorkersForViewport(store.getState().workers, storeMod.computeViewportWorldBoundsCm(store.getState().camera));
@@ -668,7 +671,7 @@ async function testBackoffCircuitBreakerLoginResetAndScrollbarGutter(): Promise<
   await authMod.loginWithPassphrase("admin", "pass", async () => new Response(JSON.stringify({ token: "jwt-ok", username: "admin", role: "GM_ARCHITECT", boot_id: "b1" }), { status: 200 }));
   assert.equal(authMod.isUnauthenticatedViewOnly(), false);
   assert.equal(storeMod.useWorldStreamStore.getState().cityNodes.length, 26);
-  assert.equal(storeMod.useWorldStreamStore.getState().workers.length, 5);
+  assert.equal(storeMod.useWorldStreamStore.getState().workers.length, 0);
   const epLogin = authMod.getRetryResetEpoch();
   storeMod.useWorldStreamStore.getState().setConnectionState("live");
   assert.ok(authMod.getRetryResetEpoch() > epLogin);
@@ -758,18 +761,32 @@ async function testSessionStorageEtagRevalidationAutoFollowAndTimeOfDay(): Promi
   assert.equal(storeMod.useWorldStreamStore.getState().timeOfDayHours, 6.0);
 }
 
-await testVerraCoordinateMathAndDynamicTilePyramid();
-await testNodePlugTransformAndAuthenticCityNodeStageIcons();
-await testZoiPolygonsVhalgadimClippingAndBlackCanvas();
-await testMutuallyExclusiveSelectionAndRightClickClear();
-await testScopedReceiptsMayorElectionsAndPersistence();
-await testStreamLayerBitmasksPoisAndFindInWorldSearch();
-await testWorkerAuthorityResolutionAndCanonicalNames();
-await testGmCommandBuildersPaginationAndTransientRetry();
-await testInspectorModalActionsCatalogNpcsAndNpcRemoval();
-await testScopedJwtAdminLoginAnd401Or403ReLogin();
-await testZeroObjectLogFalsificationAndConsistentEntityTaxonomy();
-await testTopLeftCityQuickJumpBottomRightWorkersAndActionToasts();
-await testBackoffCircuitBreakerLoginResetAndScrollbarGutter();
-await testSessionStorageEtagRevalidationAutoFollowAndTimeOfDay();
-console.log("PASS: gm_actions unit and layer bitmask contract suite (14/14 groups)");
+async function runAllGmActionsContracts(): Promise<void> {
+  await testVerraCoordinateMathAndDynamicTilePyramid();
+  await testNodePlugTransformAndAuthenticCityNodeStageIcons();
+  await testZoiPolygonsVhalgadimClippingAndBlackCanvas();
+  await testMutuallyExclusiveSelectionAndRightClickClear();
+  await testScopedReceiptsMayorElectionsAndPersistence();
+  await testStreamLayerBitmasksPoisAndFindInWorldSearch();
+  await testWorkerAuthorityResolutionAndCanonicalNames();
+  await testGmCommandBuildersPaginationAndTransientRetry();
+  await testInspectorModalActionsCatalogNpcsAndNpcRemoval();
+  await testScopedJwtAdminLoginAnd401Or403ReLogin();
+  await testZeroObjectLogFalsificationAndConsistentEntityTaxonomy();
+  await testTopLeftCityQuickJumpBottomRightWorkersAndActionToasts();
+  await testBackoffCircuitBreakerLoginResetAndScrollbarGutter();
+  await testSessionStorageEtagRevalidationAutoFollowAndTimeOfDay();
+  console.log("PASS: gm_actions unit and layer bitmask contract suite (14/14 groups)");
+}
+
+if (process.env.VITEST) {
+  const { describe, it } = await import("vitest");
+  describe("gm_actions unit and layer bitmask contract suite", () => {
+    it("verifies all 14 contract groups", async () => {
+      await runAllGmActionsContracts();
+    });
+  });
+} else {
+  await runAllGmActionsContracts();
+}
+

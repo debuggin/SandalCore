@@ -25,6 +25,7 @@ struct Stmt {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr uint64_t kGolden = 0x9E3779B97F4A7C15ull;
+constexpr int kMaxAuthoredNodePopLevel = 4;
 
 }  // namespace
 
@@ -99,10 +100,11 @@ const std::vector<int64_t>& NodePopulationData::layout_sets(int64_t layout) cons
 int64_t NodePopulationData::spawn_for(int64_t building, int level) const {
     const auto it = building_spawns_.find(building);
     if (it == building_spawns_.end()) return 0;
+    const int effective_level = std::min(level, kMaxAuthoredNodePopLevel);
     int64_t best = 0;
     for (const auto& [key, spawn] : it->second) {
-        if (key <= level) best = spawn;   // (ascending keys: the last one at or below the level)
-        else break;
+        if (key <= effective_level) best = spawn;
+        else if (key <= level && best == 0 && !spawn_sets(spawn, 2).empty()) best = spawn;
     }
     return best;
 }
@@ -111,7 +113,9 @@ std::vector<int> NodePopulationData::levels_of(int64_t building) const {
     std::vector<int> out;
     const auto it = building_spawns_.find(building);
     if (it != building_spawns_.end()) {
-        for (const auto& [key, spawn] : it->second) out.push_back(key);
+        for (const auto& [key, spawn] : it->second) {
+            if (key <= kMaxAuthoredNodePopLevel) out.push_back(key);
+        }
     }
     return out;
 }
@@ -139,7 +143,7 @@ NodeSite node_site_of(const world::CityNodes& nodes, const world::NodeWire& wire
 
 SpawnContext node_spawn_context(const SpawnContext& base, const NodeSite& site, const std::set<std::string>& shown) {
     SpawnContext c = base;
-    c.node_level = node_level_name(site.level);
+    c.node_level = node_level_name(std::min(site.level, kMaxAuthoredNodePopLevel));
     c.node_id = site.guid;
     c.node_type = node_type_name(site.type);
     c.biome = site.biome;
@@ -166,9 +170,10 @@ std::vector<PlacedSet> placed_sets(const NodePopulationData& data, const world::
     }
     const double yaw = site.yaw * kPi / 180.0;
     const double c = std::cos(yaw), s = std::sin(yaw);
-    for (const world::PlotRow& plot : wire.plot_rows_of(site.guid, site.level)) {
+    const int effective_level = std::min(site.level, kMaxAuthoredNodePopLevel);
+    for (const world::PlotRow& plot : wire.plot_rows_of(site.guid, effective_level)) {
         if (plot.building == 0 || (plot.state != 1 && plot.state != 2)) continue;
-        const int64_t spawn = data.spawn_for(plot.building, site.level);
+        const int64_t spawn = data.spawn_for(plot.building, effective_level);
         if (spawn == 0) continue;
         const double x = site.x + plot.tx * c - plot.ty * s;
         const double y = site.y + plot.tx * s + plot.ty * c;
@@ -279,8 +284,9 @@ std::optional<NodeSpawn> select_station_on_plot(const content::PopulationData& p
     const double plot_yaw = site.yaw + quaternion_yaw(plot.qx, plot.qy, plot.qz, plot.qw);
     const int64_t placement = static_cast<int64_t>(static_cast<uint64_t>(site.guid) ^ (static_cast<uint64_t>(plot.plot) * kGolden));
     bool any_station = false;
+    const int effective_level = std::min(site.level, kMaxAuthoredNodePopLevel);
     for (const int64_t b : buildings) {
-        const int64_t spawn = data.spawn_for(b, site.level);
+        const int64_t spawn = data.spawn_for(b, effective_level);
         if (spawn == 0) continue;
         for (const int64_t set_guid : data.spawn_sets(spawn, 2)) {
             const auto set_it = population.sets.find(set_guid);
@@ -319,8 +325,9 @@ std::optional<NodeSpawn> select_station_on_plot(const content::PopulationData& p
 
 std::vector<std::string> stations_on_plot(const content::PopulationData& population, const NodePopulationData& data, const NodeSite& site, const std::vector<int64_t>& buildings) {
     std::vector<std::string> out;
+    const int effective_level = std::min(site.level, kMaxAuthoredNodePopLevel);
     for (const int64_t b : buildings) {
-        const int64_t spawn = data.spawn_for(b, site.level);
+        const int64_t spawn = data.spawn_for(b, effective_level);
         if (spawn == 0) continue;
         for (const int64_t set_guid : data.spawn_sets(spawn, 2)) {
             const auto set_it = population.sets.find(set_guid);

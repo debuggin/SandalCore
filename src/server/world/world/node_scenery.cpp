@@ -70,14 +70,15 @@ size_t NodeScenery::payload_bits(int64_t node) const {
 
 NodeScenery::Built NodeScenery::build(const CityNodeInfo& info, int level, uint8_t plot_version) const {
     Built b;
-    b.header.level = static_cast<uint8_t>(std::clamp(level, 0, 255));
+    const int layout_level = std::min(level, 4);
+    b.header.level = static_cast<uint8_t>(std::clamp(layout_level, 0, 255));
     b.header.culture = config_.culture;
     b.header.season = config_.season;
     b.header.tags = {repl::kSiegeInactiveTag};
     b.header.plot_version = plot_version;
     LayoutRequest req;
     req.node = info.guid;
-    req.context.level = level;
+    req.context.level = layout_level;
     req.context.culture = config_.culture;
     req.context.node_type = info.type;
     req.context.season = config_.season;
@@ -175,16 +176,17 @@ bool NodeScenery::make_actor(Entry& e, const CityNodeInfo& info, const Built& b)
 bool NodeScenery::refresh(Entry& e, const CityNodeInfo& info, int level) {
     const auto* schema = replicator_schema();
     if (!schema) return false;
+    const int eff_level = std::min(level, 4);
     const bool first = e.level < 0;
     const uint8_t pv = first ? 1 : next_version(e.plot_version);
-    Built b = build(info, level, pv);
+    Built b = build(info, eff_level, pv);
     if (b.items.empty()) {   // nothing of this node to draw at this level
         if (e.actor != 0) {
             registry_.remove(e.actor);   // the clients that hold it close it
-            spdlog::info("[scenery] {} (node {}): level {} draws nothing; its replicator is gone", info.display_name, info.guid, level);
+            spdlog::info("[scenery] {} (node {}): level {} draws nothing; its replicator is gone", info.display_name, info.guid, eff_level);
         }
         e.actor = 0;
-        e.level = level;
+        e.level = eff_level;
         e.items = 0;
         e.plot_version = pv;
         return true;
@@ -197,21 +199,21 @@ bool NodeScenery::refresh(Entry& e, const CityNodeInfo& info, int level) {
     registry_.modify(e.actor, Change::State, [&](WorldActor& a) {
         ok = repl::sync_node_layout(*schema, a.actor.obj.arrays, b.header, b.items, &sync);
         if (!ok) return;
-        a.scenery.level = level;
+        a.scenery.level = eff_level;
         a.scenery.items = b.items.size();
         a.scenery.plot_version = pv;
         a.scenery.payload_bits = snapshot_bits(*schema, a.actor.obj.arrays);
     });
     if (!ok) {
-        spdlog::error("[scenery] {} (node {}): the new payload for level {} does not build; the clients keep the old one", info.display_name, info.guid, level);
+        spdlog::error("[scenery] {} (node {}): the new payload for level {} does not build; the clients keep the old one", info.display_name, info.guid, eff_level);
         return false;
     }
-    e.level = level;
+    e.level = eff_level;
     e.items = b.items.size();
     e.plot_version = pv;
     ++rebuilds_;
     spdlog::info("[scenery] {} (node {}): level {} -> {}: a new full payload of {} items (was {}; {} under construction), PlotChangeVersion {}, {} bits", info.display_name, info.guid, old_level,
-                 level, b.items.size(), old_items, sites_of(b.items, info.guid), pv, payload_bits(info.guid));
+                 eff_level, b.items.size(), old_items, sites_of(b.items, info.guid), pv, payload_bits(info.guid));
     return true;
 }
 
@@ -245,10 +247,10 @@ size_t NodeScenery::tick() {
     seen_version_ = version;
     size_t n = 0;
     for (auto& [node, e] : entries_) {
-        const int level = nodes_.level_of_rank(e.rank);
-        if (level == e.level) continue;
+        const int eff_level = std::min(nodes_.level_of_rank(e.rank), 4);
+        if (eff_level == e.level) continue;
         const CityNodeInfo* info = nodes_.by_rank(e.rank);
-        if (info && refresh(e, *info, level)) ++n;
+        if (info && refresh(e, *info, eff_level)) ++n;
     }
     return n;
 }

@@ -9,10 +9,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
-	"encoding/binary"
-	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"slices"
 	"strconv"
@@ -172,7 +169,12 @@ func (s *Server) handleWorldState(w http.ResponseWriter, r *http.Request, _ Role
 		return
 	}
 	sel, q := parseLayerSelection(r), r.URL.Query()
-	if sel.StreamLayers != 0 {
+	if q.Get("fresh") == "1" || q.Get("sync") == "1" {
+		s.mu.Lock()
+		clear(s.lastStreamAt)
+		s.mu.Unlock()
+		s.pullAllWorkersSync(r.Context(), &worldadminv1.AreaBox{MinXCm: -2500000, MinYCm: -1500000, MaxXCm: 1000000, MaxYCm: 2000000}, max(sel.StreamLayers&StreamLayerAll, StreamLayerNpcs), s.now().UnixMilli())
+	} else if sel.StreamLayers != 0 {
 		s.pullWorldStreamSnapshot(r.Context(), filter, sel.StreamLayers)
 	}
 	players, entities, pois, nodes, onlinePlayersCount := make([]PlayerInfo, 0), make([]worldstream.EntitySnapshot, 0), make([]admincatalog.PlaceEntry, 0), make([]PmTilesNodeMeta, 0), 0
@@ -200,14 +202,13 @@ func (s *Server) handleWorldState(w http.ResponseWriter, r *http.Request, _ Role
 	if sel.Pois && includePois {
 		nodes, pois = s.resolveWorldNodesAndPois(r.Context())
 	}
-	todHours, anchorHours, anchorMs := s.TimeOfDayHoursAt(time.UnixMilli(stateTimeMs)), 12.0, int64(0)
-	anchorHours, anchorMs = s.TimeOfDayAnchor()
 	payload := map[string]any{
 		"schema_version": "1.0", "layer_mask": sel.LayerMask, "stream_layers": sel.StreamLayers, "layers": sel,
 		"layer_counts": map[string]int{"players": onlinePlayersCount, "npcs": len(npcs), "monsters": len(monsters), "resource_nodes": len(resourceNodes), "mounts": len(mounts), "loot_piles": len(lootPiles), "pois": len(pois), "city_nodes": len(nodes)},
 		"players": players, "workers": s.snapshotWorldWorkerStatuses(), "data_modes": s.resolveDataModes(), "service_tick_hz": worldstream.ServiceTickHz(),
-		"time_of_day_hours": todHours, "time_of_day_label": formatTimeOfDayLabel(todHours), "time_of_day_anchor_hours": anchorHours, "time_of_day_anchor_ms": anchorMs, "time_of_day_rate": 9.0, "entities": entities, "count": len(entities), "serverTimeMs": stateTimeMs,
+		"entities": entities, "count": len(entities), "serverTimeMs": stateTimeMs,
 	}
+	s.enrichPayloadWithTimeAndCalendar(payload, s.now())
 	if !compact {
 		payload["npcs"], payload["monsters"], payload["resource_nodes"], payload["mounts"], payload["loot_piles"] = npcs, monsters, resourceNodes, mounts, lootPiles
 		payload["pois"], payload["places"], payload["nodes"], payload["city_nodes"] = pois, pois, nodes, nodes
@@ -271,8 +272,11 @@ func (s *Server) pullWorldStreamSnapshot(ctx context.Context, _ worldstream.View
 }
 
 func (s *Server) pullAllWorkersSync(ctx context.Context, area *worldadminv1.AreaBox, effLayers uint32, nowMs int64) {
+	s.mu.Lock()
+	workers := append([]*WorldWorkerEndpoint(nil), s.worldWorkers...)
+	s.mu.Unlock()
 	var wg sync.WaitGroup
-	for _, w := range s.worldWorkers {
+	for _, w := range workers {
 		if s.workerStreamClient(w) != nil {
 			wg.Add(1)
 			go func(worker *WorldWorkerEndpoint) {
@@ -304,7 +308,7 @@ func (s *Server) pullOneWorkerStream(ctx context.Context, w *WorldWorkerEndpoint
 	if err != nil || frame == nil || frame.GetSnapshot() == nil {
 		return
 	}
-	scope, rawEnts := strings.ToLower(strings.TrimSpace(firstNonEmpty(w.ScopeKey, w.WorkerID))), frame.GetSnapshot().GetEntities()
+	scope, rawEnts := workerBatchScopeKey(w), frame.GetSnapshot().GetEntities()
 	seenIDs, batch := make(map[string]struct{}, len(rawEnts)), make([]worldstream.EntitySnapshot, 0, len(rawEnts))
 	for _, ent := range rawEnts {
 		snap := protoEntityToSnapshot(ent, 0)
@@ -312,7 +316,7 @@ func (s *Server) pullOneWorkerStream(ctx context.Context, w *WorldWorkerEndpoint
 			snap.ID, snap.Zone = scope+":"+snap.ID, scope
 		}
 		if snap.Kind == "resource_node" {
-			snap.Name, snap.ResourceType, snap.Quality = ent.GetName(), "", ""
+			snap.Name, snap.ResourceType, snap.ResourceTypeCamel, snap.Quality = ent.GetName(), "", "", ""
 			enrichResourceNodeSnapshot(&snap, scope, ent.GetId())
 		}
 		if (ent.GetState()&uint32(worldadminv1.EntityState_ENTITY_STATE_DEAD)) != 0 || s.isEntityDespawned(snap.ID) {
@@ -357,6 +361,8 @@ func protoEntityToSnapshot(ent *worldadminv1.Entity, nowMs int64) worldstream.En
 	}
 	if kind == "resource_node" {
 		enrichResourceNodeSnapshot(&snap, snap.Zone, ent.GetId())
+	} else if kind == "npc" || kind == "monster" {
+		enrichNpcSnapshot(&snap)
 	}
 	return snap
 }
@@ -374,8 +380,35 @@ func enrichResourceNodeSnapshot(snap *worldstream.EntitySnapshot, scope string, 
 		snap.Name = catName
 	}
 	snap.ResourceType, snap.Quality = firstNonEmpty(snap.ResourceType, catType), firstNonEmpty(snap.Quality, catQual)
+	snap.ResourceTypeCamel = snap.ResourceType
 	if snap.Level <= 0 {
 		snap.Level = catLv
+	}
+}
+
+func enrichNpcSnapshot(snap *worldstream.EntitySnapshot) {
+	raw := strings.TrimSpace(snap.Name)
+	isHuntable := strings.EqualFold(snap.NpcSubkind, "huntable") || strings.EqualFold(snap.NpcSubkindCamel, "huntable")
+	if lb, rb := strings.IndexByte(raw, '['), strings.LastIndexByte(raw, ']'); lb > 0 && rb > lb {
+		meta := raw[lb+1 : rb]
+		metaLower := strings.ToLower(meta)
+		if strings.Contains(metaLower, "hunting") || strings.Contains(metaLower, "husbandry") || isHuntable {
+			isHuntable = true
+			snap.Name = strings.TrimSpace(raw[:lb])
+			if parts := strings.SplitN(meta, "|", 2); len(parts) == 2 {
+				snap.ResourceType, snap.Quality = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+			} else {
+				snap.ResourceType = strings.TrimSpace(meta)
+			}
+		}
+	} else if strings.Contains(strings.ToLower(raw), "hunting_") {
+		isHuntable = true
+	}
+	if isHuntable {
+		snap.NpcSubkind, snap.NpcSubkindCamel = "huntable", "huntable"
+		snap.ResourceType = firstNonEmpty(snap.ResourceType, snap.ResourceTypeCamel, "Hunting / Animal Husbandry")
+		snap.ResourceTypeCamel = snap.ResourceType
+		snap.Quality = firstNonEmpty(snap.Quality, "Common · Tier 1 (Novice)")
 	}
 }
 
@@ -511,6 +544,7 @@ func (s *Server) collectNonPlayerLayers(
 		case "resource_node", "resource", "gatherable":
 			if sel.ResourceNodes {
 				snap.Kind = "resource_node"
+				snap.ResourceTypeCamel = firstNonEmpty(snap.ResourceTypeCamel, snap.ResourceType)
 				resourceNodes = append(resourceNodes, snap)
 			}
 		case "mount":
@@ -524,6 +558,7 @@ func (s *Server) collectNonPlayerLayers(
 				lootPiles = append(lootPiles, snap)
 			}
 		default:
+			enrichNpcSnapshot(&snap)
 			if isMonsterSnapshot(snap) {
 				if sel.Monsters {
 					snap.Kind = "monster"
@@ -576,7 +611,10 @@ func computeHealthPct(health, maxHealth uint32) float64 {
 }
 
 func normalizeNodeKey(raw string) string {
-	s := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(raw)), "verra_rvr_")
+	s := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(raw)), "_node_", "_")
+	for _, pref := range []string{"verra_rvr_", "verra_san_", "verra_snd_", "verra_jun_", "verra_anv_", "verra_tur_", "verra_", "node_"} {
+		s = strings.TrimPrefix(s, pref)
+	}
 	var b strings.Builder
 	for _, r := range s {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
@@ -645,6 +683,7 @@ func (s *Server) SetCityNodeMayor(nodeName, mayorGuid, mayorName string) (CityNo
 		lv = defaultNodeLevel(sp.Name)
 	}
 	s.recordMutation()
+	s.persistCityNodeState(context.Background(), sp.GUID, sp.Name)
 	return CityNodeState{
 		NodeIndex: sp.NodeIndex, GUID: guidStr, Name: sp.Name, DisplayName: sp.DisplayName,
 		TextureStem: sp.TextureStem, Ox: sp.Ox, Oy: sp.Oy, Oz: sp.Oz, YawDeg: sp.YawDeg,
@@ -686,6 +725,7 @@ func (s *Server) TriggerCityNodeElection(nodeName, action string) (CityNodeState
 		lv = defaultNodeLevel(sp.Name)
 	}
 	s.recordMutation()
+	s.persistCityNodeState(context.Background(), sp.GUID, sp.Name)
 	return CityNodeState{
 		NodeIndex: sp.NodeIndex, GUID: guidStr, Name: sp.Name, DisplayName: sp.DisplayName,
 		TextureStem: sp.TextureStem, Ox: sp.Ox, Oy: sp.Oy, Oz: sp.Oz, YawDeg: sp.YawDeg,
@@ -751,42 +791,4 @@ func (s *Server) serveWebSocketStream(w http.ResponseWriter, r *http.Request, su
 		_ = conn.SetWriteDeadline(s.now().Add(5 * time.Second))
 		return writeWSFrame(conn, payload)
 	})
-}
-
-func (s *Server) streamSubscriptionLoop(r *http.Request, sub *worldstream.Subscription, maxFrames int, emit func([]byte) error) {
-	s.coalescer.Flush()
-	for sent := 0; ; {
-		select {
-		case <-r.Context().Done():
-			return
-		case delta, ok := <-sub.Updates():
-			if !ok {
-				return
-			}
-			payload, _ := json.Marshal(delta)
-			if emit(payload) != nil {
-				return
-			}
-			if sent++; maxFrames > 0 && sent >= maxFrames {
-				return
-			}
-		}
-	}
-}
-
-func writeWSFrame(conn net.Conn, payload []byte) error {
-	length, header := len(payload), []byte{0x81}
-	if length <= 125 {
-		header = append(header, byte(length))
-	} else if length <= 65535 {
-		header = append(header, 126, byte(length>>8), byte(length))
-	} else {
-		header = append(header, 127, 0, 0, 0, 0, 0, 0, 0, 0)
-		binary.BigEndian.PutUint64(header[2:10], uint64(length))
-	}
-	if _, err := conn.Write(header); err != nil {
-		return err
-	}
-	_, err := conn.Write(payload)
-	return err
 }

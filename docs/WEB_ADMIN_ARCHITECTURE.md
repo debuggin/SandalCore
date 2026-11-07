@@ -3,7 +3,7 @@
 **Primary Diataxis Quadrant**: `Explanation` & `Technical Reference` (`DOC-01`)
 **Related Guides**: [Root Architecture Overview](../README.md) | [Web Admin & GM Studio Reference](WEB_ADMIN.md) | [UI Style Guide & Design System](UI_STYLE_GUIDE.md) | [Operational Runbook & `.env` Topologies](RUNBOOK.md) | [Server Workers & Spatial Authority](SERVER_WORKERS.md) | [Web Admin SPA Source Reference](../src/clients/web-admin/README.md)
 
-This document explains the end-to-end architecture of the SandalCore **Web Admin & GM Studio** (`src/clients/web-admin` and `src/server/services/cmd/mesh-gateway`), detailing the constant `30 Hz` (`33 ms`) entity telemetry pipeline, per-scope worker tick rates (`30--120 Hz`) and `2560M` memory bounds, the authoritative `9x` Verra server clock and Popover Time Picker (`world-time-picker-popover`), high-resolution `z=7` minimap tile rendering, 3-pass unclipped ZOI borders, data-driven Resource Node inspection (`Resource Type` & `Quality / Rarity`), and the 4-zone observability workspace.
+This document explains the end-to-end architecture of the SandalCore **Web Admin & GM Studio** (`src/clients/web-admin` and `src/server/services/cmd/mesh-gateway`), detailing the constant `30 Hz` (`33 ms`) entity telemetry pipeline, per-worker tick-rate selector (`Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)`, and manual `10..60 Hz`) with Little's Law `<= 1.0 s` (`>= 1 Hz`) entity backlog floor, PostgreSQL (`world_simulation_state` + `city_node_state`) Control-Plane SSoT in `mesh-gateway` for continuous `9x` Time of Day + 360-day Verra Calendar (`Year >= 1 AE`, 4 seasons x 3 months x 30 days) and Tier 5/6 City Node population fallback, high-resolution `z=7` minimap tile rendering, 3-pass unclipped ZOI borders, data-driven Resource Node inspection (`Resource Type` & `Quality / Rarity`), and the 4-zone **Observability** workspace.
 
 ---
 
@@ -62,12 +62,13 @@ flowchart TB
 
 ---
 
-## 2. Authoritative `9x` Verra Server Time of Day & Popover Time Picker (`world-time-picker-popover`)
+## 2. PostgreSQL Control-Plane SSoT (`world_simulation_state` + `city_node_state`), `9x` Time of Day & 360-Day Verra Calendar
 
-### Continuous `kGameTimeFactor = 9.0` Verra Clock
+### Continuous `kGameTimeFactor = 9.0` Verra Clock & 360-Day Verra Calendar (`Year >= 1 AE`)
 
-- **Authoritative Simulation Clock**: `aoc-world` advances Verra's in-game time of day continuously at **`kGameTimeFactor = 9.0`** (`9` in-game seconds per `1` real-world second, completing a full `24-hour` in-game day-night cycle every **`2 hours 40 minutes`** / `160` real minutes).
-- **Live `Time HH:MM:SS` Header Pill**: `StreamStatus.tsx` renders a tabular monospace **`Time HH:MM:SS`** badge (`world-time-readout-pill`) in the top bar that interpolates smoothly between `/api/v1/world/state` responses (`time_of_day_hours` / `server_time_seconds` / `game_time_factor: 9.0`).
+- **PostgreSQL Control-Plane SSoT in `mesh-gateway`**: `src/server/services/internal/admin-gateway/sim_persistence.go` and `0025_world_simulation_state.sql` persist `world_simulation_state` (`time_of_day_anchor_hours`, `time_of_day_anchor_at`, `calendar_anchor_year`, `calendar_anchor_day`, `time_scale = 9.0`, `simulate_all_npcs`, `worker_tick_mode`, `worker_tick_hz`) and `city_node_state` (`node_guid`, `node_id`, `level` `0..6` with Tier 5/6 population fallback to the last defined populated layout at Tier 4, `mayor_character_id`, `mayor_name`, `tax_rate_pct`, `treasury_gold`, `buildings`).
+- **Authoritative Simulation Clock & 360-Day Verra Calendar**: `mesh-gateway` and `aoc-world` advance Verra's in-game time of day continuously at **`kGameTimeFactor = 9.0`** (`9` in-game seconds per `1` real-world second, `2 hours 40 minutes` real time per `24h` in-game day) and roll elapsed days into the **360-day Verra Calendar** (`Year >= 1 AE`, `4` seasons x `3` months x `30` days = `360` days/year).
+- **Live `Time HH:MM:SS` Header Pill & `VerraCalendarPopover`**: `StreamStatus.tsx` and `VerraCalendarPopover.tsx` render the tabular monospace **`Time HH:MM:SS`** badge (`world-time-readout-pill`) and season/date controls (`Spring (D1)`, `Summer (D91)`, `Autumn (D181)`, `Winter (D271)`, `Year (AE)`, `Month (1-12)`, `Day (1-30)`, `1..360` slider).
 
 ### Interactive `Set Time` Popover Time Picker (`zIndex >= 100`)
 
@@ -95,7 +96,7 @@ flowchart TB
 
 - The **`Visible Server Workers`** panel (`data-testid="visible-server-workers-panel"`) in the bottom-right dock enforces a fixed outer frame (`width: 320px`, `height: 208px`) and a fixed `176px` scrollable list body (`data-testid="visible-server-workers-scroll"`, `overflowY: "scroll"`, `scrollbarGutter: "stable"`).
 - When running multi-worker topologies (`per_region` with `5` workers, `per_zoi`, or `per_zoi_nodes_and_pois` with `> 6` active ZOI/Node-Plug/POI workers), the panel lists every worker intersecting the viewport and activates smooth vertical scrolling for `> 6` rows (`26px` per row) without resizing the card or shifting adjacent HUD elements.
-- Each row displays the canonical worker name (`aoc-riverlands`, `aoc-winstead`, `aoc-sunhaven`, `aoc-carphin`), region/scope label, click-to-zoom handler (`zoomToWorkerArea`), and an inline `<select>` (`worker-tick-rate-select-<id>`) to tune that worker's live tick rate (`10..120 Hz`).
+- Each row displays the canonical worker name (`aoc-riverlands`, `aoc-winstead`, `aoc-sunhaven`, `aoc-carphin`), region/scope label, click-to-zoom handler (`zoomToWorkerArea`), and an inline `<select>` (`worker-tick-rate-select-<id>`) supporting **`Dynamic (30-60 Hz)`** (`-1`), **`0 Hz (Pause NPCs)`** (`0`, pausing NPC simulation on just that worker), and manual **`10, 15, 20, 25, 30, 40, 50, 60 Hz`** (backed by the Little's Law `<= 1.0 s` / `>= 1 Hz` entity backlog floor).
 
 ---
 
@@ -108,11 +109,11 @@ flowchart TB
 
 ---
 
-## 5. `Service Routing & Connection Health` Cards & `Auto Tail` / `Auto Follow` Log Controls
+## 5. `Observability` Tab: `Service Routing & Connection Health` Cards & `Auto Tail` / `Auto Follow` Log Controls
 
 ### Consistent `<Service Name> (<Protocol>)` Health Cards
 
-- In the **Analytics & Logs** workspace (`LogsAndContainersTab.tsx`), the **Service Routing & Connection Health** strip (`envoy-cluster-red-strip` / `service-routing-health-grid`) formats every upstream service card header with the canonical **`<Service Name> (<Protocol>)`** pattern:
+- In the **Observability** workspace (`LogsAndContainersTab.tsx`), the **Service Routing & Connection Health** strip (`envoy-cluster-red-strip` / `service-routing-health-grid`) formats every upstream service card header with the canonical **`<Service Name> (<Protocol>)`** pattern:
   - `aoc-gateway (HTTP/WS)`
   - `aoc-mesh-gateway (HTTP/gRPC)`
   - `aoc-auth (gRPC)`

@@ -185,6 +185,15 @@ template <typename Pred>
     return out;
 }
 
+[[nodiscard]] inline bool point_in_any_node_plug(double x_cm, double y_cm) noexcept {
+    for (const NodePlugObb& p : kVerraNodePlugs) if (p.contains(x_cm, y_cm)) return true;
+    return false;
+}
+inline constexpr double kNodeTownFootprintRadiusCm = 16500.0;
+[[nodiscard]] inline bool point_in_any_node_town_footprint(double x_cm, double y_cm) noexcept {
+    for (const NodePlugObb& p : kVerraNodePlugs) if (std::hypot(x_cm - p.cx_cm, y_cm - p.cy_cm) <= kNodeTownFootprintRadiusCm) return true;
+    return false;
+}
 [[nodiscard]] inline const NodePlugObb* find_node_plug(std::string_view name_or_guid) {
     const std::string key = normalize_area_token(name_or_guid);
     if (key.empty()) return nullptr;
@@ -751,17 +760,14 @@ enum class PartitionTopologyMode : uint8_t {
     PartitionTopologyMode mode, RegionBit target_region = RegionBit::Riverlands) {
     std::vector<AreaConfig> out;
     if (mode == PartitionTopologyMode::SingleRiverlands) {
-        AreaConfig a = AreaConfig::for_region("riverlands"); a.worker_name = "aoc-riverlands";
-        out.push_back(std::move(a)); return out;
+        AreaConfig a = AreaConfig::for_region("riverlands"); a.worker_name = "aoc-riverlands"; out.push_back(std::move(a)); return out;
     }
     if (mode == PartitionTopologyMode::SingleWorld) {
-        AreaConfig a = AreaConfig::continent(); a.worker_name = "aoc-world";
-        out.push_back(std::move(a)); return out;
+        AreaConfig a = AreaConfig::continent(); a.worker_name = "aoc-world"; out.push_back(std::move(a)); return out;
     }
     if (mode == PartitionTopologyMode::PerRegion) {
         for (const char* r : {"riverlands", "sandsquall", "jundark", "anvils", "turquoise_sea"}) {
-            AreaConfig a = AreaConfig::for_region(r); a.worker_index = static_cast<int>(out.size());
-            a.resolve_canonical_worker_name(); out.push_back(std::move(a));
+            AreaConfig a = AreaConfig::for_region(r); a.worker_index = static_cast<int>(out.size()); a.resolve_canonical_worker_name(); out.push_back(std::move(a));
         }
         return out;
     }
@@ -787,8 +793,7 @@ enum class PartitionTopologyMode : uint8_t {
     }
     return out;
 }
-
 inline constexpr double kLoginSpotZ = bootstrap::kDefaultSpawn.z;
 inline constexpr double kLoginSpotYaw = bootstrap::kDefaultSpawn.yaw_degrees;
-
 }  // namespace aoc::worldd::spawns
+namespace aoc::worldd::world { using spawns::point_in_any_node_plug; using spawns::point_in_any_node_town_footprint; using spawns::kVerraNodePlugs; }

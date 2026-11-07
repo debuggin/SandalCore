@@ -776,13 +776,13 @@ func resolveMapMetaIcons(arch *PmTilesArchive) any {
 }
 
 func extractTimeOfDayHours(p map[string]any) (float64, bool) {
+	if f, ok := extractFloatParam(p, "hour", "time_of_day", "hours", "time_of_day_hours", "value", "amount"); ok && !math.IsNaN(f) && !math.IsInf(f, 0) {
+		return wrapHours24(f), true
+	}
 	if s := extractStringParam(p, "time_of_day", "hour", "hours", "time", "value", "amount"); s != "" {
 		if h, ok := parseClockOrFloatHours(s); ok {
 			return h, true
 		}
-	}
-	if f, ok := extractFloatParam(p, "hour", "time_of_day", "hours", "time_of_day_hours", "value", "amount"); ok && !math.IsNaN(f) && !math.IsInf(f, 0) {
-		return wrapHours24(f), true
 	}
 	return 0, false
 }

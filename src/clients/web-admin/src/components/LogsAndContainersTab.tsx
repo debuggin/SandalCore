@@ -2,7 +2,7 @@
 
 import React from "react";
 import { ServerTimeOfDayControl } from "../map/VerraMapCanvas";
-import { DEFAULT_REGIONAL_WORLD_WORKERS, useWorldStreamStore, WORKER_TICK_HZ_OPTIONS, type WorldWorkerInfo } from "../state/worldStreamStore";
+import { DEFAULT_REGIONAL_WORLD_WORKERS, formatWorkerTickHzOptionLabel, normalizeWorkerTickHz, useWorldStreamStore, WORKER_TICK_HZ_OPTIONS, type WorldWorkerInfo } from "../state/worldStreamStore";
 import { buildPaginatedQueryUrl, fetchWithTransientRetry, formatLogEntryToString, normalizePaginatedEnvelope, type PaginatedListEnvelope } from "./GmCommandPalette";
 import { SANDAL_LAUNCHER_TOKENS } from "./PlayersAndSpawnerTab";
 
@@ -67,11 +67,7 @@ export interface ContainersScrapeSnapshot {
   readonly prometheus: PrometheusScrapeReport; readonly workers: readonly WorldAuthorityWorker[]; readonly containers: readonly ContainerScrapeMetric[];
 }
 
-export const DEFAULT_PROMETHEUS_TARGETS: readonly PrometheusTargetStatus[] = Object.freeze([
-  { name: "ingress-proxy", url: "ingress-proxy:9901/stats/prometheus", status: "UP", latency_ms: 1.2, exported_metrics: 148, families_count: 34 },
-  { name: "mesh-gateway", url: "mesh-gateway:8082/metrics", status: "UP", latency_ms: 0.9, exported_metrics: 64, families_count: 18 },
-  { name: "world-stream", url: "world:50062/WorldStreamService", status: "UP", latency_ms: 0.8, exported_metrics: 8, families_count: 8 },
-]);
+export const DEFAULT_PROMETHEUS_TARGETS: readonly PrometheusTargetStatus[] = Object.freeze([]);
 export const EMPTY_GATEWAY_TELEMETRY: GatewayTelemetrySummary = Object.freeze({
   requests_total: 0, errors_total: 0, cache_hits_total: 0, cache_misses_total: 0, transient_retries_total: 0, uptime_ms: 0,
 });
@@ -128,7 +124,7 @@ export function formatCanonicalWorkerName(scopeKind: string, scopeKey: string, r
 
 function defaultTickHzForScope(scopeKind: string): number {
   const kind = scopeKind.trim().toLowerCase();
-  return kind === "world" ? 10 : kind === "region" ? 20 : 30;
+  return kind === "world" ? 30 : kind === "region" ? 45 : kind === "zoi" || kind === "dynamic_zoi" ? 60 : 100;
 }
 
 function formatScopeTierBadge(scopeKind: string, tickHz: number): string {
@@ -159,25 +155,14 @@ function normalizeSingleWorker(w: Record<string, unknown>, idx: number): WorldAu
 }
 
 export function normalizeWorldWorkers(rawWorkers: unknown): readonly WorldAuthorityWorker[] {
-  if (Array.isArray(rawWorkers) && rawWorkers.length > 0) {
-    const valid = (rawWorkers as readonly Record<string, unknown>[]).filter(
-      (w) => w && typeof w === "object" && String(w.worker_id ?? w.id ?? w.name ?? "").trim().length > 0,
-    );
-    if (valid.length > 0) {
-      const hasBaseWorldOrRegion = valid.some((w) => {
-        const k = String(w.scope_kind ?? "region").trim().toLowerCase().replace(/^dynamic_/, "");
-        return k === "world" || k === "region";
-      });
-      if (hasBaseWorldOrRegion) return valid.map((w, idx) => normalizeSingleWorker(w, idx));
-      const merged = [...(DEFAULT_REGIONAL_WORLD_WORKERS as unknown as readonly Record<string, unknown>[]), ...valid];
-      return merged.map((w, idx) => normalizeSingleWorker(w, idx));
-    }
-  }
-  return DEFAULT_REGIONAL_WORLD_WORKERS.map((def, idx) => normalizeSingleWorker(def as unknown as Record<string, unknown>, idx));
+  if (!Array.isArray(rawWorkers) || rawWorkers.length === 0) return [];
+  return (rawWorkers as readonly Record<string, unknown>[])
+    .filter((w) => w && typeof w === "object" && String(w.worker_id ?? w.id ?? w.name ?? "").trim().length > 0)
+    .map((w, idx) => normalizeSingleWorker(w, idx));
 }
 
 function buildEmptyContainerMetric(name: string): ContainerScrapeMetric {
-  return { name, image: `sandalcore/${name.replace(/^aoc-/, "")}:latest`, state: "unknown", status: "Awaiting scrape", cpu_pct: 0, mem_mb: 0, mem_limit_mb: 0, mem_pct: 0, pids: 0, rx_bytes: 0, tx_bytes: 0, scrape_target: `${name}:metrics`, scrape_status: "UP", scrape_latency_ms: 0, exported_metrics: 0, requests_total: 0, errors_total: 0, active_connections: 0 };
+  return { name, image: `sandalcore/${name.replace(/^aoc-/, "")}:latest`, state: "unknown", status: "Awaiting scrape", cpu_pct: 0, mem_mb: 0, mem_limit_mb: 0, mem_pct: 0, pids: 0, rx_bytes: 0, tx_bytes: 0, scrape_target: `${name}:metrics`, scrape_status: "UNKNOWN", scrape_latency_ms: 0, exported_metrics: 0, requests_total: 0, errors_total: 0, active_connections: 0 };
 }
 
 function parseClusterMetricsMap(rawClusters: unknown): Readonly<Record<string, EnvoyClusterHealthRow>> {
@@ -186,7 +171,7 @@ function parseClusterMetricsMap(rawClusters: unknown): Readonly<Record<string, E
   for (const [key, val] of Object.entries(cObj)) {
     if (!val || typeof val !== "object") continue;
     const item = val as Record<string, unknown>;
-    out[key] = { cluster: String(item.cluster ?? key), container: String(item.container ?? ""), requests_total: Number(item.requests_total ?? 0), errors_5xx_total: Number(item.errors_5xx_total ?? 0), timeouts_total: Number(item.timeouts_total ?? 0), active_connections: Number(item.active_connections ?? 0), healthy_members: Number(item.healthy_members ?? 1) };
+    out[key] = { cluster: String(item.cluster ?? key), container: String(item.container ?? ""), requests_total: Number(item.requests_total ?? 0), errors_5xx_total: Number(item.errors_5xx_total ?? 0), timeouts_total: Number(item.timeouts_total ?? 0), active_connections: Number(item.active_connections ?? 0), healthy_members: Number(item.healthy_members ?? 0) };
   }
   return out;
 }
@@ -194,23 +179,21 @@ function parseClusterMetricsMap(rawClusters: unknown): Readonly<Record<string, E
 function normalizePrometheusReport(rawProm: unknown, ws: Record<string, unknown>): PrometheusScrapeReport {
   const p = (rawProm && typeof rawProm === "object" ? rawProm : {}) as Record<string, unknown>;
   const rawTargets = Array.isArray(p.targets) ? (p.targets as readonly Record<string, unknown>[]) : [];
-  const targets: readonly PrometheusTargetStatus[] = rawTargets.length > 0
-    ? rawTargets.map((t) => ({ name: String(t.name ?? "target"), url: String(t.url ?? ""), status: String(t.status ?? "UP").toUpperCase(), latency_ms: Number(t.latency_ms ?? 0), exported_metrics: Number(t.exported_metrics ?? 0), families_count: Number(t.families_count ?? 0) }))
-    : DEFAULT_PROMETHEUS_TARGETS;
+  const targets: readonly PrometheusTargetStatus[] = rawTargets.map((t) => ({ name: String(t.name ?? "target"), url: String(t.url ?? ""), status: String(t.status ?? "DOWN").toUpperCase(), latency_ms: Number(t.latency_ms ?? 0), exported_metrics: Number(t.exported_metrics ?? 0), families_count: Number(t.families_count ?? 0) }));
   const mgRaw = (p.mesh_gateway_metrics && typeof p.mesh_gateway_metrics === "object" ? p.mesh_gateway_metrics : {}) as Record<string, unknown>;
   const mesh_gateway_metrics: Record<string, number> = {};
   for (const [k, v] of Object.entries(mgRaw)) mesh_gateway_metrics[k] = Number(v ?? 0);
   const wm = (p.world_metrics && typeof p.world_metrics === "object" ? p.world_metrics : {}) as Record<string, unknown>;
   return {
     scraped_at_ms: Number(p.scraped_at_ms ?? Date.now()), targets, cluster_metrics: parseClusterMetricsMap(p.cluster_metrics), mesh_gateway_metrics,
-    world_metrics: { connected: Boolean(wm.connected ?? ws.connected ?? true), tick_hz: Number(wm.tick_hz ?? 30.0), tick_p50_ms: Number(wm.tick_p50_ms ?? ws.tick_ms ?? 0), tick_p99_ms: Number(wm.tick_p99_ms ?? ws.publish_max_ms ?? 0), publish_ms: Number(wm.publish_ms ?? ws.publish_ms ?? 0), publish_max_ms: Number(wm.publish_max_ms ?? ws.publish_max_ms ?? 0), subscribers: Number(wm.subscribers ?? ws.subscribers ?? 0), npc_count: Number(wm.npc_count ?? ws.npcs_total ?? ws.npcs ?? 0), resource_node_count: Number(wm.resource_node_count ?? ws.resource_nodes_total ?? ws.resource_nodes ?? 0), city_node_count: Number(wm.city_node_count ?? 26), active_players: Number(wm.active_players ?? ws.players_online ?? ws.players ?? 0) },
+    world_metrics: { connected: Boolean(wm.connected ?? ws.connected ?? false), tick_hz: Number(wm.tick_hz ?? 0), tick_p50_ms: Number(wm.tick_p50_ms ?? ws.tick_ms ?? 0), tick_p99_ms: Number(wm.tick_p99_ms ?? ws.publish_max_ms ?? 0), publish_ms: Number(wm.publish_ms ?? ws.publish_ms ?? 0), publish_max_ms: Number(wm.publish_max_ms ?? ws.publish_max_ms ?? 0), subscribers: Number(wm.subscribers ?? ws.subscribers ?? 0), npc_count: Number(wm.npc_count ?? ws.npcs_total ?? ws.npcs ?? 0), resource_node_count: Number(wm.resource_node_count ?? ws.resource_nodes_total ?? ws.resource_nodes ?? 0), city_node_count: Number(wm.city_node_count ?? 0), active_players: Number(wm.active_players ?? ws.players_online ?? ws.players ?? 0) },
   };
 }
 
 function parseContainerItem(c: Record<string, unknown>): ContainerScrapeMetric {
   const name = String(c.name ?? ""), memMb = Number(c.mem_mb ?? c.memory_mb ?? 0), memLim = Number(c.mem_limit_mb ?? c.memory_limit_mb ?? 0);
   return {
-    name, image: String(c.image ?? `sandalcore/${name.replace(/^aoc-/, "")}:latest`), state: String(c.state ?? "running"), status: String(c.status ?? "Up"),
+    name, image: String(c.image ?? `sandalcore/${name.replace(/^aoc-/, "")}:latest`), state: String(c.state ?? "unknown"), status: String(c.status ?? "Unknown"),
     cpu_pct: Number(c.cpu_pct ?? c.cpu_percent ?? 0), mem_mb: memMb, mem_limit_mb: memLim, mem_pct: Number(c.mem_pct ?? c.memory_pct ?? (memLim > 0 ? (memMb / memLim) * 100 : 0)),
     pids: Number(c.pids ?? 0), rx_bytes: Number(c.rx_bytes ?? c.net_rx_bytes ?? 0), tx_bytes: Number(c.tx_bytes ?? c.net_tx_bytes ?? 0),
     scrape_target: String(c.scrape_target ?? `${name}:metrics`), scrape_status: String(c.scrape_status ?? (c.state === "running" ? "UP" : "DOWN")).toUpperCase(),
@@ -229,7 +212,7 @@ export function normalizeContainersScrapeResponse(raw: unknown): ContainersScrap
     const parsed = parseContainerItem(c);
     if (parsed.name) byName.set(parsed.name, parsed);
   }
-  const containers = byName.size > 0 ? Array.from(byName.values()) : CANONICAL_SANDAL_CONTAINERS.map((name) => buildEmptyContainerMetric(name));
+  const containers = Array.from(byName.values());
   const prometheus = normalizePrometheusReport(obj.prometheus, ws);
   const playersOnline = Number(ws.players_online ?? ws.players ?? 0), npcsTotal = Number(ws.npcs_total ?? ws.npcs ?? 0);
   const monstersTotal = Number(ws.monsters_total ?? ws.monsters ?? 0), resourcesTotal = Number(ws.resource_nodes_total ?? ws.resource_nodes ?? 0);
@@ -323,6 +306,14 @@ const PANEL_STYLE: React.CSSProperties = {
   background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)",
 };
 
+const COLLAPSIBLE_PANEL_STYLE: React.CSSProperties = {
+  ...PANEL_STYLE, padding: 0, overflow: "hidden",
+};
+
+const COLLAPSIBLE_BODY_STYLE: React.CSSProperties = {
+  padding: "10px 16px 14px 16px",
+};
+
 const SELECT_INPUT_STYLE: React.CSSProperties = {
   minHeight: "32px", padding: "4px 8px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
   backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "12px",
@@ -348,11 +339,11 @@ const PILL_STYLE: React.CSSProperties = {
 
 function renderCollapsibleHeader(title: string, pills: readonly string[], collapsed: boolean, onToggle: () => void, testId?: string): React.ReactElement {
   return (
-    <div role="button" tabIndex={0} aria-expanded={!collapsed} data-testid={testId} onClick={onToggle} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onToggle(); }} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "8px", cursor: "pointer", marginBottom: collapsed ? 0 : "10px" }}>
+    <div role="button" tabIndex={0} aria-expanded={!collapsed} data-testid={testId} onClick={onToggle} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } }} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "8px", width: "100%", minHeight: "48px", padding: "12px 16px", margin: 0, boxSizing: "border-box", cursor: "pointer", userSelect: "none", borderBottom: collapsed ? "none" : "1px solid rgba(140, 108, 66, 0.22)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
         <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, fontSize: "12px", fontWeight: 700 }}>{collapsed ? "\u25B8" : "\u25BE"}</span>
         <strong style={{ fontSize: "13px", letterSpacing: "0.06em", color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 }}>{title}</strong>
-        <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, fontSize: "11px" }}>{"->"}</span>
+        {pills.length > 0 ? <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, fontSize: "11px" }}>{"->"}</span> : null}
         {pills.map((p, i) => (<span key={i} style={PILL_STYLE}>{p}</span>))}
       </div>
       <span style={{ fontSize: "11px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>{collapsed ? "Expand" : "Collapse"}</span>
@@ -416,72 +407,64 @@ function renderWorldAuthorityWorkersCard(
   const headers = ["Mesh #", "Canonical Worker", "Scope Tier & Hz", "Scope Key / ZOI", "gRPC Admin / Stream", "Tick p50 / p99", "Total Entities", "Players", "NPCs", "Monsters", "Resources", "Status", "Logs"];
   const pills = [`${workers.filter((w) => w.status === "UP" || w.status === "ONLINE").length}/${workers.length} Online`, `${workers.reduce((s, w) => s + w.total_entities, 0)} Entities`, `${workers.reduce((s, w) => s + w.players, 0)} Players`];
   return (
-    <section aria-label="World Shards" data-testid="world-authority-workers-card" style={PANEL_STYLE}>
+    <section aria-label="World Shards" data-testid="world-authority-workers-card" style={COLLAPSIBLE_PANEL_STYLE}>
       {renderCollapsibleHeader("World Shards", pills, collapsed, onToggle, "toggle-card-world-shards")}
       {collapsed ? null : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", fontVariantNumeric: "tabular-nums" }}>
-          <thead>
-            <tr style={{ textAlign: "left", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}` }}>
-              {headers.map((h) => (<th key={h} style={{ padding: "6px" }}>{h}</th>))}
-            </tr>
-          </thead>
-          <tbody>
-            {workers.map((w) => {
-              const isUp = w.status === "UP" || w.status === "ONLINE";
-              const isSel = areContainerNamesEquivalent(w.container_name, selectedContainer) || areContainerNamesEquivalent(w.canonical_name, selectedContainer);
-              const liveWorker = storeSnap.workers.find((sw) => sw.worker_id === w.worker_id);
-              const curHz = Math.round(Number(liveWorker?.tick_hz ?? w.tick_hz ?? 30));
-              const opts = WORKER_TICK_HZ_OPTIONS.includes(curHz) ? WORKER_TICK_HZ_OPTIONS : [...WORKER_TICK_HZ_OPTIONS, curHz].sort((a, b) => a - b);
-              return (
-                <tr key={w.worker_id} data-testid={`worker-row-${w.worker_id}`} onClick={() => onSelectContainer(w.container_name)} style={{ cursor: "pointer", backgroundColor: isSel ? "rgba(232, 178, 90, 0.14)" : "transparent", borderBottom: "1px solid rgba(140, 108, 66, 0.22)" }}>
-                  <td style={{ padding: "7px 6px", fontWeight: 700, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400 }}>#{w.worker_index}</td>
-                  <td style={{ padding: "7px 6px", fontWeight: 700, color: isSel ? SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>{w.canonical_name} <span style={{ fontSize: "11px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>({w.worker_id})</span></td>
-                  <td style={{ padding: "7px 6px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-                    <span style={{ padding: "2px 7px", borderRadius: "999px", fontSize: "11px", fontWeight: 700, backgroundColor: "rgba(232, 178, 90, 0.16)", color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400 }}>{formatScopeTierBadge(w.scope_kind, curHz)}</span>
-                    <select aria-label={`Tick rate for ${w.worker_id}`} data-testid={`analytics-worker-tick-select-${w.worker_id}`} value={curHz} onClick={(e) => e.stopPropagation()} onChange={(e) => { e.stopPropagation(); void useWorldStreamStore.getState().executeSetWorkerTickRateAction(w.worker_id, Number(e.currentTarget.value)); }} style={{ height: "22px", padding: "0 6px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
-                      {opts.map((hz) => (<option key={hz} value={hz}>{hz} Hz</option>))}
-                    </select>
-                    {w.dynamic_scaling_stub ? <span style={{ padding: "2px 6px", borderRadius: "999px", fontSize: "10px", backgroundColor: "rgba(32, 216, 206, 0.14)", color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 }}>Dynamic Scale Stub (min=1)</span> : null}
-                  </td>
-                  <td style={{ padding: "7px 6px", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>{w.region_label} ({w.scope_key})</td>
-                  <td style={{ padding: "7px 6px", fontSize: "11px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>{w.admin_addr} | {w.stream_addr}</td>
-                  <td style={{ padding: "7px 6px" }}>{w.tick_p50_ms.toFixed(1)} / {w.tick_p99_ms.toFixed(1)} ms</td>
-                  <td style={{ padding: "7px 6px", fontWeight: 700, color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 }}>{w.total_entities}</td>
-                  <td style={{ padding: "7px 6px" }}>{w.players}</td>
-                  <td style={{ padding: "7px 6px" }}>{w.npcs}</td>
-                  <td style={{ padding: "7px 6px" }}>{w.monsters}</td>
-                  <td style={{ padding: "7px 6px" }}>{w.resources}</td>
-                  <td style={{ padding: "7px 6px" }}><span style={{ padding: "2px 8px", borderRadius: "999px", fontSize: "11px", fontWeight: 700, backgroundColor: isUp ? "rgba(32, 216, 206, 0.16)" : "rgba(224, 82, 88, 0.18)", color: isUp ? SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 : SANDAL_LAUNCHER_TOKENS.VerraRuinCrimson500 }}>{w.status}</span></td>
-                  <td style={{ padding: "7px 6px" }}><button type="button" data-testid={`worker-logs-btn-${w.worker_id}`} onClick={(e) => { e.stopPropagation(); onSelectContainer(w.container_name); }} style={{ minHeight: "26px", padding: "2px 8px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: isSel ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: isSel ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>Logs</button></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div style={COLLAPSIBLE_BODY_STYLE}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", fontVariantNumeric: "tabular-nums" }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}` }}>
+                {headers.map((h) => (<th key={h} style={{ padding: "6px" }}>{h}</th>))}
+              </tr>
+            </thead>
+            <tbody>
+              {workers.map((w) => {
+                const isUp = w.status === "UP" || w.status === "ONLINE";
+                const isSel = areContainerNamesEquivalent(w.container_name, selectedContainer) || areContainerNamesEquivalent(w.canonical_name, selectedContainer);
+                const liveWorker = storeSnap.workers.find((sw) => sw.worker_id === w.worker_id);
+                const curHz = normalizeWorkerTickHz(liveWorker?.tick_hz ?? w.tick_hz, liveWorker?.tick_mode ?? w.tick_mode);
+                return (
+                  <tr key={w.worker_id} data-testid={`worker-row-${w.worker_id}`} onClick={() => onSelectContainer(w.container_name)} style={{ cursor: "pointer", backgroundColor: isSel ? "rgba(232, 178, 90, 0.14)" : "transparent", borderBottom: "1px solid rgba(140, 108, 66, 0.22)" }}>
+                    <td style={{ padding: "7px 6px", fontWeight: 700, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400 }}>#{w.worker_index}</td>
+                    <td style={{ padding: "7px 6px", fontWeight: 700, color: isSel ? SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>{w.canonical_name} <span style={{ fontSize: "11px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>({w.worker_id})</span></td>
+                    <td style={{ padding: "7px 6px", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                      <span style={{ padding: "2px 7px", borderRadius: "999px", fontSize: "11px", fontWeight: 700, backgroundColor: "rgba(232, 178, 90, 0.16)", color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400 }}>{formatScopeTierBadge(w.scope_kind, curHz)}</span>
+                      <select aria-label={`Tick rate for ${w.worker_id}`} data-testid={`analytics-worker-tick-select-${w.worker_id}`} value={curHz} onClick={(e) => e.stopPropagation()} onChange={(e) => { e.stopPropagation(); void useWorldStreamStore.getState().executeSetWorkerTickRateAction(w.worker_id, Number(e.currentTarget.value)); }} style={{ height: "22px", padding: "0 6px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
+                        {WORKER_TICK_HZ_OPTIONS.map((hz) => (<option key={hz} value={hz}>{formatWorkerTickHzOptionLabel(hz, false)}</option>))}
+                      </select>
+                      {w.dynamic_scaling_stub ? <span style={{ padding: "2px 6px", borderRadius: "999px", fontSize: "10px", backgroundColor: "rgba(32, 216, 206, 0.14)", color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 }}>Dynamic Scale Stub (min=1)</span> : null}
+                    </td>
+                    <td style={{ padding: "7px 6px", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>{w.region_label} ({w.scope_key})</td>
+                    <td style={{ padding: "7px 6px", fontSize: "11px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>{w.admin_addr} | {w.stream_addr}</td>
+                    <td style={{ padding: "7px 6px" }}>{w.tick_p50_ms.toFixed(1)} / {w.tick_p99_ms.toFixed(1)} ms</td>
+                    <td style={{ padding: "7px 6px", fontWeight: 700, color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 }}>{w.total_entities}</td>
+                    <td style={{ padding: "7px 6px" }}>{w.players}</td>
+                    <td style={{ padding: "7px 6px" }}>{w.npcs}</td>
+                    <td style={{ padding: "7px 6px" }}>{w.monsters}</td>
+                    <td style={{ padding: "7px 6px" }}>{w.resources}</td>
+                    <td style={{ padding: "7px 6px" }}><span style={{ padding: "2px 8px", borderRadius: "999px", fontSize: "11px", fontWeight: 700, backgroundColor: isUp ? "rgba(32, 216, 206, 0.16)" : "rgba(224, 82, 88, 0.18)", color: isUp ? SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 : SANDAL_LAUNCHER_TOKENS.VerraRuinCrimson500 }}>{w.status}</span></td>
+                    <td style={{ padding: "7px 6px" }}><button type="button" data-testid={`worker-logs-btn-${w.worker_id}`} onClick={(e) => { e.stopPropagation(); onSelectContainer(w.container_name); }} style={{ minHeight: "26px", padding: "2px 8px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: isSel ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: isSel ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 600, cursor: "pointer" }}>Logs</button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
 }
 
-const DEFAULT_CLUSTER_ROUTES: readonly EnvoyClusterHealthRow[] = Object.freeze([
-  { cluster: "auth_grpc", container: "aoc-auth", requests_total: 0, errors_5xx_total: 0, timeouts_total: 0, active_connections: 1, healthy_members: 1 },
-  { cluster: "character_grpc", container: "aoc-character", requests_total: 0, errors_5xx_total: 0, timeouts_total: 0, active_connections: 1, healthy_members: 1 },
-  { cluster: "citynode_grpc", container: "aoc-citynode", requests_total: 0, errors_5xx_total: 0, timeouts_total: 0, active_connections: 1, healthy_members: 1 },
-  { cluster: "quest_grpc", container: "aoc-quest", requests_total: 0, errors_5xx_total: 0, timeouts_total: 0, active_connections: 1, healthy_members: 1 },
-  { cluster: "mesh_grpc", container: "aoc-mesh", requests_total: 0, errors_5xx_total: 0, timeouts_total: 0, active_connections: 1, healthy_members: 1 },
-  { cluster: "gateway_http", container: "aoc-gateway", requests_total: 0, errors_5xx_total: 0, timeouts_total: 0, active_connections: 1, healthy_members: 1 },
-  { cluster: "web_admin_http", container: "aoc-web-admin", requests_total: 0, errors_5xx_total: 0, timeouts_total: 0, active_connections: 1, healthy_members: 1 },
-]);
+const DEFAULT_CLUSTER_ROUTES: readonly EnvoyClusterHealthRow[] = Object.freeze([]);
 
 function renderServiceRoutingCard(prom: PrometheusScrapeReport, collapsed = false, onToggle: () => void = () => {}): React.ReactElement {
-  const rawList = Object.values(prom.cluster_metrics);
-  const clusters = rawList.length > 0 ? rawList : DEFAULT_CLUSTER_ROUTES;
+  const clusters = Object.values(prom.cluster_metrics);
   const pills = [`${clusters.length} Routes`, `Req ${clusters.reduce((s, c) => s + Math.round(c.requests_total), 0)}`, `5xx ${clusters.reduce((s, c) => s + Math.round(c.errors_5xx_total), 0)}`];
   return (
-    <section aria-label="Service Routing & Connection Health" data-testid="service-routing-card" style={PANEL_STYLE}>
+    <section aria-label="Service Routing & Connection Health" data-testid="service-routing-card" style={COLLAPSIBLE_PANEL_STYLE}>
       {renderCollapsibleHeader("Service Routing & Connection Health", pills, collapsed, onToggle, "toggle-card-service-routing")}
       {collapsed ? null : (
-        <div data-testid="envoy-cluster-red-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "8px" }}>
+        <div data-testid="envoy-cluster-red-strip" style={{ ...COLLAPSIBLE_BODY_STYLE, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "8px" }}>
           {clusters.map((cl) => (
             <div key={cl.cluster} data-testid={`envoy-cluster-${cl.cluster}`} style={{ padding: "8px 10px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, fontSize: "11px", fontVariantNumeric: "tabular-nums" }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
@@ -502,10 +485,10 @@ function renderServiceRoutingCard(prom: PrometheusScrapeReport, collapsed = fals
 function renderPrometheusTargetsCard(prom: PrometheusScrapeReport, collapsed = false, onToggle: () => void = () => {}): React.ReactElement {
   const pills = [`${prom.targets.filter((t) => t.status === "UP").length}/${prom.targets.length} Targets UP`, `${prom.targets.reduce((s, t) => s + Number(t.families_count ?? 0), 0)} Families`, `${prom.targets.reduce((s, t) => s + Number(t.exported_metrics ?? 0), 0)} Series`];
   return (
-    <section aria-label="Telemetry & Metrics" data-testid="prometheus-scrape-card" style={PANEL_STYLE}>
+    <section aria-label="Telemetry & Metrics" data-testid="prometheus-scrape-card" style={COLLAPSIBLE_PANEL_STYLE}>
       {renderCollapsibleHeader("Telemetry & Metrics", pills, collapsed, onToggle, "toggle-card-telemetry-metrics")}
       {collapsed ? null : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px" }}>
+        <div style={{ ...COLLAPSIBLE_BODY_STYLE, display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px" }}>
           {prom.targets.map((t) => {
             const isUp = t.status === "UP";
             return (
@@ -554,19 +537,21 @@ function renderContainersScrapeTable(
   const headers = ["Container", "Image", "State / Status", "CPU %", "Memory (Used / Limit / %)", "PIDs", "Net RX / TX", "OTel Scrape (Status / Series / Latency)", "Logs"];
   const pills = [`${containers.filter((c) => c.state === "running").length}/${containers.length} Running`, `CPU ${containers.reduce((s, c) => s + Number(c.cpu_pct ?? 0), 0).toFixed(1)}%`, `RAM ${Math.round(containers.reduce((s, c) => s + Number(c.mem_mb ?? 0), 0))} MB`];
   return (
-    <section aria-label="Container Metrics & Analytics" data-testid="containers-scrape-card" style={PANEL_STYLE}>
+    <section aria-label="Container Metrics & Analytics" data-testid="containers-scrape-card" style={COLLAPSIBLE_PANEL_STYLE}>
       {renderCollapsibleHeader("Container Metrics & Analytics", pills, collapsed, onToggle, "toggle-card-container-metrics")}
       {collapsed ? null : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", fontVariantNumeric: "tabular-nums" }}>
-          <thead>
-            <tr style={{ textAlign: "left", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}` }}>
-              {headers.map((h) => (<th key={h} style={{ padding: "6px" }}>{h}</th>))}
-            </tr>
-          </thead>
-          <tbody>
-            {containers.map((c) => renderContainerTableRow(c, selectedContainer, onSelectContainer))}
-          </tbody>
-        </table>
+        <div style={COLLAPSIBLE_BODY_STYLE}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px", fontVariantNumeric: "tabular-nums" }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}` }}>
+                {headers.map((h) => (<th key={h} style={{ padding: "6px" }}>{h}</th>))}
+              </tr>
+            </thead>
+            <tbody>
+              {containers.map((c) => renderContainerTableRow(c, selectedContainer, onSelectContainer))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );
@@ -615,10 +600,10 @@ function renderDockerLogTailerCard(
   const title = `Log Explorer (${props.selectedContainer}) (${filteredRows.length} lines)`;
   const pills = [props.selectedContainer, `${filteredRows.length} / ${props.logEnv.total} Lines`, `Tail: ${props.autoTail ? "ON" : "OFF"} · Follow: ${props.autoFollow ? "ON" : "OFF"}`];
   return (
-    <section aria-label={title} data-testid="docker-log-tailer-card" style={PANEL_STYLE}>
+    <section aria-label={title} data-testid="docker-log-tailer-card" style={COLLAPSIBLE_PANEL_STYLE}>
       {renderCollapsibleHeader(title, pills, collapsed, onToggle, "toggle-card-log-explorer")}
       {collapsed ? null : (
-        <>
+        <div style={COLLAPSIBLE_BODY_STYLE}>
           <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" }}>
             <select aria-label="Container selector" data-testid="log-container-select" value={props.selectedContainer} onChange={(e) => onControlsChange({ container: e.currentTarget.value, offset: 0 })} style={SELECT_INPUT_STYLE}>
               {props.selectableContainers.map((name) => (<option key={name} value={name}>{name}</option>))}
@@ -657,27 +642,29 @@ function renderDockerLogTailerCard(
               {filteredRows.length > 0 ? filteredRows.map((row) => renderStructuredLogRowItem(row)) : "No log lines received yet."}
             </div>
           </div>
-        </>
+        </div>
       )}
     </section>
   );
 }
 
 function renderGmAuditLogCard(auditRows: readonly GmAuditSummaryRow[], collapsed = false, onToggle: () => void = () => {}): React.ReactElement {
-  const pills = [`${auditRows.length} Entries`, "Role: GM_ADMIN", "Window: Recent 25"];
+  const pills = [`${auditRows.length} Entries`];
   return (
-    <section aria-label="GM Audit Log" data-testid="gm-audit-trail-strip" style={PANEL_STYLE}>
+    <section aria-label="GM Audit Log" data-testid="gm-audit-trail-strip" style={COLLAPSIBLE_PANEL_STYLE}>
       {renderCollapsibleHeader("GM Audit Log", pills, collapsed, onToggle, "toggle-card-gm-audit")}
       {collapsed ? null : (
-        <div data-testid="gm-audit-log-body" style={{ margin: 0, padding: "10px", maxHeight: "180px", overflowY: "auto", borderRadius: "8px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: "rgba(6, 8, 14, 0.94)", display: "flex", flexDirection: "column", gap: "6px", fontSize: "11px" }}>
-          {auditRows.length > 0 ? auditRows.map((a, idx) => (
-            <div key={a.audit_id || idx} data-testid={`gm-audit-row-${idx}`} style={{ display: "grid", gridTemplateColumns: "150px 1fr 160px 160px", gap: "8px", alignItems: "center", padding: "4px 6px", borderBottom: "1px solid rgba(140, 108, 66, 0.14)" }}>
-              <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontWeight: 700 }}>Who: {a.actor_sub ? `${a.actor_sub} (${a.actor_role})` : a.actor_role || "GM_ADMIN"}</span>
-              <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>What: <strong>{a.action_name}</strong> {a.target_entity_id} {a.diff_summary ? `(${a.diff_summary})` : ""}</span>
-              <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 }}>Where: {a.where_zone || a.target_entity_id || "verra"}</span>
-              <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, fontVariantNumeric: "tabular-nums" }}>When: {a.applied_at || "--:--:--"}</span>
-            </div>
-          )) : <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>No GM audit actions recorded yet.</span>}
+        <div style={COLLAPSIBLE_BODY_STYLE}>
+          <div data-testid="gm-audit-log-body" style={{ margin: 0, padding: "10px", maxHeight: "180px", overflowY: "auto", borderRadius: "8px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: "rgba(6, 8, 14, 0.94)", display: "flex", flexDirection: "column", gap: "6px", fontSize: "11px" }}>
+            {auditRows.length > 0 ? auditRows.map((a, idx) => (
+              <div key={a.audit_id || idx} data-testid={`gm-audit-row-${idx}`} style={{ display: "grid", gridTemplateColumns: "150px 1fr 160px 160px", gap: "8px", alignItems: "center", padding: "4px 6px", borderBottom: "1px solid rgba(140, 108, 66, 0.14)" }}>
+                <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontWeight: 700 }}>Who: {a.actor_sub ? `${a.actor_sub} (${a.actor_role})` : a.actor_role || "GM_ADMIN"}</span>
+                <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>What: <strong>{a.action_name}</strong> {a.target_entity_id} {a.diff_summary ? `(${a.diff_summary})` : ""}</span>
+                <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 }}>Where: {a.where_zone || a.target_entity_id || "verra"}</span>
+                <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, fontVariantNumeric: "tabular-nums" }}>When: {a.applied_at || "--:--:--"}</span>
+              </div>
+            )) : <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>No GM audit actions recorded yet.</span>}
+          </div>
         </div>
       )}
     </section>
@@ -762,7 +749,7 @@ export function LogsAndContainersTab(props?: LogsAndContainersTabProps): React.R
   const selectContainer = (container: string): void => { storeSnap.setSelectedContainer(container); setOffset(0); };
   const selectableContainers = Array.from(new Set([...scrapeSnap.containers.map((c) => c.name), ...scrapeSnap.workers.map((w) => w.container_name), storeSnap.selectedContainer])).filter((name) => name.length > 0);
   return (
-    <div data-testid="logs-and-containers-tab" style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "16px", backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, minHeight: "540px" }}>
+    <div aria-label="Observability" data-testid="logs-and-containers-tab" style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "16px", backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, minHeight: "540px" }}>
       {showAnalytics ? renderTelemetrySummaryHeader(scrapeSnap) : null}
       {showAnalytics ? renderWorldAuthorityWorkersCard(scrapeSnap.workers, storeSnap.selectedContainer, selectContainer, Boolean(collapsed.shards), () => toggleSection("shards")) : null}
       {showAnalytics ? renderContainersScrapeTable(scrapeSnap.containers, storeSnap.selectedContainer, selectContainer, Boolean(collapsed.containers), () => toggleSection("containers")) : null}

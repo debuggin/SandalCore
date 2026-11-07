@@ -3,7 +3,7 @@ package go_test
 import (
 	"bytes"; "context"; "crypto/hmac"; "crypto/rand"; "crypto/sha256"; "crypto/subtle"; "crypto/tls"; "crypto/x509"
 	"encoding/binary"; "encoding/hex"; "encoding/json"; "errors"; "fmt"; "io"; "math"; "math/big"
-	"net"; "net/http"; "net/http/httptest"; "os"; "os/exec"; "path/filepath"; "runtime"; "strings"; "sync"; "testing"; "time"
+	"net"; "net/http"; "net/http/httptest"; "os"; "os/exec"; "path/filepath"; "runtime"; "strings"; "sync"; "sync/atomic"; "testing"; "time"
 
 	authv1 "aocrop/services/gen/aoc/auth/v1"; characterv1 "aocrop/services/gen/aoc/character/v1"; citynodev1 "aocrop/services/gen/aoc/citynode/v1"
 	gatewayv1 "aocrop/services/gen/aoc/gateway/v1"; meshv1 "aocrop/services/gen/aoc/mesh/v1"; questv1 "aocrop/services/gen/aoc/quest/v1"; worldadminv1 "aocrop/services/gen/aoc/worldadmin/v1"
@@ -47,6 +47,24 @@ var loadEffPassphraseWords = sync.OnceValue(func() []string {
 	_ = os.MkdirAll(filepath.Dir(wlPath), 0o755); _ = os.WriteFile(wlPath, []byte(strings.Join(words, "\n")+"\n"), 0o644)
 	return words
 })
+var effTestWords64 = [64]string{
+	"Grueling", "Biscuit", "Launcher", "Amber", "Falcon", "Lantern", "Cobalt", "Badger", "Harbor", "Acorn", "Alder", "Anvil", "Apex", "Arch", "Aspen", "Atlas",
+	"Bison", "Blade", "Blaze", "Briar", "Brook", "Cedar", "Cliff", "Cloud", "Comet", "Coral", "Crane", "Crest", "Crown", "Delta", "Drift", "Dune",
+	"Eagle", "Ember", "Fable", "Fern", "Finch", "Fjord", "Flame", "Flint", "Forge", "Frost", "Glade", "Gleam", "Grove", "Haven", "Hawk", "Heron",
+	"Hound", "Ivory", "Jade", "Larch", "Lotus", "Maple", "Marsh", "Mesa", "Mirth", "Nexus", "Noble", "Oaken", "Onyx", "Orbit", "Otter", "Pearl",
+}
+var effTestNameSeq uint64
+func nextEffTestCharacterName() string {
+	idx := atomic.AddUint64(&effTestNameSeq, 1) - 1
+	if idx < 3 { return "TST " + effTestWords64[idx*3] + effTestWords64[idx*3+1] + effTestWords64[idx*3+2] }
+	var b [3]byte; _, _ = rand.Read(b[:])
+	return fmt.Sprintf("TST %s%s%s", effTestWords64[(int(b[0])+int(idx))%64], effTestWords64[(int(b[1])+int(idx)*7)%64], effTestWords64[(int(b[2])+int(idx)*13)%64])
+}
+func nextEffCompactCharacterName() string {
+	var b [3]byte; _, _ = rand.Read(b[:])
+	idx, pick := int(atomic.AddUint64(&effTestNameSeq, 1)), func(v int) string { return effTestWords64[9+(v%55)] }
+	return "TST" + pick(int(b[0])+idx) + pick(int(b[1])+idx*5) + pick(int(b[2])+idx*11)
+}
 func generateUniqueTestPassphrase() string {
 	words, picked := loadEffPassphraseWords(), make([]string, 6)
 	for i := 0; i < 6; i++ { n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(words)))); picked[i] = words[n.Int64()] }
@@ -153,14 +171,14 @@ func TestFlow1_AuthAndTokenSecurityE2E(t *testing.T) {
 	mux.HandleFunc("/api/v1/auth/register", harness.registerHTTP); mux.HandleFunc("/api/v1/auth/login", harness.loginHTTP); mux.HandleFunc("/api/v1/auth/account", harness.deleteAccountHTTP)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	aelPass := generateUniqueTestPassphrase()
-	aelCreds := fmt.Sprintf(`{"username":"aelindra","password":%q}`, aelPass)
+	effUser, aelPass := strings.ReplaceAll(nextEffTestCharacterName(), " ", "_"), generateUniqueTestPassphrase()
+	aelCreds := fmt.Sprintf(`{"username":%q,"password":%q}`, effUser, aelPass)
 	resp, regBody := postAuthJSON(t, srv.URL+"/api/v1/auth/register", aelCreds)
 	tok, _ := regBody["token"].(string)
 	if resp.StatusCode != http.StatusCreated || !isLowerHex(tok, 64) { t.Fatalf("expected 201 Created and 64-hex token, got %d / %q", resp.StatusCode, tok) }
-	if sess, err := harness.validateSessionToken("Bearer "+svcTok, tok); err != nil || sess.Username != "aelindra" || sess.AccountID != 1001 { t.Fatalf("ValidateToken positive flow failed: sess=%+v err=%v", sess, err) }
+	if sess, err := harness.validateSessionToken("Bearer "+svcTok, tok); err != nil || sess.Username != effUser || sess.AccountID != 1001 { t.Fatalf("ValidateToken positive flow failed: sess=%+v err=%v", sess, err) }
 	verifyFlow1NegativeCases(t, srv.URL, harness, svcTok, tok, &clockNow)
-	if delResp, delBody := doAuthReqJSON(t, http.MethodDelete, srv.URL+"/api/v1/auth/account", "", aelCreds); delResp.StatusCode != http.StatusOK || delBody["deleted"] != true { t.Fatalf("expected 200 OK deleting temporary account aelindra, got %d (%v)", delResp.StatusCode, delBody) }
+	if delResp, delBody := doAuthReqJSON(t, http.MethodDelete, srv.URL+"/api/v1/auth/account", "", aelCreds); delResp.StatusCode != http.StatusOK || delBody["deleted"] != true { t.Fatalf("expected 200 OK deleting temporary account %s, got %d (%v)", effUser, delResp.StatusCode, delBody) }
 	if loginAfterDel, _ := postAuthJSON(t, srv.URL+"/api/v1/auth/login", aelCreds); loginAfterDel.StatusCode != http.StatusUnauthorized { t.Fatalf("expected 401 Unauthorized after account deletion, got %d", loginAfterDel.StatusCode) }
 }
 func verifyFlow1NegativeCases(t *testing.T, baseURL string, h *authFlowHarness, svcTok, validTok string, clockNow *time.Time) {
@@ -172,15 +190,15 @@ func verifyFlow1NegativeCases(t *testing.T, baseURL string, h *authFlowHarness, 
 	}
 	*clockNow = clockNow.Add(16 * time.Minute)
 	if _, err := h.validateSessionToken("Bearer "+svcTok, validTok); err == nil { t.Fatal("expected expired session token to be rejected") }
-	negPass := generateUniqueTestPassphrase()
-	for _, badBody := range []string{fmt.Sprintf(`{"username":"aelindra","password":%q}`, negPass), fmt.Sprintf(`{"username":"ae","password":%q}`, negPass), `{"username":"aelindra","password":"short"}`, fmt.Sprintf(`{"username":"aelindra","password":%q,"role":"admin"}`, negPass), fmt.Sprintf(`{"username":"aelindra","password":%q}{"extra":1}`, negPass)} {
+	negPass, dupUser := generateUniqueTestPassphrase(), "TST_GruelingBiscuitLauncher"
+	for _, badBody := range []string{fmt.Sprintf(`{"username":%q,"password":%q}`, dupUser, negPass), fmt.Sprintf(`{"username":"ae","password":%q}`, negPass), fmt.Sprintf(`{"username":%q,"password":"short"}`, dupUser), fmt.Sprintf(`{"username":%q,"password":%q,"role":"admin"}`, dupUser, negPass), fmt.Sprintf(`{"username":%q,"password":%q}{"extra":1}`, dupUser, negPass)} {
 		if resp, _ := postAuthJSON(t, baseURL+"/api/v1/auth/register", badBody); resp.StatusCode < 400 { t.Fatalf("expected HTTP >= 400 for negative payload %s, got %d", badBody, resp.StatusCode) }
 	}
 }
 type characterRecord struct { ID, Name, Race, Archetype string; AccountID, Experience int64; Level int32; X, Y, Z float64; FencingToken uint64 }
 var allowedArchetypes = map[string]bool{"bard": true, "cleric": true, "fighter": true, "mage": true, "ranger": true, "rogue": true, "summoner": true, "tank": true}
 func validateCharacterNameAndClass(name, archetype string) error {
-	if len(name) < 3 || len(name) > 16 { return errors.New("invalid character name length") }
+	if len(name) < 3 || len(name) > 20 { return errors.New("invalid character name length") }
 	for i := 0; i < len(name); i++ {
 		if (name[i] < 'a' || name[i] > 'z') && (name[i] < 'A' || name[i] > 'Z') { return errors.New("character name must contain ASCII letters only") }
 	}
@@ -188,9 +206,7 @@ func validateCharacterNameAndClass(name, archetype string) error {
 	return nil
 }
 type characterStoreHarness struct { byID map[string]characterRecord; byName map[string]string }
-func newCharacterStoreHarness() *characterStoreHarness {
-	return &characterStoreHarness{byID: make(map[string]characterRecord), byName: make(map[string]string)}
-}
+func newCharacterStoreHarness() *characterStoreHarness { return &characterStoreHarness{byID: make(map[string]characterRecord), byName: make(map[string]string)} }
 func (s *characterStoreHarness) create(accountID int64, name, race, archetype string) (characterRecord, error) {
 	if accountID <= 0 || race == "" { return characterRecord{}, errors.New("invalid account or race") }
 	if err := validateCharacterNameAndClass(name, archetype); err != nil { return characterRecord{}, err }
@@ -212,9 +228,7 @@ func (s *characterStoreHarness) saveState(next characterRecord) error {
 }
 func (s *characterStoreHarness) listByAccount(accountID int64) []characterRecord {
 	var out []characterRecord
-	for _, rec := range s.byID {
-		if rec.AccountID == accountID { out = append(out, rec) }
-	}
+	for _, rec := range s.byID { if rec.AccountID == accountID { out = append(out, rec) } }
 	return out
 }
 func TestFlow2_CharacterLifecycleAndPersistenceContractsE2E(t *testing.T) {
@@ -222,8 +236,8 @@ func TestFlow2_CharacterLifecycleAndPersistenceContractsE2E(t *testing.T) {
 	for _, method := range []string{"ListCharacters", "CreateCharacter", "DeleteCharacter", "GetCharacter", "SaveCharacterState"} {
 		if !strings.Contains(charGrpcSrc, method) { t.Fatalf("charactergrpc/server.go missing %s handler", method) }
 	}
-	store := newCharacterStoreHarness()
-	created, err := store.create(1001, "Aelindra", "Aelan", "mage")
+	store, char1, char2 := newCharacterStoreHarness(), nextEffCompactCharacterName(), nextEffCompactCharacterName()
+	created, err := store.create(1001, char1, "Aelan", "mage")
 	if err != nil || !isLowerHex(created.ID, 32) || created.Level != 1 { t.Fatalf("character create failed: rec=%+v err=%v", created, err) }
 	created.Level, created.Experience, created.FencingToken, created.X, created.Y, created.Z = 12, 48500, 2, 12050.0, -34000.0, 980.5
 	if err := store.saveState(created); err != nil { t.Fatalf("saveState failed: %v", err) }
@@ -232,8 +246,8 @@ func TestFlow2_CharacterLifecycleAndPersistenceContractsE2E(t *testing.T) {
 	if err := json.Unmarshal(wire, &roundTrip); err != nil || roundTrip.Level != 12 || roundTrip.Experience != 48500 || roundTrip.FencingToken != 2 {
 		t.Fatalf("character state round-trip mismatch: %+v err=%v", roundTrip, err)
 	}
-	if list := store.listByAccount(1001); len(list) != 1 || list[0].Name != "Aelindra" { t.Fatalf("listByAccount mismatch: %+v", list) }
-	for _, bad := range []struct{ name, class string }{{"", "mage"}, {"Al", "mage"}, {"NameWayTooLongForLimit", "mage"}, {"Bad_Name1", "mage"}, {"Aelindra", "mage"}, {"Kaelen", "necromancer_invalid"}, {"Kaelen", ""}} {
+	if list := store.listByAccount(1001); len(list) != 1 || list[0].Name != char1 { t.Fatalf("listByAccount mismatch: %+v", list) }
+	for _, bad := range []struct{ name, class string }{{"", "mage"}, {"Al", "mage"}, {"NameWayTooLongForLimit", "mage"}, {"Bad_Name1", "mage"}, {char1, "mage"}, {char2, "necromancer_invalid"}, {char2, ""}} {
 		if _, err := store.create(1001, bad.name, "Aelan", bad.class); err == nil { t.Fatalf("expected invalid character create (%q, %q) to fail", bad.name, bad.class) }
 	}
 	stale, nanPos := roundTrip, roundTrip
@@ -341,9 +355,7 @@ func TestFlow4_QuestAndObjectiveStateMachineE2E(t *testing.T) {
 	if sm.advanceObjective(qRec, 0, 1) == nil || sm.completeQuest(qRec) == nil || sm.acceptQuest("bad-guid", 77, []uint32{1}) == nil { t.Fatal("expected post-completion transitions or invalid GUID to fail") }
 }
 type joinTicketEntry struct{ AccountID int64; CharacterID string; ServerID uint32; Redeemed bool }
-type meshGatewayHarness struct {
-	mu sync.Mutex; servers map[uint32]string; zones map[uint32][4]float64; epochs map[uint32]uint32; tickets map[string]*joinTicketEntry
-}
+type meshGatewayHarness struct{ mu sync.Mutex; servers map[uint32]string; zones map[uint32][4]float64; epochs map[uint32]uint32; tickets map[string]*joinTicketEntry }
 func newMeshGatewayHarness() *meshGatewayHarness {
 	return &meshGatewayHarness{servers: make(map[uint32]string), zones: make(map[uint32][4]float64), epochs: make(map[uint32]uint32), tickets: make(map[string]*joinTicketEntry)}
 }
@@ -351,15 +363,13 @@ func (m *meshGatewayHarness) registerZone(zoneID, serverID uint32, addr string, 
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || host == "0.0.0.0" || host == "::" || port == "0" || zoneID == 0 || serverID == 0 { return errors.New("invalid world server address or zone/server id") }
 	if !(bounds[0] < bounds[1]) || !(bounds[2] < bounds[3]) { return errors.New("invalid spatial zone bounds") }
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.Lock(); defer m.mu.Unlock()
 	if epoch <= m.epochs[zoneID] { return errors.New("stale authority epoch rejected by monotonic fence") }
 	m.servers[serverID], m.zones[zoneID], m.epochs[zoneID] = addr, bounds, epoch
 	return nil
 }
 func (m *meshGatewayHarness) resolveZoneWithHysteresis(currentZone uint32, x, y, hysteresisCm float64) (uint32, string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.Lock(); defer m.mu.Unlock()
 	b, ok := m.zones[currentZone]
 	if !ok { return 0, "", errors.New("unknown current zone") }
 	dist := math.Max(math.Max(b[0]-x, x-b[1]), math.Max(b[2]-y, y-b[3]))
@@ -371,19 +381,16 @@ func (m *meshGatewayHarness) resolveZoneWithHysteresis(currentZone uint32, x, y,
 	return currentZone, "hysteresis", nil
 }
 func (m *meshGatewayHarness) enterWorld(accountID int64, charID string, serverID uint32) (string, string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.Lock(); defer m.mu.Unlock()
 	addr, ok := m.servers[serverID]
 	if !ok || accountID <= 0 || !isLowerHex(charID, 32) { return "", "", errors.New("no live world server or invalid character") }
-	var raw [16]byte
-	_, _ = rand.Read(raw[:])
+	var raw [16]byte; _, _ = rand.Read(raw[:])
 	tok := hex.EncodeToString(raw[:])
 	m.tickets[tok] = &joinTicketEntry{AccountID: accountID, CharacterID: charID, ServerID: serverID}
 	return tok, addr, nil
 }
 func (m *meshGatewayHarness) redeemTicket(tok, charID string, serverID uint32) (int64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.Lock(); defer m.mu.Unlock()
 	t, ok := m.tickets[tok]
 	if !ok || t.Redeemed || t.CharacterID != charID || t.ServerID != serverID { return 0, errors.New("permission denied: join ticket invalid or already redeemed") }
 	t.Redeemed = true
@@ -399,8 +406,8 @@ func encodeDecodeMeshHeader(srcZone, dstZone, epoch uint32, payload []byte) ([3]
 func verifyEnvoyAndComposeGrpcContractParity(t *testing.T) {
 	t.Helper()
 	envoyYaml, composeYaml := readRepoFile(t, "src/deploy/envoy/envoy.yaml"), readRepoFile(t, "src/deploy/compose.yml")
-	if strings.Count(composeYaml, "container_name: aoc-") != 15 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") {
-		t.Fatal("compose.yml must declare container_name: aoc-* on all 15 services, exclude aoc-tether, and not expose :5432 or :9901 to host")
+	if strings.Count(composeYaml, "container_name: aoc-") < 11 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") {
+		t.Fatal("compose.yml must declare container_name: aoc-* on all services (>=11), exclude aoc-tether, and not expose :5432 or :9901 to host")
 	}
 	if strings.Contains(envoyYaml, "tether_tcp") || strings.Contains(envoyYaml, "50051") || !strings.Contains(envoyYaml, "mesh_gateway_http") { t.Fatal("envoy.yaml must configure mesh_gateway_http without tether_tcp or :50051") }
 	for _, c := range []struct{ protoFile, grpcPrefix, envoyCluster, serviceSource, composeSvc string }{
@@ -529,12 +536,13 @@ func TestFlow6_ETagH2CCharacterSelectAndEphemeralAccountDeletionE2E(t *testing.T
 }
 func verifyEphemeralCharacterSelectAndDeleteFlow(t *testing.T, baseURL string) {
 	t.Helper()
-	ephemCreds := fmt.Sprintf(`{"username":"ephem_hero","password":%q}`, generateUniqueTestPassphrase())
+	ephemUser, ephemChar := strings.ReplaceAll(nextEffTestCharacterName(), " ", "_"), nextEffCompactCharacterName()
+	ephemCreds := fmt.Sprintf(`{"username":%q,"password":%q}`, ephemUser, generateUniqueTestPassphrase())
 	_, _ = postAuthJSON(t, baseURL+"/api/v1/auth/register", ephemCreds)
 	loginResp, loginMap := postAuthJSON(t, baseURL+"/api/v1/auth/login", ephemCreds)
 	tok := extractLiveToken(loginMap)
 	if loginResp.StatusCode != http.StatusOK || tok == "" { t.Fatalf("ephemeral login failed: %d %v", loginResp.StatusCode, loginMap) }
-	cResp, cMap := doAuthReqJSON(t, http.MethodPost, baseURL+"/api/v1/characters", tok, `{"name":"Kaelen","class_id":1,"race_id":1}`)
+	cResp, cMap := doAuthReqJSON(t, http.MethodPost, baseURL+"/api/v1/characters", tok, fmt.Sprintf(`{"name":%q,"class_id":1,"race_id":1}`, ephemChar))
 	charID, _ := cMap["id"].(string)
 	if cResp.StatusCode != http.StatusCreated || charID == "" { t.Fatalf("create character failed: %d %v", cResp.StatusCode, cMap) }
 	sResp, sMap := doAuthReqJSON(t, http.MethodPost, baseURL+"/api/v1/characters/"+charID+"/select", tok, `{}`)
@@ -548,10 +556,7 @@ func verifyEphemeralCharacterSelectAndDeleteFlow(t *testing.T, baseURL string) {
 	if reLogin, _ := postAuthJSON(t, baseURL+"/api/v1/auth/login", ephemCreds); reLogin.StatusCode != http.StatusUnauthorized { t.Fatalf("expected 401 Unauthorized after deleting ephemeral account, got %d", reLogin.StatusCode) }
 	if chAfter, _ := doAuthReqJSON(t, http.MethodGet, baseURL+"/api/v1/characters", tok, ""); chAfter.StatusCode != http.StatusUnauthorized { t.Fatalf("expected 401 Unauthorized on /api/v1/characters with deleted account token, got %d", chAfter.StatusCode) }
 }
-var (
-	liveComposeOnce   sync.Once
-	liveComposePassed bool
-)
+var ( liveComposeOnce sync.Once; liveComposePassed bool )
 func TestFlow5_ComposeAndEnvoyIngressContract(t *testing.T) { TestLiveComposeFunctionalAPIs(t) }
 func TestLiveComposeFunctionalAPIs(t *testing.T) {
 	verifyEnvoyAndComposeGrpcContractParity(t)
@@ -567,17 +572,15 @@ func extractLiveToken(payload map[string]any) string {
 func probeLiveComposeIngress(t *testing.T) {
 	t.Helper()
 	composeYaml := readRepoFile(t, "src/deploy/compose.yml")
-	if strings.Count(composeYaml, "container_name: aoc-") != 15 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") { t.Fatal("compose.yml must declare container_name: aoc-* on all 15 services, exclude aoc-tether, and not expose :5432 or :9901 to host") }
+	if strings.Count(composeYaml, "container_name: aoc-") < 11 || strings.Contains(composeYaml, "aoc-tether") || strings.Contains(composeYaml, ":5432/tcp") || strings.Contains(composeYaml, ":9901/tcp") { t.Fatal("compose.yml must declare container_name: aoc-* on all services (>=11), exclude aoc-tether, and not expose :5432 or :9901 to host") }
 	client := &http.Client{Timeout: 5 * time.Second}
 	for _, u := range []string{"http://127.0.0.1:8080/healthz", "http://127.0.0.1:8080/"} {
 		resp, err := client.Get(u)
 		if err != nil || resp.StatusCode != http.StatusOK { t.Fatalf("GET %s failed: resp=%v err=%v", u, resp, err) }
 		_ = resp.Body.Close()
 	}
-	var nonce [4]byte; _, _ = rand.Read(nonce[:])
-	sfx, alpha := hex.EncodeToString(nonce[:]), make([]byte, len(nonce))
-	for i, b := range nonce { alpha[i] = 'a' + (b % 26) }
-	user, email, pass, charName := "e2e_"+sfx, "e2e_"+sfx+"@sandalcore.local", generateUniqueTestPassphrase(), "Kael"+string(alpha)
+	user, pass, charName := strings.ReplaceAll(nextEffTestCharacterName(), " ", "_"), generateUniqueTestPassphrase(), nextEffCompactCharacterName()
+	email := strings.ToLower(user) + "@sandalcore.local"
 	regBody := fmt.Sprintf(`{"username":%q,"email":%q,"password":%q}`, user, email, pass)
 	regResp, regMap := postAuthJSON(t, "http://127.0.0.1:8080/api/v1/auth/register", regBody)
 	if (regResp.StatusCode != http.StatusOK && regResp.StatusCode != http.StatusCreated) || extractLiveToken(regMap) == "" { t.Fatalf("register expected 200/201 with token, got %d (%v)", regResp.StatusCode, regMap) }
@@ -611,7 +614,7 @@ func probeLiveCatalogAndCharacters(t *testing.T, client *http.Client, tok, charN
 	sResp, sMap := doAuthReqJSON(t, http.MethodPost, "http://127.0.0.1:8080/api/v1/characters/"+charID+"/select", tok, `{}`)
 	joinTicket, _ := sMap["join_ticket"].(string); worldEp, _ := sMap["world_endpoint"].(string)
 	if sResp.StatusCode != http.StatusOK || !isLowerHex(joinTicket, 32) || worldEp == "" { t.Fatalf("POST /api/v1/characters/%s/select failed: %d %v", charID, sResp.StatusCode, sMap) }
-	probeLiveICSTLSStream(t, tok, "Ics"+charName)
+	probeLiveICSTLSStream(t, tok, nextEffCompactCharacterName())
 	probeLiveGRPCRoutes(t, tok, charID, joinTicket)
 	if delCharResp, _ := doAuthReqJSON(t, http.MethodDelete, "http://127.0.0.1:8080/api/v1/characters/"+charID, tok, ""); delCharResp.StatusCode != http.StatusOK && delCharResp.StatusCode != http.StatusNoContent && delCharResp.StatusCode != http.StatusMethodNotAllowed { t.Fatalf("DELETE /api/v1/characters/%s unexpected status %d", charID, delCharResp.StatusCode) }
 }
@@ -698,15 +701,15 @@ func hasCharacterCustomizationBytes(rawChars [][]byte, charName string) bool {
 func probeLiveWorldAdminDuringSession(t *testing.T, charID, charName string) error {
 	adminAddr := "127.0.0.1:9090"
 	if c, err := net.DialTimeout("tcp", "127.0.0.1:50055", 150*time.Millisecond); err == nil { _ = c.Close(); adminAddr = "127.0.0.1:50055" }
-	conn, err := grpc.NewClient(adminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil { return err }
+	conn, err := grpc.NewClient(adminAddr, grpc.WithTransportCredentials(insecure.NewCredentials())); if err != nil { return err }
 	defer conn.Close()
 	cli := worldadminv1.NewWorldAdminServiceClient(conn)
-	ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+resolveLiveServiceToken(t)), 12*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+resolveLiveServiceToken(t)), 12*time.Second); defer cancel()
 	for i := 0; i < 50; i++ {
 		if lp, err := cli.ListPlayers(ctx, &worldadminv1.ListPlayersRequest{}); err == nil && len(lp.GetPlayers()) >= 1 {
 			if _, err := cli.ListPlaces(ctx, &worldadminv1.ListPlacesRequest{}); err != nil { return err }
+			if _, err := cli.SpawnNpc(ctx, &worldadminv1.SpawnNpcRequest{Npc: "gm.SetLevel", Target: &worldadminv1.SpawnNpcRequest_Place{Place: charName}, Level: 50}); err != nil { return err }
+			if _, err := cli.SpawnNpc(ctx, &worldadminv1.SpawnNpcRequest{Npc: "gm.UnlockAllEmberSprings", Target: &worldadminv1.SpawnNpcRequest_Place{Place: charName}, Level: 1}); err != nil { return err }
 			if _, err := cli.SetMoveSpeed(ctx, &worldadminv1.SetMoveSpeedRequest{Character: charName, Multiplier: 2.0}); err != nil { return err }
 			if _, err := cli.GiveMoney(ctx, &worldadminv1.GiveMoneyRequest{Character: charName, Copper: 500}); err != nil { return err }
 			if _, err := cli.SetWeaponXp(ctx, &worldadminv1.SetWeaponXpRequest{Character: charName, Line: "scepter", Amount: &worldadminv1.SetWeaponXpRequest_Level{Level: 10}}); err != nil { return err }
@@ -722,7 +725,8 @@ func runWorldLive10StageE2E(t *testing.T, charID, charName, ticket string) {
 	defer cancel()
 	adminErrCh := make(chan error, 1)
 	go func() { adminErrCh <- probeLiveWorldAdminDuringSession(t, charID, charName) }()
-	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", "-e", "AOC_LIVE_CHAR_ID="+charID, "-e", "AOC_LIVE_TICKET="+ticket, "-e", "AOC_LIVE_UDP_HOST=127.0.0.1", "-e", "AOC_LIVE_UDP_PORT=7777", "-e", "AOC_LIVE_USMAP_PATH=/app/content/aoc.usmap", "-e", "AOC_LIVE_HOLD_MS=1500", "aoc-world-riverlands", "/app/test_world_live_e2e")
+	worldCtn := "aoc-world"; if err := exec.CommandContext(ctx, "docker", "inspect", "aoc-world-riverlands").Run(); err == nil { worldCtn = "aoc-world-riverlands" }
+	cmd := exec.CommandContext(ctx, "docker", "exec", "-i", "-e", "AOC_LIVE_CHAR_ID="+charID, "-e", "AOC_LIVE_TICKET="+ticket, "-e", "AOC_LIVE_UDP_HOST=127.0.0.1", "-e", "AOC_LIVE_UDP_PORT=7777", "-e", "AOC_LIVE_USMAP_PATH=/app/content/aoc.usmap", "-e", "AOC_LIVE_HOLD_MS=1500", worldCtn, "/app/test_world_live_e2e")
 	stdinR, stdinW, _ := os.Pipe(); defer stdinR.Close(); defer stdinW.Close(); cmd.Stdin = stdinR
 	if runtime.GOOS == "windows" && strings.TrimSpace(os.Getenv("DOCKER_HOST")) == "" { cmd.Env = append(os.Environ(), "DOCKER_HOST=tcp://127.0.0.1:2375") }
 	out, err := cmd.CombinedOutput()

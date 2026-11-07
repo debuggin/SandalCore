@@ -20,10 +20,11 @@ export interface WorldWorkerInfo {
   readonly scope_key: string; readonly scope_kind: WorkerScopeKind | string; readonly region_label: string;
   readonly container_name: string; readonly polygon_cutout?: ReadonlyArray<readonly [number, number]>;
   readonly dynamic_scaling_stub?: boolean; readonly admin_addr?: string; readonly stream_addr?: string;
-  readonly status: string; readonly npc_count: number; readonly monster_count?: number;
-  readonly resource_node_count: number; readonly player_count: number; readonly npcs: number;
-  readonly monsters: number; readonly resource_nodes: number; readonly active_players: number;
-  readonly tick_hz?: number; readonly tick_p50_ms?: number; readonly tick_p99_ms?: number;
+  readonly status: string; readonly npc_count?: number; readonly npcs_count?: number; readonly monster_count?: number;
+  readonly resource_node_count?: number; readonly player_count?: number; readonly players_count?: number;
+  readonly npcs?: number; readonly monsters?: number; readonly resource_nodes?: number; readonly active_players?: number;
+  readonly tick_hz?: number; readonly tick_mode?: string; readonly simulate_npcs?: boolean;
+  readonly tick_p50_ms?: number; readonly tick_p99_ms?: number;
 }
 
 export type WorldWorkerRecord = WorldWorkerInfo;
@@ -75,7 +76,7 @@ export const DEFAULT_REGIONAL_WORLD_WORKERS: readonly WorldWorkerInfo[] = Object
     worker_id: w.worker_id, worker_index: w.worker_index ?? idx, canonical_name: w.canonical_name ?? formatCanonicalWorkerName(w.scope_kind, w.scope_key),
     scope_key: w.scope_key, scope_kind: w.scope_kind, region_label: w.region_label, container_name: w.container_name, dynamic_scaling_stub: false,
     status: "UP", npc_count: 0, monster_count: 0, resource_node_count: 0, player_count: 0, npcs: 0, monsters: 0, resource_nodes: 0, active_players: 0,
-    tick_hz: 30.0, tick_p50_ms: 0.5, tick_p99_ms: 2.0,
+    tick_hz: 0, tick_p50_ms: 0.5, tick_p99_ms: 2.0,
   })),
 );
 
@@ -193,11 +194,42 @@ export type NodeElectionAction = "start" | "open_voting" | "conclude" | "cancel"
 export type NodeElectionStatus = "none" | "registration" | "voting" | "active_term";
 export type NpcInstanceAction = "kill_npc" | "heal_npc" | "reset_npc" | "respawn_npc" | "despawn_npc";
 
-export type CommandReceiptScope =
-  | "nodeLevel" | "nodeMayor" | "nodeElection" | "nodeXp"
-  | "currency" | "giveItem" | "teleport" | "moveSpeed" | "spawnNpc" | "entityAction" | "worker_tick" | "timeOfDay";
+export type CommandReceiptScope = "nodeLevel" | "nodeMayor" | "nodeElection" | "nodeXp" | "currency" | "giveItem" | "teleport" | "moveSpeed" | "spawnNpc" | "entityAction" | "worker_tick" | "timeOfDay";
 
-export const WORKER_TICK_HZ_OPTIONS: readonly number[] = Object.freeze([5, 10, 15, 20, 30, 60, 100, 120]);
+export const WORKER_TICK_HZ_OPTIONS = [-1, 0, 10, 15, 20, 25, 30, 40, 50, 60] as const;
+const DISCRETE_TICK_HZ_VALUES = [10, 15, 20, 25, 30, 40, 50, 60] as const;
+const MANUAL_WORKER_TICK_OVERRIDES = new Map<string, number>();
+
+export function normalizeWorkerTickHz(raw: number | string | null | undefined, tickMode?: string | null): number {
+  const modeStr = String(tickMode ?? "").trim().toLowerCase(), rawStr = String(raw ?? "").trim().toLowerCase();
+  if (modeStr === "dynamic" || raw === -1 || rawStr === "-1" || rawStr === "dynamic" || raw === null || raw === undefined || rawStr === "") return -1;
+  if (raw === 0 || rawStr === "0") return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return -1;
+  return DISCRETE_TICK_HZ_VALUES.reduce((best, v) => (Math.abs(n - v) < Math.abs(n - best) ? v : best), DISCRETE_TICK_HZ_VALUES[0]);
+}
+
+export function formatWorkerTickHzOptionLabel(hz: number, compact = false): string {
+  if (hz < 0) return compact ? "Dynamic" : "Dynamic (30-60 Hz)";
+  if (hz === 0) return compact ? "0 Hz (Off)" : "0 Hz (Pause NPCs)";
+  return `${hz} Hz`;
+}
+
+export const VERRA_CALENDAR_MONTH_NAMES = ["Newbloom", "Verdant", "Blossom", "Suncrest", "Highsun", "Goldleaf", "Emberfall", "Harvest", "Duskwind", "Frostwane", "Deepcold", "Starfall"] as const;
+export const VERRA_CALENDAR_SEASON_NAMES = ["Spring", "Summer", "Autumn", "Winter"] as const;
+
+export interface VerraCalendarSnapshot {
+  readonly calendarYear: number; readonly calendarDayOfYear: number; readonly calendarSeason: string;
+  readonly calendarMonth: number; readonly calendarMonthName: string; readonly calendarDayOfMonth: number; readonly calendarFormatted: string;
+}
+
+export function computeVerraCalendar(dayOfYear: number, year: number): VerraCalendarSnapshot {
+  const baseYear = Number.isFinite(year) && year >= 1 ? Math.trunc(year) : 1, rawDay = Number.isFinite(dayOfYear) ? Math.trunc(dayOfYear) - 1 : 0;
+  const calendarYear = Math.max(1, baseYear + Math.floor(rawDay / 360)), zeroIdx = ((rawDay % 360) + 360) % 360, calendarDayOfYear = zeroIdx + 1;
+  const monthIdx = Math.floor(zeroIdx / 30), calendarMonth = monthIdx + 1, calendarDayOfMonth = (zeroIdx % 30) + 1;
+  const calendarMonthName = VERRA_CALENDAR_MONTH_NAMES[monthIdx] ?? "Newbloom", seasonBase = VERRA_CALENDAR_SEASON_NAMES[Math.floor(monthIdx / 3)] ?? "Spring";
+  return { calendarYear, calendarDayOfYear, calendarSeason: `${seasonBase} (${calendarMonthName})`, calendarMonth, calendarMonthName, calendarDayOfMonth, calendarFormatted: `Year ${calendarYear} AE · ${calendarDayOfMonth} ${calendarMonthName} · ${seasonBase} (Day ${calendarDayOfYear}/360)` };
+}
 
 export interface CommandReceipt {
   readonly scope: CommandReceiptScope; readonly ok: boolean; readonly message: string;
@@ -255,12 +287,11 @@ export function resolveWorkerSpatialArea(worker: WorldWorkerInfo): WorkerSpatial
   return { minX: -2375000, minY: -875000, maxX: 185000, maxY: 1685000, centerXCm: -777664, centerYCm: 522023, targetZoom: 1 };
 }
 
-export function getVisibleWorkersForViewport(
-  workers: readonly WorldWorkerInfo[],
-  viewportBoundsCm?: ViewportWorldBoundsCm | null,
-): readonly WorldWorkerInfo[] {
-  const list = expandViewportWorkerCatalog(workers.length > 0 ? workers : DEFAULT_REGIONAL_WORLD_WORKERS);
-  if (!viewportBoundsCm) return list;
+export function getVisibleWorkersForViewport(workers: readonly WorldWorkerInfo[], viewportBoundsCm?: ViewportWorldBoundsCm | null): readonly WorldWorkerInfo[] {
+  const list = expandViewportWorkerCatalog(workers).map((w) =>
+    MANUAL_WORKER_TICK_OVERRIDES.has(w.worker_id) ? { ...w, tick_hz: MANUAL_WORKER_TICK_OVERRIDES.get(w.worker_id) } : w,
+  );
+  if (!viewportBoundsCm || list.length === 0) return list;
   const visible = list.filter((w) => {
     const a = resolveWorkerSpatialArea(w);
     return a.maxX >= viewportBoundsCm.minX && a.minX <= viewportBoundsCm.maxX && a.maxY >= viewportBoundsCm.minY && a.minY <= viewportBoundsCm.maxY;
@@ -283,13 +314,8 @@ export const STREAM_LAYER_LOOT_PILES = 16;
 export const STREAM_LAYER_ALL = 31;
 export const LAYER_POIS = 32;
 export const LAYER_MONSTERS = 64;
-
-export const OVERLAY_LAYER_KEYS = Object.freeze([
-  "players", "npcs", "monsters", "resource_nodes", "mounts", "loot_piles", "pois",
-] as const);
-
+export const OVERLAY_LAYER_KEYS = Object.freeze(["players", "npcs", "monsters", "resource_nodes", "mounts", "loot_piles", "pois"] as const);
 export type OverlayLayerKey = (typeof OVERLAY_LAYER_KEYS)[number];
-
 export const OVERLAY_LAYER_BITMASK: Readonly<Record<OverlayLayerKey, number>> = Object.freeze({
   players: STREAM_LAYER_PLAYERS, npcs: STREAM_LAYER_NPCS, monsters: LAYER_MONSTERS,
   resource_nodes: STREAM_LAYER_RESOURCE_NODES, mounts: STREAM_LAYER_MOUNTS, loot_piles: STREAM_LAYER_LOOT_PILES, pois: LAYER_POIS,
@@ -298,9 +324,20 @@ export const OVERLAY_LAYER_BITMASK: Readonly<Record<OverlayLayerKey, number>> = 
 export interface WorldEntity {
   readonly guid: string; readonly name: string; readonly kind: WorldEntityKind;
   readonly xCm: number; readonly yCm: number; readonly zCm: number; readonly yawDeg: number;
-  readonly level: number; readonly healthPct: number; readonly npc_subkind?: string;
-  readonly resourceType?: string; readonly quality?: string;
+  readonly level: number; readonly healthPct: number; readonly npc_subkind?: string; readonly npcSubkind?: string;
+  readonly resourceType?: string; readonly resource_type?: string; readonly quality?: string;
   readonly inCombat?: boolean; readonly dead?: boolean; readonly mounted?: boolean; readonly zoneId?: string;
+}
+
+export function inferResourceNodeType(rawName: string, rawType?: string, rawSubkind?: string): string {
+  if (typeof rawType === "string" && rawType.trim().length > 0) return rawType.trim();
+  const s = `${rawSubkind ?? ""} ${rawName ?? ""}`.toLowerCase();
+  if (rawSubkind?.toLowerCase() === "huntable" || /hunting|husbandry|^hunting_/i.test(s)) return "Hunting / Animal Husbandry";
+  if (/stonecutting|rock|stone|granite|slate|basalt|limestone|sandstone/i.test(s)) return "Stonecutting / Rock";
+  if (/mining|ore|vein|copper|iron|zinc|tin|rividium|ruby|sapphire|emerald|geode|crystal|halcyonite|lumadon/i.test(s)) return "Mining / Ore";
+  if (/herbalism|plant|herb|daffodil|moonbell|snowdrop|spiritbloom|flax|yarrow/i.test(s)) return "Herbalism / Plant";
+  if (/lumberjacking|tree|wood|oak|ash|cedar|willow|lumber/i.test(s)) return "Lumberjacking / Tree";
+  return "Gathering Resource";
 }
 
 export interface LayerToggles {
@@ -315,7 +352,6 @@ export interface LayerEntityCounts {
 }
 
 export type CameraMode = "2d" | "3d";
-
 export interface CameraViewport {
   readonly longitude: number; readonly latitude: number; readonly zoom: number;
   readonly pitch: number; readonly bearing: number; readonly mode: CameraMode;
@@ -323,7 +359,6 @@ export interface CameraViewport {
 }
 
 export type StreamConnectionState = "connecting" | "live" | "degraded" | "offline" | "replaying";
-
 export interface StreamProblemDetails {
   readonly status: number; readonly title: string; readonly detail: string;
   readonly correlationId?: string; readonly retryAfterSeconds?: number;
@@ -335,9 +370,7 @@ export interface WorldDeltaBatch {
 }
 
 export interface NavmeshLinkSegment {
-  readonly segmentId: string;
-  readonly fromCm: readonly [number, number, number];
-  readonly toCm: readonly [number, number, number];
+  readonly segmentId: string; readonly fromCm: readonly [number, number, number]; readonly toCm: readonly [number, number, number];
 }
 
 export interface PersistedWebAdminState extends Partial<SessionUiExtraState> {
@@ -351,7 +384,7 @@ export interface PersistedWebAdminState extends Partial<SessionUiExtraState> {
   readonly simulateAllNpcs?: boolean;
 }
 
-export interface WorldStreamState extends SessionUiExtraState {
+export interface WorldStreamState extends SessionUiExtraState, VerraCalendarSnapshot {
   readonly entities: ReadonlyMap<string, WorldEntity>; readonly cityNodes: readonly VerraCityNodeMeta[];
   readonly pois: readonly PoiOverlay[]; readonly workers: readonly WorldWorkerInfo[]; readonly toasts: readonly GmActionToast[];
   readonly selectedEntityGuid: string | null; readonly selectedCityNodeName: string | null; readonly selectedPoiGuid: string | null;
@@ -378,14 +411,12 @@ export interface WorldStreamState extends SessionUiExtraState {
   readonly setSimulateAllNpcs: (enabled?: boolean, fetchImpl?: typeof fetch) => Promise<boolean>;
   readonly setCityNodes: (nodes: readonly VerraCityNodeMeta[]) => void; readonly setPois: (pois: readonly PoiOverlay[]) => void;
   readonly setWorkers: (workers: readonly WorldWorkerInfo[]) => void; readonly updateCityNodeLevel: (name: string, level: number) => void;
-  readonly setScopedReceipt: (
-    scope: CommandReceiptScope,
-    receiptOrMessage: (Omit<CommandReceipt, "scope" | "timestampMs"> & { readonly timestampMs?: number }) | string | null,
-    tone?: "success" | "error" | "info",
-  ) => void;
+  readonly setScopedReceipt: (scope: CommandReceiptScope, receiptOrMessage: (Omit<CommandReceipt, "scope" | "timestampMs"> & { readonly timestampMs?: number }) | string | null, tone?: "success" | "error" | "info") => void;
   readonly clearScopedReceipt: (scope: CommandReceiptScope) => void;
-  readonly executeSetWorkerTickRateAction: (workerId: string, tickHz: number, fetchImpl?: typeof fetch) => Promise<void>;
-  readonly executeSetTimeOfDayAction: (hour: number | string, fetchImpl?: typeof fetch) => Promise<void>;
+  readonly setTimeOfDay: (hourInput: number | string, syncedAtMs?: number) => void;
+  readonly setWorldCalendar: (dayOfYear: number, year: number, syncedAtMs?: number) => void;
+  readonly executeSetWorkerTickRateAction: (workerId: string, tickHz: number | string, fetchImpl?: typeof fetch) => Promise<void>;
+  readonly executeSetTimeOfDayAction: (hour: number | string, optsOrFetch?: typeof fetch | { readonly dayOfYear?: number; readonly year?: number; readonly fetchImpl?: typeof fetch }, maybeFetchImpl?: typeof fetch) => Promise<void>;
   readonly setNodeMayor: (nodeName: string, mayorCharacterGuidOrName: string, fetchImpl?: typeof fetch) => Promise<CommandReceipt>;
   readonly triggerNodeElection: (nodeName: string, action: NodeElectionAction, fetchImpl?: typeof fetch) => Promise<CommandReceipt>;
   readonly toggleLayer: (layer: keyof LayerToggles, enabled?: boolean) => void; readonly resetLayers: () => void;
@@ -416,27 +447,12 @@ export function computeStreamLayerMask(layers: Partial<Pick<LayerToggles, Overla
   return mask;
 }
 
-export function buildActiveLayersParam(layers: Partial<Pick<LayerToggles, OverlayLayerKey>>): string {
-  return OVERLAY_LAYER_KEYS.filter((key) => layers[key] === true).join(",");
-}
-
-export function shouldPollWorldState(layers: Partial<Pick<LayerToggles, OverlayLayerKey>>): boolean {
-  return computeStreamLayerMask(layers) > 0;
-}
-
+export function buildActiveLayersParam(layers: Partial<Pick<LayerToggles, OverlayLayerKey>>): string { return OVERLAY_LAYER_KEYS.filter((key) => layers[key] === true).join(","); }
+export function shouldPollWorldState(layers: Partial<Pick<LayerToggles, OverlayLayerKey>>): boolean { return computeStreamLayerMask(layers) > 0; }
 export const ZOOM_UPDATE_HZ_TIERS: readonly number[] = [30, 30, 30, 30, 30, 30, 30, 30];
-
-export function getMapPollHzForZoom(_zoom: number): number {
-  return 30;
-}
-
-export function getMapPollIntervalMsForZoom(_zoom: number): number {
-  return 33;
-}
-
-export interface ViewportWorldBoundsCm {
-  readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number;
-}
+export function getMapPollHzForZoom(_zoom: number): number { return 30; }
+export function getMapPollIntervalMsForZoom(_zoom: number): number { return 33; }
+export interface ViewportWorldBoundsCm { readonly minX: number; readonly minY: number; readonly maxX: number; readonly maxY: number; }
 
 export function computeViewportWorldBoundsCm(
   camera: Pick<CameraViewport, "centerXCm" | "centerYCm" | "zoom">,
@@ -451,8 +467,7 @@ export function computeViewportWorldBoundsCm(
 }
 
 export function buildWorldStatePollUrl(layers: Partial<Pick<LayerToggles, OverlayLayerKey>>, viewportBounds?: ViewportWorldBoundsCm | null): string | null {
-  const layerMask = computeStreamLayerMask(layers);
-  const param = buildActiveLayersParam(layers);
+  const layerMask = computeStreamLayerMask(layers), param = buildActiveLayersParam(layers);
   if (layerMask === 0 || param.length === 0) return null;
   const base = `/api/v1/world/state?layer_mask=${layerMask}&layers=${param}`;
   return viewportBounds ? `${base}&minX=${Math.round(viewportBounds.minX)}&minY=${Math.round(viewportBounds.minY)}&maxX=${Math.round(viewportBounds.maxX)}&maxY=${Math.round(viewportBounds.maxY)}` : base;
@@ -463,16 +478,10 @@ export function shouldFetchPoisCatalog(layers: Partial<Pick<LayerToggles, "pois"
 export function computeLayerEntityCounts(state: Pick<WorldStreamState, "entities"> & { readonly pois?: readonly PoiOverlay[]; readonly cityNodes?: readonly VerraCityNodeMeta[] }): LayerEntityCounts {
   let players = 0, npcs = 0, monsters = 0, resource_nodes = 0, mounts = 0, loot_piles = 0, poiEntities = 0;
   for (const entity of state.entities.values()) {
-    if (entity.kind === "player") players += 1;
-    else if (entity.kind === "npc") npcs += 1;
-    else if (entity.kind === "monster") monsters += 1;
-    else if (entity.kind === "resource_node") resource_nodes += 1;
-    else if (entity.kind === "mount") mounts += 1;
-    else if (entity.kind === "loot_pile") loot_piles += 1;
-    else if (entity.kind === "poi") poiEntities += 1;
+    if (entity.kind === "player") players += 1; else if (entity.kind === "npc") npcs += 1; else if (entity.kind === "monster") monsters += 1;
+    else if (entity.kind === "resource_node") resource_nodes += 1; else if (entity.kind === "mount") mounts += 1; else if (entity.kind === "loot_pile") loot_piles += 1; else if (entity.kind === "poi") poiEntities += 1;
   }
-  const pois = (state.pois?.length ?? 0) + (state.cityNodes?.length ?? 0) + poiEntities;
-  return { players, npcs, monsters, resource_nodes, resources: resource_nodes, mounts, loot_piles, pois };
+  return { players, npcs, monsters, resource_nodes, resources: resource_nodes, mounts, loot_piles, pois: (state.pois?.length ?? 0) + (state.cityNodes?.length ?? 0) + poiEntities };
 }
 
 function pruneHiddenLayerEntities(entities: ReadonlyMap<string, WorldEntity>, layers: LayerToggles): Map<string, WorldEntity> {
@@ -485,86 +494,62 @@ function pruneHiddenLayerEntities(entities: ReadonlyMap<string, WorldEntity>, la
   return next;
 }
 
-export const DEFAULT_CAMERA_VIEWPORT: CameraViewport = Object.freeze({
-  longitude: 0.0, latitude: 0.0, zoom: 3.5, pitch: 0.0, bearing: 0.0, mode: "2d", centerXCm: -777664.0, centerYCm: 522023.0,
-});
+export const DEFAULT_CAMERA_VIEWPORT: CameraViewport = Object.freeze({ longitude: 0.0, latitude: 0.0, zoom: 3.5, pitch: 0.0, bearing: 0.0, mode: "2d", centerXCm: -777664.0, centerYCm: 522023.0 });
 
 export function parseTabFromUrlHash(hash: string): AdminTabId | null {
-  const clean = hash.replace(/^#/, "").trim().toLowerCase();
-  const match = /(?:^|&)tab=([^&]+)/.exec(clean);
+  const clean = hash.replace(/^#/, "").trim().toLowerCase(), match = /(?:^|&)tab=([^&]+)/.exec(clean);
   const candidate = match ? decodeURIComponent(match[1]) : clean.split("&")[0];
   if (candidate === "map" || candidate === "world-map") return "map";
   if (candidate === "analytics" || candidate === "analytics-state") return "analytics";
-  if (candidate === "logs" || candidate === "players-spawner" || candidate === "logs-containers") return candidate;
-  return null;
+  return candidate === "logs" || candidate === "players-spawner" || candidate === "logs-containers" ? candidate : null;
 }
 
 export function parseModalFromUrlHash(hash: string): GmModalId {
-  const clean = hash.replace(/^#/, "").trim().toLowerCase();
-  const match = /(?:^|&)modal=([^&]+)/.exec(clean);
+  const clean = hash.replace(/^#/, "").trim().toLowerCase(), match = /(?:^|&)modal=([^&]+)/.exec(clean);
   const candidate = match ? decodeURIComponent(match[1]) : "";
-  if (candidate === "give-item" || candidate === "give-currency" || candidate === "teleport" || candidate === "spawn-npc" || candidate === "node-governance") return candidate;
-  return null;
+  return candidate === "give-item" || candidate === "give-currency" || candidate === "teleport" || candidate === "spawn-npc" || candidate === "node-governance" ? candidate : null;
 }
 
-export function buildUrlHashForTab(tab: AdminTabId, modal: GmModalId = null): string {
-  return modal ? `#tab=${tab}&modal=${modal}` : `#tab=${tab}`;
-}
+export function buildUrlHashForTab(tab: AdminTabId, modal: GmModalId = null): string { return modal ? `#tab=${tab}&modal=${modal}` : `#tab=${tab}`; }
 
 export function savePersistedWebAdminState(
-  state: Pick<WorldStreamState, "activeTab" | "camera" | "layers" | "selectedPlayer" | "teleportMode" | "spawnTargetMode" | "selectedNpcTemplate" | "selectedContainer" | "logQuery"> & Partial<SessionUiExtraState> & {
-    readonly activeModal?: GmModalId; readonly selectedEntityGuid?: string | null; readonly selectedCityNodeName?: string | null; readonly lastClickedPoint?: VerraUnrealPoint | null; readonly simulateAllNpcs?: boolean;
-  },
+  state: Pick<WorldStreamState, "activeTab" | "camera" | "layers" | "selectedPlayer" | "teleportMode" | "spawnTargetMode" | "selectedNpcTemplate" | "selectedContainer" | "logQuery"> & Partial<SessionUiExtraState> & { readonly activeModal?: GmModalId; readonly selectedEntityGuid?: string | null; readonly selectedCityNodeName?: string | null; readonly lastClickedPoint?: VerraUnrealPoint | null; readonly simulateAllNpcs?: boolean },
   storage?: Pick<Storage, "setItem"> | null,
 ): PersistedWebAdminState {
   const entId = state.selectedEntityGuid ?? state.selectedEntityId ?? null;
+  const { timeOfDayHours: _th, timeOfDaySyncedAtMs: _ts, timeOfDayLabel: _tl, simulateAllNpcs: _sim, ...persistedExtra } = { ...DEFAULT_SESSION_UI_EXTRA_STATE, ...state };
   const snapshot: PersistedWebAdminState = {
-    ...DEFAULT_SESSION_UI_EXTRA_STATE,
-    ...state,
-    activeTab: state.activeTab, activeModal: state.activeModal ?? null,
+    ...persistedExtra, activeTab: state.activeTab, activeModal: state.activeModal ?? null,
     camera: { centerXCm: state.camera.centerXCm, centerYCm: state.camera.centerYCm, zoom: state.camera.zoom, mode: state.camera.mode },
-    layers: state.layers, layerMask: computeStreamLayerMask(state.layers),
-    selectedPlayer: state.selectedPlayer, selectedEntityGuid: entId, selectedEntityId: entId,
-    selectedCityNodeName: state.selectedCityNodeName ?? null, lastClickedPoint: state.lastClickedPoint ?? null,
-    teleportMode: state.teleportMode, spawnTargetMode: state.spawnTargetMode,
+    layers: state.layers, layerMask: computeStreamLayerMask(state.layers), selectedPlayer: state.selectedPlayer, selectedEntityGuid: entId, selectedEntityId: entId,
+    selectedCityNodeName: state.selectedCityNodeName ?? null, lastClickedPoint: state.lastClickedPoint ?? null, teleportMode: state.teleportMode, spawnTargetMode: state.spawnTargetMode,
     selectedNpcTemplate: state.selectedNpcTemplate, selectedDefId: state.selectedDefId ?? state.selectedNpcTemplate,
-    selectedContainer: state.selectedContainer, logContainer: state.logContainer ?? state.selectedContainer,
-    logQuery: state.logQuery, logSearch: state.logSearch ?? state.logQuery, simulateAllNpcs: state.simulateAllNpcs ?? true,
+    selectedContainer: state.selectedContainer, logContainer: state.logContainer ?? state.selectedContainer, logQuery: state.logQuery, logSearch: state.logSearch ?? state.logQuery,
   };
-  const targetStorage = resolveTabSessionStorage(storage);
-  try { targetStorage?.setItem(SESSION_UI_STORAGE_KEY, JSON.stringify(snapshot)); } catch { /* ignore */ }
+  try { resolveTabSessionStorage(storage)?.setItem(SESSION_UI_STORAGE_KEY, JSON.stringify(snapshot)); } catch { /* ignore */ }
   return snapshot;
 }
 
 export const saveSessionUiState = savePersistedWebAdminState;
 
 export function loadPersistedWebAdminState(storage?: Pick<Storage, "getItem"> | null, locationHash?: string, forceRestoreCamera = false): Partial<WorldStreamState> {
-  const targetStorage = resolveTabSessionStorage(storage);
-  const hashStr = locationHash !== undefined ? locationHash : typeof window !== "undefined" && window.location ? window.location.hash : "";
+  const targetStorage = resolveTabSessionStorage(storage), hashStr = locationHash !== undefined ? locationHash : typeof window !== "undefined" && window.location ? window.location.hash : "";
   let parsed: Partial<PersistedWebAdminState> = {};
   try { const raw = targetStorage?.getItem(SESSION_UI_STORAGE_KEY) ?? targetStorage?.getItem(WEB_ADMIN_STORAGE_KEY); if (raw) parsed = JSON.parse(raw) as Partial<PersistedWebAdminState>; } catch { parsed = {}; }
+  const { timeOfDayHours: _pth, timeOfDaySyncedAtMs: _pts, timeOfDayLabel: _ptl, simulateAllNpcs: _psim, ...cleanParsed } = parsed as Partial<PersistedWebAdminState>;
   const useDefaultCam = (!forceRestoreCamera && storage === undefined && !getActiveAdminJwtToken()) || !parsed.camera || (parsed.camera.zoom === 3.0 && parsed.camera.centerXCm === -777664.0 && parsed.camera.centerYCm === 522023.0);
   const entId = typeof (parsed.selectedEntityGuid ?? parsed.selectedEntityId) === "string" ? (parsed.selectedEntityGuid ?? parsed.selectedEntityId ?? null) : null;
   const selContainer = typeof parsed.selectedContainer === "string" && parsed.selectedContainer.length > 0 ? parsed.selectedContainer : "aoc-world-riverlands";
   const logQ = typeof (parsed.logQuery ?? parsed.logSearch) === "string" ? String(parsed.logQuery ?? parsed.logSearch) : "";
   const npcTmpl = typeof (parsed.selectedNpcTemplate ?? parsed.selectedDefId) === "string" && String(parsed.selectedNpcTemplate ?? parsed.selectedDefId).length > 0 ? String(parsed.selectedNpcTemplate ?? parsed.selectedDefId) : "Aela";
   return {
-    ...DEFAULT_SESSION_UI_EXTRA_STATE,
-    ...parsed,
-    activeTab: parseTabFromUrlHash(hashStr) ?? (parsed.activeTab ?? "map"),
-    activeModal: parseModalFromUrlHash(hashStr) ?? (parsed.activeModal ?? null),
-    camera: useDefaultCam ? { ...DEFAULT_CAMERA_VIEWPORT } : { ...DEFAULT_CAMERA_VIEWPORT, ...parsed.camera },
-    layers: parsed.layers ? { ...DEFAULT_LAYER_TOGGLES, ...parsed.layers } : DEFAULT_LAYER_TOGGLES,
-    selectedPlayer: typeof parsed.selectedPlayer === "string" ? parsed.selectedPlayer : "",
-    selectedEntityGuid: entId, selectedEntityId: entId,
-    selectedCityNodeName: typeof parsed.selectedCityNodeName === "string" ? parsed.selectedCityNodeName : null,
-    lastClickedPoint: parsed.lastClickedPoint ?? null, pickedCoordinate: parsed.lastClickedPoint ?? null,
-    teleportMode: parsed.teleportMode ?? "place", spawnTargetMode: parsed.spawnTargetMode ?? "place",
-    selectedNpcTemplate: npcTmpl, selectedDefId: npcTmpl,
-    selectedContainer: selContainer, logContainer: typeof parsed.logContainer === "string" && parsed.logContainer.length > 0 ? parsed.logContainer : selContainer,
-    logQuery: logQ, logSearch: logQ,
+    ...DEFAULT_SESSION_UI_EXTRA_STATE, ...cleanParsed, activeTab: parseTabFromUrlHash(hashStr) ?? (parsed.activeTab ?? "map"), activeModal: parseModalFromUrlHash(hashStr) ?? (parsed.activeModal ?? null),
+    camera: useDefaultCam ? { ...DEFAULT_CAMERA_VIEWPORT } : { ...DEFAULT_CAMERA_VIEWPORT, ...parsed.camera }, layers: parsed.layers ? { ...DEFAULT_LAYER_TOGGLES, ...parsed.layers } : DEFAULT_LAYER_TOGGLES,
+    selectedPlayer: typeof parsed.selectedPlayer === "string" ? parsed.selectedPlayer : "", selectedEntityGuid: entId, selectedEntityId: entId,
+    selectedCityNodeName: typeof parsed.selectedCityNodeName === "string" ? parsed.selectedCityNodeName : null, lastClickedPoint: parsed.lastClickedPoint ?? null, pickedCoordinate: parsed.lastClickedPoint ?? null,
+    teleportMode: parsed.teleportMode ?? "place", spawnTargetMode: parsed.spawnTargetMode ?? "place", selectedNpcTemplate: npcTmpl, selectedDefId: npcTmpl,
+    selectedContainer: selContainer, logContainer: typeof parsed.logContainer === "string" && parsed.logContainer.length > 0 ? parsed.logContainer : selContainer, logQuery: logQ, logSearch: logQ,
     collapsedSections: parsed.collapsedSections && typeof parsed.collapsedSections === "object" ? parsed.collapsedSections : {},
-    simulateAllNpcs: typeof parsed.simulateAllNpcs === "boolean" ? parsed.simulateAllNpcs : true,
   };
 }
 
@@ -620,64 +605,83 @@ function appendToastToList(list: readonly GmActionToast[], text: string, tone: "
 
 async function executeSetNodeMayorAction(setState: WorldStreamStoreApi["setState"], nodeName: string, mayorCharacterGuidOrName: string, fetchImpl: typeof fetch = typeof fetch === "function" ? fetch : (undefined as unknown as typeof fetch)): Promise<CommandReceipt> {
   const cleanMayor = mayorCharacterGuidOrName.trim(), worker = resolveCityNodeWorker(nodeName);
+  const foundNode = DEFAULT_VERRA_CITY_NODES.find((n) => n.name === nodeName || n.display_name === nodeName);
   let ok = true, message = cleanMayor ? `Assigned ${cleanMayor} as mayor of ${nodeName}` : `Cleared mayor of ${nodeName}`;
   if (typeof fetchImpl === "function") {
     try {
-      const res = await fetchImpl("/api/v1/gm/node/mayor", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ node_name: nodeName, mayor_guid: cleanMayor, mayor_name: cleanMayor, zone: worker.scope_key, worker_id: worker.worker_id }) });
+      const res = await fetchImpl("/api/v1/gm/node/mayor", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ node_name: nodeName, node_guid: foundNode?.guid ?? "", mayor_guid: cleanMayor, mayor_name: cleanMayor, zone: worker.scope_key, worker_id: worker.worker_id }) });
       const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
       ok = res.ok;
       if (typeof data.message === "string" && data.message.length > 0 && data.message !== "executed") message = data.message;
       else if (!res.ok) message = String(data.detail ?? data.title ?? `HTTP ${res.status}`);
-    } catch { ok = true; }
+    } catch (err) { ok = false; message = err instanceof Error ? err.message : `Failed to update mayor of ${nodeName}`; }
   }
   const receipt: CommandReceipt = { scope: "nodeMayor", ok, message, timestampMs: Date.now() };
-  setState((prev) => ({ cityNodes: prev.cityNodes.map((n) => (n.name === nodeName || n.display_name === nodeName ? { ...n, mayor_guid: cleanMayor, mayor_name: cleanMayor } : n)), lastReceiptsByScope: { ...prev.lastReceiptsByScope, nodeMayor: receipt }, toasts: appendToastToList(prev.toasts, message, ok ? "success" : "error", setState).nextList }));
+  setState((prev) => ({ cityNodes: ok ? prev.cityNodes.map((n) => (n.name === nodeName || n.display_name === nodeName ? { ...n, mayor_guid: cleanMayor, mayor_name: cleanMayor } : n)) : prev.cityNodes, lastReceiptsByScope: { ...prev.lastReceiptsByScope, nodeMayor: receipt }, toasts: appendToastToList(prev.toasts, message, ok ? "success" : "error", setState).nextList }));
   return receipt;
 }
 
 async function executeTriggerNodeElectionAction(setState: WorldStreamStoreApi["setState"], nodeName: string, action: NodeElectionAction, fetchImpl: typeof fetch = typeof fetch === "function" ? fetch : (undefined as unknown as typeof fetch)): Promise<CommandReceipt> {
-  const worker = resolveCityNodeWorker(nodeName);
+  const worker = resolveCityNodeWorker(nodeName), foundNode = DEFAULT_VERRA_CITY_NODES.find((n) => n.name === nodeName || n.display_name === nodeName);
   const actionLabels: Record<NodeElectionAction, string> = { start: "Started election", open_voting: "Opened election voting", conclude: "Concluded election", cancel: "Cancelled election" };
   let nextStatus: string = mapElectionActionToStatus(action), ok = true, message = `${actionLabels[action]} in ${nodeName} (${nextStatus})`;
   if (typeof fetchImpl === "function") {
     try {
-      const res = await fetchImpl("/api/v1/gm/node/election", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ node_name: nodeName, action, zone: worker.scope_key, worker_id: worker.worker_id }) });
+      const res = await fetchImpl("/api/v1/gm/node/election", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ node_name: nodeName, node_guid: foundNode?.guid ?? "", action, zone: worker.scope_key, worker_id: worker.worker_id }) });
       const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
       ok = res.ok;
       if (typeof data.election_status === "string" && data.election_status.length > 0) nextStatus = data.election_status;
       if (typeof data.message === "string" && data.message.length > 0 && data.message !== "executed") message = data.message;
       else if (!res.ok) message = String(data.detail ?? data.title ?? `HTTP ${res.status}`);
-    } catch { ok = true; }
+    } catch (err) { ok = false; message = err instanceof Error ? err.message : `Failed to update election in ${nodeName}`; }
   }
   const receipt: CommandReceipt = { scope: "nodeElection", ok, message, timestampMs: Date.now() };
-  setState((prev) => ({ cityNodes: prev.cityNodes.map((n) => (n.name === nodeName || n.display_name === nodeName ? { ...n, election_status: nextStatus } : n)), lastReceiptsByScope: { ...prev.lastReceiptsByScope, nodeElection: receipt }, toasts: appendToastToList(prev.toasts, message, ok ? "success" : "error", setState).nextList }));
+  setState((prev) => ({ cityNodes: ok ? prev.cityNodes.map((n) => (n.name === nodeName || n.display_name === nodeName ? { ...n, election_status: nextStatus } : n)) : prev.cityNodes, lastReceiptsByScope: { ...prev.lastReceiptsByScope, nodeElection: receipt }, toasts: appendToastToList(prev.toasts, message, ok ? "success" : "error", setState).nextList }));
   return receipt;
 }
 
-async function runSetWorkerTickRateAction(setState: WorldStreamStoreApi["setState"], workerId: string, tickHz: number, fetchImpl: typeof fetch = typeof fetch === "function" ? fetch : (undefined as unknown as typeof fetch)): Promise<void> {
-  const clampedHz = Math.max(1, Math.min(120, Math.round(Number.isFinite(tickHz) ? tickHz : 30)));
-  setSubpartitionWorkerTickHz(workerId, clampedHz);
-  setState((prev) => ({ workers: prev.workers.map((w) => (w.worker_id === workerId || w.canonical_name === workerId || w.container_name === workerId ? { ...w, tick_hz: clampedHz } : w)) }));
+async function runSetWorkerTickRateAction(setState: WorldStreamStoreApi["setState"], workerId: string, tickHz: number | string, fetchImpl: typeof fetch = typeof fetch === "function" ? fetch : (undefined as unknown as typeof fetch)): Promise<void> {
+  const normalizedHz = normalizeWorkerTickHz(tickHz);
+  const tickMode = normalizedHz === -1 ? "dynamic" : "manual", wireHz = normalizedHz === -1 ? 60 : normalizedHz, simNpcs = normalizedHz !== 0;
+  MANUAL_WORKER_TICK_OVERRIDES.set(workerId, normalizedHz);
+  setSubpartitionWorkerTickHz(workerId, normalizedHz);
+  setState((prev) => ({ workers: prev.workers.map((w) => (w.worker_id === workerId || w.canonical_name === workerId || w.container_name === workerId ? { ...w, tick_hz: normalizedHz, tick_mode: tickMode, simulate_npcs: simNpcs } : w)) }));
+  let ok = true, errDetail = "";
   if (typeof fetchImpl === "function") {
-    await fetchImpl("/api/v1/gm/command", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ command: "set_tick_rate", target: workerId, args: { worker_id: workerId, tick_hz: clampedHz }, params: { worker_id: workerId, tick_hz: clampedHz }, worker_id: workerId, tick_hz: clampedHz }) }).catch(() => {});
+    try {
+      const payload = { worker_id: workerId, tick_hz: wireHz, tick_mode: tickMode, simulate_npcs: simNpcs };
+      const res = await fetchImpl("/api/v1/gm/command", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ command: "set_tick_rate", target: workerId, ...payload, args: payload, params: payload }) });
+      ok = res.ok;
+      if (!res.ok) { const d = (await res.json().catch(() => ({}))) as Record<string, unknown>; errDetail = String(d.detail ?? d.title ?? `HTTP ${res.status}`); }
+    } catch (err) { ok = false; errDetail = err instanceof Error ? err.message : "Network error"; }
   }
-  const message = `Set ${workerId} tick rate to ${clampedHz} Hz`;
-  const receipt: CommandReceipt = { scope: "worker_tick", ok: true, message, timestampMs: Date.now() };
-  setState((prev) => ({ lastReceiptsByScope: { ...prev.lastReceiptsByScope, worker_tick: receipt }, toasts: appendToastToList(prev.toasts, message, "success", setState).nextList }));
+  const baseMsg = normalizedHz === -1 ? `Set ${workerId} tick rate to Dynamic (30-60 Hz)` : normalizedHz === 0 ? `Set ${workerId} tick rate to 0 Hz (Paused NPC simulation)` : `Set ${workerId} tick rate to ${normalizedHz} Hz`;
+  const message = ok ? baseMsg : `${baseMsg}: ${errDetail}`;
+  const receipt: CommandReceipt = { scope: "worker_tick", ok, message, timestampMs: Date.now() };
+  setState((prev) => ({ lastReceiptsByScope: { ...prev.lastReceiptsByScope, worker_tick: receipt }, toasts: appendToastToList(prev.toasts, message, ok ? "success" : "error", setState).nextList }));
 }
 
-async function runSetTimeOfDayAction(setState: WorldStreamStoreApi["setState"], getState: () => WorldStreamState, hourInput: number | string, fetchImpl: typeof fetch = typeof fetch === "function" ? fetch : (undefined as unknown as typeof fetch)): Promise<void> {
-  const cleanHour = parseTimeOfDayInput(hourInput);
-  const label = formatTimeOfDayLabel(cleanHour);
-  setState({ timeOfDayHours: cleanHour, timeOfDaySyncedAtMs: Date.now(), timeOfDayLabel: label });
-  let message = `Set server time of day to ${label} (${cleanHour.toFixed(2)}h) across ${Math.max(1, getState().workers.length)} world workers`;
+async function runSetTimeOfDayAction(setState: WorldStreamStoreApi["setState"], getState: () => WorldStreamState, hourInput: number | string, optsOrFetch?: typeof fetch | { readonly dayOfYear?: number; readonly year?: number; readonly fetchImpl?: typeof fetch }, maybeFetchImpl?: typeof fetch): Promise<void> {
+  const isFn = typeof optsOrFetch === "function", opts = !isFn && optsOrFetch ? optsOrFetch : {};
+  const fetchImpl = isFn ? optsOrFetch : (opts.fetchImpl ?? maybeFetchImpl ?? (typeof fetch === "function" ? fetch : undefined));
+  const cleanHour = parseTimeOfDayInput(hourInput), label = formatTimeOfDayLabel(cleanHour), now = Date.now(), cur = getState();
+  const cal = computeVerraCalendar(opts.dayOfYear ?? cur.calendarDayOfYear ?? 1, opts.year ?? cur.calendarYear ?? 1);
+  setState({ timeOfDayHours: cleanHour, timeOfDaySyncedAtMs: now, timeOfDayLabel: label, ...cal });
+  let ok = true, message = `Set server time of day to ${label} (${cleanHour.toFixed(2)}h) across ${Math.max(1, cur.workers.length)} world workers`;
   if (typeof fetchImpl === "function") {
-    const res = await fetchImpl("/api/v1/gm/commands", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ command: "set_time_of_day", hour: cleanHour, params: { hour: cleanHour }, reason: "Operator updated server time of day" }) }).catch(() => null);
-    const data = res ? ((await res.json().catch(() => ({}))) as Record<string, unknown>) : {};
-    if (typeof data.message === "string" && data.message.length > 0 && data.message !== "executed") message = data.message;
+    const body = JSON.stringify({ command: "set_time_of_day", hour: cleanHour, hours: cleanHour, day_of_year: cal.calendarDayOfYear, year: cal.calendarYear, params: { hour: cleanHour, hours: cleanHour, day_of_year: cal.calendarDayOfYear, year: cal.calendarYear }, reason: "Operator updated server time of day" });
+    const headers = { "Content-Type": "application/json", Accept: "application/json" };
+    try {
+      if (opts.dayOfYear !== undefined || opts.year !== undefined) await fetchImpl("/api/v1/gm/world/time-of-day", { method: "PUT", headers, body });
+      const res = await fetchImpl("/api/v1/gm/commands", { method: "POST", headers, body });
+      ok = res.ok;
+      const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      if (typeof data.message === "string" && data.message.length > 0 && data.message !== "executed") message = data.message;
+      else if (!res.ok) message = String(data.detail ?? data.title ?? `HTTP ${res.status}`);
+    } catch (err) { ok = false; message = err instanceof Error ? err.message : "Failed to update server time of day"; }
   }
-  const receipt: CommandReceipt = { scope: "timeOfDay", ok: true, message, timestampMs: Date.now() };
-  setState((prev) => ({ lastReceiptsByScope: { ...prev.lastReceiptsByScope, timeOfDay: receipt }, toasts: appendToastToList(prev.toasts, message, "success", setState).nextList }));
+  const receipt: CommandReceipt = { scope: "timeOfDay", ok, message, timestampMs: now };
+  setState((prev) => ({ lastReceiptsByScope: { ...prev.lastReceiptsByScope, timeOfDay: receipt }, toasts: appendToastToList(prev.toasts, message, ok ? "success" : "error", setState).nextList }));
 }
 
 function syncWindowUrlHash(tab: AdminTabId, modal: GmModalId): void {
@@ -687,16 +691,16 @@ function syncWindowUrlHash(tab: AdminTabId, modal: GmModalId): void {
 let suppressSessionPersist = false;
 
 function buildInitialWorldStreamState(setState: WorldStreamStoreApi["setState"], getState: () => WorldStreamState, overrides?: Partial<WorldStreamState>): WorldStreamState {
-  const h = loadPersistedWebAdminState();
+  const h = loadPersistedWebAdminState(), defaultCal = computeVerraCalendar(1, 1);
   return {
-    ...DEFAULT_SESSION_UI_EXTRA_STATE, ...h,
-    entities: new Map<string, WorldEntity>(), cityNodes: DEFAULT_VERRA_CITY_NODES, pois: [], workers: DEFAULT_REGIONAL_WORLD_WORKERS, toasts: [],
+    ...DEFAULT_SESSION_UI_EXTRA_STATE, ...defaultCal, ...h,
+    entities: new Map<string, WorldEntity>(), cityNodes: DEFAULT_VERRA_CITY_NODES, pois: [], workers: [], toasts: [],
     selectedEntityGuid: h.selectedEntityGuid ?? null, selectedEntityId: h.selectedEntityGuid ?? null,
     selectedCityNodeName: h.selectedCityNodeName ?? null, selectedPoiGuid: null, selectedPlayer: h.selectedPlayer ?? "",
     activeTab: h.activeTab ?? "map", activeModal: h.activeModal ?? null, teleportMode: h.teleportMode ?? "place", spawnTargetMode: h.spawnTargetMode ?? "place",
     selectedNpcTemplate: h.selectedNpcTemplate ?? "Aela", selectedDefId: h.selectedNpcTemplate ?? "Aela",
     selectedContainer: h.selectedContainer ?? "aoc-world-riverlands", logContainer: h.logContainer ?? h.selectedContainer ?? "aoc-world-riverlands",
-    logQuery: h.logQuery ?? "", logSearch: h.logQuery ?? "", simulateAllNpcs: h.simulateAllNpcs ?? true, layers: h.layers ?? DEFAULT_LAYER_TOGGLES, camera: h.camera ?? { ...DEFAULT_CAMERA_VIEWPORT },
+    logQuery: h.logQuery ?? "", logSearch: h.logQuery ?? "", simulateAllNpcs: true, layers: h.layers ?? DEFAULT_LAYER_TOGGLES, camera: h.camera ?? { ...DEFAULT_CAMERA_VIEWPORT },
     connectionState: "connecting", lastSeq: 0, tickLatencyMs: 0, streamHz: STREAM_TARGET_HZ, needsSnapshotResync: false, error: null,
     pickedCoordinate: h.lastClickedPoint ?? null, lastClickedPoint: h.lastClickedPoint ?? null, navmeshSegments: [], lastReceiptsByScope: DEFAULT_RECEIPTS_BY_SCOPE,
     pushToast: (text, tone = "info") => { const { nextList, toast } = appendToastToList(getState().toasts, text, tone, setState); setState({ toasts: nextList }); return toast; },
@@ -716,15 +720,17 @@ function buildInitialWorldStreamState(setState: WorldStreamStoreApi["setState"],
     setLogQuery: (logQuery) => setState({ logQuery, logSearch: logQuery }),
     patchSessionUi: (patch) => setState({ ...patch, ...(patch.selectedEntityId !== undefined ? { selectedEntityGuid: patch.selectedEntityId } : {}), ...(patch.selectedDefId !== undefined ? { selectedNpcTemplate: patch.selectedDefId } : {}), ...(patch.logContainer !== undefined ? { selectedContainer: patch.logContainer } : {}), ...(patch.logSearch !== undefined ? { logQuery: patch.logSearch } : {}), ...(patch.logAutoTail !== undefined ? { autoRefreshLogs: patch.logAutoTail } : {}), ...(patch.autoRefreshLogs !== undefined && patch.logAutoTail === undefined ? { logAutoTail: patch.autoRefreshLogs } : {}) }),
     saveSessionUiState: (storage) => savePersistedWebAdminState(getState(), storage),
-    restoreForAuthenticatedSession: (storage) => { const restored = loadPersistedWebAdminState(storage, "", true); const cur = getState(); setState({ ...restored, cityNodes: cur.cityNodes.length > 0 ? cur.cityNodes : DEFAULT_VERRA_CITY_NODES, workers: cur.workers.length > 0 ? cur.workers : DEFAULT_REGIONAL_WORLD_WORKERS, connectionState: "connecting" }); },
+    restoreForAuthenticatedSession: (storage) => { const restored = loadPersistedWebAdminState(storage, "", true); const cur = getState(); setState({ ...restored, timeOfDayHours: cur.timeOfDayHours, timeOfDaySyncedAtMs: cur.timeOfDaySyncedAtMs, timeOfDayLabel: cur.timeOfDayLabel, simulateAllNpcs: cur.simulateAllNpcs, cityNodes: cur.cityNodes.length > 0 ? cur.cityNodes : DEFAULT_VERRA_CITY_NODES, workers: cur.workers, connectionState: "connecting" }); },
     setSimulateAllNpcs: async (enabled, fetchImpl = typeof fetch === "function" ? fetch : undefined) => { const nextVal = enabled !== undefined ? enabled : !getState().simulateAllNpcs; setState({ simulateAllNpcs: nextVal }); if (typeof fetchImpl === "function") await fetchImpl("/api/v1/gm/commands", { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ command: "set_simulate_all_npcs", params: { enabled: nextVal }, action: "set_simulate_all_npcs", enabled: nextVal }) }).catch(() => {}); return nextVal; },
     setCityNodes: (cityNodes) => setState({ cityNodes }), setPois: (pois) => setState({ pois }),
     setWorkers: (workers) => { const prev = getState().workers; if (workers.some((w) => (w.status === "UP" || w.status === "ONLINE") && prev.some((p) => p.worker_id === w.worker_id && p.status !== "UP" && p.status !== "ONLINE"))) resetAllRetryTimersAndCircuits("worker-ready"); setState({ workers }); },
     updateCityNodeLevel: (name, level) => setState((prev) => ({ cityNodes: updateNodeLevelInList(prev.cityNodes, name, level) })),
     setScopedReceipt: (scope, receiptOrMessage, tone) => setState((prev) => { const receipt = typeof receiptOrMessage === "string" ? { ok: tone !== "error", message: receiptOrMessage } : receiptOrMessage; const toastTone = tone ?? (receipt?.ok ? "success" : "error"); return { lastReceiptsByScope: { ...prev.lastReceiptsByScope, [scope]: receipt ? { scope, ok: receipt.ok, message: receipt.message, timestampMs: receipt.timestampMs ?? Date.now(), correlationId: receipt.correlationId } : null }, ...(receipt?.message ? { toasts: appendToastToList(prev.toasts, receipt.message, toastTone, setState).nextList } : {}) }; }),
     clearScopedReceipt: (scope) => setState((prev) => ({ lastReceiptsByScope: { ...prev.lastReceiptsByScope, [scope]: null } })),
+    setTimeOfDay: (hourInput, syncedAtMs = Date.now()) => { const clean = parseTimeOfDayInput(hourInput); setState({ timeOfDayHours: clean, timeOfDaySyncedAtMs: syncedAtMs, timeOfDayLabel: formatTimeOfDayLabel(clean) }); },
+    setWorldCalendar: (dayOfYear, year, syncedAtMs = Date.now()) => { const cal = computeVerraCalendar(dayOfYear, year); setState({ ...cal, timeOfDaySyncedAtMs: syncedAtMs }); },
     executeSetWorkerTickRateAction: (workerId, tickHz, fetchImpl) => runSetWorkerTickRateAction(setState, workerId, tickHz, fetchImpl),
-    executeSetTimeOfDayAction: (hour, fetchImpl) => runSetTimeOfDayAction(setState, getState, hour, fetchImpl),
+    executeSetTimeOfDayAction: (hour, optsOrFetch, maybeFetch) => runSetTimeOfDayAction(setState, getState, hour, optsOrFetch, maybeFetch),
     setNodeMayor: (nodeName, mayor, fetchImpl) => executeSetNodeMayorAction(setState, nodeName, mayor, fetchImpl),
     triggerNodeElection: (nodeName, action, fetchImpl) => executeTriggerNodeElectionAction(setState, nodeName, action, fetchImpl),
     toggleLayer: (layer, enabled) => setState((prev) => { const nextVal = enabled !== undefined ? enabled : !prev.layers[layer]; const nextLayers: LayerToggles = { ...prev.layers, [layer]: nextVal, ...(layer === "pois" ? { cityNodes: nextVal } : {}), ...(layer === "cityNodes" ? { pois: nextVal } : {}) }; return { layers: nextLayers, entities: pruneHiddenLayerEntities(prev.entities, nextLayers) }; }),
@@ -734,7 +740,7 @@ function buildInitialWorldStreamState(setState: WorldStreamStoreApi["setState"],
     setConnectionState: (connectionState, error = null) => { if (connectionState === "live" && getState().connectionState !== "live") resetAllRetryTimersAndCircuits("service-live"); setState({ connectionState, error }); },
     setPickedCoordinate: (point) => setState(point !== null ? { pickedCoordinate: point, lastClickedPoint: point, selectedEntityGuid: null, selectedEntityId: null, selectedCityNodeName: null, selectedPoiGuid: null } : { pickedCoordinate: null, lastClickedPoint: null }),
     setSpatialOverlays: (navmeshSegments) => setState({ navmeshSegments }),
-    resetForUnauthenticatedSession: () => { const cur = getState(); if (!suppressSessionPersist && cur.connectionState !== "offline") savePersistedWebAdminState(cur); suppressSessionPersist = true; setState({ ...DEFAULT_SESSION_UI_EXTRA_STATE, camera: { ...DEFAULT_CAMERA_VIEWPORT }, activeTab: "map", activeModal: null, entities: new Map<string, WorldEntity>(), pois: [], cityNodes: [], workers: [], navmeshSegments: [], pickedCoordinate: null, lastClickedPoint: null, selectedEntityGuid: null, selectedEntityId: null, selectedCityNodeName: null, selectedPoiGuid: null, selectedPlayer: "", connectionState: "offline" }); suppressSessionPersist = false; },
+    resetForUnauthenticatedSession: () => { const cur = getState(); if (!suppressSessionPersist && cur.connectionState !== "offline") savePersistedWebAdminState(cur); suppressSessionPersist = true; setState({ ...DEFAULT_SESSION_UI_EXTRA_STATE, timeOfDayHours: cur.timeOfDayHours, timeOfDaySyncedAtMs: cur.timeOfDaySyncedAtMs, timeOfDayLabel: cur.timeOfDayLabel, simulateAllNpcs: cur.simulateAllNpcs, camera: { ...DEFAULT_CAMERA_VIEWPORT }, activeTab: "map", activeModal: null, entities: new Map<string, WorldEntity>(), pois: [], cityNodes: [], workers: [], navmeshSegments: [], pickedCoordinate: null, lastClickedPoint: null, selectedEntityGuid: null, selectedEntityId: null, selectedCityNodeName: null, selectedPoiGuid: null, selectedPlayer: "", connectionState: "offline" }); suppressSessionPersist = false; },
     ...overrides,
   };
 }
@@ -753,27 +759,18 @@ export function createWorldStreamStore(initialOverrides?: Partial<WorldStreamSta
     if (nextState === state) return;
     const prevState = state;
     state = nextState;
-    if (!suppressSessionPersist && !isUnauthenticatedViewOnly() && state.connectionState !== "offline") {
-      savePersistedWebAdminState(state);
-    }
+    if (!suppressSessionPersist && !isUnauthenticatedViewOnly() && state.connectionState !== "offline") savePersistedWebAdminState(state);
     for (const listener of listeners) listener(state, prevState);
   };
   state = buildInitialWorldStreamState(setState, () => state, initialOverrides);
   const initialState = state;
-  return {
-    getState: () => state,
-    getInitialState: () => initialState,
-    setState,
-    subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
-  };
+  return { getState: () => state, getInitialState: () => initialState, setState, subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; } };
 }
 
 const defaultWorldStreamStore = createWorldStreamStore();
 subscribeRetryReset((_ep, reason) => {
   if (reason === "logout" || reason === "unauthorized") defaultWorldStreamStore.getState().resetForUnauthenticatedSession();
-  else if (reason === "login" || (reason === "refresh" && getActiveAdminJwtToken())) {
-    defaultWorldStreamStore.getState().restoreForAuthenticatedSession();
-  }
+  else if (reason === "login" || (reason === "refresh" && getActiveAdminJwtToken())) defaultWorldStreamStore.getState().restoreForAuthenticatedSession();
 });
 
 export function zoomToWorkerArea(worker: WorldWorkerInfo, storeSnap: WorldStreamState = defaultWorldStreamStore.getState()): WorkerSpatialArea {

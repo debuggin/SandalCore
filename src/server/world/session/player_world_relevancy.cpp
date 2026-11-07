@@ -573,18 +573,15 @@ world::BorderDecision PlayerWorld::step_player_border_handover(
     uint64_t player_id, double x, double y, int64_t now_ms) {
     if (!std::isfinite(x) || !std::isfinite(y)) return world::BorderDecision::StayLocal;
     auto [it, inserted] = regional_handover_states_.try_emplace(player_id);
-    if (inserted) {
-        const uint8_t mask = area_.region_mask;
-        it->second.authoritative_region =
-            (mask != 0 && mask != static_cast<uint8_t>(spawns::RegionBit::All))
-                ? static_cast<spawns::RegionBit>(mask)
-                : spawns::resolve_point_region_bit(x, y);
+    if (inserted && area_.region_mask != 0 &&
+        area_.region_mask != static_cast<uint8_t>(spawns::RegionBit::All)) {
+        it->second.authoritative_region = static_cast<spawns::RegionBit>(area_.region_mask);
         it->second.candidate_region = it->second.authoritative_region;
     }
     const int64_t eff_ms = (now_ms >= 0) ? now_ms : static_cast<int64_t>(world_clock_ * 1000.0);
     const bool sub_area = !area_.zoi_guids.empty() || !area_.exclude_zoi_guids.empty() ||
                           !area_.include_node_plugs.empty() || !area_.exclude_node_plugs.empty() ||
-                          area_.polygon_cutout_cm.size() >= 3 || !area_.excluded_polygons_cm.empty() || !area_.region;
+                          area_.polygon_cutout_cm.size() >= 3 || !area_.excluded_polygons_cm.empty();
     world::BorderDecision decision = world::BorderDecision::StayLocal;
     if (!sub_area) {
         decision = world::evaluate_regional_handover(it->second, x, y, eff_ms, area_.handover_hysteresis_cm);
@@ -600,7 +597,7 @@ world::BorderDecision PlayerWorld::step_player_border_handover(
 void PlayerWorld::commit_player_handover(uint64_t player_id, int64_t now_ms) noexcept {
     auto [it, _] = regional_handover_states_.try_emplace(player_id);
     const int64_t eff_ms = (now_ms >= 0) ? now_ms : static_cast<int64_t>(world_clock_ * 1000.0);
-    world::complete_border_handover(it->second, eff_ms);
+    (void)world::complete_border_handover(it->second, eff_ms);
     authority_states_[player_id] = it->second.authority_state;
     (void)try_advance_lease_epoch(player_id, it->second.lease_epoch);
 }
@@ -623,7 +620,6 @@ size_t PlayerWorld::sync_boundary_halo_actors(PlayerWorld& other, double halo_cm
                 if (ex->reliable_version < a.reliable_version || ex->version < a.version) {
                     dst.registry().modify(a.id, world::Change::State, [&](world::WorldActor& m) {
                         m.actor = a.actor;
-                        m.components = a.components;
                     });
                 }
                 ++synced;

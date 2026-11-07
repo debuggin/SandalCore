@@ -518,13 +518,9 @@ export const DEFAULT_SUBPARTITION_WORKERS = Object.freeze([
 export function expandViewportWorkerCatalog<T extends { readonly worker_id: string; readonly canonical_name?: string; readonly scope_key: string; readonly scope_kind: string; readonly tick_hz?: number }>(
   baseWorkers: readonly T[],
 ): readonly T[] {
-  const seen = new Set(baseWorkers.map((w) => `${w.scope_kind}:${w.scope_key}`));
-  const extras = (DEFAULT_SUBPARTITION_WORKERS as unknown as readonly T[])
-    .filter((w) => !seen.has(`${w.scope_kind}:${w.scope_key}`))
-    .map((w) => {
-      const hz = SUBPARTITION_TICK_OVERRIDES.get(w.worker_id) ?? (w.canonical_name ? SUBPARTITION_TICK_OVERRIDES.get(w.canonical_name) : undefined);
-      return hz !== undefined ? { ...w, tick_hz: hz } : w;
-    });
-  return [...baseWorkers, ...extras];
+  return baseWorkers.map((w) => {
+    const hz = SUBPARTITION_TICK_OVERRIDES.get(w.worker_id) ?? (w.canonical_name ? SUBPARTITION_TICK_OVERRIDES.get(w.canonical_name) : undefined);
+    return hz !== undefined ? { ...w, tick_hz: hz } : w;
+  });
 }
 

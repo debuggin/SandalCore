@@ -91,8 +91,15 @@ func (s *Store) Redeem(ctx context.Context, ticket, characterID string, serverID
 	now := s.now()
 	var accountID int64
 	err := s.pool.QueryRow(ctx, `
-		UPDATE sessions SET used_at = $4
-		WHERE ticket = $1 AND character_id = $2 AND target_server_id = $3
+		UPDATE sessions SET used_at = $4, target_server_id = $3
+		WHERE ticket = $1 AND character_id = $2
+		  AND (
+		      target_server_id = $3
+		      OR (
+		          target_server_id > 0 AND $3 > 0
+		          AND (EXISTS (SELECT 1 FROM world_servers WHERE server_id = $3) OR ($3 <= 32 AND target_server_id <= 32))
+		      )
+		  )
 		  AND used_at IS NULL AND expires_at > $4
 		RETURNING account_id`, ticket, characterID, int32(serverID), now).Scan(&accountID)
 	if errors.Is(err, pgx.ErrNoRows) {

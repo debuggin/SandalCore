@@ -20,10 +20,12 @@ import (
 	admincatalog "aocrop/services/internal/admin-catalog"
 	admingateway "aocrop/services/internal/admin-gateway"
 	"aocrop/services/internal/config"
+	"aocrop/services/internal/db"
 	"aocrop/services/internal/mesh"
 	"aocrop/services/internal/telemetry"
 	worldstream "aocrop/services/internal/world-stream"
 	pkgtelemetry "aocrop/services/pkg/telemetry"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Gateway struct {
@@ -35,8 +37,12 @@ type Gateway struct {
 }
 
 func newGateway(reg *mesh.Registry, router *mesh.ZoneRouter, serverID string) (*Gateway, error) {
+	return newGatewayWithPool(reg, router, serverID, nil)
+}
+
+func newGatewayWithPool(reg *mesh.Registry, router *mesh.ZoneRouter, serverID string, pool *pgxpool.Pool) (*Gateway, error) {
 	if reg == nil {
-		reg = mesh.NewRegistry(nil, 15*time.Second, "")
+		reg = mesh.NewRegistry(pool, 15*time.Second, "")
 	}
 	if router == nil {
 		router = mesh.NewZoneRouter(mesh.DefaultBoundaryHysteresisCm)
@@ -66,6 +72,7 @@ func newGateway(reg *mesh.Registry, router *mesh.ZoneRouter, serverID string) (*
 		WorldStreamAddr: firstEnvDefault("world:50062", "AOC_WORLD_STREAM_ADDR", "SANDAL_WORLD_STREAM_ADDR"),
 		CityNodeAddr:    firstEnvDefault("citynode:50056", "AOC_CITYNODE_GRPC_ADDR", "SANDAL_CITYNODE_GRPC_ADDR"),
 		ServiceToken:    resolveServiceToken(),
+		Pool:            pool,
 	})
 	return &Gateway{
 		registry:  reg,
@@ -127,6 +134,15 @@ func firstEnvDefault(def string, keys ...string) string {
 		return v
 	}
 	return def
+}
+
+func firstNonEmptyString(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func loadRoleTokens() map[string]admingateway.Role {
@@ -251,9 +267,21 @@ func runWithContext(ctx context.Context, probeAddr string) error {
 	if err := checkStaticWorld(cfg.MeshStaticWorld); err != nil {
 		return err
 	}
-	reg := mesh.NewRegistry(nil, cfg.MeshHeartbeatTTL, cfg.MeshStaticWorld)
+	var pool *pgxpool.Pool
+	if dsn := firstEnv("AOC_DATABASE_URL", "DATABASE_URL", "SANDAL_DATABASE_URL"); dsn != "" || cfg.DatabaseURL != "" {
+		if p, err := db.Open(ctx, firstNonEmptyString(cfg.DatabaseURL, dsn)); err == nil {
+			defer p.Close()
+			if migErr := db.Migrate(ctx, p); migErr != nil {
+				slog.Warn("mesh-gateway database migrate warning", "err", migErr)
+			}
+			pool = p
+		} else {
+			slog.Warn("mesh-gateway failed to open postgres pool, continuing in memory mode", "err", err)
+		}
+	}
+	reg := mesh.NewRegistry(pool, cfg.MeshHeartbeatTTL, cfg.MeshStaticWorld)
 	router := mesh.NewZoneRouter(mesh.DefaultBoundaryHysteresisCm)
-	gateway, err := newGateway(reg, router, "mesh-gateway")
+	gateway, err := newGatewayWithPool(reg, router, "mesh-gateway", pool)
 	if err != nil {
 		return err
 	}

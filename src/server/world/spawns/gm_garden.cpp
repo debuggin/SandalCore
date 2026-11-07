@@ -80,6 +80,13 @@ bool make_node(world::WorldActor& w, const garden::Def& def, double x, double y,
     w.y = y;
     w.z = z;
     w.yaw_degrees = yaw;
+    static constexpr const char* kRarities[6] = {"Common", "Uncommon", "Rare", "Heroic", "Epic", "Legendary"};
+    const char* rarity = kRarities[mix(def.guid ^ static_cast<uint64_t>(std::llround(x))) % 6];
+    const std::string display = std::string(def.name) + " [" + def.profession + " / " + def.resource + " | " + rarity +
+                                " | Tier " + std::to_string(def.tier + 1) + " " + def.tier_name + "]";
+    w.label = display;
+    w.npc.name = display;
+    w.npc.level = (def.tier + 1) * 10;
     return true;
 }
 

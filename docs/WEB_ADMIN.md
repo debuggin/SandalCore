@@ -15,9 +15,9 @@ To protect live world manipulation, SQL hotfix execution, and container lifecycl
 
 1. **Startup Passphrase Generation & Console Banner**:
    - On every `start.bat` / `sandal.ps1 up` invocation, `scripts/lib/Env.psm1` (`Ensure-SandalAdminPassphrase`) generates a fresh cryptographic passphrase (`AOC_ADMIN_PASSPHRASE`, e.g., `verra-xxxx-xxxx-xxxx`), a 256-bit signing key (`AOC_ADMIN_JWT_SECRET`), and a unique boot identifier (`AOC_ADMIN_BOOT_ID`).
-   - The passphrase is written to `deploy/.admin_passphrase` and printed prominently in the terminal startup banner alongside `Username: admin`.
-2. **Passphrase-to-JWT Exchange (`POST /api/v1/admin/auth/login`)**:
-   - Submitting `{"username": "admin", "passphrase": "<passphrase>"}` to `POST /api/v1/admin/auth/login` validates the credentials using constant-time comparison (`subtle.ConstantTimeCompare`) and returns a signed `HS256` Bearer JWT (`token`), `expires_at`, `boot_id`, and granted `scopes`.
+   - The passphrase is written to `deploy/.admin_passphrase` and printed prominently in the terminal startup banner alongside `Username: Admin` (`DEFAULT_ADMIN_USERNAME = "Admin"`).
+2. **Passphrase-to-JWT Exchange (`POST /api/v1/admin/auth/login`) & `END SESSION`**:
+   - Submitting `{"username": "Admin", "passphrase": "<passphrase>"}` to `POST /api/v1/admin/auth/login` validates the credentials using constant-time comparison (`subtle.ConstantTimeCompare`) and returns a signed `HS256` Bearer JWT (`token`), `expires_at`, `boot_id`, and granted `scopes`. Authenticated operators can terminate their session at any time via the top-bar **`END SESSION`** button (`END_SESSION_BUTTON_LABEL = "END SESSION"`).
 3. **Extensible Scope Matrix**:
    - Every issued JWT embeds an explicit `scopes` array checked by middleware on `aoc-gateway`:
      - `admin:read` -- Read world state, entity inspector, catalog tables, and map layers.
@@ -111,13 +111,13 @@ When an operator clicks a ground pin (`Map Position`) or triggers a GM action fr
 
 ---
 
-## 5. Zero-Redundancy 4-Zone Analytics & Structured Logs Explorer
+## 5. `Observability` Tab -- Zero-Redundancy 4-Zone Observability & Structured Logs Explorer
 
-The **Analytics & Logs** workspace (`src/clients/web-admin/src/components/LogsAndContainersTab.tsx`) consolidates cluster observability into **4 non-overlapping zones** with zero duplicate metric cards:
+The **Observability** workspace (`src/clients/web-admin/src/components/LogsAndContainersTab.tsx`) consolidates cluster observability into **4 non-overlapping zones** with zero duplicate metric cards:
 
 | Zone | Title & Scope | Key Signals & Operator Controls |
 |:---:|:---|:---|
 | **Zone 1** | **Google SRE Four Golden Signals Banner** | Top-level KPI strip aggregating cluster-wide **Latency** (tick duration $p50 / p99$ vs. frame budget), **Traffic** (active UDP sessions, packets/sec, gRPC RPS), **Errors** (failed RPCs, dropped frames, auth rejections), and **Saturation** (worker tick budget utilization `%` and SQLite/Postgres pool pressure). |
-| **Zone 2** | **Dynamic Server Worker Shards Table** | Live table of all registered `aoc-world` / `aoc-<region>` / `aoc-<zoi>` / `aoc-<city>` workers showing `worker_index`, spatial tier (`world | region | zoi | node_plug | polygon_cutout`), target vs. actual Tick Rate (`10 Hz` / `20 Hz` / `30 Hz`), active player count, spawned NPC count, `.tsv` storage mode (`memory` vs. `disk`), and handover counters. |
+| **Zone 2** | **Dynamic Server Worker Shards Table** | Live table of all registered `aoc-world` / `aoc-<region>` / `aoc-<zoi>` / `aoc-<city>` workers showing `worker_index`, spatial tier (`world | region | zoi | node_plug | polygon_cutout`), target vs. actual Tick Rate (`Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)`, or manual `10, 15, 20, 25, 30, 40, 50, 60 Hz` with Little's Law `<= 1.0 s` / `>= 1 Hz` entity backlog floor), active player count, spawned NPC count, `.tsv` storage mode (`memory` vs. `disk`), and handover counters. |
 | **Zone 3** | **USE / RED Container Matrix** | Per-container row matrix across all active Linux containers (`aoc-postgres`, `aoc-auth`, `aoc-character`, `aoc-citynode`, `aoc-quest`, `aoc-mesh`, `aoc-mesh-gateway`, `aoc-gateway`, `aoc-web-admin`, `aoc-ingress-proxy`, and `aoc-*` world workers) reporting **Utilization** (CPU `%`, RSS memory MB), **Saturation** (run-queue / memory limit `%`), **Errors** (restart count, healthcheck status), and one-click container restart actions (`containers:manage` scope). |
 | **Zone 4** | **Structured Logs & GM Audit Trail Explorer** | Real-time filterable log viewer querying structured JSON container logs and the persistent GM Audit Trail (`gm_audit_log`), with instant filtering by container service, severity (`INFO`, `WARN`, `ERROR`), worker shard, correlation/request ID, or free-text search. |

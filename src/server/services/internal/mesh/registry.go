@@ -133,7 +133,18 @@ func (s *Registry) Place(ctx context.Context, characterID string) (uint32, strin
 	err := s.pool.QueryRow(ctx, `
 		SELECT server_id, address FROM world_servers
 		WHERE last_heartbeat > $1
-		ORDER BY last_heartbeat DESC, server_id DESC
+		ORDER BY
+			CASE
+				WHEN 'riverlands' = ANY(regions) OR address LIKE 'world:%' THEN 0
+				WHEN cardinality(regions) > 0 OR address LIKE 'world-%' THEN 1
+				ELSE 2
+			END ASC,
+			CASE
+				WHEN 'riverlands' = ANY(regions) OR cardinality(regions) > 0 OR address LIKE 'world:%' OR address LIKE 'world-%' THEN server_id
+				ELSE 0
+			END ASC,
+			last_heartbeat DESC,
+			server_id DESC
 		LIMIT 1`, s.now().Add(-s.ttl)).Scan(&id, &address)
 	switch {
 	case err == nil:

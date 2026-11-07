@@ -503,7 +503,9 @@ void NpcWorld::step_all_ambient(double t) {
     if (!players_.empty() && !allow_when_players) return;
     const size_t total = npcs_.size();
     if (total == 0) return;
-    const size_t max_slice = std::min(total, std::max<size_t>(1, cfg_.sim_step_cap));
+    const uint32_t eff_hz = static_cast<uint32_t>(std::clamp(static_cast<int>(std::lround(1.0 / std::max(1e-3, cfg_.step_seconds))), 10, 60));
+    const size_t min_for_1s_backlog = (total + eff_hz - 1) / eff_hz;
+    const size_t max_slice = std::min(total, std::max<size_t>(cfg_.sim_step_cap, min_for_1s_backlog));
     const double budget_ms = std::max(0.5, 0.375 * cfg_.step_seconds * 1000.0);
     const auto slice_start = std::chrono::steady_clock::now();
     auto it = npcs_.begin();
@@ -518,7 +520,8 @@ void NpcWorld::step_all_ambient(double t) {
         if (n.setup.ambient == Ambient::Stationary && !n.hostile && n.setup.route.size() < 2) continue;
         step_roam(n, t);
         ++stepped;
-        if ((stepped & 63u) == 0 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - slice_start).count() >= budget_ms) break;
+        if (stepped >= min_for_1s_backlog && (stepped & 63u) == 0 &&
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - slice_start).count() >= budget_ms) break;
     }
     ambient_cursor_ = (ambient_cursor_ + std::max<size_t>(1, stepped)) % total;
 }
@@ -562,12 +565,8 @@ void NpcWorld::advance_ambient_wander(Npc& n, world::WorldActor& a, double t, do
     if (!was_goal || dist_goal < 120.0) {
         if (was_goal && t < n.wait_until) return;
         const double ang = next_unit(n) * 6.283185307179586, rad = (0.25 + 0.75 * std::sqrt(next_unit(n))) * roam_r;
-        n.goal_x = n.home.x + std::cos(ang) * rad;
-        n.goal_y = n.home.y + std::sin(ang) * rad;
-        n.goal_z = n.home.z;
-        n.has_goal = true;
-        n.wait_until = was_goal ? (t + 0.2 + next_unit(n) * 1.0) : t;
-        ++stats_.moves_started;
+        n.goal_x = n.home.x + std::cos(ang) * rad; n.goal_y = n.home.y + std::sin(ang) * rad; n.goal_z = n.home.z;
+        n.has_goal = true; n.wait_until = was_goal ? (t + 0.2 + next_unit(n) * 1.0) : t; ++stats_.moves_started;
     }
     if (t < n.wait_until) return;
     const double dx = n.goal_x - a.x, dy = n.goal_y - a.y, d = std::hypot(dx, dy);

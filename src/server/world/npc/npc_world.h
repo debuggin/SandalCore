@@ -51,15 +51,10 @@
 #include "world/actor_registry.h"
 
 #include <atomic>
-#include <chrono>
-#include <cstdint>
+#include <cmath>
 #include <deque>
-#include <functional>
 #include <map>
 #include <optional>
-#include <string_view>
-#include <unordered_map>
-#include <vector>
 
 namespace aoc::worldd::npc {
 

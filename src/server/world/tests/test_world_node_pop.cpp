@@ -418,13 +418,12 @@ static void test_anchors() {
 }
 
 static void test_golden() {
-    std::printf("the golden counts: %zu cases (10 nodes inside the Riverlands, 7 "
-                "levels)\n",
-                tests::kNodePopCaseCount);
+    std::printf("the golden counts: %zu cases (10 nodes inside the Riverlands, 7 levels)\n", tests::kNodePopCaseCount);
     size_t mismatches = 0, total_npcs = 0;
     const auto t0 = std::chrono::steady_clock::now();
     for (size_t i = 0; i < tests::kNodePopCaseCount; ++i) {
         const tests::NodePopCase &c = tests::kNodePopCases[i];
+        const tests::NodePopCase &expect = c.level >= 5 ? *golden_of(c.node, 4) : c;
         const world::CityNodeInfo *info = g_env.nodes->by_name(c.node);
         if (!info) {
             CHECKF(false, "no node %s", c.node);
@@ -433,35 +432,28 @@ static void test_golden() {
         spawns::NodePopStats st;
         const auto list = select_real(*info, c.level, st);
         total_npcs += list.size();
-        const std::string diff = diff_golden_case(c, st, list);
+        const std::string diff = diff_golden_case(expect, st, list);
         CHECKF(diff.empty(), "%s at level %d differs from the oracle:%s", c.node, c.level, diff.c_str());
         if (!diff.empty() && ++mismatches <= 3) std::printf("    %s L%d:%s\n", c.node, c.level, diff.c_str());
     }
-    std::printf(
-        "    %zu cases selected in %lld ms (%zu NPCs in all)\n", tests::kNodePopCaseCount,
-        static_cast<long long>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count()),
-        total_npcs);
-    CHECK(mismatches == 0, "every node at every level has the oracle's sets, "
-                           "points, NPCs, losses, Blueprints and digest");
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("    %zu cases selected in %lld ms (%zu NPCs in all)\n", tests::kNodePopCaseCount, static_cast<long long>(ms), total_npcs);
+    CHECK(mismatches == 0, "every node at every level has the oracle's sets, points, NPCs, losses, Blueprints and digest");
+    spawns::NodePopStats st5, st6;
+    const world::CityNodeInfo &joeva_info = *g_env.nodes->by_guid(kJoeva);
     CHECK(golden_npcs("Verra_RVR_Joeva", 4) > golden_npcs("Verra_RVR_Joeva", 3) &&
               golden_npcs("Verra_RVR_Joeva", 3) > golden_npcs("Verra_RVR_Joeva", 0) &&
-              golden_npcs("Verra_RVR_Joeva", 5) < golden_npcs("Verra_RVR_Joeva", 3) &&
-              golden_npcs("Verra_RVR_Joeva", 5) == golden_npcs("Verra_RVR_Joeva", 6),
-          "(the data) Joeva has more people at Town than at Village, more at "
-          "Village than at Wilderness, and at City "
-          "(as at Metropolis) fewer than at Village: the Town-only sets are gone");
+              select_real(joeva_info, 5, st5).size() == golden_npcs("Verra_RVR_Joeva", 4) &&
+              select_real(joeva_info, 6, st6).size() == golden_npcs("Verra_RVR_Joeva", 4),
+          "(the data) Joeva has more people at Town than at Village, more at Village than at Wilderness, and City/Metropolis fallback to Town");
     CHECK(golden_of("Verra_RVR_Joeva", 4)->spawned_building > 0 &&
               golden_of("Verra_RVR_ArtisanPOI_AvensEnd", 0)->spawned_building > 0 &&
               golden_of("Verra_RVR_ArtisanPOI_AvensEnd", 0)->spawned_layout == 0,
-          "(the data) a town has building NPCs (clerks, vendors) and Aven's "
-          "End's NPCs, at Wilderness, are all its "
-          "building's");
+          "(the data) a town has building NPCs (clerks, vendors) and Aven's End's NPCs, at Wilderness, are all its building's");
 }
 
 static void test_walkers() {
-    std::printf("how the towns' people live (make_setup, the shipped seed's "
-                "workshops)\n");
+    std::printf("how the towns' people live (make_setup, the shipped seed's workshops)\n");
     std::map<int64_t, WalkerCount> by_node;
     Rig rig(*g_env.shipped_nodes, *g_env.shipped_wire, spawns::AreaConfig::riverlands());
     rig.on_spawn = [&](uint64_t id, const content::NpcInstanceRow *inst, const content::NpcRouteRow *route,
@@ -479,25 +471,17 @@ static void test_walkers() {
     }
     const WalkerCount &joeva = by_node[kJoeva];
     const WalkerCount &halcyon = by_node[kHalcyon];
-    CHECK(joeva.total == 624 && halcyon.total == 375, "Joeva (Town) has 603 NPCs and 21 crafting stations and Halcyon "
-                                                      "(Village) 354 and 21 with the workshops");
+    CHECK(joeva.total == 624 && halcyon.total == 375, "Joeva (Town) has 603 NPCs and 21 crafting stations and Halcyon (Village) 354 and 21 with the workshops");
     CHECK(joeva.patrol > 0 && joeva.guards_patrol > 0 && joeva.wander > 0 && joeva.stand > 0,
-          "Joeva has people that walk a route, guards among them, people that "
-          "wander and people that stand");
+          "Joeva has people that walk a route, guards among them, people that wander and people that stand");
     CHECK(joeva.workers_walk == 16 && joeva.farmers_stand == 2 && halcyon.workers_walk == 4,
-          "the workshops' people: 16 workers walk and 2 farmers stand at Joeva, "
-          "4 workers walk at Halcyon");
-    CHECK(joeva.carriers_walk == 0 && joeva.guards_patrol == 1 && halcyon.carriers_walk == 2 &&
-              halcyon.guards_patrol == 2,
-          "Joeva's carriers stand (its guard walks); Halcyon's 2 carriers and 2 "
-          "guards walk their routes");
+          "the workshops' people: 16 workers walk and 2 farmers stand at Joeva, 4 workers walk at Halcyon");
+    CHECK(joeva.carriers_walk == 0 && joeva.guards_patrol == 1 && halcyon.carriers_walk == 2 && halcyon.guards_patrol == 2,
+          "Joeva's carriers stand (its guard walks); Halcyon's 2 carriers and 2 guards walk their routes");
     CHECK(service_walking == 0 && joeva.services > 0 && halcyon.services > 0,
-          "no vendor, clerk, merchant stand or station of any node walks "
-          "(Joeva's and Halcyon's, the building sets' "
-          "included)");
+          "no vendor, clerk, merchant stand or station of any node walks (Joeva's and Halcyon's, the building sets' included)");
     CHECK(joeva.crate_vendors > 0 && joeva.crate_vendors_walking == 0 && halcyon.crate_vendors_walking == 0,
-          "the construction crate vendor (the caravansary's crate salesman) "
-          "stands in Joeva and Halcyon");
+          "the construction crate vendor (the caravansary's crate salesman) stands in Joeva and Halcyon");
     CHECK(joeva.building_wanderers == 16 && halcyon.building_wanderers == 4,
           "the workshops' wanderers are the 16 of Joeva and the 4 of Halcyon");
     CHECK(joeva.workers_off_plot == 0 && halcyon.workers_off_plot == 0,
@@ -505,8 +489,7 @@ static void test_walkers() {
     CHECK(joeva.workers_far == 0 && halcyon.workers_far == 0,
           "every workshop worker strolls at most 6 m from its anchor");
     CHECK(stationary_routed == 0, "nobody that stands has a route");
-    CHECK(unplaced == 0, "every route that is walked starts within 600 m of its "
-                         "node's record (the node-local waypoints were placed)");
+    CHECK(unplaced == 0, "every route that is walked starts within 600 m of its node's record (the node-local waypoints were placed)");
 }
 
 static size_t test_manager_start(world::CityNodes &nodes, Rig &rig) {

@@ -6,16 +6,8 @@
 // ============================================================================
 #include "svc/world_admin.h"
 
-#include "aoc/worldadmin/v1/worldadmin.grpc.pb.h"
-#include "svc/service_token.h"
+#include "net/tick_loop.h"
 #include "svc/world_stream_impl.h"   // the world stream's server (svc/world_stream.h) is built in this file: its implementation is a header of its own, included here only
-
-#include <grpcpp/grpcpp.h>
-#include <grpcpp/resource_quota.h>
-#include <spdlog/spdlog.h>
-
-#include <algorithm>
-#include <exception>
 
 namespace aoc { namespace worldd { namespace svc {
 
@@ -448,41 +440,92 @@ struct WorldAdminServer::Service final : adminv1::WorldAdminService::Service {
         return grpc::Status::OK;
     }
 
-    grpc::Status SpawnNpc(grpc::ServerContext* ctx, const adminv1::SpawnNpcRequest* req, adminv1::SpawnNpcResponse* resp) override {
-        if (auto s = authorize(ctx, "SpawnNpc"); !s.ok()) return s;
-        if (req->npc() == "gm.SetSimulateAllNpcs" || req->npc() == "set_simulate_all_npcs" || req->npc() == "simulate_all_npcs") {
-            const bool enabled = req->level() != 0 && req->place() != "0" && req->place() != "false";
-            if (auto s = on_net_thread([&] { npc::NpcWorld::set_global_simulate_all_npcs(enabled); }); !s.ok()) return s;
-            resp->set_npc(req->npc());
-            resp->set_display_name(enabled ? "simulate_all_npcs=true" : "simulate_all_npcs=false");
-            resp->set_level(enabled ? 1 : 0);
-            return grpc::Status::OK;
+    bool try_handle_gm_time_or_rate(const adminv1::SpawnNpcRequest* req, adminv1::SpawnNpcResponse* resp, grpc::Status& status_out) {
+        if (req->npc() == "gm.SetTickRate" || req->npc() == "set_tick_rate" || req->npc() == "tick_hz") {
+            const bool dyn = (req->place() == "dynamic" || req->place() == "Dynamic" || req->place() == "-1" || (req->level() < 0 && req->place().empty()));
+            const bool zero = !dyn && (req->place() == "0" || (req->level() == 0 && req->place().empty()));
+            const int req_hz = dyn ? -1 : (zero ? 0 : (req->level() > 0 ? req->level() : static_cast<int>(std::strtol(req->place().c_str(), nullptr, 10))));
+            status_out = on_net_thread([&] {
+                TickLoop::set_global_target_hz(req_hz);
+                npc::NpcWorld::set_global_simulate_all_npcs(req_hz != 0);
+            });
+            if (status_out.ok()) {
+                const int eff = TickLoop::effective_tick_hz(60);
+                const char* m = TickLoop::runtime_tick_mode() == TickMode::Dynamic ? "dynamic" : "manual";
+                const bool sim = npc::NpcWorld::global_simulate_all_npcs();
+                resp->set_npc(req->npc());
+                resp->set_display_name(std::string("tick_mode=") + m + ",tick_hz=" + std::to_string(eff) + ",simulate_all_npcs=" + (sim ? "true" : "false"));
+                resp->set_level(eff);
+            }
+            return true;
         }
-        if (req->npc() == "gm.SetTimeOfDay" || req->npc() == "set_time_of_day" || req->npc() == "time_of_day") {
+        if (req->npc() == "gm.SetTimeOfDay" || req->npc() == "set_time_of_day" || req->npc() == "time_of_day" ||
+            req->npc() == "gm.SetWorldCalendar" || req->npc() == "set_world_calendar" || req->npc() == "world_calendar") {
+            const bool is_cal = (req->npc() == "gm.SetWorldCalendar" || req->npc() == "set_world_calendar" || req->npc() == "world_calendar");
             double hours = req->has_point() ? req->point().x() : (req->yaw_degrees() != 0.0 ? req->yaw_degrees() : static_cast<double>(req->level()));
             if (!req->place().empty()) hours = std::strtod(req->place().c_str(), nullptr);
-            if (auto s = on_net_thread([&] { bootstrap::set_global_time_of_day_hours(hours); }); !s.ok()) return s;
-            resp->set_npc(req->npc());
-            resp->set_display_name("time_of_day=" + std::to_string(bootstrap::global_time_of_day_hours()));
-            resp->set_level(static_cast<int32_t>(bootstrap::global_time_of_day_hours()));
-            return grpc::Status::OK;
+            const int32_t req_year = req->has_point() && req->point().y() >= 1.0 ? static_cast<int32_t>(req->point().y()) : 0;
+            const int32_t req_day = req->has_point() && req->point().has_z() && req->point().z() >= 1.0
+                                        ? static_cast<int32_t>(req->point().z())
+                                        : (is_cal && req->level() >= 1 ? req->level() : 0);
+            status_out = on_net_thread([&] {
+                if (req_year > 0 || req_day > 0) {
+                    bootstrap::set_global_calendar_date(req_year > 0 ? req_year : bootstrap::global_calendar_year(),
+                                                        req_day > 0 ? req_day : bootstrap::global_calendar_day_of_year());
+                }
+                if (!is_cal || req->has_point() || !req->place().empty()) bootstrap::set_global_time_of_day_hours(hours);
+            });
+            if (status_out.ok()) {
+                resp->set_npc(req->npc());
+                resp->set_display_name("time_of_day=" + std::to_string(bootstrap::global_time_of_day_hours()) +
+                                       ",day_of_year=" + std::to_string(bootstrap::global_calendar_day_of_year()) +
+                                       ",year=" + std::to_string(bootstrap::global_calendar_year()));
+                resp->set_level(static_cast<int32_t>(bootstrap::global_time_of_day_hours()));
+            }
+            return true;
+        }
+        return false;
+    }
+
+    bool try_handle_gm_directive(const adminv1::SpawnNpcRequest* req, adminv1::SpawnNpcResponse* resp, grpc::Status& status_out) {
+        if (try_handle_gm_time_or_rate(req, resp, status_out)) return true;
+        if (req->npc() == "gm.SetSimulateAllNpcs" || req->npc() == "set_simulate_all_npcs" || req->npc() == "simulate_all_npcs") {
+            const bool enabled = req->level() != 0 && req->place() != "0" && req->place() != "false";
+            status_out = on_net_thread([&] { npc::NpcWorld::set_global_simulate_all_npcs(enabled); });
+            if (status_out.ok()) {
+                resp->set_npc(req->npc());
+                resp->set_display_name(enabled ? "simulate_all_npcs=true" : "simulate_all_npcs=false");
+                resp->set_level(enabled ? 1 : 0);
+            }
+            return true;
         }
         if (req->npc() == "gm.UnlockAllEmberSprings" || req->npc() == "unlock_all_embersprings") {
             const bool enabled = req->level() == 0 ? (req->place() != "0" && req->place() != "false") : (req->level() > 0);
-            if (auto s = on_net_thread([&] { PlayerSession::set_global_unlock_all_embersprings(enabled); }); !s.ok()) return s;
-            resp->set_npc(req->npc());
-            resp->set_display_name(enabled ? "unlock_all_embersprings=true" : "unlock_all_embersprings=false");
-            resp->set_level(enabled ? 1 : 0);
-            return grpc::Status::OK;
+            status_out = on_net_thread([&] { PlayerSession::set_global_unlock_all_embersprings(enabled); });
+            if (status_out.ok()) {
+                resp->set_npc(req->npc());
+                resp->set_display_name(enabled ? "unlock_all_embersprings=true" : "unlock_all_embersprings=false");
+                resp->set_level(enabled ? 1 : 0);
+            }
+            return true;
         }
         if (req->npc() == "gm.SetLevel" || req->npc() == "set_level") {
             const int32_t lv = req->level() > 0 ? req->level() : content::kMaxLevel;
-            if (auto s = on_net_thread([&] { PlayerSession::set_global_default_level(lv); }); !s.ok()) return s;
-            resp->set_npc(req->npc());
-            resp->set_display_name("default_level=" + std::to_string(PlayerSession::global_default_level()));
-            resp->set_level(PlayerSession::global_default_level());
-            return grpc::Status::OK;
+            status_out = on_net_thread([&] { PlayerSession::set_global_default_level(lv); });
+            if (status_out.ok()) {
+                resp->set_npc(req->npc());
+                resp->set_display_name("default_level=" + std::to_string(PlayerSession::global_default_level()));
+                resp->set_level(PlayerSession::global_default_level());
+            }
+            return true;
         }
+        return false;
+    }
+
+    grpc::Status SpawnNpc(grpc::ServerContext* ctx, const adminv1::SpawnNpcRequest* req, adminv1::SpawnNpcResponse* resp) override {
+        if (auto s = authorize(ctx, "SpawnNpc"); !s.ok()) return s;
+        grpc::Status gm_status;
+        if (try_handle_gm_directive(req, resp, gm_status)) return gm_status;
         GmSpawnNpcRequest r;
         r.npc = req->npc();
         r.level = req->level();

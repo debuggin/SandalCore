@@ -3,7 +3,9 @@
 import React from "react";
 import {
   clearAdminSession,
+  DEFAULT_ADMIN_USERNAME,
   loginWithPassphrase,
+  normalizeAdminUsername,
   setAdminAuthState,
   useAdminAuthStore,
 } from "../state/adminAuthClient";
@@ -61,9 +63,25 @@ const INPUT_FIELD_STYLE: React.CSSProperties = {
   boxSizing: "border-box",
 };
 
+export const END_SESSION_BUTTON_LABEL = "END SESSION";
+export const END_SESSION_BUTTON_STYLE: React.CSSProperties = Object.freeze({
+  minHeight: "32px",
+  padding: "4px 12px",
+  borderRadius: "8px",
+  background: "rgba(239, 68, 68, 0.16)",
+  backgroundColor: "rgba(239, 68, 68, 0.16)",
+  border: "1px solid rgba(248, 113, 113, 0.42)",
+  color: "#fca5a5",
+  fontSize: "11px",
+  fontWeight: 600,
+  letterSpacing: "0.04em",
+  cursor: "pointer",
+});
+
 export function AdminAuthSessionBadge(): React.ReactElement {
   const authSnap = useAdminAuthStore();
   const isAuthenticated = Boolean(authSnap.token && authSnap.token.length > 0);
+  const displayUsername = normalizeAdminUsername(authSnap.username);
   const onActionClick = (): void => {
     if (isAuthenticated) {
       useWorldStreamStore.getState().saveSessionUiState();
@@ -80,6 +98,30 @@ export function AdminAuthSessionBadge(): React.ReactElement {
       data-testid="admin-auth-session-badge"
       style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}
     >
+      <button
+        type="button"
+        data-testid="admin-auth-session-btn"
+        aria-label={isAuthenticated ? "End Session" : "Start Session"}
+        onClick={onActionClick}
+        style={
+          isAuthenticated
+            ? END_SESSION_BUTTON_STYLE
+            : {
+                minHeight: "32px",
+                padding: "4px 12px",
+                borderRadius: "8px",
+                border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
+                backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush,
+                color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100,
+                fontSize: "11px",
+                fontWeight: 700,
+                letterSpacing: "0.04em",
+                cursor: "pointer",
+              }
+        }
+      >
+        {isAuthenticated ? END_SESSION_BUTTON_LABEL : "Start Session"}
+      </button>
       {isAuthenticated ? (
         <span
           data-testid="admin-auth-session-identity"
@@ -93,28 +135,9 @@ export function AdminAuthSessionBadge(): React.ReactElement {
             color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500,
           }}
         >
-          {authSnap.username || "admin"}
+          {displayUsername}
         </span>
       ) : null}
-      <button
-        type="button"
-        data-testid="admin-auth-session-btn"
-        onClick={onActionClick}
-        style={{
-          minHeight: "32px",
-          padding: "4px 12px",
-          borderRadius: "8px",
-          border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
-          backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush,
-          color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100,
-          fontSize: "11px",
-          fontWeight: 700,
-          letterSpacing: "0.04em",
-          cursor: "pointer",
-        }}
-      >
-        {isAuthenticated ? "End Session" : "Start Session"}
-      </button>
     </div>
   );
 }
@@ -181,13 +204,13 @@ function renderAdminLoginFormBody(p: AdminLoginFormBodyProps): React.ReactElemen
 export function AdminLoginModal(props?: AdminLoginModalProps): React.ReactElement | null {
   const authSnap = useAdminAuthStore();
   const isModalOpen = props?.isOpen ?? (authSnap.loginPromptOpen || authSnap.authRequired);
-  const [username, setUsername] = React.useState(authSnap.username || "admin");
+  const [username, setUsername] = React.useState(normalizeAdminUsername(authSnap.username || DEFAULT_ADMIN_USERNAME));
   const [passphrase, setPassphrase] = React.useState("");
   const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   React.useEffect(() => {
     if (authSnap.username && authSnap.username.trim().length > 0) {
-      setUsername(authSnap.username);
+      setUsername(normalizeAdminUsername(authSnap.username));
     }
   }, [authSnap.username]);
 

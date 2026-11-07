@@ -115,22 +115,29 @@ function resolveDefaultStorage(): Storage | null {
   }
 }
 
+export const DEFAULT_ADMIN_USERNAME = "Admin";
+
+export function normalizeAdminUsername(raw?: string | null): string {
+  const trimmed = (raw ?? "").trim();
+  return !trimmed || trimmed.toLowerCase() === "admin" ? DEFAULT_ADMIN_USERNAME : trimmed;
+}
+
 export function loadAdminSession(storage: Pick<Storage, "getItem"> | null = resolveDefaultStorage()): PersistedAdminJwtSession {
   try {
     const raw = storage?.getItem(ADMIN_JWT_STORAGE_KEY);
     if (!raw) {
-      return { token: null, username: "admin", role: "GM_ARCHITECT", scopes: DEFAULT_SCOPES, bootId: "" };
+      return { token: null, username: DEFAULT_ADMIN_USERNAME, role: "GM_ARCHITECT", scopes: DEFAULT_SCOPES, bootId: "" };
     }
     const parsed = JSON.parse(raw) as Partial<PersistedAdminJwtSession> & { readonly boot_id?: string };
     return {
       token: typeof parsed.token === "string" && parsed.token.length > 0 ? parsed.token : null,
-      username: typeof parsed.username === "string" && parsed.username.length > 0 ? parsed.username : "admin",
+      username: normalizeAdminUsername(parsed.username),
       role: typeof parsed.role === "string" && parsed.role.length > 0 ? parsed.role : "GM_ARCHITECT",
       scopes: Array.isArray(parsed.scopes) ? parsed.scopes.map(String) : DEFAULT_SCOPES,
       bootId: typeof parsed.bootId === "string" ? parsed.bootId : typeof parsed.boot_id === "string" ? parsed.boot_id : "",
     };
   } catch {
-    return { token: null, username: "admin", role: "GM_ARCHITECT", scopes: DEFAULT_SCOPES, bootId: "" };
+    return { token: null, username: DEFAULT_ADMIN_USERNAME, role: "GM_ARCHITECT", scopes: DEFAULT_SCOPES, bootId: "" };
   }
 }
 
@@ -262,7 +269,7 @@ export async function loginWithPassphrase(
   passphrase: string,
   fetchImpl?: typeof fetch,
 ): Promise<AdminLoginResult> {
-  const cleanUser = username.trim() || "admin";
+  const cleanUser = username.trim() || DEFAULT_ADMIN_USERNAME;
   const cleanPass = passphrase.trim();
   if (!cleanPass) {
     setAdminAuthState({ lastAuthError: "Passphrase is required." });
@@ -285,7 +292,7 @@ export async function loginWithPassphrase(
       return { ok: false, error: errMsg };
     }
     const token = typeof body.token === "string" ? body.token : typeof body.access_token === "string" ? body.access_token : "";
-    const resolvedUser = typeof body.username === "string" && body.username.length > 0 ? body.username : cleanUser;
+    const resolvedUser = normalizeAdminUsername(typeof body.username === "string" && body.username.length > 0 ? body.username : cleanUser);
     const role = typeof body.role === "string" && body.role.length > 0 ? body.role : "GM_ARCHITECT";
     const scopes = Array.isArray(body.scopes) ? body.scopes.map(String) : DEFAULT_SCOPES;
     const bootId = typeof body.boot_id === "string" ? body.boot_id : typeof body.bootId === "string" ? body.bootId : "";

@@ -308,7 +308,7 @@ bool init_logging_token_and_content(WorldCliOptions& o, std::string& token_out,
     spdlog::set_default_logger(logger);
     o.area = spawns::AreaConfig::resolve_worker_area(
         spawns::WorkerAreaSpec{o.area_radius_m, o.area_region, o.area_zoi, o.area_exclude_zoi, o.area_node_plug, o.area_exclude_node_plug,
-                               o.no_zone_filter, o.area_polygon, o.area_exclude_polygon, o.worker_index});
+                               o.no_zone_filter, o.area_polygon, o.area_exclude_polygon, {}, {}, o.worker_index});
     const char *env_thz = std::getenv("AOC_WORLD_TICK_HZ"), *env_thz2 = std::getenv("AOC_TICK_HZ");
     if (!o.tick_hz_option || o.tick_hz_option->count() == 0) {
         if (env_thz && *env_thz) o.tick_hz = std::clamp(static_cast<int>(std::strtol(env_thz, nullptr, 10)), 1, 120);
@@ -689,50 +689,65 @@ bootstrap::GameStateMode parse_gamestate_mode(std::string_view mode_str) {
     return mode_str == "tier2" ? bootstrap::GameStateMode::Tier2 : bootstrap::GameStateMode::Tier1;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
+int parse_and_validate_cli(int argc, char** argv, WorldCliOptions& o) {
     for (int i = 1; i < argc; ++i) {
-        if (argv[i] && (std::string_view(argv[i]) == "--healthcheck" || std::string_view(argv[i]) == "-healthcheck")) return 0;
+        if (argv[i] && (std::string_view(argv[i]) == "--healthcheck" || std::string_view(argv[i]) == "-healthcheck")) return -1;
     }
     CLI::App app{"world: the AoC world server"};
-    WorldCliOptions o;
     register_service_cli_options(app, o);
     register_area_cli_options(app, o);
     register_combat_and_gather_cli_options(app, o);
     register_tick_cli_options(app, o);
     CLI11_PARSE(app, argc, argv);
-    if (const int rc = validate_cli_options(o); rc != 0) return rc;
+    return validate_cli_options(o);
+}
 
-    std::string token, content_problem, error;
+std::unique_ptr<UdpSocket> bind_world_socket(WorldCliOptions& o, Address& public_addr) {
+    if (o.public_address.empty() && o.bind.rfind("0.0.0.0:", 0) == 0) o.public_address = "127.0.0.1:" + o.bind.substr(8);
+    const auto bind_addr = parse_address(o.bind), pub = parse_address(o.public_address.empty() ? o.bind : o.public_address);
+    if (!bind_addr || !pub || pub->ip == 0 || pub->port == 0) {
+        spdlog::error("--bind and --public-address must be a.b.c.d:port, and the public address dialable");
+        return nullptr;
+    }
+    public_addr = *pub;
+    std::string error;
+    auto socket = UdpSocket::open(*bind_addr, &error);
+    if (!socket) spdlog::error("{}", error);
+    return socket;
+}
+
+void shutdown_world_services(UdpSocket& socket, Endpoint& endpoint, CharacterSaver& saver, quest::QuestWorker& quest_worker, std::thread& heartbeat) {
+    spdlog::info("stopping: telling {} connected clients", endpoint.session_count());
+    g_stop = true;
+    endpoint.kick_all(login_text::kShuttingDown, Clock::now());
+    drain_shutdown_window(socket, endpoint, std::chrono::milliseconds(500));
+    endpoint.finish_players("world is stopping");
+    if (!saver.flush(std::chrono::seconds(5))) spdlog::warn("stopping: {} position(s) were not saved in 5 s", saver.queued());
+    if (!quest_worker.flush(std::chrono::seconds(5))) spdlog::warn("stopping: a quest log was not saved in 5 s");
+    heartbeat.join();
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    WorldCliOptions o;
+    if (const int rc = parse_and_validate_cli(argc, argv, o); rc != 0) return rc < 0 ? 0 : rc;
+    std::string token, content_problem;
     std::optional<content::ContentDb> content;
     if (!init_logging_token_and_content(o, token, content, content_problem)) return 1;
-    if (o.public_address.empty() && o.bind.rfind("0.0.0.0:", 0) == 0) o.public_address = "127.0.0.1:" + o.bind.substr(8);
-    const auto bind_addr = parse_address(o.bind);
-    const auto public_addr = parse_address(o.public_address.empty() ? o.bind : o.public_address);
-    if (!bind_addr || !public_addr || public_addr->ip == 0 || public_addr->port == 0) {
-        spdlog::error("--bind and --public-address must be a.b.c.d:port, and the public address dialable");
-        return 1;
-    }
-    auto socket = UdpSocket::open(*bind_addr, &error);
-    if (!socket) { spdlog::error("{}", error); return 1; }
-    std::signal(SIGINT, on_signal);
-    std::signal(SIGTERM, on_signal);
-
+    Address public_addr{};
+    auto socket = bind_world_socket(o, public_addr);
+    if (!socket) return 1;
+    std::signal(SIGINT, on_signal); std::signal(SIGTERM, on_signal);
     svc::GrpcServices services({o.gateway, o.character, o.mesh}, token);
     svc::RegisterResult reg;
-    if (const int rc = register_with_mesh(services, *public_addr, o, reg); rc != 0) return rc;
-    if (g_stop) return 0;
-
+    if (const int rc = register_with_mesh(services, public_addr, o, reg); rc != 0 || g_stop) return rc;
     uint32_t randomizer = 0;
     while (randomizer == 0) secure_random(reinterpret_cast<uint8_t*>(&randomizer), sizeof(randomizer));
     aoc::protocol::ServerGuidAllocator guids(reg.server_id, randomizer);
     spdlog::info("GameState mode {}", o.gamestate_mode);
-
     NodeRuntimeState nodes;
-    CharacterSaver::Config saver_config;
-    saver_config.destructor_wait = std::chrono::milliseconds(0);
-    CharacterSaver saver(services, saver_config);
+    CharacterSaver saver(services, CharacterSaver::Config{.destructor_wait = std::chrono::milliseconds(0)});
     const char* quests_env = std::getenv("AOC_QUESTS_GRPC_ADDR");
     quest::GrpcQuestApi quest_api(quests_env && *quests_env ? quests_env : "127.0.0.1:50058", token);
     quest::QuestWorker quest_worker(quest_api);
@@ -742,11 +757,9 @@ int main(int argc, char** argv) {
     std::unique_ptr<svc::CityNodeFeed> city_feed;
     if (content && players.ready()) load_city_nodes_and_scenery(players, o, token, nodes, city_feed);
     load_living_area_and_gathering(players, o, dice_seed);
-    spdlog::info("moves are checked: at most {:.0f} cm/s along the ground; positions are saved every {} s and when a session ends",
-                 o.movement.limits.max_speed, o.movement.save_interval.count());
+    spdlog::info("moves are checked: at most {:.0f} cm/s along the ground; positions are saved every {} s and when a session ends", o.movement.limits.max_speed, o.movement.save_interval.count());
     o.endpoint_config.players = &players;
     configure_view_threads(o);
-
     std::atomic<int> exit_code{0};
     std::thread heartbeat = start_heartbeat_thread(services, reg, exit_code);
     CookieSigner signer;
@@ -754,16 +767,9 @@ int main(int argc, char** argv) {
     Endpoint* endpoint_ptr = nullptr;
     LoginWorker worker(login, reg.server_id, [&](uint64_t id, LoginResult r) { endpoint_ptr->post_login_result(id, std::move(r)); });
     LoopStats loop_stats;
-    Endpoint endpoint(o.endpoint_config, signer, worker,
-                      [&](const Address& to, const std::vector<uint8_t>& pkt) {
-                          loop_stats.bytes_out += pkt.size();
-                          ++loop_stats.packets_out;
-                          socket->send(to, pkt.data(), pkt.size());
-                      },
-                      secure_random, Clock::now());
+    Endpoint endpoint(o.endpoint_config, signer, worker, [&](const Address& to, const std::vector<uint8_t>& pkt) { loop_stats.bytes_out += pkt.size(); ++loop_stats.packets_out; socket->send(to, pkt.data(), pkt.size()); }, secure_random, Clock::now());
     endpoint_ptr = &endpoint;
     endpoint.publish_token_snapshot(TokenSnapshot{1, token, {}, Clock::now()});
-
     GmTravel travel(players, [&] { return endpoint.players(); }, [] { return Clock::now(); });
     players.set_gm_port(&travel);
     svc::AdminQueue admin_queue;
@@ -771,21 +777,12 @@ int main(int argc, char** argv) {
     auto stream = start_stream_server(o, token, players, endpoint, admin_queue);
     auto metrics = start_metrics_server(o, players, endpoint, loop_stats);
     TickLoopBudget tick_budget;
-    WorldLoopContext loop_ctx{*socket, endpoint, saver, admin_queue, stream.get(), shared_updates.get(),
-                              loop_stats, g_stop, exit_code, o.tick_hz, o.loop_stats_seconds, &tick_budget};
+    WorldLoopContext loop_ctx{*socket, endpoint, saver, admin_queue, stream.get(), shared_updates.get(), loop_stats, g_stop, exit_code, o.tick_hz, o.loop_stats_seconds, &tick_budget};
     run_world_loop(loop_ctx);
-
     if (metrics) metrics->stop();
     if (stream) stream->stop();
     if (admin) admin->stop();
     players.set_gm_port(nullptr);
-    spdlog::info("stopping: telling {} connected clients", endpoint.session_count());
-    g_stop = true;
-    endpoint.kick_all(login_text::kShuttingDown, Clock::now());
-    drain_shutdown_window(*socket, endpoint, std::chrono::milliseconds(500));
-    endpoint.finish_players("world is stopping");
-    if (!saver.flush(std::chrono::seconds(5))) spdlog::warn("stopping: {} position(s) were not saved in 5 s", saver.queued());
-    if (!quest_worker.flush(std::chrono::seconds(5))) spdlog::warn("stopping: a quest log was not saved in 5 s");
-    heartbeat.join();
+    shutdown_world_services(*socket, endpoint, saver, quest_worker, heartbeat);
     return exit_code;
 }

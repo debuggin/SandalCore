@@ -56,8 +56,38 @@ int64_t steady_now_ns() noexcept {
 
 std::atomic<double>   g_tod_anchor_hours{12.0};
 std::atomic<int64_t>  g_tod_anchor_steady_ns{steady_now_ns()};
+std::atomic<int32_t>  g_calendar_year{1};
+std::atomic<int32_t>  g_calendar_day_of_year{1};
 std::atomic<bool>     g_has_time_of_day_override{false};
 std::atomic<uint64_t> g_time_of_day_epoch{0};
+
+void read_time_and_calendar_snapshot(double& hours_out, int32_t& year_out, int32_t& day_out) noexcept {
+    double anchor_hours = 12.0;
+    int64_t anchor_ns = 0;
+    int32_t anchor_year = 1;
+    int32_t anchor_day = 1;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        const uint64_t epoch1 = g_time_of_day_epoch.load(std::memory_order_acquire);
+        anchor_hours = g_tod_anchor_hours.load(std::memory_order_acquire);
+        anchor_ns = g_tod_anchor_steady_ns.load(std::memory_order_acquire);
+        anchor_year = g_calendar_year.load(std::memory_order_acquire);
+        anchor_day = g_calendar_day_of_year.load(std::memory_order_acquire);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        const uint64_t epoch2 = g_time_of_day_epoch.load(std::memory_order_acquire);
+        if (epoch1 == epoch2) break;
+    }
+    const double elapsed_real_seconds = anchor_ns > 0
+        ? std::max(0.0, static_cast<double>(steady_now_ns() - anchor_ns) * 1.0e-9)
+        : 0.0;
+    const double total_hours = anchor_hours + elapsed_real_seconds * (kGameTimeFactor / 3600.0);
+    const int64_t days_elapsed = static_cast<int64_t>(std::floor(total_hours / 24.0));
+    hours_out = std::fmod(std::fmod(total_hours, 24.0) + 24.0, 24.0);
+    const int64_t base_days = static_cast<int64_t>(std::max<int32_t>(1, anchor_year) - 1) * 360LL +
+                              static_cast<int64_t>(std::clamp<int32_t>(anchor_day, 1, 360) - 1);
+    const int64_t total_days = std::max<int64_t>(0, base_days + days_elapsed);
+    year_out = static_cast<int32_t>(total_days / 360LL) + 1;
+    day_out = static_cast<int32_t>(total_days % 360LL) + 1;
+}
 
 }  // namespace
 
@@ -253,21 +283,68 @@ repl::LoadTracker load_tracker(std::string_view flags) {
 
 void set_global_time_of_day_hours(double hours) noexcept {
     if (!std::isfinite(hours)) return;
-    double wrapped = std::fmod(hours, 24.0);
-    if (wrapped < 0.0) wrapped += 24.0;
-    g_tod_anchor_hours.store(wrapped, std::memory_order_relaxed);
-    g_tod_anchor_steady_ns.store(steady_now_ns(), std::memory_order_relaxed);
-    g_has_time_of_day_override.store(true, std::memory_order_relaxed);
-    g_time_of_day_epoch.fetch_add(1, std::memory_order_release);
+    double cur_h = 12.0;
+    int32_t cur_year = 1;
+    int32_t cur_day = 1;
+    read_time_and_calendar_snapshot(cur_h, cur_year, cur_day);
+    const int64_t extra_days = static_cast<int64_t>(std::floor(hours / 24.0));
+    if (extra_days != 0) {
+        const int64_t total_days = std::max<int64_t>(
+            0, static_cast<int64_t>(cur_year - 1) * 360LL + static_cast<int64_t>(cur_day - 1) + extra_days);
+        cur_year = static_cast<int32_t>(total_days / 360LL) + 1;
+        cur_day = static_cast<int32_t>(total_days % 360LL) + 1;
+    }
+    const double wrapped = std::fmod(std::fmod(hours, 24.0) + 24.0, 24.0);
+    const int64_t now_ns = steady_now_ns();
+    g_tod_anchor_hours.store(wrapped, std::memory_order_release);
+    g_tod_anchor_steady_ns.store(now_ns, std::memory_order_release);
+    g_calendar_year.store(cur_year, std::memory_order_release);
+    g_calendar_day_of_year.store(cur_day, std::memory_order_release);
+    g_has_time_of_day_override.store(true, std::memory_order_release);
+    g_time_of_day_epoch.fetch_add(1, std::memory_order_acq_rel);
 }
 
 double global_time_of_day_hours() noexcept {
-    const double anchor_hours = g_tod_anchor_hours.load(std::memory_order_relaxed);
-    const int64_t anchor_ns = g_tod_anchor_steady_ns.load(std::memory_order_relaxed);
-    const double elapsed_real_seconds = anchor_ns > 0
-        ? std::max(0.0, static_cast<double>(steady_now_ns() - anchor_ns) * 1.0e-9)
-        : 0.0;
-    return std::fmod(std::fmod(anchor_hours + elapsed_real_seconds * (kGameTimeFactor / 3600.0), 24.0) + 24.0, 24.0);
+    double hours = 12.0;
+    int32_t year = 1;
+    int32_t day = 1;
+    read_time_and_calendar_snapshot(hours, year, day);
+    return hours;
+}
+
+int32_t global_calendar_year() noexcept {
+    double hours = 12.0;
+    int32_t year = 1;
+    int32_t day = 1;
+    read_time_and_calendar_snapshot(hours, year, day);
+    return year;
+}
+
+int32_t global_calendar_day_of_year() noexcept {
+    double hours = 12.0;
+    int32_t year = 1;
+    int32_t day = 1;
+    read_time_and_calendar_snapshot(hours, year, day);
+    return day;
+}
+
+void set_global_calendar_date(int32_t year, int32_t day_of_year) noexcept {
+    double cur_h = 12.0;
+    int32_t cur_year = 1;
+    int32_t cur_day = 1;
+    read_time_and_calendar_snapshot(cur_h, cur_year, cur_day);
+    const int64_t norm_year = std::max<int64_t>(1, year);
+    const int64_t norm_day_zero = std::max<int64_t>(0, static_cast<int64_t>(day_of_year) - 1);
+    const int64_t total_days = (norm_year - 1) * 360LL + norm_day_zero;
+    const int32_t final_year = static_cast<int32_t>(total_days / 360LL) + 1;
+    const int32_t final_day = static_cast<int32_t>(total_days % 360LL) + 1;
+    const int64_t now_ns = steady_now_ns();
+    g_tod_anchor_hours.store(cur_h, std::memory_order_release);
+    g_tod_anchor_steady_ns.store(now_ns, std::memory_order_release);
+    g_calendar_year.store(final_year, std::memory_order_release);
+    g_calendar_day_of_year.store(final_day, std::memory_order_release);
+    g_has_time_of_day_override.store(true, std::memory_order_release);
+    g_time_of_day_epoch.fetch_add(1, std::memory_order_acq_rel);
 }
 
 bool has_global_time_of_day_override() noexcept {
@@ -282,9 +359,11 @@ ClientTimes client_times(double world_time) {
     ClientTimes t;
     t.synchronized_time = world_time + kSynchronizedTimeOffset;
     const double base_game_time = kGameTimeFactor * t.synchronized_time + kGameTimeOffset;
+    read_time_and_calendar_snapshot(t.game_time, t.calendar_year, t.calendar_day_of_year);
     if (has_global_time_of_day_override()) {
         const double day_floor = std::floor(base_game_time / 86400.0) * 86400.0;
-        t.game_time = day_floor + global_time_of_day_hours() * 3600.0;
+        const int64_t cal_days = static_cast<int64_t>(t.calendar_year - 1) * 360LL + static_cast<int64_t>(t.calendar_day_of_year - 1);
+        t.game_time = day_floor + static_cast<double>(cal_days) * 86400.0 + t.game_time * 3600.0;
     } else {
         t.game_time = base_game_time;
     }

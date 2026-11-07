@@ -33,14 +33,16 @@ import {
   DEFAULT_VERRA_CITY_NODES,
   DEFAULT_VERRA_MAP_META,
   formatCanonicalWorkerName,
-  formatTimeOfDayClock,
   formatTimeOfDayLabel,
   formatTimePhaseLabel,
+  formatWorkerTickHzOptionLabel,
   getCityNodeCenterCm,
   getMapPollHzForZoom,
   getMapPollIntervalMsForZoom,
   getVisibleWorkersForViewport,
+  inferResourceNodeType,
   type LayerToggles,
+  normalizeWorkerTickHz,
   type NpcInstanceAction,
   OVERLAY_LAYER_KEYS,
   parseTimeOfDayInput,
@@ -59,9 +61,16 @@ import {
   zoomToWorkerArea,
 } from "../state/worldStreamStore";
 import {
+  dispatchAuthoritativeTimeAndCalendarUpdate,
+  pollAuthoritativeTimeOfDay,
+  useLiveVerraClockAndCalendar,
+  VerraCalendarDateModifierSection,
+} from "./VerraCalendarPopover";
+import {
   buildVerraDeckOverlayLayers,
   DEFAULT_VERRA_PMTILES_URL,
   drawCanvasScene,
+  ENTITY_MAP_LEGEND_SWATCHES,
   filterMapSearchItems,
   findNearestEntityOrNodeAtScreen,
   formatOverlayLayerLabel,
@@ -79,6 +88,7 @@ import {
 } from "./verraTilePyramidRenderer";
 
 export * from "../state/worldStreamStore";
+export * from "./VerraCalendarPopover";
 export * from "./verraTilePyramidRenderer";
 
 export interface VerraMapCanvasProps {
@@ -99,6 +109,20 @@ export const NPC_INSTANCE_ACTIONS: readonly { readonly id: NpcInstanceAction; re
   { id: "respawn_npc", label: "Respawn" },
   { id: "despawn_npc", label: "Despawn" },
 ]);
+
+function applyPolledWorldState(stateData: unknown, snap: WorldStreamState): void {
+  const added = parseWorldStateResponse(stateData, snap.layers), pois = parsePoisFromPayload(stateData);
+  if (pois.length > 0) snap.setPois(pois);
+  if (Array.isArray((stateData as { workers?: unknown }).workers)) snap.setWorkers((stateData as { workers: readonly WorldWorkerInfo[] }).workers);
+  const sd = stateData as { time_of_day_hours?: unknown; time_of_day_anchor_hours?: unknown; calendar_day_of_year?: unknown; calendar_year?: unknown };
+  const liveH = typeof sd.time_of_day_hours === "number" ? sd.time_of_day_hours : typeof sd.time_of_day_anchor_hours === "number" ? sd.time_of_day_anchor_hours : null;
+  const now = Date.now();
+  if (liveH !== null && Number.isFinite(liveH)) snap.setTimeOfDay(liveH, now);
+  if (typeof sd.calendar_day_of_year === "number" && Number.isFinite(sd.calendar_day_of_year)) {
+    snap.setWorldCalendar(sd.calendar_day_of_year, typeof sd.calendar_year === "number" ? sd.calendar_year : 1, now);
+  }
+  snap.applyWorldDelta({ seq: snap.lastSeq + 1, isSnapshot: true, added });
+}
 
 function useWorldMapPolling(storeSnap: WorldStreamState, onMetaLoaded: (meta: VerraMapMeta) => void, canvasRef: React.RefObject<HTMLCanvasElement | null>): void {
   const authSnap = useAdminAuthStore();
@@ -145,27 +169,18 @@ function useWorldMapPolling(storeSnap: WorldStreamState, onMetaLoaded: (meta: Ve
       const pollUrl = `${baseUrl}&compact=1${snap.pois.length > 0 && tickCount % 90 !== 1 ? "&include_pois=0" : ""}`;
       inflight = true;
       fetchWithTransientRetry(pollUrl).then((r) => (r.ok ? r.json() : null)).then((stateData) => {
-        if (cancelled || !stateData || isUnauthenticatedViewOnly()) return;
-        const added = parseWorldStateResponse(stateData, snap.layers), pois = parsePoisFromPayload(stateData);
-        if (pois.length > 0) snap.setPois(pois);
-        if (Array.isArray((stateData as { workers?: unknown }).workers)) snap.setWorkers((stateData as { workers: readonly WorldWorkerInfo[] }).workers);
-        const sd = stateData as { time_of_day_anchor_hours?: unknown; time_of_day_anchor_ms?: unknown; time_of_day_label?: unknown };
-        const anchorH = typeof sd.time_of_day_anchor_hours === "number" ? sd.time_of_day_anchor_hours : null;
-        const anchorMs = typeof sd.time_of_day_anchor_ms === "number" && sd.time_of_day_anchor_ms > 0 ? sd.time_of_day_anchor_ms : null;
-        if (anchorH !== null && Number.isFinite(anchorH) && (Math.abs(anchorH - snap.timeOfDayHours) > 1e-3 || (anchorMs !== null && Math.abs(anchorMs - snap.timeOfDaySyncedAtMs) > 1000))) {
-          snap.patchSessionUi({ timeOfDayHours: anchorH, timeOfDaySyncedAtMs: anchorMs ?? Date.now(), timeOfDayLabel: typeof sd.time_of_day_label === "string" ? sd.time_of_day_label : formatTimeOfDayLabel(anchorH) });
-        }
-        snap.applyWorldDelta({ seq: snap.lastSeq + 1, isSnapshot: true, added });
+        if (!cancelled && stateData && !isUnauthenticatedViewOnly()) applyPolledWorldState(stateData, snap);
       }).catch(() => {}).finally(() => {
         inflight = false;
         if (rerunAfterInflight && !cancelled) { rerunAfterInflight = false; poll(); }
       });
     };
     pollRef.current = poll;
+    pollAuthoritativeTimeOfDay(storeSnapRef);
     poll();
     const timer = window.setInterval(poll, pollIntervalMs);
     return () => { cancelled = true; pollRef.current = null; window.clearInterval(timer); };
-  }, [isUnauthed, authSnap.token, retryEpoch, activeLayersParam]);
+  }, [isUnauthed, authSnap.token, retryEpoch, activeLayersParam, pollIntervalMs]);
 
   React.useEffect(() => { pollRef.current?.(); }, [storeSnap.camera.centerXCm, storeSnap.camera.centerYCm, storeSnap.camera.zoom]);
 }
@@ -201,7 +216,10 @@ export function parseWorldStateResponse(raw: unknown, layers: LayerToggles): rea
         ? rawKind
         : "npc";
     const rawName = String(e.name ?? kind);
-    const defaultResType = /ore|iron|copper|stone|rock|gem/i.test(rawName) ? "Mining / Ore Vein" : /tree|wood|oak|ash|lumber/i.test(rawName) ? "Lumberjacking / Timber" : /herb|flower|plant|flax/i.test(rawName) ? "Herbalism / Flora" : "Gathering Resource";
+    const rawSubkind = typeof e.npc_subkind === "string" && e.npc_subkind.length > 0 ? e.npc_subkind : typeof e.npcSubkind === "string" && e.npcSubkind.length > 0 ? e.npcSubkind : undefined;
+    const rawResType = typeof e.resourceType === "string" && e.resourceType.length > 0 ? e.resourceType : typeof e.resource_type === "string" && e.resource_type.length > 0 ? e.resource_type : undefined;
+    const resType = kind === "resource_node" || rawSubkind === "huntable" || Boolean(rawResType) ? inferResourceNodeType(rawName, rawResType, rawSubkind) : undefined;
+    const qual = typeof e.quality === "string" && e.quality.length > 0 ? e.quality : typeof e.rarity === "string" && e.rarity.length > 0 ? e.rarity : kind === "resource_node" ? "Common · Tier 1 (Novice)" : undefined;
     const ent: WorldEntity = {
       guid: String(e.id ?? e.guid ?? e.name ?? "entity"),
       name: rawName,
@@ -212,9 +230,11 @@ export function parseWorldStateResponse(raw: unknown, layers: LayerToggles): rea
       yawDeg: Number(e.yaw_deg ?? e.yaw ?? 0),
       level: Number(e.level ?? 1),
       healthPct: Number(e.health_pct ?? e.hp ?? 100),
-      npc_subkind: typeof e.npc_subkind === "string" ? e.npc_subkind : undefined,
-      resourceType: typeof e.resource_type === "string" && e.resource_type.length > 0 ? e.resource_type : typeof e.resourceType === "string" && e.resourceType.length > 0 ? e.resourceType : kind === "resource_node" ? defaultResType : undefined,
-      quality: typeof e.quality === "string" && e.quality.length > 0 ? e.quality : typeof e.rarity === "string" && e.rarity.length > 0 ? e.rarity : kind === "resource_node" ? "Common · Tier 1 (Novice)" : undefined,
+      npc_subkind: rawSubkind,
+      npcSubkind: rawSubkind,
+      resourceType: resType,
+      resource_type: resType,
+      quality: qual,
       zoneId: typeof e.zone === "string" ? e.zone : typeof e.zone_id === "string" ? e.zone_id : undefined,
     };
     if (isEntityVisibleForLayers(ent, layers, 5)) added.push(ent);
@@ -274,29 +294,23 @@ function useMapRemoteSearch(searchText: string, layers: LayerToggles): readonly 
 
 export function ServerTimeOfDayControl(props: { readonly storeSnap: WorldStreamState; readonly compact?: boolean }): React.ReactElement {
   const { storeSnap, compact } = props;
-  const anchorRef = React.useRef<{ hours: number; atMs: number }>({ hours: storeSnap.timeOfDayHours ?? 12, atMs: Date.now() });
-  if (Math.abs((storeSnap.timeOfDayHours ?? 12) - anchorRef.current.hours) > 1e-4) {
-    anchorRef.current = { hours: storeSnap.timeOfDayHours ?? 12, atMs: Date.now() };
-  }
-  const [nowMs, setNowMs] = React.useState(() => Date.now());
+  const { liveHours, liveClock, liveCalendar, setLiveAnchor } = useLiveVerraClockAndCalendar(storeSnap);
   const [popoverOpen, setPopoverOpen] = React.useState(false);
   const [draftTime, setDraftTime] = React.useState(() => formatTimeOfDayLabel(storeSnap.timeOfDayHours ?? 12));
+  const [draftDayOfYear, setDraftDayOfYear] = React.useState(() => storeSnap.calendarDayOfYear ?? 1);
+  const [draftYear, setDraftYear] = React.useState(() => storeSnap.calendarYear ?? 1);
   React.useEffect(() => { setDraftTime(formatTimeOfDayLabel(storeSnap.timeOfDayHours ?? 12)); }, [storeSnap.timeOfDayHours]);
-  React.useEffect(() => {
-    if (typeof window === "undefined") return;
-    const t = window.setInterval(() => setNowMs(Date.now()), 100);
-    return () => window.clearInterval(t);
-  }, []);
-  const liveHours = computeLiveTimeOfDayHours(anchorRef.current.hours, anchorRef.current.atMs, nowMs);
-  const liveClock = formatTimeOfDayClock(liveHours);
+  React.useEffect(() => { setDraftDayOfYear(storeSnap.calendarDayOfYear ?? 1); setDraftYear(storeSnap.calendarYear ?? 1); }, [storeSnap.calendarDayOfYear, storeSnap.calendarYear]);
   const draftHours = parseTimeOfDayInput(draftTime);
   const draftMinutes = Math.max(0, Math.min(1439, Math.round(draftHours * 60)));
-  const applyHours = (h: number): void => {
+  const applyHours = (h: number, d = draftDayOfYear, y = draftYear): void => {
     const clean = (((Number.isFinite(h) ? h : 12) % 24) + 24) % 24;
-    anchorRef.current = { hours: clean, atMs: Date.now() };
+    setLiveAnchor(clean, d, y);
     setDraftTime(formatTimeOfDayLabel(clean));
+    setDraftDayOfYear(d);
+    setDraftYear(y);
     setPopoverOpen(false);
-    void storeSnap.executeSetTimeOfDayAction(clean);
+    dispatchAuthoritativeTimeAndCalendarUpdate(storeSnap, clean, d, y);
   };
   return (
     <div style={{ position: "relative", zIndex: popoverOpen ? 100 : 10, display: "inline-flex", alignItems: "center", gap: "6px", padding: compact ? "2px 6px" : "3px 8px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush }}>
@@ -304,15 +318,20 @@ export function ServerTimeOfDayControl(props: { readonly storeSnap: WorldStreamS
       <span data-testid="world-current-time-display" title="Authoritative Verra Server Time (advances at 9x real time across all world workers)" style={{ fontFamily: "ui-monospace, monospace", fontVariantNumeric: "tabular-nums", fontSize: "11px", fontWeight: 700, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400 }}>
         Time {liveClock}
       </span>
-      <button type="button" data-testid="world-time-picker-btn" aria-expanded={popoverOpen} title="Open Server Time of Day editor" onClick={() => { if (!popoverOpen) setDraftTime(formatTimeOfDayLabel(liveHours)); setPopoverOpen((v) => !v); }} style={{ height: compact ? "22px" : "24px", padding: "0 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: popoverOpen ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: popoverOpen ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
+      <span data-testid="verra-calendar-badge" title={liveCalendar.calendarFormatted} style={{ fontSize: "10px", fontWeight: 600, color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
+        {compact ? `Y${liveCalendar.calendarYear} D${liveCalendar.calendarDayOfYear} ${liveCalendar.calendarSeason}` : `Year ${liveCalendar.calendarYear} AE · ${liveCalendar.calendarSeason} · ${liveCalendar.calendarDayOfMonth} ${liveCalendar.calendarMonthName} (Day ${liveCalendar.calendarDayOfYear}/360)`}
+      </span>
+      <button type="button" data-testid="world-time-picker-btn" aria-expanded={popoverOpen} title="Open Server Time of Day & Verra Calendar editor" onClick={() => { if (!popoverOpen) { setDraftTime(formatTimeOfDayLabel(liveHours)); setDraftDayOfYear(liveCalendar.calendarDayOfYear); setDraftYear(liveCalendar.calendarYear); } setPopoverOpen((v) => !v); }} style={{ height: compact ? "22px" : "24px", padding: "0 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: popoverOpen ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: popoverOpen ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
         Set Time
       </button>
-      <div data-testid="world-time-picker-popover" style={{ display: popoverOpen ? "flex" : "none", position: "absolute", top: "calc(100% + 6px)", right: 0, width: "268px", flexDirection: "column", gap: "8px", padding: "10px 12px", borderRadius: "8px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(18px)", boxShadow: "0 12px 32px rgba(0,0,0,0.65)", zIndex: 120 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px" }}>
+      <div id="time-of-day-popover" data-testid="world-time-picker-popover" style={{ display: popoverOpen ? "flex" : "none", position: "absolute", top: "calc(100% + 6px)", right: 0, width: "320px", flexDirection: "column", gap: "8px", padding: "10px 12px", borderRadius: "8px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(18px)", boxShadow: "0 12px 32px rgba(0,0,0,0.65)", zIndex: 1200 }}>
+        <div data-testid="time-of-day-popover" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px" }}>
           <strong style={{ color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, letterSpacing: "0.04em", textTransform: "uppercase" }}>Server Time of Day</strong>
           <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>{formatTimeOfDayLabel(draftHours)} ({formatTimePhaseLabel(draftHours)})</span>
         </div>
-        <input type="range" min={0} max={1439} step={1} aria-label="Scrub 24-hour server time" data-testid="world-time-slider" value={draftMinutes} onChange={(e) => setDraftTime(formatTimeOfDayLabel(Number(e.currentTarget.value) / 60))} style={{ width: "100%", height: "8px", borderRadius: "4px", appearance: "none", background: "linear-gradient(90deg, #0d1326 0%, #c87d55 25%, #f6cc7e 50%, #d97736 75%, #0d1326 100%)", cursor: "pointer" }} />
+        <div data-testid="time-of-day-range-slider">
+          <input type="range" min={0} max={1439} step={1} aria-label="Scrub 24-hour server time" data-testid="world-time-slider" value={draftMinutes} onChange={(e) => setDraftTime(formatTimeOfDayLabel(Number(e.currentTarget.value) / 60))} style={{ width: "100%", height: "8px", borderRadius: "4px", appearance: "none", background: "linear-gradient(90deg, #0d1326 0%, #c87d55 25%, #f6cc7e 50%, #d97736 75%, #0d1326 100%)", cursor: "pointer" }} />
+        </div>
         <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
           <input type="text" aria-label="Server Time of Day (HH:MM)" data-testid="world-time-of-day-select" placeholder="HH:MM" value={draftTime} onChange={(e) => setDraftTime(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === "Enter") applyHours(parseTimeOfDayInput(draftTime)); }} style={{ flex: 1, height: "28px", padding: "0 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontFamily: "ui-monospace, monospace", fontSize: "12px" }} />
           <button type="button" data-testid="world-time-apply-btn" onClick={() => applyHours(parseTimeOfDayInput(draftTime))} style={{ height: "28px", padding: "0 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, color: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>Apply Time</button>
@@ -322,6 +341,7 @@ export function ServerTimeOfDayControl(props: { readonly storeSnap: WorldStreamS
             <button key={p.h} type="button" onClick={() => applyHours(p.h)} style={{ height: "24px", padding: "0 4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "10px", cursor: "pointer" }}>{p.label}</button>
           ))}
         </div>
+        <VerraCalendarDateModifierSection draftDayOfYear={draftDayOfYear} draftYear={draftYear} onChangeDate={(d, y) => { setDraftDayOfYear(d); setDraftYear(y); }} onApplyPresetDate={(d, y) => applyHours(draftHours, d, y)} />
       </div>
     </div>
   );
@@ -358,9 +378,14 @@ function renderMapHeader(
           </button>
         ))}
         <button type="button" data-testid="layer-toggle-zoiBorders" aria-pressed={storeSnap.layers.zoiBorders} onClick={() => storeSnap.toggleLayer("zoiBorders")} style={{ minHeight: "32px", padding: "4px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: storeSnap.layers.zoiBorders ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: storeSnap.layers.zoiBorders ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>ZOI Borders</button>
-        <button type="button" data-testid="toggle-simulate-all-npcs" aria-pressed={storeSnap.simulateAllNpcs} onClick={() => void storeSnap.setSimulateAllNpcs(!storeSnap.simulateAllNpcs)} style={{ minHeight: "32px", padding: "4px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: storeSnap.simulateAllNpcs ? SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: storeSnap.simulateAllNpcs ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
-          Sim All NPCs: {storeSnap.simulateAllNpcs ? "ON" : "OFF"}
-        </button>
+        <div data-testid="map-entity-legend" aria-label="Map Entity Color Legend" style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "3px 8px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, fontSize: "10px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>
+          {ENTITY_MAP_LEGEND_SWATCHES.map((sw) => (
+            <span key={sw.id} data-testid={`legend-swatch-${sw.id}`} style={{ display: "inline-flex", alignItems: "center", gap: "3px", whiteSpace: "nowrap" }}>
+              <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "50%", backgroundColor: sw.color, display: "inline-block" }} />
+              <span>{sw.label}</span>
+            </span>
+          ))}
+        </div>
         <ServerTimeOfDayControl storeSnap={storeSnap} />
       </div>
     </header>
@@ -400,11 +425,11 @@ function renderZoomAndNodeControls(
   );
 }
 
-function renderBottomRightToastAndWorkersDock(storeSnap: WorldStreamState): React.ReactElement {
-  const viewportBounds = computeViewportWorldBoundsCm(storeSnap.camera);
+function renderBottomRightToastAndWorkersDock(storeSnap: WorldStreamState, canvasRef: React.RefObject<HTMLCanvasElement | null>): React.ReactElement {
+  const viewportBounds = computeViewportWorldBoundsCm(storeSnap.camera, canvasRef.current?.clientWidth || undefined, canvasRef.current?.clientHeight || undefined);
   const visibleWorkers = getVisibleWorkersForViewport(storeSnap.workers, viewportBounds);
   return (
-    <div style={{ position: "absolute", bottom: "12px", right: "12px", zIndex: 18, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px", width: "320px", minWidth: "320px", maxWidth: "320px" }}>
+    <div style={{ position: "absolute", bottom: "12px", right: "12px", zIndex: 18, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px", width: "450px", minWidth: "450px", maxWidth: "450px" }}>
       <div data-testid="gm-action-toast-stack" role="status" aria-live="polite" style={{ display: "flex", flexDirection: "column", gap: "6px", width: "100%" }}>
         {storeSnap.toasts.map((toast) => (
           <div key={toast.id} data-testid="gm-action-toast-item" data-toast-tone={toast.tone} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", padding: "8px 10px", borderRadius: "6px", border: `1px solid ${toast.tone === "error" ? SANDAL_LAUNCHER_TOKENS.VerraRuinCrimson500 : SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", color: toast.tone === "error" ? SANDAL_LAUNCHER_TOKENS.VerraRuinCrimson500 : SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "11px", fontWeight: 600 }}>
@@ -413,21 +438,20 @@ function renderBottomRightToastAndWorkersDock(storeSnap: WorldStreamState): Reac
           </div>
         ))}
       </div>
-      <div data-testid="visible-server-workers-panel" style={{ width: "320px", minWidth: "320px", maxWidth: "320px", height: "208px", minHeight: "208px", maxHeight: "208px", boxSizing: "border-box", display: "flex", flexDirection: "column", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", overflow: "hidden" }}>
+      <div data-testid="visible-server-workers-panel" style={{ width: "450px", minWidth: "450px", maxWidth: "450px", height: "208px", minHeight: "208px", maxHeight: "208px", boxSizing: "border-box", display: "flex", flexDirection: "column", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", overflow: "hidden" }}>
         <div style={{ padding: "6px 10px", borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, fontWeight: 700, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span>Visible Server Workers ({visibleWorkers.length})</span>
         </div>
-        <div data-testid="visible-server-workers-scroll" style={{ height: "176px", minHeight: "176px", maxHeight: "176px", boxSizing: "border-box", overflowY: "scroll", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: "4px", padding: "6px" }}>
+        <div data-testid="visible-server-workers-scroll" style={{ height: "176px", minHeight: "176px", maxHeight: "176px", boxSizing: "border-box", overflowY: "auto", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: "4px", padding: "6px" }}>
           {visibleWorkers.map((w) => {
-            const curHz = Math.round(Number(w.tick_hz ?? 30));
-            const opts = WORKER_TICK_HZ_OPTIONS.includes(curHz) ? WORKER_TICK_HZ_OPTIONS : [...WORKER_TICK_HZ_OPTIONS, curHz].sort((a, b) => a - b);
+            const curHz = normalizeWorkerTickHz(w.tick_hz, w.tick_mode);
             return (
               <div key={w.worker_id} role="button" tabIndex={0} data-testid={`visible-worker-row-${w.worker_id}`} onClick={() => zoomToWorkerArea(w, storeSnap)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") zoomToWorkerArea(w, storeSnap); }} style={{ width: "100%", height: "30px", minHeight: "30px", maxHeight: "30px", flexShrink: 0, overflow: "hidden", whiteSpace: "nowrap", padding: "4px 6px", boxSizing: "border-box", textAlign: "left", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontSize: "11px", fontWeight: 600, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
                 <span>{formatCanonicalWorkerName(w.scope_kind, w.scope_key)}</span>
-                <span style={{ display: "flex", alignItems: "center", gap: "4px", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontWeight: 400, fontSize: "10px" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontWeight: 400, fontSize: "10px" }}>
                   <span>{w.region_label}</span>
                   <select aria-label={`Tick rate for ${w.worker_id}`} data-testid={`worker-tick-rate-select-${w.worker_id}`} value={curHz} onClick={(e) => e.stopPropagation()} onChange={(e) => { e.stopPropagation(); void storeSnap.executeSetWorkerTickRateAction(w.worker_id, Number(e.currentTarget.value)); }} style={{ height: "20px", padding: "0 4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "10px", fontWeight: 700, cursor: "pointer" }}>
-                    {opts.map((hz) => (<option key={hz} value={hz}>{hz} Hz</option>))}
+                    {WORKER_TICK_HZ_OPTIONS.map((hz) => (<option key={hz} value={hz}>{formatWorkerTickHzOptionLabel(hz, true)}</option>))}
                   </select>
                 </span>
               </div>
@@ -542,9 +566,9 @@ function SelectedEntityQuickActions(props: { readonly entity: WorldEntity; reado
   const nudgeBtnStyle = { minHeight: "28px", padding: "3px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontSize: "11px", cursor: "pointer" } as const;
   return (
     <div data-testid="selected-entity-quick-actions" style={{ position: "relative", width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "12px", zIndex: 20 }}>
-      {entity.kind === "resource_node" ? (
+      {entity.kind === "resource_node" || Boolean(entity.resourceType ?? entity.resource_type) || (entity.npcSubkind ?? entity.npc_subkind) === "huntable" ? (
         <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "6px", fontSize: "11px" }}>
-          <span data-testid="selected-resource-type" style={{ padding: "2px 7px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontWeight: 700 }}>Type: {entity.resourceType || "Gathering Resource"}</span>
+          <span data-testid="selected-resource-type" style={{ padding: "2px 7px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontWeight: 700 }}>Type: {entity.resourceType ?? entity.resource_type ?? inferResourceNodeType(entity.name, undefined, entity.npcSubkind ?? entity.npc_subkind)}</span>
           <span data-testid="selected-resource-quality" style={{ padding: "2px 7px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontWeight: 700 }}>Quality: {entity.quality || "Common · Tier 1 (Novice)"}</span>
         </div>
       ) : null}
@@ -730,7 +754,7 @@ export function VerraMapCanvas(props: VerraMapCanvasProps): React.ReactElement {
         {renderInteractiveMapCanvas(canvasRef, dragRef, storeSnap, deckLayers.filter((l) => l.visible).length, props.onCoordinatePick)}
         {renderZoomAndNodeControls(storeSnap, cityFilterText, setCityFilterText)}
         {renderUnifiedInspectorSlot(storeSnap, viewState, props.onEntitySelect)}
-        {renderBottomRightToastAndWorkersDock(storeSnap)}
+        {renderBottomRightToastAndWorkersDock(storeSnap, canvasRef)}
         <GmCommandPalette isOpen={Boolean(props.isCommandPaletteOpen)} query={props.commandQuery ?? ""} role={props.gmRole ?? "GM_OPERATOR"} />
       </div>
     </section>

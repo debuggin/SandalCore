@@ -477,59 +477,39 @@ static void test_roads_apply_levels(world::RoadMap &m, const world::RoadMap::Pol
 
 static void test_roads_validation_and_bounds(const world::RoadMap::Polyline &plain) {
     world::RoadMap bad;
-    CHECK(!bad.add(by_level_road(1, {5, 0, 0, 0, 0, 0, 0}, {500, 500, 500, 500, 500, 500, 500}, {0, 0, 1, 1})),
-          "a tier above 4 is refused");
-    CHECK(!bad.add(by_level_road(1, {-1, -1, -1, -1, -1, -1, -1}, {0, 0, 0, 0, 0, 0, 0}, {0, 0, 1, 1})),
-          "a road with nothing at any level is refused");
-    CHECK(!bad.add(by_level_road(1, {1, 1, 1, 1, 1, 1, 1}, {500, 500, 0, 500, 500, 500, 500}, {0, 0, 1, 1})),
-          "a level with a tier and no width is refused");
-    CHECK(!bad.add(by_level_road(1, {1, 1, 1, 1, 1, 1, 1}, {500, 500, 500, 500, 500, 500, 500}, {0, 0, 1, 1}), 7),
-          "a start level beyond Metropolis is refused");
+    CHECK(!bad.add(by_level_road(1, {5, 0, 0, 0, 0, 0, 0}, {500, 500, 500, 500, 500, 500, 500}, {0, 0, 1, 1})), "a tier above 4 is refused");
+    CHECK(!bad.add(by_level_road(1, {-1, -1, -1, -1, -1, -1, -1}, {0, 0, 0, 0, 0, 0, 0}, {0, 0, 1, 1})), "a road with nothing at any level is refused");
+    CHECK(!bad.add(by_level_road(1, {1, 1, 1, 1, 1, 1, 1}, {500, 500, 0, 500, 500, 500, 500}, {0, 0, 1, 1})), "a level with a tier and no width is refused");
+    CHECK(!bad.add(by_level_road(1, {1, 1, 1, 1, 1, 1, 1}, {500, 500, 500, 500, 500, 500, 500}, {0, 0, 1, 1}), 7), "a start level beyond Metropolis is refused");
     auto too_large = plain;
     too_large.xy[0] = 1e300;
     CHECK(!bad.add(too_large), "finite coordinates outside float storage are refused before indexing");
     too_large = plain;
     too_large.half_width_cm = 1e300;
     CHECK(!bad.add(too_large), "finite widths outside float storage are refused before indexing");
-    CHECK(!bad.add(by_level_road(1, {1, 1, 1, 1, 1, 1, 1}, {500, 500, 1e300, 500, 500, 500, 500}, {0, 0, 1, 1})),
-          "a future active level's width must also fit float storage");
+    CHECK(!bad.add(by_level_road(1, {1, 1, 1, 1, 1, 1, 1}, {500, 500, 1e300, 500, 500, 500, 500}, {0, 0, 1, 1})), "a future active level's width must also fit float storage");
     CHECK(bad.roads() == 0, "(none was added)");
     world::RoadMap long_road;
-    CHECK(long_road.add(by_level_road(11, {1, 1, 2, 3, 4, 4, 4}, {500, 500, 500, 500, 500, 500, 500}, {0, 0, 1e30, 0})),
-          "a long road that fits float storage is accepted without indexing its "
-          "enormous box");
-    CHECK(long_road.tier_at(1e25, 0) == 1 && long_road.tier_at(1e25, 501) == -1,
-          "a road outside the integer grid is queried directly with its proper "
-          "width");
-    CHECK(long_road.apply_levels([](int64_t) { return 4; }, 0) == 1 && long_road.tier_at(1e25, 0) == 4,
-          "an exceptionally long road still follows its node's level");
+    CHECK(long_road.add(by_level_road(11, {1, 1, 2, 3, 4, 4, 4}, {500, 500, 500, 500, 500, 500, 500}, {0, 0, 1e30, 0})), "a long road that fits float storage is accepted without indexing its enormous box");
+    CHECK(long_road.tier_at(1e25, 0) == 1 && long_road.tier_at(1e25, 501) == -1, "a road outside the integer grid is queried directly with its proper width");
+    CHECK(long_road.apply_levels([](int64_t) { return 4; }, 0) == 1 && long_road.tier_at(1e25, 0) == 4, "an exceptionally long road still follows its node's level");
     auto local = plain;
     local.xy = {0, 0, 10000, 0};
-    CHECK(long_road.add(local) && long_road.tier_at(5000, 0) == 4,
-          "indexed and exceptional segments are queried together, keeping the "
-          "highest tier");
-    CHECK(long_road.apply_levels(nullptr, 0) == 1 && long_road.tier_at(5000, 0) == 3 && long_road.tier_at(1e25, 0) == 1,
-          "an indexed road can provide the winning tier when the exceptional "
-          "road's node level falls");
+    CHECK(long_road.add(local) && long_road.tier_at(5000, 0) == 4, "indexed and exceptional segments are queried together, keeping the highest tier");
+    CHECK(long_road.apply_levels(nullptr, 0) == 1 && long_road.tier_at(5000, 0) == 3 && long_road.tier_at(1e25, 0) == 1, "an indexed road can provide the winning tier when the exceptional road's node level falls");
     world::RoadMap many_cells;
     auto broad_box = local;
     broad_box.xy = {0, 0, 1e8, 0};
-    CHECK(many_cells.add(broad_box) && many_cells.tier_at(1e7, 0) == 3,
-          "a segment covering more than 4096 valid grid cells is queried without "
-          "filling them all");
+    CHECK(many_cells.add(broad_box) && many_cells.tier_at(1e7, 0) == 3, "a segment covering more than 4096 valid grid cells is queried without filling them all");
     world::RoadMap wide_road;
     auto wide = local;
     wide.half_width_cm = 1e20;
-    CHECK(wide_road.add(wide) && wide_road.tier_at(0, 1e19) == 3,
-          "a wide road that fits float storage is accepted and queried without "
-          "allocating billions of cells");
+    CHECK(wide_road.add(wide) && wide_road.tier_at(0, 1e19) == 3, "a wide road that fits float storage is accepted and queried without allocating billions of cells");
     world::RoadMap inactive_width;
-    CHECK(inactive_width.add(
-              by_level_road(1, {-1, 1, 1, 1, 1, 1, 1}, {1e300, 500, 500, 500, 500, 500, 500}, {0, 0, 10000, 0})) &&
+    CHECK(inactive_width.add(by_level_road(1, {-1, 1, 1, 1, 1, 1, 1}, {1e300, 500, 500, 500, 500, 500, 500}, {0, 0, 10000, 0})) &&
               inactive_width.bounds().max_y == 500 && inactive_width.tier_at(5000, 0) == -1 &&
               inactive_width.apply_levels(nullptr, 1) == 1 && inactive_width.tier_at(5000, 0) == 1,
-          "widths of inactive levels do not enlarge the index, while later "
-          "active levels still work");
+          "widths of inactive levels do not enlarge the index, while later active levels still work");
 }
 static void test_roads_tsv_files() {
     const fs::path dir = fs::temp_directory_path() / "world_node_pop_roads";
@@ -537,24 +517,19 @@ static void test_roads_tsv_files() {
     const fs::path file = dir / "roads_levels.tsv";
     {
         std::ofstream f(file);
-        f << "# roads v2: test\n"
-          << "roadn\t11\t1,1,2,3,4,4,4\t500,500,500,500,600,900,900\t0,0\t10000,0\n"
-          << "road\t3\t500\t0,9000\t10000,9000\n";
+        f << "# roads v2: test\nroadn\t11\t1,1,2,3,4,4,4\t500,500,500,500,600,900,900\t0,0\t10000,0\nroad\t3\t500\t0,9000\t10000,9000\n";
     }
     world::RoadMap fm;
     std::string error;
     CHECK(fm.load(file.string(), error, 4) && fm.roads() == 2 && fm.level_roads() == 1 && fm.level_of_road(0) == 4 &&
               fm.tier_at(5000, 0) == 4 && fm.tier_at(5000, 9000) == 3,
-          "a file with a roadn line and a road line loads; the by-level road "
-          "starts at the level the loader was given "
-          "(Town)");
+          "a file with a roadn line and a road line loads; the by-level road starts at the level the loader was given (Town)");
     {
         std::ofstream f(file);
         f << "roadn\t11\t1,1,2,3,4,4\t500,500,500,500,600,900,900\t0,0\t10000,0\n";
     }
     world::RoadMap short_file;
-    CHECK(!short_file.load(file.string(), error) && error.find("numbers each") != std::string::npos,
-          "a roadn line with six tiers is refused");
+    CHECK(!short_file.load(file.string(), error) && error.find("numbers each") != std::string::npos, "a roadn line with six tiers is refused");
     {
         std::ofstream f(file);
         f << "roadn\tx\t1,1,2,3,4,4,4\t500,500,500,500,600,900,900\t0,0\t10000,0\n";
@@ -563,22 +538,16 @@ static void test_roads_tsv_files() {
     for (const char *line : {"road\t3\t500\tnot-a-number,0\t10000,0\n", "road\t3\t500\t0,0\t10000,0junk\n",
                              "road\t4294967296\t500\t0,0\t10000,0\n",
                              "roadn\t-1\t1,1,2,3,4,4,4\t500,500,500,500,600,900,900\t0,0\t10000,0\n",
-                             "roadn\t11\t1.5,1,2,3,4,4,4\t500,500,500,500,600,900,900\t0,0\t10000,"
-                             "0\n",
-                             "roadn\t11\tnan,1,2,3,4,4,4\t500,500,500,500,600,900,900\t0,0\t10000,"
-                             "0\n"}) {
+                             "roadn\t11\t1.5,1,2,3,4,4,4\t500,500,500,500,600,900,900\t0,0\t10000,0\n",
+                             "roadn\t11\tnan,1,2,3,4,4,4\t500,500,500,500,600,900,900\t0,0\t10000,0\n"}) {
         {
             std::ofstream f(file);
             f << line;
         }
         world::RoadMap malformed;
-        CHECK(!malformed.load(file.string(), error) && !error.empty(),
-              "malformed road coordinates, tiers and zones are refused without "
-              "numeric coercion");
+        CHECK(!malformed.load(file.string(), error) && !error.empty(), "malformed road coordinates, tiers and zones are refused without numeric coercion");
     }
-    CHECK(fm.tier_at(1e300, 1e300) == -1 && fm.tier_at(-1e300, -1e300) == -1,
-          "queries far outside the road bounds avoid out-of-range cell "
-          "conversions");
+    CHECK(fm.tier_at(1e300, 1e300) == -1 && fm.tier_at(-1e300, -1e300) == -1, "queries far outside the road bounds avoid out-of-range cell conversions");
     fs::remove_all(dir);
 }
 static void sample_one_level_line(const std::string &line, const world::RoadMap &wilderness, const world::RoadMap &rm,

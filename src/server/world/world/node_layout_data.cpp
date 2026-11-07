@@ -106,7 +106,8 @@ std::unique_ptr<NodeLayoutData> NodeLayoutData::load(const std::string& path, st
 }
 
 bool NodeLayoutData::def_valid(const Def& d, const LayoutContext& c) const {
-    if (c.level < d.level_min || c.level > d.level_max) return false;
+    const int eff_level = std::min(c.level, 4);
+    if (eff_level < d.level_min || eff_level > d.level_max) return false;
     if (!bit(d.cultures, c.culture) || !bit(d.node_types, c.node_type) || !bit(d.seasons, c.season)) return false;
     if (c.biome >= 0 && !d.all_biomes && !bit(d.biomes, c.biome)) return false;
     return true;

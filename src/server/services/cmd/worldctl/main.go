@@ -208,15 +208,16 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		fmt.Fprintln(errw, usage)
 		return 2
 	}
-	cmd, rest := args[0], args[1:]
 	for _, a := range args {
 		if a == "-h" || a == "--help" {
 			fmt.Fprintln(out, usage)
 			return 0
 		}
 	}
+	cmd, rest := args[0], args[1:]
 	switch cmd {
 	case "players", "places", "tp", "speed", "give-money", "give-item", "place-station", "remove-station", "craft", "tutorials", "weapon-xp", "npc":
+		return runGRPCCommand(ctx, cmd, rest, out, errw)
 	case "tick-rate":
 		return runTickRate(ctx, rest, out, errw)
 	case "simulate-npcs":
@@ -234,6 +235,9 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		fmt.Fprintf(errw, "worldctl: unknown command %q\n%s\n", cmd, usage)
 		return 2
 	}
+}
+
+func runGRPCCommand(ctx context.Context, cmd string, rest []string, out, errw io.Writer) int {
 	fs := flag.NewFlagSet("worldctl "+cmd, flag.ContinueOnError)
 	fs.SetOutput(errw)
 	cfg := config.Load()
@@ -499,7 +503,15 @@ func parseInventoryAndStations(cmd string, pos []string) (call, error) {
 			fmt.Fprintf(out, "%s: %d x %s (%d) given%s, into %s\n", r.GetCharacter(), r.GetCount(), r.GetItem(), r.GetItemGuid(), as, r.GetContainer())
 			return nil
 		}, nil
-	case "place-station":
+	case "place-station", "remove-station":
+		return parseStations(cmd, pos)
+	default:
+		return nil, usageError("unknown command")
+	}
+}
+
+func parseStations(cmd string, pos []string) (call, error) {
+	if cmd == "place-station" {
 		if len(pos) != 3 {
 			return nil, usageError("needs a node, a plot and a station: worldctl place-station <node> <plot> <station>, such as: worldctl place-station Joeva Plot_17_Service CraftingStation_Weaponsmithing_T3")
 		}
@@ -512,19 +524,18 @@ func parseInventoryAndStations(cmd string, pos []string) (call, error) {
 			fmt.Fprintf(out, "%s %s: %s of %s placed (actor %d) at %.0f %.0f %.0f\n", r.GetNode(), r.GetPlot(), r.GetStation(), r.GetBuilding(), r.GetActor(), at.GetX(), at.GetY(), at.GetZ())
 			return nil
 		}, nil
-	default:
-		if len(pos) != 2 {
-			return nil, usageError("needs a node and a plot: worldctl remove-station <node> <plot>")
-		}
-		return func(ctx context.Context, c worldadminv1.WorldAdminServiceClient, out io.Writer) error {
-			r, err := c.RemoveStation(ctx, &worldadminv1.RemoveStationRequest{Node: pos[0], Plot: pos[1]})
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(out, "%s %s: %s removed\n", r.GetNode(), r.GetPlot(), r.GetStation())
-			return nil
-		}, nil
 	}
+	if len(pos) != 2 {
+		return nil, usageError("needs a node and a plot: worldctl remove-station <node> <plot>")
+	}
+	return func(ctx context.Context, c worldadminv1.WorldAdminServiceClient, out io.Writer) error {
+		r, err := c.RemoveStation(ctx, &worldadminv1.RemoveStationRequest{Node: pos[0], Plot: pos[1]})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "%s %s: %s removed\n", r.GetNode(), r.GetPlot(), r.GetStation())
+		return nil
+	}, nil
 }
 
 // ~ C-Y-B :: C.O.A ~

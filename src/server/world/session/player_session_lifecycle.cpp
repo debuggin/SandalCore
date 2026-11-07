@@ -34,6 +34,7 @@ struct PlayerSession::SessionInternal {
     static void init_joined_state(PlayerSession& p, PlayerWorld& world, const svc::Character& character, bootstrap::CharacterSetupResult& built, uint64_t nodes_version);
     static void init_mounts_and_view(PlayerSession& p, PlayerWorld& world);
     static void log_join_summary(PlayerSession& p, PlayerWorld& world);
+    static void log_finish_diagnostics(PlayerSession& p);
 };
 
 PlayerSession::PlayerSession(bootstrap::PlayerSetup setup, bootstrap::GameStateMode mode, std::string character_id, const MovementConfig& movement,
@@ -484,6 +485,34 @@ void PlayerSession::hand_over(const char* why, bool periodic) {
                 g.yaw_degrees, why);
 }
 
+void PlayerSession::SessionInternal::log_finish_diagnostics(PlayerSession& p) {
+    if (!p.client_calls_.empty()) {
+        std::map<std::string, size_t> by_name;
+        for (const auto& [rpc_name, count] : p.client_calls_) by_name[rpc_name] += count;
+        std::vector<std::pair<std::string, size_t>> calls(by_name.begin(), by_name.end());
+        std::sort(calls.begin(), calls.end(), [](const auto& a, const auto& b) { return a.second != b.second ? a.second > b.second : a.first < b.first; });
+        std::string text;
+        for (size_t i = 0; i < calls.size() && i < 30; ++i) text += (i ? ", " : "") + calls[i].first + " " + std::to_string(calls[i].second);
+        spdlog::info("[session] {}: the client's calls by name ({} kinds, the most first): {}{}", p.name(), calls.size(), text, calls.size() > 30 ? ", ..." : "");
+    }
+    if (p.malformed_bunches_ > 0 || p.in_place_blocks_ > 0 || p.skipped_fields_ > 0) {
+        spdlog::info("[session] {}: the client's calls the reader did not serve: {} bunches that did not read at all (ignored whole); {} calls on subobjects it names by path (skipped, in {} bunches, {} names); {} RPC "
+                     "fields of no RPC of their class (skipped)",
+                     p.name(), p.malformed_bunches_, p.in_place_blocks_, p.in_place_bunches_, p.in_place_names_.size(), p.skipped_fields_);
+    }
+    if (p.abilities_ && !p.abilities_failed_) {
+        const auto held = p.pb_.current_stats();
+        const auto it = held.find(content::kGuidStamina);
+        if (it != held.end()) {
+            const double server = p.abilities_->stamina();
+            const bool same = static_cast<float>(server) == it->second;
+            spdlog::log(same || p.abilities_dirty_ ? spdlog::level::info : spdlog::level::warn,
+                        "[session] {}: Stamina at the end: the server's {:.2f}, the pawn's array {:.2f} ({}{})", p.name(), server, it->second,
+                        same ? "the same" : "DIFFERENT", p.abilities_dirty_ ? "; an update was still waiting to be built" : "");
+        }
+    }
+}
+
 void PlayerSession::finish(const char* why) {
     if (finished_) return;
     finished_ = true;
@@ -496,14 +525,8 @@ void PlayerSession::finish(const char* why) {
     zone_actors_.clear();
     leave_presence(why);
     if (mounted() && ride_ && mounts_ && npc_world_) {
-        PlayerWorld::HandoverMountSnapshot snap;
-        snap.active = true;
-        snap.mount_item_record = mounts_->item_record();
-        snap.mount_item_guid = mounts_->item_guid();
-        snap.mount_actor_guid = ride_->actor_id();
-        snap.speed_multiplier = ride_->speed_multiplier();
-        snap.movement_mode = ride_->mode();
-        snap.dash_ready_at = ride_->dash_ready_at();
+        PlayerWorld::HandoverMountSnapshot snap{true, mounts_->item_record(), mounts_->item_guid(), ride_->actor_id(),
+                                                ride_->speed_multiplier(), ride_->mode(), ride_->dash_ready_at()};
         npc_world_->remember_handover_mount(character_id_, snap);
         if (pb_.setup().player_id > 0) npc_world_->remember_handover_mount(std::to_string(pb_.setup().player_id), snap);
     }
@@ -516,31 +539,7 @@ void PlayerSession::finish(const char* why) {
         spdlog::info("[session] {}: the world's actors: {}", name(), view_->describe());
         view_->finish();
     }
-    if (!client_calls_.empty()) {
-        std::map<std::string, size_t> by_name;
-        for (const auto& [rpc_name, count] : client_calls_) by_name[rpc_name] += count;
-        std::vector<std::pair<std::string, size_t>> calls(by_name.begin(), by_name.end());
-        std::sort(calls.begin(), calls.end(), [](const auto& a, const auto& b) { return a.second != b.second ? a.second > b.second : a.first < b.first; });
-        std::string text;
-        for (size_t i = 0; i < calls.size() && i < 30; ++i) text += (i ? ", " : "") + calls[i].first + " " + std::to_string(calls[i].second);
-        spdlog::info("[session] {}: the client's calls by name ({} kinds, the most first): {}{}", name(), calls.size(), text, calls.size() > 30 ? ", ..." : "");
-    }
-    if (malformed_bunches_ > 0 || in_place_blocks_ > 0 || skipped_fields_ > 0) {
-        spdlog::info("[session] {}: the client's calls the reader did not serve: {} bunches that did not read at all (ignored whole); {} calls on subobjects it names by path (skipped, in {} bunches, {} names); {} RPC "
-                     "fields of no RPC of their class (skipped)",
-                     name(), malformed_bunches_, in_place_blocks_, in_place_bunches_, in_place_names_.size(), skipped_fields_);
-    }
-    if (abilities_ && !abilities_failed_) {
-        const auto held = pb_.current_stats();
-        const auto it = held.find(content::kGuidStamina);
-        if (it != held.end()) {
-            const double server = abilities_->stamina();
-            const bool same = static_cast<float>(server) == it->second;
-            spdlog::log(same || abilities_dirty_ ? spdlog::level::info : spdlog::level::warn,
-                        "[session] {}: Stamina at the end: the server's {:.2f}, the pawn's array {:.2f} ({}{})", name(), server, it->second,
-                        same ? "the same" : "DIFFERENT", abilities_dirty_ ? "; an update was still waiting to be built" : "");
-        }
-    }
+    SessionInternal::log_finish_diagnostics(*this);
     if (quests_on_ && quest_worker_) {
         if (quest_log_.changed() || quests_touched_) quest_worker_->save(character_id_, quest_log_.to_saved());
         quest_worker_->unwatch(character_id_);

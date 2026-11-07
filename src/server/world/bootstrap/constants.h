@@ -201,10 +201,15 @@ inline constexpr double kGameTimeOffset = 39389245.0;
 struct ClientTimes {
     double game_time = 0;
     double synchronized_time = 0;
+    int32_t calendar_year = 1;
+    int32_t calendar_day_of_year = 1;
 };
 ClientTimes client_times(double world_time);
 void set_global_time_of_day_hours(double hours) noexcept;
 double global_time_of_day_hours() noexcept;
+int32_t global_calendar_year() noexcept;
+int32_t global_calendar_day_of_year() noexcept;
+void set_global_calendar_date(int32_t year, int32_t day_of_year) noexcept;
 bool has_global_time_of_day_override() noexcept;
 uint64_t global_time_of_day_epoch() noexcept;
 

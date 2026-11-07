@@ -31,6 +31,7 @@ import (
 const (
 	MinDynamicWorkersPerScope = 1
 	MaxDynamicWorkersPerScope = 26
+	defaultAdminUsername      = "Admin"
 )
 
 var NatoPhoneticAlphabet = [MaxDynamicWorkersPerScope]string{
@@ -89,12 +90,15 @@ func (s *Server) TimeOfDayAnchor() (float64, int64) {
 
 func (s *Server) TimeOfDayHoursAt(at time.Time) float64 {
 	s.timeOfDayMu.RLock()
-	base, updatedAt := s.timeOfDayHours, s.timeOfDayUpdatedAt
+	base, updatedAt, scale := s.timeOfDayHours, s.timeOfDayUpdatedAt, s.timeScale
 	s.timeOfDayMu.RUnlock()
 	if updatedAt.IsZero() && base == 0 {
 		base, updatedAt = 12.0, s.startedAt
 	}
-	return wrapHours24(base + max(at.Sub(updatedAt).Seconds(), 0)*(9.0/3600.0))
+	if scale <= 0 {
+		scale = 9.0
+	}
+	return wrapHours24(base + max(at.Sub(updatedAt).Seconds(), 0)*(scale/3600.0))
 }
 
 func (s *Server) TimeOfDayHours() float64 { return s.TimeOfDayHoursAt(s.now()) }
@@ -142,9 +146,12 @@ func randomHexToken(numBytes int) string {
 }
 
 func (s *Server) initAdminAuth(customRoleTokens bool) {
-	passEnv := strings.TrimSpace(os.Getenv("AOC_ADMIN_PASSPHRASE"))
+	passEnv, userEnv := strings.TrimSpace(os.Getenv("AOC_ADMIN_PASSPHRASE")), firstNonEmpty(os.Getenv("AOC_ADMIN_USERNAME"), defaultAdminUsername)
+	if strings.EqualFold(userEnv, defaultAdminUsername) {
+		userEnv = defaultAdminUsername
+	}
 	s.authCfg = AdminAuthConfig{
-		Username: firstNonEmpty(os.Getenv("AOC_ADMIN_USERNAME"), "admin"), Passphrase: firstNonEmpty(passEnv, "sandal-admin-dev-passphrase"),
+		Username: userEnv, Passphrase: firstNonEmpty(passEnv, "sandal-admin-dev-passphrase"),
 		PassphraseEnvSet: passEnv != "", JWTSecret: []byte(firstNonEmpty(os.Getenv("AOC_ADMIN_JWT_SECRET"), "ephemeral-secret-"+randomHexToken(16))),
 		BootID: firstNonEmpty(os.Getenv("AOC_ADMIN_BOOT_ID"), "boot-"+randomHexToken(8)), CustomRoleTokens: customRoleTokens,
 	}
@@ -234,14 +241,14 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username, passphrase := firstNonEmpty(extractStringParam(raw, "username", "user"), s.authCfg.Username), extractStringParam(raw, "passphrase", "password", "secret")
-	if !constantTimeEqualStrings(username, s.authCfg.Username) || passphrase == "" || !constantTimeEqualStrings(passphrase, s.authCfg.Passphrase) {
+	userOK := constantTimeEqualStrings(username, s.authCfg.Username) || strings.EqualFold(username, s.authCfg.Username) || (strings.EqualFold(s.authCfg.Username, defaultAdminUsername) && strings.EqualFold(username, defaultAdminUsername))
+	if !userOK || passphrase == "" || !constantTimeEqualStrings(passphrase, s.authCfg.Passphrase) {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="admingateway", error="invalid_credentials"`)
 		writeAuthProblem(w, r, http.StatusUnauthorized, "invalid-credentials", "invalid_credentials", "Invalid admin username or startup passphrase.")
 		return
 	}
-	role := parseRoleString(extractStringParam(raw, "requested_role", "role"))
-	scopes, now := extractRequestedScopes(raw, role), s.now()
-	exp := now.Add(12 * time.Hour)
+	role, now := parseRoleString(extractStringParam(raw, "requested_role", "role")), s.now()
+	scopes, exp := extractRequestedScopes(raw, role), now.Add(12*time.Hour)
 	jwtTok, err := s.mintAdminJWT(AdminJWTClaims{Subject: s.authCfg.Username, Username: s.authCfg.Username, Role: role, Scopes: scopes, BootID: s.authCfg.BootID, Iat: now.Unix(), Exp: exp.Unix()})
 	if err != nil {
 		writeAuthProblem(w, r, http.StatusInternalServerError, "token-mint-failed", "internal_error", "Failed to sign admin JWT.")
@@ -288,8 +295,12 @@ func (s *Server) handleAdminSession(w http.ResponseWriter, r *http.Request) {
 		writeAuthProblem(w, r, http.StatusUnauthorized, "invalid-token", "token_missing_or_boot_id_mismatch", "Session token is invalid, expired, or from a previous server boot.")
 		return
 	}
+	sessionUser := firstNonEmpty(claims.Username, claims.Subject, defaultAdminUsername)
+	if strings.EqualFold(sessionUser, defaultAdminUsername) {
+		sessionUser = defaultAdminUsername
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"authenticated": true, "username": firstNonEmpty(claims.Username, claims.Subject),
+		"authenticated": true, "username": sessionUser,
 		"role": claims.Role, "scopes": claims.Scopes, "boot_id": s.authCfg.BootID, "expires_at": claims.Exp,
 	})
 }
@@ -558,7 +569,9 @@ func (s *Server) snapshotWorldWorkerStatuses() []WorldWorkerStatus {
 	out, dynCounts := make([]WorldWorkerStatus, len(s.worldWorkers)), make(map[string]int)
 	for i, w := range s.worldWorkers {
 		meta, ep := s.workerMeta[w.WorkerID], *w
-		if ep.TickHz <= 0 {
+		if hz, ok := s.lookupWorkerTickHzOverrideLocked(w); ok {
+			ep.TickHz = hz
+		} else if ep.TickHz <= 0 {
 			ep.TickHz = defaultWorkerTierTickHz(ep.ScopeKind)
 			if meta.ScrapedTickHz > 0 {
 				ep.TickHz = meta.ScrapedTickHz
@@ -577,7 +590,7 @@ func (s *Server) snapshotWorldWorkerStatuses() []WorldWorkerStatus {
 			TopologyMode: firstNonEmpty(meta.TopologyMode, ep.ScopeKind), PolygonCutout: meta.PolygonCutout, DynamicScalingStub: meta.DynamicScalingStub || isDynamicStubMode(ep.ScopeKind),
 		}
 	}
-	return s.appendSubPartitionWorkerStatusesLocked(out)
+	return out
 }
 
 func (s *Server) handleRegisterMeshWorker(w http.ResponseWriter, r *http.Request, _ Role) {
@@ -586,10 +599,9 @@ func (s *Server) handleRegisterMeshWorker(w http.ResponseWriter, r *http.Request
 		writeProblem(w, r, http.StatusBadRequest, "invalid-json-body", "Malformed worker registration JSON.")
 		return
 	}
-	wid := firstNonEmpty(extractStringParam(raw, "worker_id", "id", "name"), fmt.Sprintf("world-%d", len(s.worldWorkers)))
-	scopeKey, scopeKind := firstNonEmpty(extractStringParam(raw, "scope_key", "region", "zoi_id", "city"), strings.TrimPrefix(wid, "world-")), firstNonEmpty(extractStringParam(raw, "scope_kind", "topology_mode", "mode"), "region")
+	wid, scopeKind := extractStringParam(raw, "worker_id", "id", "name"), firstNonEmpty(extractStringParam(raw, "scope_kind", "topology_mode", "mode"), "region")
 	ep := &WorldWorkerEndpoint{
-		WorkerID: wid, ScopeKey: scopeKey, ScopeKind: scopeKind, ContainerName: extractStringParam(raw, "container_name", "container"),
+		WorkerID: wid, ScopeKey: extractStringParam(raw, "scope_key", "region", "zoi_id", "city"), ScopeKind: scopeKind, ContainerName: extractStringParam(raw, "container_name", "container"),
 		AdminAddr: extractStringParam(raw, "admin_addr", "grpc_addr"), StreamAddr: extractStringParam(raw, "stream_addr"),
 		Status: "ONLINE", Connected: true, TickHz: defaultWorkerTierTickHz(scopeKind), LastSeenMs: s.now().UnixMilli(),
 	}
@@ -599,7 +611,11 @@ func (s *Server) handleRegisterMeshWorker(w http.ResponseWriter, r *http.Request
 		return
 	}
 	statuses := s.snapshotWorldWorkerStatuses()
-	writeJSON(w, http.StatusOK, map[string]any{"status": "registered", "worker_index": idx, "worker": statuses[idx], "workers": statuses})
+	var worker any
+	if idx >= 0 && idx < len(statuses) {
+		worker = statuses[idx]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "registered", "worker_index": idx, "worker": worker, "workers": statuses})
 }
 
 func extractPolygonFromMap(raw map[string]any) [][2]float64 {
@@ -621,6 +637,8 @@ func extractPolygonFromMap(raw map[string]any) [][2]float64 {
 func (s *Server) upsertRegisteredWorker(ep *WorldWorkerEndpoint, poly [][2]float64) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	ep.WorkerID = firstNonEmpty(ep.WorkerID, fmt.Sprintf("world-%d", len(s.worldWorkers)))
+	ep.ScopeKey = firstNonEmpty(ep.ScopeKey, strings.TrimPrefix(ep.WorkerID, "world-"))
 	if s.workerMeta == nil {
 		s.workerMeta = make(map[string]workerTopologyMeta)
 	}

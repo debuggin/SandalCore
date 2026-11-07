@@ -109,32 +109,29 @@ func callWithRetry[T any](ctx context.Context, s *Server, op func(context.Contex
 
 func (s *Server) fetchCityNodeLevels(ctx context.Context) map[string]int {
 	out := make(map[string]int, 64)
+	if cli := s.getCityNodeClient(); cli != nil {
+		rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		resp, err := callWithRetry(rctx, s, func(c context.Context) (*citynodev1.ListNodesResponse, error) { return cli.ListNodes(c, &citynodev1.ListNodesRequest{}) })
+		cancel()
+		if err == nil && resp != nil {
+			for _, n := range resp.GetNodes() {
+				lv := int(n.GetLevel())
+				if n.GetGuid() != 0 {
+					out[strconv.FormatInt(n.GetGuid(), 10)] = lv
+				}
+				for _, k := range []string{n.GetName(), n.GetDisplayName()} {
+					if k != "" {
+						out[strings.ToLower(k)] = lv
+					}
+				}
+			}
+		}
+	}
 	s.mu.Lock()
 	for k, v := range s.localNodeLevels {
 		out[k] = v
 	}
 	s.mu.Unlock()
-	cli := s.getCityNodeClient()
-	if cli == nil {
-		return out
-	}
-	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	resp, err := callWithRetry(rctx, s, func(c context.Context) (*citynodev1.ListNodesResponse, error) { return cli.ListNodes(c, &citynodev1.ListNodesRequest{}) })
-	if err != nil || resp == nil {
-		return out
-	}
-	for _, n := range resp.GetNodes() {
-		lv := int(n.GetLevel())
-		if n.GetGuid() != 0 {
-			out[strconv.FormatInt(n.GetGuid(), 10)] = lv
-		}
-		for _, k := range []string{n.GetName(), n.GetDisplayName()} {
-			if k != "" {
-				out[strings.ToLower(k)] = lv
-			}
-		}
-	}
 	return out
 }
 
@@ -342,6 +339,8 @@ func (s *Server) executeRealGMCommand(ctx context.Context, req CommandRequest) (
 		return s.execSetTickRateCommand(ctx, req.TargetID, p)
 	case "set_time_of_day", "time_of_day", "set_world_time":
 		return s.execSetTimeOfDayCommand(ctx, p)
+	case "set_world_calendar", "world_calendar", "calendar":
+		return s.execSetWorldCalendarCommand(ctx, p)
 	default:
 		return map[string]any{"status": "executed", "action": req.Command, "command": req.Command, "target_id": req.TargetID}, nil
 	}
@@ -584,42 +583,7 @@ func (s *Server) execSpawnNpcCommand(ctx context.Context, defaultNpc string, p m
 }
 
 func (s *Server) execSetNodeLevel(ctx context.Context, node string, level int) (map[string]any, error) {
-	node = strings.TrimSpace(node)
-	if node == "" {
-		return nil, status.Error(codes.InvalidArgument, "node identifier is required")
-	}
-	s.mu.Lock()
-	s.localNodeLevels[strings.ToLower(node)] = level
-	for _, spec := range admincatalog.DefaultLevelableNodes() {
-		guidStr := strconv.FormatInt(spec.GUID, 10)
-		if strings.EqualFold(spec.Name, node) || strings.EqualFold(spec.DisplayName, node) || guidStr == node {
-			s.localNodeLevels[guidStr], s.localNodeLevels[strings.ToLower(spec.Name)], s.localNodeLevels[strings.ToLower(spec.DisplayName)] = level, level, level
-		}
-	}
-	s.mu.Unlock()
-	s.recordMutation()
-	if cli := s.getCityNodeClient(); cli != nil {
-		nodeRef := &citynodev1.NodeRef{Name: node}
-		if g, err := strconv.ParseInt(node, 10, 64); err == nil && g != 0 {
-			nodeRef = &citynodev1.NodeRef{Guid: g}
-		}
-		rctx, cancel := context.WithTimeout(ctx, 4*time.Second)
-		defer cancel()
-		resp, err := callWithRetry(rctx, s, func(c context.Context) (*citynodev1.SetNodeLevelResponse, error) {
-			return cli.SetNodeLevel(c, &citynodev1.SetNodeLevelRequest{Node: nodeRef, Level: int32(level), DisableVassalship: true})
-		})
-		if err != nil && !isFallbackEligibleGRPCError(err) {
-			return nil, err
-		}
-		if err == nil && resp != nil && resp.GetNode() != nil {
-			s.refreshStreamAfterNodeTierChange(ctx)
-			n := resp.GetNode()
-			lv := int(n.GetLevel())
-			return map[string]any{"guid": strconv.FormatInt(n.GetGuid(), 10), "name": n.GetName(), "display_name": n.GetDisplayName(), "level": lv, "plug_tier": nodePlugTierForLevel(lv), "stage_name": admincatalog.StageNameForLevel(lv), "status": "UPDATED"}, nil
-		}
-	}
-	s.refreshStreamAfterNodeTierChange(ctx)
-	return map[string]any{"node": node, "level": level, "plug_tier": nodePlugTierForLevel(level), "stage_name": admincatalog.StageNameForLevel(level), "status": "UPDATED"}, nil
+	return s.resolveAndExecSetNodeLevel(ctx, node, level)
 }
 
 func (s *Server) execSetNodeMayorCommand(ctx context.Context, defaultNode string, p map[string]any) (map[string]any, error) {
@@ -774,7 +738,7 @@ func (s *Server) execNodeProgressionAction(cmd, defaultTarget string, p map[stri
 func formatGMCommandProseSummary(req CommandRequest, res map[string]any) (string, string, string) {
 	p, what := req.Params, formatGMActionWhatProse(req, res)
 	switch req.Command {
-	case "set_time_of_day", "time_of_day", "set_world_time":
+	case "set_time_of_day", "time_of_day", "set_world_time", "set_world_calendar", "world_calendar", "calendar":
 		return what, "aoc-mesh-gateway (all-workers)", "aoc-world"
 	case "set_node_level", "set_node_stage", "set_node_mayor", "trigger_node_election", "set_node_election", "add_node_xp", "advance_node_clock":
 		node := firstNonEmpty(extractStringParam(res, "display_name", "node_name", "name", "node"), extractStringParam(p, "node_name", "node", "name"), req.TargetID, "verra")

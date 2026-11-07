@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import {
   AdminAuthSessionBadge,
   AdminLoginModal,
+  END_SESSION_BUTTON_LABEL,
+  END_SESSION_BUTTON_STYLE,
 } from "./components/AdminLoginModal";
 import { LogsAndContainersTab } from "./components/LogsAndContainersTab";
 import {
@@ -12,7 +14,11 @@ import {
   SANDAL_LAUNCHER_TOKENS,
 } from "./components/PlayersAndSpawnerTab";
 import { VerraMapCanvas } from "./map/VerraMapCanvas";
-import { installGlobalAdminAuthFetchInterceptor } from "./state/adminAuthClient";
+import {
+  DEFAULT_ADMIN_USERNAME,
+  installGlobalAdminAuthFetchInterceptor,
+  normalizeAdminUsername,
+} from "./state/adminAuthClient";
 import {
   type AdminTabId,
   parseModalFromUrlHash,
@@ -29,7 +35,7 @@ export interface AdminTabDefinition {
 
 export const ADMIN_TABS: readonly AdminTabDefinition[] = Object.freeze([
   { id: "map", label: "Map" },
-  { id: "analytics", label: "Analytics & Logs" },
+  { id: "analytics", label: "Observability" },
 ]);
 
 interface ErrorBoundaryProps {
@@ -256,4 +262,5 @@ if (typeof document !== "undefined") {
   }
 }
 
+export { DEFAULT_ADMIN_USERNAME, END_SESSION_BUTTON_LABEL, END_SESSION_BUTTON_STYLE, normalizeAdminUsername };
 export default App;

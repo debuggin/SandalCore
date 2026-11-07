@@ -45,23 +45,73 @@ struct SpawnerAnchor {
     double x = 0.0, y = 0.0, z = 0.0;
 };
 
+struct GatherableCatalogEntry {
+    const char* title;
+    const char* profession;
+    const char* kind;
+    int tier;
+    const char* tier_name;
+    size_t donor_idx;
+};
+
+constexpr GatherableCatalogEntry kGatherableCatalog[] = {
+    {"Oak Tree", "Lumberjacking", "Tree", 1, "Novice", 3},
+    {"Ash Tree", "Lumberjacking", "Tree", 1, "Novice", 3},
+    {"Cedar Tree", "Lumberjacking", "Tree", 2, "Apprentice", 4},
+    {"Weeping Willow", "Lumberjacking", "Tree", 2, "Apprentice", 4},
+    {"Braidwood Tree", "Lumberjacking", "Tree", 3, "Journeyman", 5},
+    {"Granite Deposit", "Stonecutting", "Rock", 1, "Novice", 0},
+    {"Slate Deposit", "Stonecutting", "Rock", 1, "Novice", 0},
+    {"Sandstone Deposit", "Stonecutting", "Rock", 2, "Apprentice", 1},
+    {"Basalt Deposit", "Stonecutting", "Rock", 2, "Apprentice", 1},
+    {"Limestone Deposit", "Stonecutting", "Rock", 3, "Journeyman", 2},
+    {"Copper Vein", "Mining", "Ore", 1, "Novice", 0},
+    {"Zinc Vein", "Mining", "Ore", 1, "Novice", 0},
+    {"Tin Vein", "Mining", "Ore", 2, "Apprentice", 1},
+    {"Iron Vein", "Mining", "Ore", 2, "Apprentice", 1},
+    {"Rividium Vein", "Mining", "Ore", 3, "Journeyman", 2},
+    {"Lumadon Vein", "Mining", "Ore", 5, "Grandmaster", 2},
+    {"Ruby Geode", "Mining", "Gem", 2, "Apprentice", 1},
+    {"Sapphire Geode", "Mining", "Gem", 3, "Journeyman", 2},
+    {"Emerald Geode", "Mining", "Gem", 3, "Journeyman", 2},
+    {"Halcyonite Crystal", "Mining", "Gem", 4, "Master", 2},
+    {"Daffodil", "Herbalism", "Plant", 1, "Novice", 6},
+    {"Snowdrop", "Herbalism", "Plant", 1, "Novice", 6},
+    {"Flax", "Herbalism", "Plant", 2, "Apprentice", 7},
+    {"Moonbell", "Herbalism", "Plant", 2, "Apprentice", 7},
+    {"Yarrow", "Herbalism", "Plant", 3, "Journeyman", 8},
+    {"Spiritbloom", "Herbalism", "Plant", 5, "Grandmaster", 9},
+};
+constexpr size_t kGatherableCatalogCount = sizeof(kGatherableCatalog) / sizeof(kGatherableCatalog[0]);
+
 const char* gatherable_rarity_name(uint64_t seed) noexcept {
+    static constexpr const char* kRarities[6] = {"Common", "Uncommon", "Rare", "Heroic", "Epic", "Legendary"};
     const uint64_t roll = seed % 100;
-    if (roll < 50) return "Common";
-    if (roll < 75) return "Uncommon";
-    if (roll < 87) return "Rare";
-    if (roll < 94) return "Heroic";
-    if (roll < 98) return "Epic";
-    return "Legendary";
+    if (roll < 42) return kRarities[0];
+    if (roll < 68) return kRarities[1];
+    if (roll < 83) return kRarities[2];
+    if (roll < 92) return kRarities[3];
+    if (roll < 97) return kRarities[4];
+    return kRarities[5];
 }
 
-std::string format_gatherable_display_name(const garden::Def& def, uint64_t seed) {
-    const char* rarity = gatherable_rarity_name(seed);
-    return std::string(def.name) + " [" + def.profession + " / " + def.resource + " | " + rarity +
-           " | Tier " + std::to_string(def.tier + 1) + " " + def.tier_name + "]";
+std::string format_catalog_gatherable_name(const GatherableCatalogEntry& e, uint64_t seed) {
+    return std::string(e.title) + " [" + e.profession + " / " + e.kind + " | " + gatherable_rarity_name(seed) +
+           " | Tier " + std::to_string(e.tier) + " " + e.tier_name + "]";
 }
 
-bool configure_gatherable_node(world::WorldActor& w, const garden::Def& def, const SpawnerAnchor& pt, double yaw) {
+std::string format_hunting_creature_name(std::string base_name, int level, uint64_t seed) {
+    if (base_name.rfind("Hunting_", 0) == 0) base_name.erase(0, 8);
+    for (char& ch : base_name) if (ch == '_') ch = ' ';
+    if (base_name == "Rabid") base_name = "Grem";
+    if (base_name.empty()) base_name = "Wild Beast";
+    const int tier = std::clamp((std::max(1, level) - 1) / 10 + 1, 1, 5);
+    static constexpr const char* kTierNames[5] = {"Novice", "Apprentice", "Journeyman", "Master", "Grandmaster"};
+    return base_name + " [Hunting / Animal Husbandry | " + gatherable_rarity_name(seed) +
+           " | Tier " + std::to_string(tier) + " " + kTierNames[tier - 1] + "]";
+}
+
+bool configure_gatherable_node(world::WorldActor& w, const GatherableCatalogEntry& entry, const garden::Def& def, const SpawnerAnchor& pt, double yaw) {
     std::string error;
     repl::Actor& a = w.actor;
     repl::ObjectState& actor = a.obj;
@@ -91,76 +141,99 @@ bool configure_gatherable_node(world::WorldActor& w, const garden::Def& def, con
         }
     }
     const uint64_t qseed = mix(def.guid ^ static_cast<uint64_t>(std::llround(pt.x)) ^ (static_cast<uint64_t>(std::llround(pt.y)) << 1));
-    const std::string display = format_gatherable_display_name(def, qseed);
+    const std::string display = format_catalog_gatherable_name(entry, qseed);
     w.x = pt.x; w.y = pt.y; w.z = pt.z; w.yaw_degrees = yaw;
     w.label = display;
     w.npc.name = display;
-    w.npc.level = (def.tier + 1) * 10;
+    w.npc.level = entry.tier * 10;
     w.npc.source = world::Source::Data;
     w.npc.home_x = pt.x; w.npc.home_y = pt.y; w.npc.home_z = pt.z;
     return true;
 }
 
+uint64_t spatial_cell_key(double x, double y) noexcept {
+    const int64_t cx = static_cast<int64_t>(std::floor(x / 25000.0));
+    const int64_t cy = static_cast<int64_t>(std::floor(y / 25000.0));
+    return (static_cast<uint64_t>(cx) << 32) ^ static_cast<uint32_t>(cy);
+}
+
+void push_cell_anchor(std::map<uint64_t, std::vector<SpawnerAnchor>>& by_cell,
+                      const AreaConfig& area, bool use_halo, double px, double py, double pz) {
+    if (!std::isfinite(px) || !std::isfinite(py) || pz < -5000.0) return;
+    if (!(use_halo ? area.contains_with_halo(px, py) : area.contains(px, py))) return;
+    if (point_in_any_node_town_footprint(px, py)) return;
+    auto& bucket = by_cell[spatial_cell_key(px, py)];
+    if (bucket.size() < 10) bucket.push_back({px, py, pz});
+}
+
 void append_area_circle_anchors(const content::NpcPlacement& pl, const content::NpcAreaRow& area_row, const AreaConfig& area,
-                                bool use_halo, std::map<uint64_t, std::vector<SpawnerAnchor>>& by_zoi) {
+                                bool use_halo, std::map<uint64_t, std::vector<SpawnerAnchor>>& by_cell) {
     for (size_t ci = 0; ci < area_row.circles.size(); ++ci) {
         const content::NpcAreaCircle& c = area_row.circles[ci];
+        const double cx = pl.x + c.x, cy = pl.y + c.y, cz = pl.z + c.z;
+        push_cell_anchor(by_cell, area, use_halo, cx, cy, cz);
+        if (c.extent >= 1500.0) {
+            for (int ring_idx = 0; ring_idx < 6; ++ring_idx) {
+                const double ang = static_cast<double>(ring_idx) * (6.283185307179586 / 6.0);
+                const double r_mid = 0.45 * c.extent, r_outer = 0.80 * c.extent;
+                push_cell_anchor(by_cell, area, use_halo, cx + r_mid * std::cos(ang), cy + r_mid * std::sin(ang), cz);
+                if (c.extent >= 4000.0) {
+                    push_cell_anchor(by_cell, area, use_halo, cx + r_outer * std::cos(ang + 0.5235987756), cy + r_outer * std::sin(ang + 0.5235987756), cz);
+                }
+            }
+        }
         const int n_pts = std::clamp(static_cast<int>(c.extent / 3500.0) + 1, 1, 6);
         for (int s = 0; s < n_pts; ++s) {
             const uint64_t h = mix(static_cast<uint64_t>(pl.spawn) ^ static_cast<uint64_t>(area_row.guid) ^ ((ci + 1) * 0x9E3779B97F4A7C15ull) ^ static_cast<uint64_t>(s * 131));
             const double rad = std::max(0.0, c.extent) * std::sqrt(static_cast<double>(h & 0xFFFFu) / 65535.0);
             const double ang = (static_cast<double>((h >> 16) & 0xFFFFu) / 65535.0) * 6.283185307179586;
-            const double px = pl.x + c.x + rad * std::cos(ang), py = pl.y + c.y + rad * std::sin(ang), pz = pl.z + c.z;
-            if (!(use_halo ? area.contains_with_halo(px, py) : area.contains(px, py)) || pz < -5000.0) continue;
-            const uint64_t zoi = world::zoi_at(px, py);
-            by_zoi[zoi != 0 ? zoi : 1ULL].push_back({px, py, pz});
+            push_cell_anchor(by_cell, area, use_halo, cx + rad * std::cos(ang), cy + rad * std::sin(ang), cz);
         }
     }
 }
 
 std::map<uint64_t, std::vector<SpawnerAnchor>> collect_spawner_anchors(const content::PopulationData& pop, const AreaConfig& area) {
-    std::map<uint64_t, std::vector<SpawnerAnchor>> by_zoi;
+    std::map<uint64_t, std::vector<SpawnerAnchor>> by_cell;
     const bool use_halo = area.uses_boundary_halo_for_spawns();
     for (const content::NpcPlacement& pl : pop.placements) {
         const auto ws = pop.world_spawns.find(pl.spawn);
         if (ws != pop.world_spawns.end() && ws->second.map_name != "Verra_World_Master" && ws->second.name.rfind("NodeHelper_ArtisanPOI_", 0) != 0) continue;
         if (const auto sit = pop.sets.find(pl.set); sit != pop.sets.end() && sit->second.area != 0) {
             if (const auto ait = pop.areas.find(sit->second.area); ait != pop.areas.end()) {
-                append_area_circle_anchors(pl, ait->second, area, use_halo, by_zoi);
+                append_area_circle_anchors(pl, ait->second, area, use_halo, by_cell);
             }
         }
-        if (!(use_halo ? area.contains_with_halo(pl.x, pl.y) : area.contains(pl.x, pl.y)) || pl.z < -5000.0) continue;
-        const uint64_t zoi = world::zoi_at(pl.x, pl.y);
-        by_zoi[zoi != 0 ? zoi : 1ULL].push_back({pl.x, pl.y, pl.z});
+        push_cell_anchor(by_cell, area, use_halo, pl.x, pl.y, pl.z);
     }
-    for (const NodePlugObb& plug : kVerraNodePlugs) {
-        if (!area.contains(plug.cx_cm, plug.cy_cm)) continue;
-        std::vector<SpawnerAnchor>& bucket = by_zoi[plug.node_guid];
-        for (int i = 0; i < 16; ++i) {
-            const double ang = i * (2.0 * 3.14159265358979323846 / 16.0), r = 18000.0 + (i % 4) * 6500.0;
-            const double px = plug.cx_cm + r * std::cos(ang), py = plug.cy_cm + r * std::sin(ang);
-            if (area.contains(px, py)) bucket.push_back({px, py, kLoginSpotZ});
-        }
-    }
-    return by_zoi;
+    return by_cell;
 }
 
 void seed_managed_area_resource_nodes(world::ActorRegistry& registry, const AreaSources& sources, const Minter& mint, uint32_t server_id, AreaReport& report) {
-    if (!report.area.whole_world || !report.data || !sources.captured) return;
+    const bool has_region = report.area.region || report.area.region_mask != 0;
+    const bool eligible_area = report.area.whole_world || has_region || !report.area.zoi_guids.empty() ||
+                               !report.area.include_node_plugs.empty() || !report.area.polygon_cutout_cm.empty() || report.area.radius_cm > 0.0;
+    if (!eligible_area || !report.data || !sources.captured) return;
     const OpenTemplate* donor = garden_donor(*sources.captured);
     if (!donor || garden::kGardenDefCount == 0) return;
-    const auto by_zoi = collect_spawner_anchors(*report.data, report.area);
+    const auto by_cell = collect_spawner_anchors(*report.data, report.area);
+    if (by_cell.empty()) return;
+    const size_t max_gatherables = (!report.area.include_node_plugs.empty() || !report.area.polygon_cutout_cm.empty())
+                                       ? 120u
+                                       : (!report.area.zoi_guids.empty() ? 240u : (has_region ? 720u : 1800u));
+    const size_t per_cell_target = std::clamp<size_t>((max_gatherables + by_cell.size() - 1) / by_cell.size(), 1u, 8u);
     std::vector<uint64_t> near;
-    for (const auto& [zoi_guid, pts] : by_zoi) {
-        if (pts.empty()) continue;
-        const size_t target = std::min<size_t>(180, pts.size());
+    size_t spawned = 0;
+    for (const auto& [cell_id, pts] : by_cell) {
+        if (pts.empty() || spawned >= max_gatherables) break;
+        const size_t target = std::min<size_t>(per_cell_target, pts.size());
         const size_t stride = std::max<size_t>(1, pts.size() / target);
-        for (size_t k = 0; k < target; ++k) {
+        for (size_t k = 0; k < target && spawned < max_gatherables; ++k) {
             const SpawnerAnchor& base = pts[(k * stride) % pts.size()];
-            const uint64_t h = mix(zoi_guid ^ (static_cast<uint64_t>(k + 1) * 0x9E3779B97F4A7C15ull));
+            const uint64_t h = mix(cell_id ^ (static_cast<uint64_t>(k + 1) * 0x9E3779B97F4A7C15ull));
             const double rad = 450.0 + static_cast<double>(h % 950), ang = static_cast<double>((h >> 16) % 360) * (3.14159265358979323846 / 180.0);
             SpawnerAnchor pt{base.x + rad * std::cos(ang), base.y + rad * std::sin(ang), base.z};
-            if (!report.area.contains(pt.x, pt.y)) pt = base;
+            if (!report.area.contains(pt.x, pt.y) || point_in_any_node_town_footprint(pt.x, pt.y)) pt = base;
+            if (!report.area.contains(pt.x, pt.y) || point_in_any_node_town_footprint(pt.x, pt.y)) continue;
             near.clear();
             registry.query(pt.x, pt.y, 2500.0, near);
             bool has_nearby_node = false;
@@ -168,15 +241,16 @@ void seed_managed_area_resource_nodes(world::ActorRegistry& registry, const Area
                 if (const world::WorldActor* ex = registry.find(id); ex && ex->kind == world::ActorKind::Gatherable) { has_nearby_node = true; break; }
             }
             if (has_nearby_node) continue;
-            const garden::Def& def = garden::kGardenDefs[h % garden::kGardenDefCount];
+            const GatherableCatalogEntry& entry = kGatherableCatalog[h % kGatherableCatalogCount];
+            const garden::Def& def = garden::kGardenDefs[entry.donor_idx % garden::kGardenDefCount];
             InstanceParams p;
             p.keep_captured_position = true;
             p.server_id = server_id;
             p.seed = mix(0x7E5001CEull ^ h ^ def.guid);
             std::string why;
             auto w = instantiate(*donor, mint, p, why);
-            if (!w || !configure_gatherable_node(*w, def, pt, static_cast<double>((h >> 24) % 360))) continue;
-            if (registry.add(std::move(*w))) ++report.gatherables;
+            if (!w || !configure_gatherable_node(*w, entry, def, pt, static_cast<double>((h >> 24) % 360))) continue;
+            if (registry.add(std::move(*w))) { ++report.gatherables; ++spawned; }
         }
     }
 }
@@ -207,6 +281,7 @@ void place_captured_spawns(LoadContext& ctx) {
         const CapturedSpawn& c = ctx.sources.captured->spawns()[i];
         if (!(use_halo ? ctx.report.area.contains_with_halo(c.x, c.y) : ctx.report.area.contains(c.x, c.y))) continue;
         const bool npc = c.open->category == "npc";
+        if (!npc && point_in_any_node_town_footprint(c.x, c.y)) continue;
         const std::vector<Placed>& against = npc ? ctx.placed : nodes;
         const double near = npc ? kSamePointCm : 50.0;
         bool dup = false;
@@ -230,11 +305,15 @@ void place_captured_spawns(LoadContext& ctx) {
         w->npc.source = world::Source::Captured;
         w->npc.home_x = c.x; w->npc.home_y = c.y; w->npc.home_z = c.z;
         if (!npc && garden::kGardenDefCount > 0) {
-            const garden::Def& def = garden::kGardenDefs[p.seed % garden::kGardenDefCount];
-            const std::string display = format_gatherable_display_name(def, p.seed);
+            const GatherableCatalogEntry& entry = kGatherableCatalog[p.seed % kGatherableCatalogCount];
+            const std::string display = format_catalog_gatherable_name(entry, p.seed);
             w->label = display;
             w->npc.name = display;
-            w->npc.level = (def.tier + 1) * 10;
+            w->npc.level = entry.tier * 10;
+        } else if (npc && w->npc.interact_def > 1000000 && w->npc.vendor_guid == 0 && w->npc.dialogue_root == 0) {
+            const std::string hname = format_hunting_creature_name(w->npc.name.empty() ? leaf_of(c.open->archetype_path) : w->npc.name, w->npc.level, p.seed);
+            w->label = hname;
+            w->npc.name = hname;
         }
         const std::string path = c.open->archetype_path;
         if (!ctx.registry.add(std::move(*w))) {
@@ -348,13 +427,12 @@ std::optional<world::WorldActor> make_data_actor(const DataSpawn& s, const Minte
     w->npc.vendor_guid = s.instance ? s.instance->vendor : 0;
     // its conversation: the instance's own root, else its asset's
     w->npc.dialogue_root = (s.instance && s.instance->dialogue_root != 0) ? s.instance->dialogue_root : (s.asset ? s.asset->dialogue_root : 0);
-    w->npc.home_x = s.x;
-    w->npc.home_y = s.y;
-    w->npc.home_z = s.z;
-    // how far it notices and follows: the instance's own radius when it overrides the asset's [R: research/combat 6]
-    // [R: the data, retest 3] an override with a radius of 0 on a Timid asset (Rabid_Timid, Deer_Timid, Spider_Timid, Raven_Timid: 31 of 31 instances of Pop_TimidGrem) is "never
-    // notices a player"; the same override on the camps' wolves, goblins and bandits keeps the Blueprint's default, because they attack on sight [user, retest 3]; no override with no
-    // radius is "the Blueprint's", the AI's default
+    w->npc.home_x = s.x; w->npc.home_y = s.y; w->npc.home_z = s.z;
+    if (s.asset && s.asset->name.rfind("Hunting_", 0) == 0) {
+        if (w->npc.interact_def == 0 && s.asset->interaction_def != 0) w->npc.interact_def = s.asset->interaction_def;
+        const std::string hname = format_hunting_creature_name(w->npc.name.empty() ? s.asset->name : w->npc.name, s.level, s.seed);
+        w->label = hname; w->npc.name = hname;
+    }
     if (s.instance && s.instance->override_aggro) {
         if (s.instance->aggro_radius > 0) w->npc.aggro_radius_cm = s.instance->aggro_radius;
         else if (s.asset && s.asset->asset_ref.find("_Timid.") != std::string::npos) w->npc.aggro_off = true;
@@ -366,13 +444,46 @@ std::optional<world::WorldActor> make_data_actor(const DataSpawn& s, const Minte
         w->npc.respawn_seconds = s.instance->respawn_time;
         w->npc.respawn_variance = s.instance->respawn_variance;
     }
-    // what its death does: the tables its asset and instance name, how it comes back
     if (s.asset) w->npc.loot_tables.insert(w->npc.loot_tables.end(), s.asset->loot_tables.begin(), s.asset->loot_tables.end());
     if (s.instance) {
         w->npc.loot_tables.insert(w->npc.loot_tables.end(), s.instance->loot_tables.begin(), s.instance->loot_tables.end());
         w->npc.respawn_rule = s.instance->respawn_rule;
     }
     return w;
+}
+
+void place_data_spawns(LoadContext& ctx, const content::PopulationData& population, const std::vector<DataSpawn>& data) {
+    for (const DataSpawn& s : data) {
+        InstanceParams p;
+        std::string why;
+        auto w = make_data_actor(s, ctx.mint, ctx.server_id, ctx.world_time, &p, why, ctx.sources.objects);
+        if (!w) { ++ctx.report.refused; note_report(ctx.report, "a data NPC (" + leaf_of(s.open->archetype_path) + ") was refused: " + why); continue; }
+        if (s.instance) {
+            ctx.report.instances.emplace(s.instance->guid, *s.instance);
+            if (s.instance->patrol_route != 0) {
+                if (const auto r = population.routes.find(s.instance->patrol_route); r != population.routes.end()) ctx.report.routes.emplace(r->first, r->second);
+            }
+            ctx.report.recipes.push_back({s.open, p, w->npc, s});
+            w->npc.spawn_ref = static_cast<uint32_t>(ctx.report.recipes.size());
+            ctx.report.recipes.back().info.spawn_ref = w->npc.spawn_ref;
+        }
+        const std::string path = s.open->archetype_path;
+        const double x = w->x, y = w->y;
+        const bool prop = w->kind == world::ActorKind::Prop;
+        if (prop) {
+            ctx.report.props.push_back(PropRecipe{s.open, p, s.instance ? s.instance->guid : 0, s.instance ? s.instance->respawn_time : 0, s.instance ? s.instance->respawn_variance : 0, w->id});
+            w->prop.slot = static_cast<uint32_t>(ctx.report.props.size());
+        }
+        if (!ctx.registry.add(std::move(*w))) {
+            ++ctx.report.refused; note_report(ctx.report, "a data NPC could not be added to the registry");
+            if (prop) ctx.report.props.pop_back();
+            continue;
+        }
+        if (prop) continue;
+        ctx.placed.push_back({x, y, path});
+        ++ctx.report.data_npcs;
+        ++ctx.report.npcs_by_archetype[leaf_of(path)];
+    }
 }
 
 std::optional<AreaReport> load_area(world::ActorRegistry& registry, const AreaSources& sources, const AreaConfig& area, const Minter& mint, uint32_t server_id,
@@ -394,38 +505,7 @@ std::optional<AreaReport> load_area(world::ActorRegistry& registry, const AreaSo
     const auto note = [&](std::string n) { note_report(report, std::move(n)); };
 
     LoadContext ctx{registry, sources, mint, server_id, world_time, report, {}};
-    for (const DataSpawn& s : data) {
-        InstanceParams p;
-        std::string why;
-        auto w = make_data_actor(s, mint, server_id, world_time, &p, why, sources.objects);
-        if (!w) { ++report.refused; note("a data NPC (" + leaf_of(s.open->archetype_path) + ") was refused: " + why); continue; }
-        if (s.instance) {
-            report.instances.emplace(s.instance->guid, *s.instance);
-            if (s.instance->patrol_route != 0) {
-                if (const auto r = population->routes.find(s.instance->patrol_route); r != population->routes.end()) report.routes.emplace(r->first, r->second);
-            }
-            report.recipes.push_back({s.open, p, w->npc, s});
-            w->npc.spawn_ref = static_cast<uint32_t>(report.recipes.size());
-            report.recipes.back().info.spawn_ref = w->npc.spawn_ref;
-        }
-        const std::string path = s.open->archetype_path;
-        const double x = w->x, y = w->y;
-        const bool prop = w->kind == world::ActorKind::Prop;
-        if (prop) {
-            report.props.push_back(PropRecipe{s.open, p, s.instance ? s.instance->guid : 0, s.instance ? s.instance->respawn_time : 0, s.instance ? s.instance->respawn_variance : 0, w->id});
-            w->prop.slot = static_cast<uint32_t>(report.props.size());
-        }
-        if (!registry.add(std::move(*w))) {
-            ++report.refused; note("a data NPC could not be added to the registry");
-            if (prop) report.props.pop_back();
-            continue;
-        }
-        if (prop) continue;
-        ctx.placed.push_back({x, y, path});
-        ++report.data_npcs;
-        ++report.npcs_by_archetype[leaf_of(path)];
-    }
-
+    place_data_spawns(ctx, *population, data);
     place_captured_spawns(ctx);
     seed_managed_area_resource_nodes(registry, sources, mint, server_id, report);
     place_gm_vendors(ctx);

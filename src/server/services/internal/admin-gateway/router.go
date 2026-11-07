@@ -5,6 +5,7 @@
 package admingateway
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	admincatalog "aocrop/services/internal/admin-catalog"
 	"aocrop/services/internal/telemetry"
 	worldstream "aocrop/services/internal/world-stream"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc"
 )
 
@@ -118,11 +120,13 @@ type Config struct {
 	CityNodeClient                                             citynodev1.CityNodeServiceClient
 	OfflinePlayers                                             []PlayerInfo
 	WorldWorkers                                               []*WorldWorkerEndpoint
+	Pool                                                       *pgxpool.Pool
 }
 
 type Server struct {
 	catalog                                                    *admincatalog.Catalog
 	coalescer                                                  *worldstream.Coalescer
+	pool                                                       *pgxpool.Pool
 	roleTokens                                                 map[string]Role
 	now                                                        func() time.Time
 	startedAt, timeOfDayUpdatedAt                              time.Time
@@ -133,7 +137,11 @@ type Server struct {
 	transientRetries                                           atomic.Uint64
 	mu, pmtilesMu, grpcMu                                      sync.Mutex
 	timeOfDayMu                                                sync.RWMutex
-	timeOfDayHours                                             float64
+	timeOfDayHours, timeScale                                  float64
+	calendarAnchorYear, calendarAnchorDay                      int
+	simulateAllNpcs                                            bool
+	workerTickMode                                             string
+	workerTickHzMap                                            map[string]float64
 	idemStore                                                  map[string]idempotencyRecord
 	hotfixIdem                                                 map[string]hotfixIdemRecord
 	overlayState                                               map[string]HotfixRowDiff
@@ -195,14 +203,17 @@ func NewRouter(cfg Config) *Server {
 		worldWorkersSpec: firstNonEmpty(cfg.WorldWorkersSpec, os.Getenv("AOC_WORLD_WORKERS")),
 		worldAdmin: cfg.WorldAdminClient, worldStream: cfg.WorldStreamClient,
 		cityNode: cfg.CityNodeClient, dockerSocketPath: cfg.DockerSocketPath, dockerClient: cfg.DockerClient,
-		offlinePlayers: cfg.OfflinePlayers, worldWorkers: cfg.WorldWorkers, mux: http.NewServeMux(),
+		offlinePlayers: cfg.OfflinePlayers, worldWorkers: cfg.WorldWorkers, pool: cfg.Pool, mux: http.NewServeMux(),
 	}
 	s.initAdminAuth(customRoleTokens)
+	s.initSimulationDefaults()
 	s.initWorldWorkers()
+	s.hydrateFromPostgres(context.Background())
 	s.lastMutatedUnixNano.Store(nowTime.UnixNano())
 	s.ready.Store(true)
 	s.snapshotEpoch.Store(1)
 	s.registerRoutes()
+	s.registerSimulationRoutes()
 	s.etagHandler = telemetry.ETagMiddleware(s.mux)
 	return s
 }
@@ -374,17 +385,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /api/v1/gm/hotfix/apply", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleHotfixApply)))
 	s.mux.HandleFunc("GET /api/v1/gm/audit", s.requireRole(RoleObserver, s.wrapHandler(s.HandleAuditList)))
 	s.mux.HandleFunc("POST /api/v1/gm/audit/rollback", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleAuditRollback)))
-	s.registerReadRoute("/api/v1/gm/containers", s.optionalRole(RoleObserver, s.handleGMContainers))
-	s.registerReadRoute("/api/v1/gm/workers", s.optionalRole(RoleObserver, s.handleWorldWorkers))
-	s.registerReadRoute("/api/v1/world/workers", s.optionalRole(RoleObserver, s.handleWorldWorkers))
-	s.mux.HandleFunc("POST /api/v1/mesh/workers/register", s.optionalRole(RoleOperator, s.handleRegisterMeshWorker))
-	s.mux.HandleFunc("POST /api/v1/world/workers", s.optionalRole(RoleOperator, s.handleRegisterMeshWorker))
-	s.mux.HandleFunc("POST /api/v1/gm/workers", s.optionalRole(RoleOperator, s.handleRegisterMeshWorker))
-	s.registerReadRoute("/api/v1/gm/metrics", s.optionalRole(RoleObserver, s.handlePrometheusMetrics))
-	s.registerReadRoute("/api/v1/metrics", s.optionalRole(RoleObserver, s.handlePrometheusMetrics))
-	s.registerReadRoute("/api/v1/gm/logs", s.optionalRole(RoleObserver, s.handleGMLogs))
-	s.registerReadRoute("/api/v1/gm/openapi.json", s.optionalRole(RoleObserver, s.handleOpenAPI))
-	s.registerReadRoute("/api/v1/world/openapi.json", s.optionalRole(RoleObserver, s.handleOpenAPI))
+	s.registerWorkerAndTelemetryRoutes()
 }
 
 func (s *Server) registerReadRoute(pattern string, h http.HandlerFunc) {
@@ -728,54 +729,13 @@ func (s *Server) hasAnyWorldAdminClient() bool {
 	if s.getWorldAdminClient() != nil {
 		return true
 	}
-	for _, w := range s.worldWorkers {
+	s.mu.Lock()
+	workers := append([]*WorldWorkerEndpoint(nil), s.worldWorkers...)
+	s.mu.Unlock()
+	for _, w := range workers {
 		if s.workerAdminClient(w) != nil {
 			return true
 		}
-	}
-	return false
-}
-func (s *Server) markEntityDespawned(entityGuid string, scope string, rawID uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if g := strings.ToLower(strings.TrimSpace(entityGuid)); g != "" {
-		s.despawnedEntities[g] = struct{}{}
-	}
-	if rawID > 0 {
-		for _, k := range []string{fmt.Sprintf("%d", rawID), fmt.Sprintf("npc:%d", rawID), fmt.Sprintf("monster:%d", rawID)} {
-			s.despawnedEntities[k] = struct{}{}
-			if scope != "" {
-				s.despawnedEntities[strings.ToLower(scope)+":"+k] = struct{}{}
-			}
-		}
-	}
-}
-func (s *Server) clearEntityDespawned(entityGuid string, rawID uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.despawnedEntities, strings.ToLower(strings.TrimSpace(entityGuid)))
-	if rawID > 0 {
-		delete(s.despawnedEntities, fmt.Sprintf("%d", rawID))
-		for k := range s.despawnedEntities {
-			if strings.HasSuffix(k, fmt.Sprintf(":%d", rawID)) {
-				delete(s.despawnedEntities, k)
-			}
-		}
-	}
-}
-func (s *Server) isEntityDespawned(id string) bool {
-	k := strings.ToLower(strings.TrimSpace(id))
-	if k == "" {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.despawnedEntities[k]; ok {
-		return true
-	}
-	if idx := strings.IndexByte(k, ':'); idx > 0 {
-		_, ok := s.despawnedEntities[k[idx+1:]]
-		return ok
 	}
 	return false
 }

@@ -109,7 +109,7 @@ Extracted static game tables in `dist/content/*.tsv` (synced to `deploy/content/
 
 | Variable | Default / Generation | Description |
 |:---|:---|:---|
-| `AOC_ADMIN_USERNAME` | `admin` | Administrative username required by `POST /api/v1/admin/auth/login` in the [Web Admin & GM Studio](WEB_ADMIN.md). |
+| `AOC_ADMIN_USERNAME` | `Admin` | Administrative username required by `POST /api/v1/admin/auth/login` (`DEFAULT_ADMIN_USERNAME = "Admin"`, paired with the top-bar `END SESSION` button) in the [Web Admin & GM Studio](WEB_ADMIN.md). |
 | `AOC_ADMIN_PASSPHRASE` | Ephemeral per-boot (`verra-xxxx-xxxx-xxxx`) | Generated automatically by `Ensure-SandalAdminPassphrase` (`scripts/lib/Env.psm1`) on every `start.bat` / `.\sandal.ps1 up`, written to `deploy/.admin_passphrase`, and printed in the console startup banner. |
 | `AOC_ADMIN_JWT_SECRET` | Random 256-bit hex secret | HMAC-SHA256 (`HS256`) signing secret used by `aoc-gateway` (`internal/admin-gateway`) to sign and verify scoped Bearer JWTs. |
 | `AOC_ADMIN_BOOT_ID` | Fresh UUID per stack startup | Unique boot identifier embedded into issued JWTs and returned by `GET /api/v1/admin/auth/status`. Rotating `AOC_ADMIN_BOOT_ID` on server restart forces open Web Admin browser tabs to discard prior tokens (`401`/`403`) and display the Login Modal. |

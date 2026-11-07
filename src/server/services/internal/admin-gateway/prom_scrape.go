@@ -590,38 +590,17 @@ func tierTickHzEnv(envKey string, defVal float64) float64 {
 }
 
 func computeWorkerAdaptiveCPUPct(tMs float64, scopeKind string) float64 {
+	if tMs <= 0 {
+		return 0
+	}
 	tierHz := defaultWorkerTierTickHz(scopeKind)
 	budgetMs := 1000.0 / max(tierHz, 1.0)
-	ratio := min(max(tMs/max(budgetMs, 0.1), 0.15), 1.0)
-	return math.Round((30.0+ratio*15.0)*100.0) / 100.0
+	pct := min(max((tMs/max(budgetMs, 0.1))*100.0, 0.0), 100.0)
+	return math.Round(pct*100.0) / 100.0
 }
 
 func (s *Server) execSetTimeOfDayCommand(ctx context.Context, p map[string]any) (map[string]any, error) {
-	hour, ok := extractTimeOfDayHours(p)
-	if !ok {
-		return nil, status.Error(codes.InvalidArgument, "hour or time_of_day (0..24 or HH:MM) is required")
-	}
-	now := s.now()
-	s.timeOfDayMu.Lock()
-	s.timeOfDayHours, s.timeOfDayUpdatedAt = hour, now
-	s.timeOfDayMu.Unlock()
-	s.recordMutation()
-	var wg sync.WaitGroup
-	for _, w := range s.worldWorkers {
-		if w != nil {
-			s.markWorkerTimeSyncedAt(w.WorkerID, now)
-			wg.Add(1)
-			go func(worker *WorldWorkerEndpoint) { defer wg.Done(); s.pushTimeOfDayToWorker(ctx, worker, hour) }(w)
-		}
-	}
-	wg.Wait()
-	updatedCount, label := max(len(s.worldWorkers), 1), formatTimeOfDayLabel(hour)
-	msg := fmt.Sprintf("Set server time of day to %s (%.2fh) across %d world workers", label, hour, updatedCount)
-	return map[string]any{
-		"status": "executed", "action": "set_time_of_day", "command": "set_time_of_day",
-		"time_of_day_hours": hour, "time_of_day_label": label, "time_of_day_anchor_hours": hour,
-		"time_of_day_anchor_ms": now.UnixMilli(), "time_of_day_rate": 9.0, "workers_updated": updatedCount, "message": msg,
-	}, nil
+	return s.applyTimeAndCalendarParams(ctx, p, true)
 }
 
 func (s *Server) syncWorkerTimeOfDayIfNeeded(ctx context.Context, w *WorldWorkerEndpoint) {

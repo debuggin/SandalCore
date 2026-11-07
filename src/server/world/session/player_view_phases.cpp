@@ -39,6 +39,8 @@ PlayerSession::TickPlan PlayerSession::tick_logic(Connection& conn, Clock::time_
     const bool tod_changed = phase_in_done_ && tod_epoch != seen_time_of_day_epoch_;
     if (phase_in_done_ && (tod_changed || (!time_syncs_.empty() && now >= time_syncs_.front())) && room_for(1)) {
         seen_time_of_day_epoch_ = tod_epoch;
+        (void)bootstrap::global_calendar_year();
+        (void)bootstrap::global_calendar_day_of_year();
         if (!time_syncs_.empty() && now >= time_syncs_.front()) time_syncs_.pop_front();
         if (time_syncs_.empty()) time_syncs_.push_back(now + kTimeSyncInterval);
         const double world_time = pb_.setup().world_time + session_seconds(now);

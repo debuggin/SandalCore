@@ -243,68 +243,73 @@ func (w *watcher) line(ctx context.Context) {
 	fmt.Fprintln(w.out, line)
 }
 
-// runWatch is `worldctl watch`: it returns the exit status.
-func runWatch(ctx context.Context, args []string, out, errw io.Writer) int {
+func parseWatchFlags(args []string, errw io.Writer) (addr, tokenFile string, req *worldadminv1.SubscribeRequest, seconds int, code int) {
 	fs := flag.NewFlagSet("worldctl watch", flag.ContinueOnError)
 	fs.SetOutput(errw)
 	cfg := config.Load()
-	addr := fs.String("addr", cfg.WorldStreamAddr, "world's world stream address")
-	tokenFile := fs.String("token-file", defaultTokenFile(cfg.ServiceTokenFile), "the service token file")
+	addrPtr := fs.String("addr", cfg.WorldStreamAddr, "world's world stream address")
+	tokenPtr := fs.String("token-file", defaultTokenFile(cfg.ServiceTokenFile), "the service token file")
 	area := fs.String("area", "-5000000,-5000000,5000000,5000000", "the area in cm: minx,miny,maxx,maxy")
 	density := fs.Bool("density", false, "counts per cell instead of single entities")
 	cell := fs.Uint("cell", 50000, "with --density: the cell size in cm (20000, 50000 or 100000)")
 	layers := fs.String("layers", "all", "all, or a comma list of players, npcs, nodes, mounts, loot")
-	seconds := fs.Int("seconds", 0, "stop after this many seconds (0: until Ctrl+C)")
+	secPtr := fs.Int("seconds", 0, "stop after this many seconds (0: until Ctrl+C)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return 0
+			return "", "", nil, 0, 0
 		}
-		return 2
+		return "", "", nil, 0, 2
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintf(errw, "worldctl watch: takes no arguments\n%s\n", watchUsage)
-		return 2
+		return "", "", nil, 0, 2
 	}
 	box, err := parseArea(*area)
 	if err != nil {
 		fmt.Fprintf(errw, "worldctl watch: %v\n", err)
-		return 2
+		return "", "", nil, 0, 2
 	}
 	bits, err := parseLayers(*layers)
 	if err != nil {
 		fmt.Fprintf(errw, "worldctl watch: %v\n", err)
-		return 2
+		return "", "", nil, 0, 2
 	}
-	if *seconds < 0 {
+	if *secPtr < 0 {
 		fmt.Fprintln(errw, "worldctl watch: --seconds cannot be negative")
-		return 2
+		return "", "", nil, 0, 2
 	}
-	req := &worldadminv1.SubscribeRequest{Area: box, Layers: bits}
+	req = &worldadminv1.SubscribeRequest{Area: box, Layers: bits}
 	if *density {
-		req.Detail = worldadminv1.StreamDetail_STREAM_DETAIL_DENSITY
-		req.DensityCellCm = uint32(*cell)
+		req.Detail, req.DensityCellCm = worldadminv1.StreamDetail_STREAM_DETAIL_DENSITY, uint32(*cell)
 	}
+	return *addrPtr, *tokenPtr, req, *secPtr, -1
+}
 
-	token, err := svcauth.Load(*tokenFile)
+// runWatch is `worldctl watch`: it returns the exit status.
+func runWatch(ctx context.Context, args []string, out, errw io.Writer) int {
+	addr, tokenFile, req, seconds, rc := parseWatchFlags(args, errw)
+	if rc >= 0 {
+		return rc
+	}
+	token, err := svcauth.Load(tokenFile)
 	if err != nil {
 		fmt.Fprintf(errw, "worldctl: %v\n", err)
 		return 1
 	}
-	cc, err := grpc.NewClient(*addr, grpc.WithTransportCredentials(insecure.NewCredentials()), token.DialOption())
+	cc, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), token.DialOption())
 	if err != nil {
 		fmt.Fprintf(errw, "worldctl: %v\n", err)
 		return 1
 	}
 	defer cc.Close()
-
-	if *seconds > 0 {
+	if seconds > 0 {
 		var stop context.CancelFunc
-		ctx, stop = context.WithTimeout(ctx, time.Duration(*seconds)*time.Second)
+		ctx, stop = context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
 		defer stop()
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	w := &watcher{addr: *addr, client: worldadminv1.NewWorldStreamServiceClient(cc), req: req, out: out, entities: map[uint64]*worldadminv1.Entity{}}
+	w := &watcher{addr: addr, client: worldadminv1.NewWorldStreamServiceClient(cc), req: req, out: out, entities: map[uint64]*worldadminv1.Entity{}}
 	failed := make(chan error, 1)
 	go func() { failed <- w.follow(ctx) }()
 	tick := time.NewTicker(time.Second)
@@ -316,13 +321,13 @@ func runWatch(ctx context.Context, args []string, out, errw io.Writer) int {
 			got := w.total
 			w.mu.Unlock()
 			if got == 0 {
-				fmt.Fprintf(errw, "worldctl watch: no frame came from %s\n", *addr)
+				fmt.Fprintf(errw, "worldctl watch: no frame came from %s\n", addr)
 				return 1
 			}
 			return 0
 		case err := <-failed:
 			if err != nil {
-				fmt.Fprintf(errw, "worldctl watch: %s\n", explainWatch(err, *addr))
+				fmt.Fprintf(errw, "worldctl watch: %s\n", explainWatch(err, addr))
 				return 1
 			}
 			return 0

@@ -20,7 +20,7 @@ Clicking `.\start.bat` (`.\sandal.ps1 up`) on a fresh checkout starts **1 author
 - **Container & Host Actions**:
   1. Verifies `dist/content/content.db` (`v41`) and all 25 runtime game-data artifacts (auto-extracting from the local *Ashes of Creation* installation if absent).
   2. Starts the 10 Go/PostgreSQL/Envoy control-plane containers plus `1` Riverlands worker container (`aoc-riverlands` / `aoc-world` at `45 Hz` regional tick rate, `3600` NPC step cap, and `2560M` memory limit).
-  3. Prints the single-boot Web Admin passphrase (`deploy/.admin_passphrase`), creates the root `SandalLauncher.lnk` shortcut pointing to `dist/launcher/SandalLauncher.exe`, and launches `SandalLauncher`.
+  3. Prints the single-boot Web Admin passphrase (`deploy/.admin_passphrase`) with default username **`"Admin"`** (and top-bar **`"END SESSION"`** button), creates the root `SandalLauncher.lnk` shortcut pointing to `dist/launcher/SandalLauncher.exe`, and launches `SandalLauncher`.
 
 ### Copy-Paste `.env` Partition Topology Examples (`5` Standard Setups)
 
@@ -69,7 +69,7 @@ AOC_WORLD_PARTITION_REGION=sandsquall
 
 #### Setup 5: `1` Worker for Each ZOI / POI / City Node Plug (High-Frequency Sub-Area Cut-Outs)
 
-Combines `60 Hz` ZOI workers (`--area-exclude-node-plug=true`) with dedicated `100 Hz` (`1500` NPC step cap) rotated `1 km x 1 km` CityNode OBB Plug workers and high-density POI cut-out workers (such as `carphin`):
+Combines `60 Hz` ZOI workers (`--area-exclude-node-plug=Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Azmaran`) with dedicated `100 Hz` (`1500` NPC step cap) rotated `1 km x 1 km` CityNode OBB Plug workers and high-density POI cut-out workers (such as `carphin`):
 
 ```ini
 AOC_WORLD_PARTITION_MODE=per_zoi_nodes_and_pois
@@ -111,11 +111,23 @@ To maintain simulation frame times inside the **green CPU utilization band (`30%
 
 | Spatial Scope (`scope_kind`) | Partition Mode(s) | Default Tick Rate (`Hz`) | Frame Budget (`ms`) | Default NPC Step Cap | `.env` Override Variables |
 |:---|:---|:---:|:---:|:---:|:---|
-| **`world`** | `single_world` (`world`) | **`30 Hz`** | `33.33 ms` | **`5200`** | `AOC_WORLD_TICK_HZ_WORLD=30`, `AOC_WORLD_NPC_STEP_CAP_WORLD=5200` |
-| **`region`** | `single_riverlands`, `per_region` (`region`) | **`45 Hz`** | `22.22 ms` | **`3600`** | `AOC_WORLD_TICK_HZ_REGION=45`, `AOC_WORLD_NPC_STEP_CAP_REGION=3600` |
-| **`zoi`** | `per_zoi`, `per_zoi_nodes_and_pois` (`zoi`) | **`60 Hz`** | `16.67 ms` | **`2600`** | `AOC_WORLD_TICK_HZ_ZOI=60`, `AOC_WORLD_NPC_STEP_CAP_ZOI=2600` |
-| **`node_plug`** | `per_zoi_nodes_and_pois` (`mixed` CityNode OBB) | **`100 Hz`** (`..120 Hz`) | `10.00 ms` | **`1500`** | `AOC_WORLD_TICK_HZ_NODE_PLUG=100`, `AOC_WORLD_NPC_STEP_CAP_NODE_PLUG=1500` |
-| **`poi`** (`polygon_cutout`) | `per_zoi_nodes_and_pois` (`AOC_WORLD_POI_CUTOUT`) | **`100 Hz`** (`..120 Hz`) | `10.00 ms` | **`1500`** | `AOC_WORLD_TICK_HZ_POI=100`, `AOC_WORLD_NPC_STEP_CAP_POI=1500` |
+| **`world`** | `single_world` (`world`) | **`30 Hz`** | `33.33 ms` | **`5200`** | `AOC_WORLD_TICK_HZ_WORLD=30`, `AOC_WORLD_NPC_SIM_STEP_CAP_WORLD=5200` |
+| **`region`** | `single_riverlands`, `per_region` (`region`) | **`45 Hz`** | `22.22 ms` | **`3600`** | `AOC_WORLD_TICK_HZ_REGION=45`, `AOC_WORLD_NPC_SIM_STEP_CAP_REGION=3600` |
+| **`zoi`** | `per_zoi`, `per_zoi_nodes_and_pois` (`zoi`) | **`60 Hz`** | `16.67 ms` | **`2600`** | `AOC_WORLD_TICK_HZ_ZOI=60`, `AOC_WORLD_NPC_SIM_STEP_CAP_ZOI=2600` |
+| **`node_plug`** | `per_zoi_nodes_and_pois` (`mixed` CityNode OBB) | **`100 Hz`** (`..120 Hz`) | `10.00 ms` | **`1500`** | `AOC_WORLD_TICK_HZ_NODE=100`, `AOC_WORLD_NPC_SIM_STEP_CAP_NODE=1500` |
+| **`poi`** (`polygon_cutout`) | `per_zoi_nodes_and_pois` (`AOC_WORLD_POI_CUTOUT`) | **`100 Hz`** (`..120 Hz`) | `10.00 ms` | **`1500`** | `AOC_WORLD_TICK_HZ_POI=100`, `AOC_WORLD_NPC_SIM_STEP_CAP_POI=1500` |
+
+### Per-Worker Tick-Rate Selector (`Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)`, Manual `10..60 Hz`) & Little's Law `<= 1.0 s` (`>= 1 Hz`) Entity Backlog Floor
+
+1. **Per-Worker Tick-Rate Selector (`WORKER_TICK_HZ_OPTIONS`)**:
+   - In the Web Admin `Visible Server Workers` panel (`worker-tick-rate-select-<id>`) and via `POST/PUT /api/v1/gm/workers/{id}/tick-rate` (`/api/v1/world/workers/{id}/tick-rate`), each worker exposes an independent tick-rate selector persisted in PostgreSQL `world_simulation_state.worker_tick_hz`:
+     - **`Dynamic (30-60 Hz)` (`-1`)**: Auto-scales the worker's simulation frequency between `30 Hz` and `60 Hz` in `5 Hz` steps after `15` consecutive ticks of EWMA CPU work utilization above `45%` or below `30%`.
+     - **`0 Hz (Pause NPCs)` (`0` / `0 Hz (Off)`)**: Pauses ambient NPC simulation (`simulate_all_npcs = false` / `0 Hz` override) **on just that target worker** while keeping player UDP sockets, handovers, and GM RPCs responsive.
+     - **Manual Discrete Rates (`10, 15, 20, 25, 30, 40, 50, 60 Hz`)**: Locks the target worker to a fixed manual tick rate (`TickMode::Manual`).
+2. **Little's Law `<= 1.0 s` (`>= 1 Hz`) Entity Backlog Floor (`NpcWorld::step_all_ambient`)**:
+   - To guarantee that every ambient NPC across a worker's population $N$ (`total = npcs_.size()`) is stepped at least once per second (`>= 1 Hz` per-entity service rate, `<= 1.0 s` cycle time), `src/server/world/npc/npc_world.cpp` enforces the Little's Law floor `min_for_1s_backlog = (total + eff_hz - 1) / eff_hz` (`max_slice = min(total, max(sim_step_cap, min_for_1s_backlog))`), stepping at least `min_for_1s_backlog` entities per tick before checking the sub-tick time budget.
+3. **PostgreSQL (`world_simulation_state` + `city_node_state`) Control-Plane SSoT in `mesh-gateway`**:
+   - `aoc-mesh-gateway` (`src/server/services/internal/admin-gateway/sim_persistence.go` and `0025_world_simulation_state.sql`) persists the authoritative `9x` Time of Day anchor, the **360-day Verra Calendar** (`Year >= 1 AE`, `4` seasons x `3` months x `30` days = `360` days/year), `simulate_all_npcs`, and per-worker tick-rate overrides in `world_simulation_state`, and persists settlement stage (`0..6`), mayor, and governance state in `city_node_state` (with Tier 5/6 City Node population fallback to the last defined populated layout at Tier 4).
 
 ### `2.5 GiB` (`2560M`) Worker Memory Ceiling & Zero Disk Log Churn
 

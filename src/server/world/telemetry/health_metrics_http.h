@@ -67,12 +67,20 @@ struct DrainResult {
         return {200, "application/json", "{\"status\":\"ready\"}"};
     return {503, "application/json", std::string("{\"status\":\"not_ready\",\"draining\":") + (st.draining ? "true}" : "false}")};
 }
+[[nodiscard]] inline bool HasTickMutationParam(std::string_view req) noexcept {
+    return req.find("tick_hz=") != std::string_view::npos || req.find("\"tick_hz\"") != std::string_view::npos ||
+           req.find("tick_hz:") != std::string_view::npos || req.find("tick_mode=") != std::string_view::npos ||
+           req.find("\"tick_mode\"") != std::string_view::npos || req.find("SetTickRate") != std::string_view::npos;
+}
+
 [[nodiscard]] inline int ParseRequestedTickHz(std::string_view req, int fallback) noexcept {
+    if (req.find("dynamic") != std::string_view::npos || req.find("Dynamic") != std::string_view::npos) return -1;
     for (const std::string_view key : {std::string_view("tick_hz="), std::string_view("\"tick_hz\":"), std::string_view("tick_hz:")}) {
         const size_t pos = req.find(key);
         if (pos == std::string_view::npos) continue;
         size_t i = pos + key.size();
         while (i < req.size() && (req[i] == ' ' || req[i] == '"' || req[i] == '\'')) ++i;
+        if (i < req.size() && (req[i] == 'd' || req[i] == 'D' || req[i] == '-')) return -1;
         int val = 0;
         bool any = false;
         while (i < req.size() && req[i] >= '0' && req[i] <= '9') {
@@ -80,22 +88,32 @@ struct DrainResult {
             any = true;
             ++i;
         }
-        if (any && val > 0) return std::clamp(val, 1, 120);
+        if (any) return val == 0 ? 0 : aoc::worldd::TickLoop::snap_manual_tick_hz(val);
     }
-    return std::clamp(fallback, 1, 120);
+    if (fallback < 0) return -1;
+    return fallback == 0 ? 0 : aoc::worldd::TickLoop::snap_manual_tick_hz(fallback);
 }
 
-[[nodiscard]] inline double ParseRequestedTimeOfDayHours(std::string_view req, double fallback = 12.0) noexcept {
-    for (const std::string_view key : {std::string_view("time_of_day="), std::string_view("hours="), std::string_view("\"time_of_day\":"), std::string_view("\"hours\":")}) {
+[[nodiscard]] inline bool ParseKeyedDouble(std::string_view req, std::initializer_list<std::string_view> keys, double& out) noexcept {
+    for (const std::string_view key : keys) {
         const size_t pos = req.find(key);
         if (pos == std::string_view::npos) continue;
         size_t i = pos + key.size();
         while (i < req.size() && (req[i] == ' ' || req[i] == '"' || req[i] == '\'')) ++i;
         std::string num;
         while (i < req.size() && ((req[i] >= '0' && req[i] <= '9') || req[i] == '.' || req[i] == '-')) num.push_back(req[i++]);
-        if (!num.empty()) return std::strtod(num.c_str(), nullptr);
+        if (!num.empty()) {
+            out = std::strtod(num.c_str(), nullptr);
+            return true;
+        }
     }
-    return fallback;
+    return false;
+}
+
+[[nodiscard]] inline double ParseRequestedTimeOfDayHours(std::string_view req, double fallback = 12.0) noexcept {
+    double out = fallback;
+    (void)ParseKeyedDouble(req, {"time_of_day=", "hours=", "\"time_of_day\":", "\"hours\":", "\"time_of_day_hours\":"}, out);
+    return out;
 }
 
 [[nodiscard]] inline HttpProbeResponse RenderHealthz(const HealthMetricsState& st) {
@@ -104,14 +122,18 @@ struct DrainResult {
     const std::string_view scope = st.scope_kind.empty() ? std::string_view("region") : std::string_view(st.scope_kind);
     const std::string_view dmode = st.data_mode.empty() ? ResolveDataMode() : std::string_view(st.data_mode);
     const int eff_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
+    const char* tmode = aoc::worldd::TickLoop::runtime_tick_mode() == aoc::worldd::TickMode::Dynamic ? "dynamic" : "manual";
     const double tod = aoc::worldd::bootstrap::has_global_time_of_day_override() ? aoc::worldd::bootstrap::global_time_of_day_hours() : st.time_of_day_hours;
+    const int32_t cal_year = aoc::worldd::bootstrap::global_calendar_year();
+    const int32_t cal_day = aoc::worldd::bootstrap::global_calendar_day_of_year();
     std::string b = "{\"status\":\"" + std::string(r ? "ok" : "degraded") + "\",\"server_id\":\"" + st.server_id +
                     "\",\"worker_name\":\"" + std::string(wname) + "\",\"worker_index\":" + std::to_string(st.worker_index) +
                     ",\"scope_kind\":\"" + std::string(scope) + "\",\"data_mode\":\"" + std::string(dmode) +
                     "\",\"dynamic_scaling_stub\":" + (st.dynamic_scaling_stub ? "true" : "false") + ",\"ready\":" +
                     (r ? "true" : "false") + ",\"draining\":" + (st.draining ? "true" : "false") + ",\"active_sessions\":" +
-                    std::to_string(st.active_sessions) + ",\"tick_hz\":" + std::to_string(eff_hz) +
-                    ",\"time_of_day_hours\":" + std::to_string(tod) + ",\"cpu_saturation_pct\":" + std::to_string(st.cpu_saturation_pct) +
+                    std::to_string(st.active_sessions) + ",\"tick_hz\":" + std::to_string(eff_hz) + ",\"tick_mode\":\"" + tmode +
+                    "\",\"time_of_day_hours\":" + std::to_string(tod) + ",\"day_of_year\":" + std::to_string(cal_day) +
+                    ",\"year\":" + std::to_string(cal_year) + ",\"cpu_saturation_pct\":" + std::to_string(st.cpu_saturation_pct) +
                     ",\"uptime_ms\":" + std::to_string(st.uptime_ms) + "}";
     return {r ? 200 : 503, "application/json", std::move(b)};
 }
@@ -120,23 +142,35 @@ struct DrainResult {
     const bool sim = aoc::worldd::npc::NpcWorld::global_simulate_all_npcs();
     const int eff_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
     const double tod = aoc::worldd::bootstrap::has_global_time_of_day_override() ? aoc::worldd::bootstrap::global_time_of_day_hours() : st.time_of_day_hours;
+    const int32_t cal_year = aoc::worldd::bootstrap::global_calendar_year();
+    const int32_t cal_day = aoc::worldd::bootstrap::global_calendar_day_of_year();
     std::string b = "aoc_world_ready " + std::string(r ? "1\n" : "0\n") + "aoc_world_draining " + (st.draining ? "1\n" : "0\n") +
                     "aoc_world_worker_index " + std::to_string(st.worker_index) + "\naoc_world_active_sessions " + std::to_string(st.active_sessions) +
                     "\naoc_world_tick_hz " + std::to_string(eff_hz) + "\naoc_world_packets_in_total " + std::to_string(st.packets_in_total) +
                     "\naoc_world_packets_out_total " + std::to_string(st.packets_out_total) + "\naoc_world_active_npcs " + std::to_string(st.active_npcs) +
                     "\naoc_world_active_monsters " + std::to_string(st.active_monsters) + "\naoc_world_resource_nodes " + std::to_string(st.resource_nodes) +
                     "\naoc_world_simulate_all_npcs " + (sim ? "1\n" : "0\n") + "aoc_world_time_of_day_hours " + std::to_string(tod) +
+                    "\naoc_world_calendar_day_of_year " + std::to_string(cal_day) + "\naoc_world_calendar_year " + std::to_string(cal_year) +
                     "\naoc_world_cpu_saturation_pct " + std::to_string(st.cpu_saturation_pct) + "\n# EOF\n";
     return {200, "application/openmetrics-text; version=1.0.0; charset=utf-8", std::move(b)};
 }
 [[nodiscard]] inline HttpProbeResponse HandleProbePath(std::string_view path, const HealthMetricsState& st, std::string_view full_req = {}) {
     if (path == "/admin/tick_hz" || path == "/gm/tick_hz" || full_req.find("SetTickRate") != std::string_view::npos ||
         full_req.find("tick_hz=") != std::string_view::npos) {
-        const int parsed_hz = ParseRequestedTickHz(full_req, static_cast<int>(st.tick_hz));
-        aoc::worldd::TickLoop::set_global_runtime_tick_hz(parsed_hz);
+        if (HasTickMutationParam(full_req) || full_req.rfind("POST ", 0) == 0 || full_req.rfind("PUT ", 0) == 0) {
+            const int parsed_hz = ParseRequestedTickHz(full_req, -1);
+            aoc::worldd::TickLoop::set_global_target_hz(parsed_hz);
+            aoc::worldd::npc::NpcWorld::set_global_simulate_all_npcs(parsed_hz != 0);
+        }
         const int eff_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
+        const char* tmode = aoc::worldd::TickLoop::runtime_tick_mode() == aoc::worldd::TickMode::Dynamic ? "dynamic" : "manual";
+        const double ewma = aoc::worldd::TickLoop::runtime_ewma_work_ms();
+        const bool sim = aoc::worldd::npc::NpcWorld::global_simulate_all_npcs();
         if (path != "/metrics") {
-            return {200, "application/json", "{\"status\":\"ok\",\"tick_hz\":" + std::to_string(eff_hz) + "}"};
+            return {200, "application/json",
+                    "{\"status\":\"ok\",\"tick_hz\":" + std::to_string(eff_hz) + ",\"tick_mode\":\"" + tmode +
+                        "\",\"simulate_all_npcs\":" + (sim ? "true" : "false") +
+                        ",\"ewma_work_ms\":" + std::to_string(ewma) + "}"};
         }
     }
     if (path == "/admin/simulate_all_npcs" || path == "/gm/simulate_all_npcs" || full_req.find("SetSimulateAllNpcs") != std::string_view::npos ||
@@ -149,11 +183,27 @@ struct DrainResult {
     }
     if (path == "/admin/time_of_day" || path == "/gm/time_of_day" || full_req.find("SetTimeOfDay") != std::string_view::npos ||
         full_req.find("time_of_day=") != std::string_view::npos) {
-        const double parsed_tod = ParseRequestedTimeOfDayHours(full_req, st.time_of_day_hours);
-        aoc::worldd::bootstrap::set_global_time_of_day_hours(parsed_tod);
+        double parsed_tod = st.time_of_day_hours;
+        double parsed_day = 0.0;
+        double parsed_year = 0.0;
+        const bool has_tod = ParseKeyedDouble(full_req, {"time_of_day=", "hours=", "\"time_of_day\":", "\"hours\":", "\"time_of_day_hours\":"}, parsed_tod);
+        const bool has_day = ParseKeyedDouble(full_req, {"day_of_year=", "\"day_of_year\":"}, parsed_day);
+        const bool has_year = ParseKeyedDouble(full_req, {"year=", "\"year\":"}, parsed_year);
+        if (has_day || has_year) {
+            aoc::worldd::bootstrap::set_global_calendar_date(
+                has_year ? static_cast<int32_t>(parsed_year) : aoc::worldd::bootstrap::global_calendar_year(),
+                has_day ? static_cast<int32_t>(parsed_day) : aoc::worldd::bootstrap::global_calendar_day_of_year());
+        }
+        if (has_tod) {
+            aoc::worldd::bootstrap::set_global_time_of_day_hours(parsed_tod);
+        }
         const double eff_tod = aoc::worldd::bootstrap::global_time_of_day_hours();
+        const int32_t eff_day = aoc::worldd::bootstrap::global_calendar_day_of_year();
+        const int32_t eff_year = aoc::worldd::bootstrap::global_calendar_year();
         if (path != "/metrics") {
-            return {200, "application/json", "{\"status\":\"ok\",\"time_of_day_hours\":" + std::to_string(eff_tod) + "}"};
+            return {200, "application/json",
+                    "{\"status\":\"ok\",\"time_of_day_hours\":" + std::to_string(eff_tod) +
+                        ",\"day_of_year\":" + std::to_string(eff_day) + ",\"year\":" + std::to_string(eff_year) + "}"};
         }
     }
     if (path == "/livez") return RenderLivez();

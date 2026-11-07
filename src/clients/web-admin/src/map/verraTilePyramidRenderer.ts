@@ -578,6 +578,36 @@ function drawCollisionSafeLabel(
   ctx.fillText(text, tx, ty);
 }
 
+export const ENTITY_MAP_LEGEND_SWATCHES = Object.freeze([
+  { id: "npcs", label: "NPCs", color: "#38bdf8" },
+  { id: "monsters", label: "Monsters", color: "#ef4444" },
+  { id: "huntables", label: "Huntables", color: "#f97316" },
+  { id: "trees", label: "Trees", color: "#22c55e" },
+  { id: "rocks", label: "Rocks", color: "#94a3b8" },
+  { id: "ore_gems", label: "Ore/Gems", color: "#eab308" },
+  { id: "plants", label: "Plants", color: "#2dd4bf" },
+] as const);
+
+export function resolveEntityMapMarkerColor(
+  entity: Pick<WorldEntity, "kind" | "name" | "npc_subkind" | "npcSubkind" | "resourceType" | "resource_type">,
+): string {
+  const subkind = (entity.npcSubkind ?? entity.npc_subkind ?? "").toLowerCase();
+  const resType = (entity.resourceType ?? entity.resource_type ?? "").toLowerCase();
+  const name = (entity.name ?? "").toLowerCase();
+  const combined = `${resType} ${name}`;
+  if (subkind === "huntable" || /hunting|husbandry/.test(resType) || /^hunting_/.test(name)) return "#f97316";
+  if (entity.kind === "monster") return "#ef4444";
+  if (entity.kind === "poi") return "#d4af37";
+  if (entity.kind === "resource_node" || resType.length > 0) {
+    if (/stonecutting|rock|stone|granite|slate|basalt|limestone|sandstone/.test(combined)) return "#94a3b8";
+    if (/mining|ore|vein|copper|iron|zinc|tin|rividium|ruby|sapphire|emerald|geode|crystal|halcyonite|lumadon/.test(combined)) return "#eab308";
+    if (/herbalism|plant|herb|daffodil|moonbell|snowdrop|spiritbloom|flax|yarrow/.test(combined)) return "#2dd4bf";
+    if (/lumberjacking|tree|wood|oak|ash|cedar|willow/.test(combined)) return "#22c55e";
+    return "#22c55e";
+  }
+  return "#38bdf8";
+}
+
 function drawEntityAndCrosshairMarkers(
   ctx: CanvasRenderingContext2D,
   viewport: { readonly width: number; readonly height: number },
@@ -599,7 +629,7 @@ function drawEntityAndCrosshairMarkers(
       ctx.fillStyle = "#ffffff";
       ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
       ctx.fillText(entity.name, sx + 9, sy + 4);
-    } else if (entity.npc_subkind === "emberspring") {
+    } else if ((entity.npcSubkind ?? entity.npc_subkind) === "emberspring") {
       const iconImg = requestTileImage("/api/v1/world/icons/TUI_Icon_Map_ReviveShrine_Active.png", onIconLoaded);
       if (iconImg) ctx.drawImage(iconImg, sx - 9, sy - 9, 18, 18);
       else {
@@ -613,8 +643,7 @@ function drawEntityAndCrosshairMarkers(
       }
     } else {
       ctx.arc(sx, sy, entity.kind === "poi" ? 4.5 : 3.5, 0, Math.PI * 2);
-      ctx.fillStyle =
-        entity.kind === "monster" ? "#ef4444" : entity.kind === "resource_node" ? "#22c55e" : entity.kind === "poi" ? "#d4af37" : "#38bdf8";
+      ctx.fillStyle = resolveEntityMapMarkerColor(entity);
       ctx.fill();
     }
     if (state.selectedEntityGuid === entity.guid) {

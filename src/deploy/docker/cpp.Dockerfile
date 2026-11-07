@@ -58,7 +58,7 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
         -DAOC_BUILD_TESTS=OFF \
         -DAOC_PROTO_GEN_DIR=/workspace/build/gen/proto \
         -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/workspace/build/bin && \
-    cmake --build build/linux --target world test_world_live_e2e test_world_loop --parallel && \
+    cmake --build build/linux --target world test_world_live_e2e test_world_loop test_mesh_handover_hysteresis --parallel && \
     mkdir -p /workspace/build/bin && \
     WORLD_BIN="$(find /workspace/dist /workspace/build -type f -name world | head -n 1)" && \
     if [ "${WORLD_BIN}" != "/workspace/build/bin/world" ]; then cp "${WORLD_BIN}" /workspace/build/bin/world; fi && \
@@ -66,12 +66,15 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     if [ -n "${LIVE_E2E_BIN}" ] && [ "${LIVE_E2E_BIN}" != "/workspace/build/bin/test_world_live_e2e" ]; then cp "${LIVE_E2E_BIN}" /workspace/build/bin/test_world_live_e2e; fi && \
     LOOP_TEST_BIN="$(find /workspace/dist /workspace/build -type f -name test_world_loop | head -n 1)" && \
     if [ -n "${LOOP_TEST_BIN}" ] && [ "${LOOP_TEST_BIN}" != "/workspace/build/bin/test_world_loop" ]; then cp "${LOOP_TEST_BIN}" /workspace/build/bin/test_world_loop; fi && \
-    llvm-strip-18 --strip-unneeded /workspace/build/bin/world /workspace/build/bin/test_world_live_e2e /workspace/build/bin/test_world_loop && \
+    HANDOVER_TEST_BIN="$(find /workspace/dist /workspace/build -type f -name test_mesh_handover_hysteresis | head -n 1)" && \
+    if [ -n "${HANDOVER_TEST_BIN}" ] && [ "${HANDOVER_TEST_BIN}" != "/workspace/build/bin/test_mesh_handover_hysteresis" ]; then cp "${HANDOVER_TEST_BIN}" /workspace/build/bin/test_mesh_handover_hysteresis; fi && \
+    llvm-strip-18 --strip-unneeded /workspace/build/bin/world /workspace/build/bin/test_world_live_e2e /workspace/build/bin/test_world_loop /workspace/build/bin/test_mesh_handover_hysteresis && \
     mkdir -p /workspace/build/linux/bin && \
     cp /workspace/build/bin/world /workspace/build/linux/bin/world && \
     cp /workspace/build/bin/world /workspace/build/linux/bin/service && \
     cp /workspace/build/bin/test_world_live_e2e /workspace/build/linux/bin/test_world_live_e2e && \
-    cp /workspace/build/bin/test_world_loop /workspace/build/linux/bin/test_world_loop
+    cp /workspace/build/bin/test_world_loop /workspace/build/linux/bin/test_world_loop && \
+    cp /workspace/build/bin/test_mesh_handover_hysteresis /workspace/build/linux/bin/test_mesh_handover_hysteresis
 
 ARG TARGET_BINARY=world
 
@@ -106,6 +109,8 @@ COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_live_e2e
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_live_e2e /usr/local/bin/test_world_live_e2e
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_loop /app/test_world_loop
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_loop /usr/local/bin/test_world_loop
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_mesh_handover_hysteresis /app/test_mesh_handover_hysteresis
+COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_mesh_handover_hysteresis /usr/local/bin/test_mesh_handover_hysteresis
 COPY --from=builder --chown=65532:65532 /workspace/build/linux/bin/service /usr/local/bin/service
 USER 65532:65532
 EXPOSE 7777/udp 50061/tcp

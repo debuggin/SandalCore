@@ -148,6 +148,7 @@ void run_paced_world_loop(const WorldLoopContext& ctx, TickLoop& tick_loop, Tick
         const auto done = Clock::now();
         if (ctx.stream) ctx.stream->note_loop(std::chrono::duration_cast<std::chrono::microseconds>(done - started));
         const double unit_us = us_between(started, done);
+        (void)TickLoop::note_runtime_tick_work_ms(unit_us / 1000.0);
         record_tick_budget(ctx, profile, unit_us);
         if (profile.on) ctx.loop_stats.note_unit(unit_us);
     };
