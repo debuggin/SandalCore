@@ -149,9 +149,10 @@ public sealed class EphemeralCredentialAndCliTests
             new Dictionary<string, string?> { ["AOC_LAUNCHER_EMAIL"] = "" });
 
         Assert.True(opts.RegisterTemp);
-        Assert.StartsWith("tmp_", opts.Username, StringComparison.Ordinal);
-        Assert.Equal(12, opts.Username.Length);
+        Assert.StartsWith("TMP ", opts.Username, StringComparison.Ordinal);
+        Assert.Matches("^TMP ([A-Z][a-z]+){3}$", opts.Username);
         Assert.EndsWith("@sandalcore.local", opts.Email, StringComparison.Ordinal);
+        Assert.DoesNotContain(" ", opts.Email, StringComparison.Ordinal);
         Assert.Matches("^[a-zA-Z0-9_-]{12,128}$", opts.Password);
         string pass1 = LauncherCliOptions.GenerateStrongPassword();
         string pass2 = LauncherCliOptions.GenerateStrongPassword();
@@ -162,6 +163,33 @@ public sealed class EphemeralCredentialAndCliTests
         Assert.Null(opts.AutomationPort);
         Assert.Equal(LauncherCliOptions.DefaultTimeoutSeconds, opts.TimeoutSec);
         Assert.Contains("--register-temp", LauncherCliOptions.GetUsageText(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void GenerateEffTempAccountName_ProducesTmpAndTstThreeWordPascalCaseNamesFromWordList()
+    {
+        Assert.True(LauncherCliOptions.EffAccountWords.Count >= 64);
+        Assert.Contains("Hero", LauncherCliOptions.EffAccountWords);
+        Assert.Contains("Noodle", LauncherCliOptions.EffAccountWords);
+        Assert.Contains("Truck", LauncherCliOptions.EffAccountWords);
+        Assert.Contains("Grueling", LauncherCliOptions.EffAccountWords);
+        Assert.Contains("Biscuit", LauncherCliOptions.EffAccountWords);
+        Assert.Contains("Launcher", LauncherCliOptions.EffAccountWords);
+        Assert.All(LauncherCliOptions.EffAccountWords, w => Assert.Matches("^[A-Z][a-z]+$", w));
+
+        string tmpName = LauncherCliOptions.GenerateEffTempAccountName("TMP");
+        string tstName = LauncherCliOptions.GenerateEffTempAccountName("TST");
+        string defaultTemp = LauncherCliOptions.GenerateTempUsername();
+
+        Assert.Matches("^TMP ([A-Z][a-z]+){3}$", tmpName);
+        Assert.Matches("^TST ([A-Z][a-z]+){3}$", tstName);
+        Assert.Matches("^TMP ([A-Z][a-z]+){3}$", defaultTemp);
+        Assert.True(ProfileStoreService.IsTemporaryUsername(tmpName));
+        Assert.True(ProfileStoreService.IsTemporaryUsername(tstName));
+        Assert.True(ProfileStoreService.IsTemporaryUsername("TMP HeroNoodleTruck"));
+        Assert.True(ProfileStoreService.IsTemporaryUsername("TST GruelingBiscuitLauncher"));
+        Assert.Equal("tmp_heronoodletruck", LauncherCliOptions.ToEffAccountSlug("TMP HeroNoodleTruck"));
+        Assert.Equal("tst_gruelingbiscuitlauncher", LauncherCliOptions.ToEffAccountSlug("TST GruelingBiscuitLauncher"));
     }
 
     [Fact]
@@ -194,11 +222,11 @@ public sealed class EphemeralCredentialAndCliTests
             using var vault = new InMemoryCredentialVault();
             var guard = new EphemeralCredentialGuard(vault, tokenFile);
 
-            await guard.SaveTemporaryCredentialsAsync("temp-tmp_1234abcd", "tmp_1234abcd", "Tmp!Pass99", isTemporaryAccount: true);
-            Assert.Equal("tmp_1234abcd\nTmp!Pass99", await vault.RetrieveTokenAsync("temp-tmp_1234abcd"));
+            await guard.SaveTemporaryCredentialsAsync("temp-TMP HeroNoodleTruck", "TMP HeroNoodleTruck", "Tmp!Pass99", isTemporaryAccount: true);
+            Assert.Equal("TMP HeroNoodleTruck\nTmp!Pass99", await vault.RetrieveTokenAsync("temp-TMP HeroNoodleTruck"));
 
-            await guard.PurgeTemporaryCredentialsAsync("temp-tmp_1234abcd", tokenFile);
-            Assert.Null(await vault.RetrieveTokenAsync("temp-tmp_1234abcd"));
+            await guard.PurgeTemporaryCredentialsAsync("temp-TMP HeroNoodleTruck", tokenFile);
+            Assert.Null(await vault.RetrieveTokenAsync("temp-TMP HeroNoodleTruck"));
             Assert.False(File.Exists(tokenFile));
         }
         finally
@@ -227,9 +255,9 @@ public sealed class EphemeralCredentialAndCliTests
             };
             var ephemeral = new LauncherProfile
             {
-                Id = "temp-tmp_abcd1234",
-                DisplayName = "Temp (tmp_abcd1234)",
-                AccountUsername = "tmp_abcd1234",
+                Id = "temp-TMP HeroNoodleTruck",
+                DisplayName = "Temp (TMP HeroNoodleTruck)",
+                AccountUsername = "TMP HeroNoodleTruck",
                 IsTemporaryAccount = true,
                 CreatedAtUtc = DateTimeOffset.UtcNow
             };
@@ -239,7 +267,7 @@ public sealed class EphemeralCredentialAndCliTests
 
             IReadOnlyList<LauncherProfile> tempList = await store.GetTemporaryProfilesAsync();
             Assert.Single(tempList);
-            Assert.Equal("temp-tmp_abcd1234", tempList[0].Id);
+            Assert.Equal("temp-TMP HeroNoodleTruck", tempList[0].Id);
             Assert.True(tempList[0].IsTemporaryAccount);
 
             LauncherProfile updated = ephemeral with { DisplayName = "Updated Ephemeral" };
@@ -248,8 +276,8 @@ public sealed class EphemeralCredentialAndCliTests
             Assert.Single(tempList);
             Assert.Equal("Updated Ephemeral", tempList[0].DisplayName);
 
-            Assert.True(await store.DeleteProfileAsync("temp-tmp_abcd1234"));
-            Assert.False(await store.DeleteProfileAsync("temp-tmp_abcd1234"));
+            Assert.True(await store.DeleteProfileAsync("temp-TMP HeroNoodleTruck"));
+            Assert.False(await store.DeleteProfileAsync("temp-TMP HeroNoodleTruck"));
             Assert.Empty(await store.GetTemporaryProfilesAsync());
         }
         finally

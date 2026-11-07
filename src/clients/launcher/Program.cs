@@ -41,7 +41,7 @@ namespace SandalLauncher
                 mockGate.Wait(TimeSpan.FromSeconds(Math.Max(1, cliOptions.MockGameSleepSec)));
                 return 0;
             }
-            if (cliOptions.Headless || cliOptions.HasAutomationFlags)
+            if (cliOptions.Headless || (args.Length > 0 && cliOptions.HasAutomationFlags))
             {
                 return RunSyncBounded(() => RunCliAutomationAsync(cliOptions), cliOptions.TimeoutSec);
             }
@@ -237,7 +237,7 @@ namespace SandalLauncher.ViewModels
         private CancellationTokenSource? _tetherCts;
 
         [ObservableProperty] private string _selectedSection = "Profiles";
-        [ObservableProperty] private string _activeSectionTitle = "1. Profiles — Environment & Sandbox Roster";
+        [ObservableProperty] private string _activeSectionTitle = "1. Profiles -- Environment & Sandbox Roster";
         [ObservableProperty] private string _activeSectionSubtitle = "Bind local-dev, docker-single, or prod-mesh environment profiles to the Verra client.";
         [ObservableProperty] private string _currentViewState = "populated";
         [ObservableProperty] private bool _isLoadingState;
@@ -245,10 +245,10 @@ namespace SandalLauncher.ViewModels
         [ObservableProperty] private bool _isErrorState;
         [ObservableProperty] private bool _isDegradedState;
         [ObservableProperty] private bool _isPopulatedState = true;
-        [ObservableProperty] private string _realmStatusBadgeText = "● ONLINE — SANCTUM READY";
+        [ObservableProperty] private string _realmStatusBadgeText = "● ONLINE -- SANCTUM READY";
         [ObservableProperty] private string _realmLatencyText = "12 ms | seq_id #1024";
         [ObservableProperty] private string _activeProfileName = "Profile: local-dev (Verra Sandbox)";
-        [ObservableProperty] private string _errorTitle = "■ GATEWAY UNREACHABLE (HTTP 503 Service Unavailable — RFC 9457)";
+        [ObservableProperty] private string _errorTitle = "■ GATEWAY UNREACHABLE (HTTP 503 Service Unavailable -- RFC 9457)";
         [ObservableProperty] private string _errorDetail = "What: Gateway HTTP/ICS probe timed out on 127.0.0.1:8080. Why: Local gateway container or tether daemon is not listening.";
         [ObservableProperty] private string _errorRemediation = "How to fix: Start the gateway service or verify SANDAL_GATEWAY_HTTP_ADVERTISE_ADDR in config/sandal.env, then click Retry Endpoint Probe.";
         [ObservableProperty] private string _degradedSummary = "Stream sequence gap detected (received_seq 1029 > last_seq 1024 + 1). Showing last verified realm snapshot while resyncing.";
@@ -263,7 +263,7 @@ namespace SandalLauncher.ViewModels
         [ObservableProperty] private string _configSourceSummary = string.Empty;
         [ObservableProperty] private string _launchCommandLinePreview = string.Empty;
         [ObservableProperty] private string _diagnosticsReportText = string.Empty;
-        [ObservableProperty] private string _statusBannerMessage = "Verra Realm Ready — Sign in or create a quick temp account to play.";
+        [ObservableProperty] private string _statusBannerMessage = "Verra Realm Ready -- Sign in or create a quick temp account to play.";
         [ObservableProperty] private string _authUsername = string.Empty;
         [ObservableProperty] private string _authEmail = string.Empty;
         [ObservableProperty] private string _authPassword = string.Empty;
@@ -360,7 +360,7 @@ namespace SandalLauncher.ViewModels
 
         private void ApplyConfigSnapshot(LauncherConfig cfg)
         {
-            ClientPakDir = string.IsNullOrWhiteSpace(cfg.ClientPakDir) ? "— (Unconfigured)" : cfg.ClientPakDir;
+            ClientPakDir = string.IsNullOrWhiteSpace(cfg.ClientPakDir) ? "-- (Unconfigured)" : cfg.ClientPakDir;
             GatewayHttpAddr = $"HTTP: {cfg.GatewayHttpAddr}";
             GatewayIcsAddr = $"ICS UDP: {cfg.GatewayIcsAddr}";
             GatewayGrpcAddr = $"gRPC: {cfg.GatewayGrpcAddr}";
@@ -388,11 +388,11 @@ namespace SandalLauncher.ViewModels
 
             (RealmStatusBadgeText, RealmLatencyText) = state switch
             {
-                "loading" => ("◌ PROBING — GATEWAY HANDSHAKE", $"< 400 ms budget | seq_id #{_lastSeqId}"),
-                "empty" => ("○ STANDBY — NO PROFILE", "— ms | seq_id #0"),
-                "error" => ("■ OFFLINE — GATEWAY UNREACHABLE", "timeout | HTTP 503"),
-                "degraded" => ("▲ DEGRADED — SEQ GAP DETECTED", $"stale | seq_id #{_lastSeqId}"),
-                _ => ("● ONLINE — SANCTUM READY", $"12 ms | seq_id #{_lastSeqId}")
+                "loading" => ("◌ PROBING -- GATEWAY HANDSHAKE", $"< 400 ms budget | seq_id #{_lastSeqId}"),
+                "empty" => ("○ STANDBY -- NO PROFILE", "-- ms | seq_id #0"),
+                "error" => ("■ OFFLINE -- GATEWAY UNREACHABLE", "timeout | HTTP 503"),
+                "degraded" => ("▲ DEGRADED -- SEQ GAP DETECTED", $"stale | seq_id #{_lastSeqId}"),
+                _ => ("● ONLINE -- SANCTUM READY", $"12 ms | seq_id #{_lastSeqId}")
             };
         }
 
@@ -526,56 +526,18 @@ namespace SandalLauncher.ViewModels
         }
 
         [RelayCommand]
-        public async Task LoginAsync(CancellationToken ct = default)
-        {
-            string user = AuthUsername.Trim();
-            string pass = AuthPassword;
-            AuthPassword = string.Empty;
-            AuthSessionResult session = await GatewayClient.LoginAsync(user, pass, ct).ConfigureAwait(false);
-            if (IsTemporaryAccount)
-                CredentialGuard.SaveTemporaryCredentials($"temp-{session.Username}", session.Username, pass, isTemporaryAccount: true);
-            await ApplyAuthenticatedSessionAsync(session, IsTemporaryAccount, ct).ConfigureAwait(false);
-            if (RememberCredentials && !IsTemporaryAccount)
-                await TrySaveAccountToStoreAsync(session.Username, pass, isTemp: false, ct).ConfigureAwait(false);
-        }
-
-        [RelayCommand]
-        public async Task RegisterTempAsync(CancellationToken ct = default)
-        {
-            if (IsAuthenticated && IsTemporaryAccount)
-                Logout();
-            bool desktopClick = IsDesktopInteractiveMode();
-            string user = desktopClick || string.IsNullOrWhiteSpace(AuthUsername)
-                ? LauncherCliOptions.GenerateTempUsername()
-                : AuthUsername.Trim();
-            string pass = desktopClick || string.IsNullOrEmpty(AuthPassword)
-                ? LauncherCliOptions.GenerateStrongPassword()
-                : AuthPassword;
-            AuthUsername = user;
-            AuthPassword = string.Empty;
-            IsTemporaryAccount = true;
-            AuthSessionResult session = await GatewayClient.RegisterAsync(user, pass, isTemporaryAccount: true, ct).ConfigureAwait(false);
-            string tempProfileId = $"temp-{session.Username}";
-            CredentialGuard.SaveTemporaryCredentials(tempProfileId, session.Username, pass, isTemporaryAccount: true);
-            ProfileStore.TrackEphemeralSessionProfile(session.Username, _config);
-            await ApplyAuthenticatedSessionAsync(session, isTemp: true, ct).ConfigureAwait(false);
-            if (desktopClick)
-                await EnsureCharacterAndLaunchAsync(ct).ConfigureAwait(false);
-        }
-
-        [RelayCommand]
         public Task CreateCharacterAsync(CancellationToken ct = default) =>
             CreateCharacterWithIdsAsync(NewCharacterName, 1, 1, ct);
 
         public static string SanitizeAutoCharacterName(string? raw)
         {
-            string uniqueHero = $"Hero{Guid.NewGuid():N}"[..12];
+            string uniqueHero = LauncherCliOptions.GenerateEffTempAccountName("TST");
             if (string.IsNullOrWhiteSpace(raw) || raw.Contains('_', StringComparison.Ordinal))
                 return uniqueHero;
+            if (ProfileStoreService.IsTemporaryUsername(raw))
+                return raw.Trim();
             string trimmed = new(raw.Trim().Where(char.IsLetterOrDigit).ToArray());
-            if (trimmed.Length is < 3 or > 20 || !char.IsLetter(trimmed[0]))
-                return uniqueHero;
-            return trimmed;
+            return trimmed.Length is >= 3 and <= 32 && char.IsLetter(trimmed[0]) ? trimmed : uniqueHero;
         }
 
         public static string NormalizeWorldEndpoint(string? worldEndpoint, Uri? gatewayUri)

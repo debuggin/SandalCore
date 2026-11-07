@@ -522,29 +522,133 @@ double PlayerWorld::place_height(const world::Place& place) const {
     return place.z + kPlaceLiftCm;
 }
 
+world::BorderDecision evaluate_sub_area_handover(
+    world::RegionalHandoverState& s, const spawns::AreaConfig& area, double x, double y, int64_t eff_ms) noexcept {
+    const float signed_dist = area.signed_border_distance_cm(x, y);
+    const bool inside = area.contains(x, y);
+    const spawns::RegionBit pt_reg = spawns::resolve_point_region_bit(x, y);
+    s.last_signed_border_distance_cm = signed_dist;
+    s.outside_worker_area = !inside;
+    const float hyst_cm = std::max(0.0f, area.handover_hysteresis_cm);
+    if (inside) {
+        s.dwell_ticks_beyond_hysteresis = 0;
+        s.candidate_region = s.authoritative_region;
+        if (s.authority_state == world::AuthorityState::HandoverPending && signed_dist > -hyst_cm) {
+            s.last_suppressed_by_hysteresis = true;
+        } else {
+            s.authority_state = world::AuthorityState::Local;
+            s.last_suppressed_by_hysteresis = false;
+        }
+        return (s.authority_state == world::AuthorityState::HandoverPending)
+                   ? world::BorderDecision::HandoverPending
+                   : world::BorderDecision::StayLocal;
+    }
+    s.candidate_region = (pt_reg != spawns::RegionBit::None) ? pt_reg : s.authoritative_region;
+    const bool in_cd = (eff_ms > 0 && s.last_handover_commit_ms >= 0 &&
+                        (eff_ms - s.last_handover_commit_ms) < world::runtime_handover_cooldown_ms());
+    if (in_cd || signed_dist < hyst_cm) {
+        s.dwell_ticks_beyond_hysteresis = 0;
+        s.last_suppressed_by_hysteresis = true;
+        ++s.suppressed_oscillations;
+        return (s.authority_state == world::AuthorityState::HandoverPending)
+                   ? world::BorderDecision::HandoverPending
+                   : world::BorderDecision::StayLocal;
+    }
+    if (s.dwell_ticks_beyond_hysteresis < 255) ++s.dwell_ticks_beyond_hysteresis;
+    if (s.dwell_ticks_beyond_hysteresis < world::runtime_handover_dwell_samples()) {
+        s.last_suppressed_by_hysteresis = true;
+        return world::BorderDecision::StayLocal;
+    }
+    s.last_suppressed_by_hysteresis = false;
+    if (s.authority_state != world::AuthorityState::HandoverPending) {
+        s.authority_state = world::AuthorityState::HandoverPending;
+        ++s.lease_epoch;
+        ++s.handover_count;
+        s.last_handover_commit_ms = eff_ms;
+    }
+    return world::BorderDecision::HandoverPending;
+}
+
+world::BorderDecision PlayerWorld::step_player_border_handover(
+    uint64_t player_id, double x, double y, int64_t now_ms) {
+    if (!std::isfinite(x) || !std::isfinite(y)) return world::BorderDecision::StayLocal;
+    auto [it, inserted] = regional_handover_states_.try_emplace(player_id);
+    if (inserted) {
+        const uint8_t mask = area_.region_mask;
+        it->second.authoritative_region =
+            (mask != 0 && mask != static_cast<uint8_t>(spawns::RegionBit::All))
+                ? static_cast<spawns::RegionBit>(mask)
+                : spawns::resolve_point_region_bit(x, y);
+        it->second.candidate_region = it->second.authoritative_region;
+    }
+    const int64_t eff_ms = (now_ms >= 0) ? now_ms : static_cast<int64_t>(world_clock_ * 1000.0);
+    const bool sub_area = !area_.zoi_guids.empty() || !area_.exclude_zoi_guids.empty() ||
+                          !area_.include_node_plugs.empty() || !area_.exclude_node_plugs.empty() ||
+                          area_.polygon_cutout_cm.size() >= 3 || !area_.excluded_polygons_cm.empty() || !area_.region;
+    world::BorderDecision decision = world::BorderDecision::StayLocal;
+    if (!sub_area) {
+        decision = world::evaluate_regional_handover(it->second, x, y, eff_ms, area_.handover_hysteresis_cm);
+        it->second.outside_worker_area = !area_.contains(x, y);
+    } else {
+        decision = evaluate_sub_area_handover(it->second, area_, x, y, eff_ms);
+    }
+    authority_states_[player_id] = it->second.authority_state;
+    (void)try_advance_lease_epoch(player_id, it->second.lease_epoch);
+    return decision;
+}
+
+void PlayerWorld::commit_player_handover(uint64_t player_id, int64_t now_ms) noexcept {
+    auto [it, _] = regional_handover_states_.try_emplace(player_id);
+    const int64_t eff_ms = (now_ms >= 0) ? now_ms : static_cast<int64_t>(world_clock_ * 1000.0);
+    world::complete_border_handover(it->second, eff_ms);
+    authority_states_[player_id] = it->second.authority_state;
+    (void)try_advance_lease_epoch(player_id, it->second.lease_epoch);
+}
+
+size_t PlayerWorld::sync_boundary_halo_actors(PlayerWorld& other, double halo_cm) {
+    if (&other == this) return 0;
+    const double eff_halo = (halo_cm >= 0.0) ? halo_cm : area_.aoi_border_halo_cm;
+    const auto sync_one_way = [eff_halo](PlayerWorld& src, PlayerWorld& dst) -> size_t {
+        size_t synced = 0;
+        src.registry().for_each([&](const world::WorldActor& a) {
+            if (a.kind != world::ActorKind::Player && a.kind != world::ActorKind::Npc &&
+                a.kind != world::ActorKind::Mount && a.kind != world::ActorKind::Pile) {
+                return;
+            }
+            if (!dst.area().contains_with_halo(a.x, a.y, eff_halo)) return;
+            if (world::WorldActor* ex = dst.registry().find(a.id)) {
+                if (std::hypot(ex->x - a.x, ex->y - a.y) > 0.1 || std::abs(ex->z - a.z) > 0.1 || std::abs(ex->yaw_degrees - a.yaw_degrees) > 0.01) {
+                    dst.registry().move(a.id, a.x, a.y, a.z, a.yaw_degrees);
+                }
+                if (ex->reliable_version < a.reliable_version || ex->version < a.version) {
+                    dst.registry().modify(a.id, world::Change::State, [&](world::WorldActor& m) {
+                        m.actor = a.actor;
+                        m.components = a.components;
+                    });
+                }
+                ++synced;
+            } else {
+                world::WorldActor copy = a;
+                if (dst.registry().add(std::move(copy))) ++synced;
+            }
+            if (src.aftermath() && dst.aftermath()) {
+                if (const combat::Corpse* sc = src.aftermath()->corpse_of(a.id)) {
+                    dst.aftermath()->upsert_halo_corpse(*sc, dst.world_clock());
+                    if (const combat::Corpse* dc = dst.aftermath()->corpse_of(a.id)) {
+                        src.aftermath()->upsert_halo_corpse(*dc, src.world_clock());
+                    }
+                }
+            }
+        });
+        return synced;
+    };
+    return sync_one_way(*this, other) + sync_one_way(other, *this);
+}
+
 void PlayerWorld::note_player(uint64_t player_id, double x, double y) {
     if (npcs_) npcs_->note_player(player_id, x, y, world_clock_);
     if (std::isfinite(x) && std::isfinite(y)) {
-        static thread_local std::unordered_map<uint64_t, world::RegionalHandoverState> s_handovers;
-        auto [it, inserted] = s_handovers.try_emplace(player_id);
-        if (inserted) {
-            const uint8_t mask = area_.region_mask;
-            it->second.authoritative_region =
-                (mask != 0 && mask != static_cast<uint8_t>(spawns::RegionBit::All))
-                    ? static_cast<spawns::RegionBit>(mask)
-                    : spawns::resolve_point_region_bit(x, y);
-            it->second.candidate_region = it->second.authoritative_region;
-        }
-        const int64_t now_ms = static_cast<int64_t>(world_clock_ * 1000.0);
-        const auto decision = world::evaluate_regional_handover(it->second, x, y, now_ms);
-        if (decision == world::BorderDecision::HandoverPending) {
-            authority_states_[player_id] = world::AuthorityState::HandoverPending;
-            (void)try_advance_lease_epoch(player_id, it->second.lease_epoch);
-        } else if (it->second.last_suppressed_by_hysteresis) {
-            authority_states_[player_id] = world::AuthorityState::Local;
-        } else {
-            (void)update_border_authority(player_id, x, y);
-        }
+        (void)step_player_border_handover(player_id, x, y);
     }
     if (!nav_ || !nav_->has_region() || !std::isfinite(x) || !std::isfinite(y)) return;
     const bool outside = !nav_->in_region(x, y);

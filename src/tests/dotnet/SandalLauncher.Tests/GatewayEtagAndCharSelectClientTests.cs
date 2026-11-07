@@ -27,9 +27,9 @@ public sealed class GatewayEtagAndCharSelectClientTests
             recorded.Add((req.Method, req.RequestUri!.AbsolutePath, auth, ifMatch, body));
 
             if (req.RequestUri.AbsolutePath == "/api/v1/auth/register")
-                return JsonResponse(HttpStatusCode.OK, "{\"token\":\"tok_reg_99\",\"expires_in\":7200,\"username\":\"tmp_hero01\"}", "\"acct-v1\"");
+                return JsonResponse(HttpStatusCode.OK, "{\"token\":\"tok_reg_99\",\"expires_in\":7200,\"username\":\"TMP HeroNoodleTruck\"}", "\"acct-v1\"");
             if (req.RequestUri.AbsolutePath == "/api/v1/auth/login")
-                return JsonResponse(HttpStatusCode.OK, "{\"access_token\":\"tok_login_88\",\"expires_in\":3600,\"username\":\"perm_hero\"}", "\"acct-v2\"");
+                return JsonResponse(HttpStatusCode.OK, "{\"access_token\":\"tok_login_88\",\"expires_in\":3600,\"username\":\"TST GruelingBiscuitLauncher\"}", "\"acct-v2\"");
             if (req.Method == HttpMethod.Delete && req.RequestUri.AbsolutePath == "/api/v1/auth/account")
                 return JsonResponse(HttpStatusCode.NoContent, string.Empty);
 
@@ -39,20 +39,22 @@ public sealed class GatewayEtagAndCharSelectClientTests
         using var http = new HttpClient(handler);
         var client = new MultiProtocolGatewayClient("http://127.0.0.1:18080", http);
 
-        AuthSessionResult reg = await client.RegisterAsync("tmp_hero01", "Tmp!Pass99", isTemporaryAccount: true);
+        AuthSessionResult reg = await client.RegisterAsync("TMP HeroNoodleTruck", "Tmp!Pass99", isTemporaryAccount: true);
         Assert.Equal("tok_reg_99", reg.AccessToken);
-        Assert.Equal("tmp_hero01", reg.Username);
+        Assert.Equal("TMP HeroNoodleTruck", reg.Username);
         Assert.Equal(7200, reg.ExpiresIn);
         Assert.True(reg.IsTemporaryAccount);
+        Assert.Contains("\"username\":\"TMP HeroNoodleTruck\"", recorded[0].Body, StringComparison.Ordinal);
+        Assert.Contains("tmp_heronoodletruck_", recorded[0].Body, StringComparison.Ordinal);
 
-        AuthSessionResult login = await client.LoginAsync("perm_hero", "Perm!Pass88");
+        AuthSessionResult login = await client.LoginAsync("TST GruelingBiscuitLauncher", "Perm!Pass88");
         Assert.Equal("tok_login_88", login.AccessToken);
-        Assert.Equal("perm_hero", login.Username);
+        Assert.Equal("TST GruelingBiscuitLauncher", login.Username);
         Assert.Equal(3600, login.ExpiresIn);
         Assert.False(login.IsTemporaryAccount);
 
         client.SetCachedETag("/api/v1/auth/account", "\"acct-etag-del\"");
-        bool deleted = await client.DeleteAccountAsync("tok_reg_99", "tmp_hero01", "Tmp!Pass99");
+        bool deleted = await client.DeleteAccountAsync("tok_reg_99", "TMP HeroNoodleTruck", "Tmp!Pass99");
         Assert.True(deleted);
         Assert.Equal(3, recorded.Count);
         Assert.Equal(HttpMethod.Delete, recorded[2].Method);
@@ -71,7 +73,7 @@ public sealed class GatewayEtagAndCharSelectClientTests
             callCount++;
             if (callCount == 1)
             {
-                string json = "{\"characters\":[{\"character_id\":\"char_101\",\"name\":\"TestHero\",\"class_id\":2,\"race_id\":3,\"level\":15}]}";
+                string json = "{\"characters\":[{\"character_id\":\"char_101\",\"name\":\"TST GruelingBiscuitLauncher\",\"class_id\":2,\"race_id\":3,\"level\":15}]}";
                 return Task.FromResult(JsonResponse(HttpStatusCode.OK, json, "\"chars-etag-v1\""));
             }
 
@@ -87,7 +89,7 @@ public sealed class GatewayEtagAndCharSelectClientTests
         IReadOnlyList<LauncherCharacterSummary> first = await client.ListCharactersAsync("tok_abc");
         Assert.Single(first);
         Assert.Equal("char_101", first[0].CharacterId);
-        Assert.Equal("TestHero", first[0].Name);
+        Assert.Equal("TST GruelingBiscuitLauncher", first[0].Name);
         Assert.Equal(15, first[0].Level);
         Assert.True(client.TryGetCachedETag("/api/v1/characters", out string cachedETag));
         Assert.Equal("\"chars-etag-v1\"", cachedETag);
@@ -97,7 +99,7 @@ public sealed class GatewayEtagAndCharSelectClientTests
         Assert.Equal("\"chars-etag-v1\"", secondIfNoneMatch);
         Assert.Single(second);
         Assert.Equal("char_101", second[0].CharacterId);
-        Assert.Equal("TestHero", second[0].Name);
+        Assert.Equal("TST GruelingBiscuitLauncher", second[0].Name);
         Assert.True(client.ETagCache.ContainsKey("/api/v1/characters"));
     }
 
@@ -150,13 +152,13 @@ public sealed class GatewayEtagAndCharSelectClientTests
             if (req.Method == HttpMethod.Post && path == "/api/v1/characters")
             {
                 createIfMatch = req.Headers.IfMatch.ToString();
-                string json = "{\"character_id\":\"char_777\",\"name\":\"TestHero\",\"class_id\":1,\"race_id\":1,\"level\":1}";
+                string json = "{\"character_id\":\"char_777\",\"name\":\"TST GruelingBiscuitLauncher\",\"class_id\":1,\"race_id\":1,\"level\":1}";
                 return JsonResponse(HttpStatusCode.Created, json, "\"chars-etag-1\"");
             }
             if (req.Method == HttpMethod.Post && path == "/api/v1/characters/char_777/select")
             {
                 selectIfMatch = req.Headers.IfMatch.ToString();
-                string json = $"{{\"character_id\":\"char_777\",\"character_name\":\"TestHero\",\"join_ticket\":\"{joinTicketHex}\",\"world_endpoint\":\"127.0.0.1:7777\"}}";
+                string json = $"{{\"character_id\":\"char_777\",\"character_name\":\"TST GruelingBiscuitLauncher\",\"join_ticket\":\"{joinTicketHex}\",\"world_endpoint\":\"127.0.0.1:7777\"}}";
                 return JsonResponse(HttpStatusCode.OK, json, "\"char-sel-etag-1\"");
             }
             if (req.Method == HttpMethod.Post && path == "/api/v1/world/enter")
@@ -171,9 +173,9 @@ public sealed class GatewayEtagAndCharSelectClientTests
         var client = new MultiProtocolGatewayClient("http://127.0.0.1:18080", http);
 
         _ = await client.ListCharactersAsync("tok_session_1");
-        LauncherCharacterSummary created = await client.CreateCharacterAsync("tok_session_1", "TestHero", 1, 1);
+        LauncherCharacterSummary created = await client.CreateCharacterAsync("tok_session_1", "TST GruelingBiscuitLauncher", 1, 1);
         Assert.Equal("char_777", created.CharacterId);
-        Assert.Equal("TestHero", created.Name);
+        Assert.Equal("TST GruelingBiscuitLauncher", created.Name);
         Assert.Equal("\"chars-etag-0\"", createIfMatch);
 
         CharacterSelectTicket ticket = await client.SelectCharacterAsync(
@@ -183,7 +185,7 @@ public sealed class GatewayEtagAndCharSelectClientTests
             ifMatchETag: "\"chars-etag-1\"");
 
         Assert.Equal("char_777", ticket.CharacterId);
-        Assert.Equal("TestHero", ticket.CharacterName);
+        Assert.Equal("TST GruelingBiscuitLauncher", ticket.CharacterName);
         Assert.Equal(joinTicketHex, ticket.JoinTicket);
         Assert.Equal(32, ticket.JoinTicket.Length);
         Assert.Equal("127.0.0.1:7777", ticket.WorldEndpoint);
@@ -208,7 +210,7 @@ public sealed class GatewayEtagAndCharSelectClientTests
             {
                 return Task.FromResult(JsonResponse(
                     HttpStatusCode.OK,
-                    "{\"character_id\":\"c1\",\"character_name\":\"TestHero\",\"join_ticket\":\"abcdef0123456789abcdef0123456789\",\"world_endpoint\":\"127.0.0.1:7777\"}",
+                    "{\"character_id\":\"c1\",\"character_name\":\"TST GruelingBiscuitLauncher\",\"join_ticket\":\"abcdef0123456789abcdef0123456789\",\"world_endpoint\":\"127.0.0.1:7777\"}",
                     "\"sel-etag\""));
             }
             if (failStage == "world" && path == "/api/v1/world/enter")
@@ -221,7 +223,7 @@ public sealed class GatewayEtagAndCharSelectClientTests
         var client = new MultiProtocolGatewayClient("http://127.0.0.1:18080", http);
 
         HttpRequestException exCreate = await Assert.ThrowsAsync<HttpRequestException>(() =>
-            client.CreateCharacterAsync("tok", "TestHero"));
+            client.CreateCharacterAsync("tok", "TST GruelingBiscuitLauncher"));
         Assert.Equal(HttpStatusCode.PreconditionFailed, exCreate.StatusCode);
 
         failStage = "select";

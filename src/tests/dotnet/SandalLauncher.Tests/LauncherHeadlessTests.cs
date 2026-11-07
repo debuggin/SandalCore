@@ -470,12 +470,12 @@ public sealed class LauncherHeadlessTests
             string body = path switch
             {
                 "/api/v1/auth/register" or "/api/v1/auth/login" =>
-                    "{\"access_token\":\"tok_e2e_1\",\"username\":\"tmp_e2e\",\"is_temporary\":true}",
+                    "{\"access_token\":\"tok_e2e_1\",\"username\":\"TMP HeroNoodleTruck\",\"is_temporary\":true}",
                 "/api/v1/characters" when request.Method == HttpMethod.Get => "[]",
                 "/api/v1/characters" =>
-                    "{\"character_id\":\"char-1\",\"name\":\"HeroAuto1234\",\"class_name\":\"Fighter\",\"level\":1,\"zone_name\":\"verra-01\"}",
+                    "{\"character_id\":\"char-1\",\"name\":\"TST GruelingBiscuitLauncher\",\"class_name\":\"Fighter\",\"level\":1,\"zone_name\":\"verra-01\"}",
                 _ when path.EndsWith("/select", StringComparison.OrdinalIgnoreCase) =>
-                    "{\"character_id\":\"char-1\",\"character_name\":\"HeroAuto1234\",\"join_ticket\":\"jtk_99\",\"world_endpoint\":\"world:7777\",\"world_enter_allowed\":true}",
+                    "{\"character_id\":\"char-1\",\"character_name\":\"TST GruelingBiscuitLauncher\",\"join_ticket\":\"jtk_99\",\"world_endpoint\":\"world:7777\",\"world_enter_allowed\":true}",
                 "/api/v1/world/enter" => "{\"status\":\"ALLOW\",\"world_endpoint\":\"world:7777\"}",
                 _ => "{\"online_players\":64,\"max_players\":500}"
             };

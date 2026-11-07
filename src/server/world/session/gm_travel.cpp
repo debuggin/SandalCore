@@ -32,12 +32,22 @@ std::string coords(double x, double y) {
     return buf;
 }
 
+std::vector<uint64_t>& despawned_pawns() {
+    static std::vector<uint64_t> ids;
+    return ids;
+}
+
+bool is_despawned_pawn(uint64_t pawn_id) {
+    const auto& ids = despawned_pawns();
+    return pawn_id != 0 && std::find(ids.begin(), ids.end(), pawn_id) != ids.end();
+}
+
 }  // namespace
 
 PlayerHandle GmTravel::find_player(const std::string& name) {
     if (name.empty()) return {};
     for (const PlayerHandle& h : directory_()) {
-        if (h && iequal(h.player->name(), name)) return h;
+        if (h && !is_despawned_pawn(h.player->bootstrap().setup().guids.pawn.ObjectId) && iequal(h.player->name(), name)) return h;
     }
     return {};
 }
@@ -45,18 +55,10 @@ PlayerHandle GmTravel::find_player(const std::string& name) {
 std::vector<GmPlayerInfo> GmTravel::list_players() {
     std::vector<GmPlayerInfo> out;
     for (const PlayerHandle& h : directory_()) {
-        if (!h) continue;
+        if (!h || is_despawned_pawn(h.player->bootstrap().setup().guids.pawn.ObjectId)) continue;
         const PlayerSession& p = *h.player;
         const GoodPosition g = p.last_position();
-        GmPlayerInfo info;
-        info.name = p.name();
-        info.character_id = p.character_id();
-        info.position = {g.x, g.y, g.z};
-        info.yaw_degrees = g.yaw_degrees;
-        info.mounted = p.mounted();
-        info.dead = p.dead();
-        info.move_speed_multiplier = p.gm_speed();
-        out.push_back(std::move(info));
+        out.push_back({p.name(), p.character_id(), {g.x, g.y, g.z}, g.yaw_degrees, p.mounted(), p.dead(), p.gm_speed()});
     }
     return out;
 }
@@ -557,26 +559,27 @@ GmNpcResult GmTravel::kill_npc(uint64_t id, const std::string& by) {
     const std::vector<PlayerHandle> players = directory_();
     world::WorldActor* a = npc_named(world_, players, id, out);
     if (!a) return out;
-    combat::CombatWorld* combat = world_.combat();
-    if (!combat) return refused(out, GmStatus::FailedPrecondition, "the fights are switched off (--no-combat): nothing can be killed");
-    if (npc_is_dead(world_, id)) return refused(out, GmStatus::FailedPrecondition, out.name + " is dead already");
+    const double loc_x = a->x, loc_y = a->y;
     const double now = world_.world_clock();
-    std::string why;
-    if (!combat->gm_kill(id, now, why)) return refused(out, GmStatus::InvalidArgument, out.name + ": " + why);
+    combat::CombatWorld* combat = world_.combat();
     combat::Aftermath* after = world_.aftermath();
-    const combat::Corpse* corpse = after ? after->corpse_of(id) : nullptr;
+    std::string why;
+    const bool combat_killed = combat && !npc_is_dead(world_, id) && combat->gm_kill(id, now, why);
+    const combat::Corpse* corpse = (combat_killed && after) ? after->corpse_of(id) : nullptr;
     out.loot_stacks = corpse ? static_cast<uint32_t>(corpse->loot.size()) : 0;
-    out.respawn_in_seconds = after ? after->respawn_in(id, now) : 0.0;
+    double respawn_secs = after ? after->respawn_in(id, now) : 0.0;
+    double despawn_secs = 0.0;
+    if (after) after->despawn(id, now, true, &despawn_secs);
+    if (respawn_secs <= 0.0) respawn_secs = despawn_secs;
+    out.respawn_in_seconds = respawn_secs;
+    if (combat) combat->forget(id);
+    if (world_.npcs()) world_.npcs()->remove(id);
+    world_.registry().remove(id);
     std::string m = out.name + " was killed";
-    if (out.loot_stacks > 0) {
-        m += ": its corpse holds " + count_of(out.loot_stacks, "stack", "stacks") + " of loot" +
-             (corpse->parts ? ", open to every player in the world" : ", and nobody is in the world to take it");
-    } else {
-        m += ": it dropped nothing";
-    }
+    m += out.loot_stacks > 0 ? ": its corpse holds " + count_of(out.loot_stacks, "stack", "stacks") + " of loot" : ": it dropped nothing";
     m += out.respawn_in_seconds > 0 ? "; its spawn point makes it again in " + seconds_of(out.respawn_in_seconds) : std::string("; its spawn point does not make it again");
     out.message = m;
-    spdlog::info("[npc] {}: killed {} (actor {}) at {}: {}", by, log_text(out.name), id, metres_at(a->x, a->y), log_text(out.message));
+    spdlog::info("[npc] {}: killed {} (actor {}) at {}: {}", by, log_text(out.name), id, metres_at(loc_x, loc_y), log_text(out.message));
     return out;
 }
 
@@ -684,13 +687,29 @@ GmNpcResult GmTravel::heal_npc(uint64_t id, const std::string& by) {
 GmNpcResult GmTravel::despawn_npc(uint64_t id, const std::string& by) {
     GmNpcResult out;
     const std::vector<PlayerHandle> players = directory_();
+    for (const PlayerHandle& h : players) {
+        if (!h || h.player->bootstrap().setup().guids.pawn.ObjectId != id) continue;
+        out.id = id;
+        out.name = h.player->name();
+        const GoodPosition pos = h.player->last_position();
+        out.position = {pos.x, pos.y, pos.z};
+        h.player->finish("disconnected by GM");
+        if (h.connection) h.connection->send_close();
+        world_.registry().remove(id);
+        if (!is_despawned_pawn(id)) despawned_pawns().push_back(id);
+        out.message = out.name + " was disconnected from the world";
+        spdlog::info("[gm] {}: disconnected player {} (pawn {})", by, log_text(out.name), id);
+        return out;
+    }
     world::WorldActor* a = npc_named(world_, players, id, out);
     if (!a) return out;
     const world::NpcInfo info = a->npc;
     combat::Aftermath* after = world_.aftermath();
     double secs = 0;
     if (after) after->despawn(id, world_.world_clock(), true, &secs);
-    else world_.registry().remove(id);
+    if (world_.combat()) world_.combat()->forget(id);
+    if (world_.npcs()) world_.npcs()->remove(id);
+    world_.registry().remove(id);
     out.respawn_in_seconds = secs;
     std::string m = out.name + " was taken out of the world";
     if (secs > 0) m += "; its spawn point makes it again in " + seconds_of(secs);
@@ -763,11 +782,8 @@ size_t GmTravel::teleport_characters(const std::string& names, double x, double 
     const auto flush = [&] {
         if (token.empty()) return;
         const PlayerHandle h = find_player(token);
-        if (!h) {
-            spdlog::warn("[gm] {}: no player named \"{}\" is in the world", by, log_text(token));
-        } else if (h.player->gm_teleport(*h.connection, x, y, z, now, by).status == PlayerSession::GmMoveResult::Status::Moved) {
-            ++moved;
-        }
+        if (!h) spdlog::warn("[gm] {}: no player named \"{}\" is in the world", by, log_text(token));
+        else if (h.player->gm_teleport(*h.connection, x, y, z, now, by).status == PlayerSession::GmMoveResult::Status::Moved) ++moved;
         token.clear();
     };
     for (const char c : names) {

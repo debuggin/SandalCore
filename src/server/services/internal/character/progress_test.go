@@ -71,8 +71,8 @@ func TestSaveProgressRefusalsChangeNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, p := range map[string]Progress{
-		"level 26":      {Level: 26},
 		"level 51":      {Level: 51},
+		"level 52":      {Level: 52},
 		"level -1":      {Level: -1},
 		"class 9":       {ClassID: 9},
 		"type 0":        {Experience: []Experience{{0, 1, 0}}},
@@ -191,20 +191,20 @@ func TestCreateWithTheStarterSetMarksTheCharacter(t *testing.T) {
 	}
 }
 
-// ValidateLevel: 0 is unset, 1 to 25 is a level, nothing else is (no database needed).
+// ValidateLevel: 0 is unset, 1 to 50 is a level, nothing else is (no database needed).
 func TestValidateLevel(t *testing.T) {
-	for _, level := range []int32{0, 1, 24, MaxLevel} {
+	for _, level := range []int32{0, 1, 24, 25, MaxLevel} {
 		if err := ValidateLevel(level); err != nil {
 			t.Errorf("level %d: %v", level, err)
 		}
 	}
-	for _, level := range []int32{-1, MaxLevel + 1, 50, 1 << 30} {
+	for _, level := range []int32{-1, MaxLevel + 1, 51, 1 << 30} {
 		if err := ValidateLevel(level); !errors.Is(err, ErrInvalid) {
 			t.Errorf("level %d: %v, want ErrInvalid", level, err)
 		}
 	}
-	if MaxLevel != 25 {
-		t.Errorf("MaxLevel is %d: the game's maximum level is 25", MaxLevel)
+	if MaxLevel != 50 {
+		t.Errorf("MaxLevel is %d: the game's maximum level is 50", MaxLevel)
 	}
 }
 

@@ -176,6 +176,9 @@ public:
     uint64_t drop_pile(double x, double y, double z, const protocol::repl::GuidValue& owner, const std::string& name, std::vector<LootStack> stacks, double now,
                        std::string& error);
 
+    /// Replicates or synchronizes a cross-boundary halo corpse or player loot pile onto this worker's Aftermath.
+    void upsert_halo_corpse(const Corpse& c, double now = 0.0);
+
     const Stats& stats() const { return stats_; }
     size_t corpses() const { return corpses_.size(); }
     size_t corpse_count() const { return corpses_.size(); }

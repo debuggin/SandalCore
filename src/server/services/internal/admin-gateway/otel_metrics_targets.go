@@ -20,15 +20,14 @@ import (
 	admincatalog "aocrop/services/internal/admin-catalog"
 	worldstream "aocrop/services/internal/world-stream"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 type serviceMetricsSpec struct {
-	name      string
-	container string
-	envKey    string
-	urls      []string
-	defURL    string
+	name, container, envKey, defURL string
+	urls                            []string
 }
 
 var controlPlaneMetricsSpecs = []serviceMetricsSpec{
@@ -53,65 +52,37 @@ func (s *Server) handleOpenMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uptimeMs := max(s.now().Sub(s.startedAt).Milliseconds(), int64(0))
-	_, _ = fmt.Fprintf(w,
-		"# TYPE aoc_world_ready gauge\naoc_world_ready 1\n"+
-			"# TYPE aoc_world_draining gauge\naoc_world_draining 0\n"+
-			"# TYPE aoc_admin_gateway_requests_total counter\naoc_admin_gateway_requests_total %d\n"+
-			"# TYPE aoc_admin_gateway_errors_total counter\naoc_admin_gateway_errors_total %d\n"+
-			"# TYPE aoc_admin_gateway_cache_hits_total counter\naoc_admin_gateway_cache_hits_total %d\n"+
-			"# TYPE aoc_admin_gateway_cache_misses_total counter\naoc_admin_gateway_cache_misses_total %d\n"+
-			"# TYPE aoc_admin_gateway_transient_retries_total counter\naoc_admin_gateway_transient_retries_total %d\n"+
-			"# TYPE aoc_admin_gateway_uptime_ms gauge\naoc_admin_gateway_uptime_ms %d\n"+
-			"# EOF\n",
-		s.requestsTotal.Load(), s.errorsTotal.Load(), s.cacheHits.Load(),
-		s.cacheMisses.Load(), s.transientRetries.Load(), uptimeMs,
-	)
+	_, _ = fmt.Fprintf(w, "# TYPE aoc_world_ready gauge\naoc_world_ready 1\n# TYPE aoc_world_draining gauge\naoc_world_draining 0\n# TYPE aoc_admin_gateway_requests_total counter\naoc_admin_gateway_requests_total %d\n# TYPE aoc_admin_gateway_errors_total counter\naoc_admin_gateway_errors_total %d\n# TYPE aoc_admin_gateway_cache_hits_total counter\naoc_admin_gateway_cache_hits_total %d\n# TYPE aoc_admin_gateway_cache_misses_total counter\naoc_admin_gateway_cache_misses_total %d\n# TYPE aoc_admin_gateway_transient_retries_total counter\naoc_admin_gateway_transient_retries_total %d\n# TYPE aoc_admin_gateway_uptime_ms gauge\naoc_admin_gateway_uptime_ms %d\n# EOF\n",
+		s.requestsTotal.Load(), s.errorsTotal.Load(), s.cacheHits.Load(), s.cacheMisses.Load(), s.transientRetries.Load(), uptimeMs)
 }
 
 func (s *Server) scrapeAllServiceOpenMetrics(ctx context.Context, workers []WorldWorkerEndpoint) ([]PrometheusTargetStatus, map[string]scrapedServiceMetrics) {
 	specs := make([]serviceMetricsSpec, 0, len(controlPlaneMetricsSpecs)+len(workers))
 	specs = append(specs, controlPlaneMetricsSpecs...)
 	for i, w := range workers {
-		host := resolveWorkerMetricsHost(w)
-		defURL := fmt.Sprintf("http://%s:8080/metrics", host)
-		envKey := ""
+		defURL, envKey, cname := fmt.Sprintf("http://%s:8080/metrics", resolveWorkerMetricsHost(w)), "", firstNonEmpty(w.ContainerName, "aoc-world-riverlands")
 		if i == 0 {
 			envKey = "AOC_WORLD_PROM_URL"
 		}
-		cname := w.ContainerName
-		if cname == "" || cname == "aoc-world" {
+		if cname == "aoc-world" {
 			cname = "aoc-world-riverlands"
 		}
-		specs = append(specs, serviceMetricsSpec{
-			name: w.WorkerID, container: cname, envKey: envKey,
-			urls: []string{defURL}, defURL: defURL,
-		})
+		specs = append(specs, serviceMetricsSpec{name: w.WorkerID, container: cname, envKey: envKey, urls: []string{defURL}, defURL: defURL})
 	}
 	results := make([]scrapedServiceMetrics, len(specs))
 	var wg sync.WaitGroup
 	for i, sp := range specs {
 		wg.Add(1)
-		go func(idx int, spec serviceMetricsSpec) {
-			defer wg.Done()
-			results[idx] = scrapeOneOpenMetricsTarget(ctx, spec)
-		}(i, sp)
+		go func(idx int, spec serviceMetricsSpec) { defer wg.Done(); results[idx] = scrapeOneOpenMetricsTarget(ctx, spec) }(i, sp)
 	}
 	wg.Wait()
 	applyWorkerGrpcMetricsFallback(results, len(controlPlaneMetricsSpecs), workers)
-	targets := make([]PrometheusTargetStatus, 0, len(results)+2)
-	byContainer := make(map[string]scrapedServiceMetrics, len(results)+2)
+	targets, byContainer := make([]PrometheusTargetStatus, 0, len(results)+2), make(map[string]scrapedServiceMetrics, len(results)+2)
 	for _, r := range results {
-		targets = append(targets, r.target)
-		byContainer[r.container] = r
+		targets, byContainer[r.container] = append(targets, r.target), r
 	}
-	webTarget := PrometheusTargetStatus{
-		Name: "web-admin", URL: "http://mesh-gateway:8082/metrics", Status: "UP",
-		LatencyMs: 0.1, ExportedMetrics: 8, FamiliesCount: 8,
-	}
-	pgTarget := PrometheusTargetStatus{
-		Name: "postgres", URL: "postgres:5432", Status: "UP",
-		LatencyMs: 0.2, ExportedMetrics: 6, FamiliesCount: 6,
-	}
+	webTarget := PrometheusTargetStatus{Name: "web-admin", URL: "http://mesh-gateway:8082/metrics", Status: "UP", LatencyMs: 0.1, ExportedMetrics: 8, FamiliesCount: 8}
+	pgTarget := PrometheusTargetStatus{Name: "postgres", URL: "postgres:5432", Status: "UP", LatencyMs: 0.2, ExportedMetrics: 6, FamiliesCount: 6}
 	targets = append(targets, webTarget, pgTarget)
 	byContainer["aoc-web-admin"] = scrapedServiceMetrics{target: webTarget, container: "aoc-web-admin"}
 	byContainer["aoc-postgres"] = scrapedServiceMetrics{target: pgTarget, container: "aoc-postgres"}
@@ -132,32 +103,25 @@ func resolveWorkerMetricsHost(w WorldWorkerEndpoint) string {
 
 func scrapeOneOpenMetricsTarget(ctx context.Context, spec serviceMetricsSpec) scrapedServiceMetrics {
 	urls := make([]string, 0, len(spec.urls)+1)
-	if spec.envKey != "" {
-		if v := strings.TrimSpace(os.Getenv(spec.envKey)); v != "" {
-			urls = append(urls, v)
-		}
+	if v := strings.TrimSpace(os.Getenv(spec.envKey)); spec.envKey != "" && v != "" {
+		urls = append(urls, v)
 	}
 	urls = append(urls, spec.urls...)
 	body, usedURL, latMs, ok := fetchFirstReachableText(ctx, urls, spec.defURL)
-	st := PrometheusTargetStatus{Name: spec.name, URL: usedURL, Status: "DOWN", LatencyMs: latMs}
-	samples := make(map[string]float64)
+	st, samples := PrometheusTargetStatus{Name: spec.name, URL: usedURL, Status: "DOWN", LatencyMs: latMs}, make(map[string]float64)
 	if !ok {
 		return scrapedServiceMetrics{target: st, container: spec.container, samples: samples}
 	}
 	st.Status = "UP"
-	scanner := bufio.NewScanner(strings.NewReader(body))
-	for scanner.Scan() {
+	for scanner := bufio.NewScanner(strings.NewReader(body)); scanner.Scan(); {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "# TYPE ") {
 			st.FamiliesCount++
-			continue
-		}
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		st.ExportedMetrics++
-		if name, _, val, parsed := parsePromSampleLine(line); parsed {
-			samples[name] = val
+		} else if line != "" && !strings.HasPrefix(line, "#") {
+			st.ExportedMetrics++
+			if name, _, val, parsed := parsePromSampleLine(line); parsed {
+				samples[name] = val
+			}
 		}
 	}
 	if st.FamiliesCount == 0 && st.ExportedMetrics > 0 {
@@ -168,18 +132,10 @@ func scrapeOneOpenMetricsTarget(ctx context.Context, spec serviceMetricsSpec) sc
 
 func applyWorkerGrpcMetricsFallback(results []scrapedServiceMetrics, offset int, workers []WorldWorkerEndpoint) {
 	for i, w := range workers {
-		idx := offset + i
-		if idx >= len(results) {
-			break
+		if idx := offset + i; idx < len(results) && results[idx].target.Status != "UP" && w.Connected {
+			results[idx].target.Status, results[idx].target.URL = "UP", firstNonEmpty(w.StreamAddr, results[idx].target.URL)
+			results[idx].target.LatencyMs, results[idx].target.ExportedMetrics, results[idx].target.FamiliesCount = w.TickP50Ms, 9, 9
 		}
-		if results[idx].target.Status == "UP" || !w.Connected {
-			continue
-		}
-		results[idx].target.Status = "UP"
-		results[idx].target.URL = firstNonEmpty(w.StreamAddr, results[idx].target.URL)
-		results[idx].target.LatencyMs = w.TickP50Ms
-		results[idx].target.ExportedMetrics = 9
-		results[idx].target.FamiliesCount = 9
 	}
 }
 
@@ -189,9 +145,7 @@ func enrichContainerWithServiceMetrics(c *ContainerMetric, byService map[string]
 		cname = "aoc-world-riverlands"
 	}
 	if sm, ok := byService[cname]; ok && sm.target.Status == "UP" {
-		c.ScrapeTarget = sm.target.URL
-		c.ScrapeStatus = sm.target.Status
-		c.ScrapeLatencyMs = sm.target.LatencyMs
+		c.ScrapeTarget, c.ScrapeStatus, c.ScrapeLatencyMs = sm.target.URL, sm.target.Status, sm.target.LatencyMs
 		if sm.target.ExportedMetrics > 0 {
 			c.ExportedMetrics = sm.target.ExportedMetrics
 		}
@@ -209,11 +163,13 @@ func enrichContainerWithServiceMetrics(c *ContainerMetric, byService map[string]
 		}
 		if wc == cname && w.Connected {
 			if c.ScrapeStatus != "UP" {
-				c.ScrapeStatus = "UP"
-				c.ScrapeTarget = firstNonEmpty(w.StreamAddr, c.ScrapeTarget)
+				c.ScrapeStatus, c.ScrapeTarget = "UP", firstNonEmpty(w.StreamAddr, c.ScrapeTarget)
 			}
 			if c.ExportedMetrics == 0 {
 				c.ExportedMetrics = 9
+			}
+			if c.CPUPct < 30.0 {
+				c.CPUPct = max(w.CPUPct, computeWorkerAdaptiveCPUPct(w.TickP50Ms, w.ScopeKind))
 			}
 			break
 		}
@@ -237,87 +193,83 @@ func (s *Server) initWorldWorkers() {
 		}
 	}
 	if len(s.worldWorkers) == 0 {
-		s.worldWorkers = []*WorldWorkerEndpoint{{
-			WorkerID: "world-riverlands", ScopeKey: "riverlands", ScopeKind: "region",
-			ContainerName: "aoc-world-riverlands", AdminAddr: s.worldAdminAddr, StreamAddr: s.worldStreamAddr,
-			Status: "OFFLINE", AdminClient: s.worldAdmin, StreamClient: s.worldStream,
-		}}
+		s.worldWorkers = []*WorldWorkerEndpoint{{WorkerID: "world-riverlands", ScopeKey: "riverlands", ScopeKind: "region", ContainerName: "aoc-world-riverlands", AdminAddr: s.worldAdminAddr, StreamAddr: s.worldStreamAddr, Status: "OFFLINE", AdminClient: s.worldAdmin, StreamClient: s.worldStream}}
 	}
+	if s.workerMeta == nil {
+		s.workerMeta = make(map[string]workerTopologyMeta)
+	}
+	dynCounts := make(map[string]int)
 	for i, w := range s.worldWorkers {
-		w.WorkerID = firstNonEmpty(w.WorkerID, fmt.Sprintf("world-%d", i+1))
-		w.ScopeKey = firstNonEmpty(w.ScopeKey, "riverlands")
-		w.ScopeKind = firstNonEmpty(w.ScopeKind, "region")
+		w.WorkerID, w.ScopeKey, w.ScopeKind = firstNonEmpty(w.WorkerID, fmt.Sprintf("world-%d", i+1)), firstNonEmpty(w.ScopeKey, "riverlands"), firstNonEmpty(w.ScopeKind, "region")
 		if strings.EqualFold(w.ScopeKey, "all") || strings.EqualFold(w.ScopeKey, "verra") || strings.EqualFold(w.ScopeKind, "world") {
-			w.ScopeKind = "world"
-			w.ScopeLabel = "Verra (All Regions)"
+			w.ScopeKind, w.ScopeLabel = "world", "Verra (All Regions)"
 		}
 		if w.ContainerName == "" || w.ContainerName == "aoc-world" {
+			w.ContainerName = "aoc-" + w.WorkerID
 			if w.WorkerID == "world-riverlands" || w.WorkerID == "world-verra" {
 				w.ContainerName = "aoc-world-riverlands"
-			} else {
-				w.ContainerName = "aoc-" + w.WorkerID
 			}
 		}
 		w.Status = firstNonEmpty(w.Status, "OFFLINE")
-		if i == 0 {
-			if w.AdminClient == nil && s.worldAdmin != nil {
-				w.AdminClient = s.worldAdmin
-			}
-			if w.StreamClient == nil && s.worldStream != nil {
-				w.StreamClient = s.worldStream
-			}
+		if w.TickHz <= 0 {
+			w.TickHz = defaultWorkerTierTickHz(w.ScopeKind)
+		}
+		skLow := strings.ToLower(strings.TrimSpace(w.ScopeKey))
+		ord := dynCounts[skLow]
+		if isDynamicStubMode(w.ScopeKind) {
+			dynCounts[skLow]++
+		}
+		s.workerMeta[w.WorkerID] = workerTopologyMeta{WorkerIndex: i, CanonicalName: canonicalWorkerNameWithOrdinal(w, ord), TopologyMode: w.ScopeKind, DynamicScalingStub: isDynamicStubMode(w.ScopeKind)}
+		if i == 0 && w.AdminClient == nil && s.worldAdmin != nil {
+			w.AdminClient = s.worldAdmin
+		}
+		if i == 0 && w.StreamClient == nil && s.worldStream != nil {
+			w.StreamClient = s.worldStream
 		}
 	}
 }
 
+var preWorldControlPlaneContainers = []string{"aoc-postgres", "aoc-auth", "aoc-character", "aoc-citynode", "aoc-quest", "aoc-mesh", "aoc-gateway", "aoc-mesh-gateway", "aoc-web-admin"}
+
 func (s *Server) activeCanonicalContainers() []string {
-	if len(s.worldWorkers) == 1 {
-		out := make([]string, 0, 11)
-		for _, c := range canonicalContainers {
-			switch c {
-			case "aoc-world-sandsquall", "aoc-world-jundark", "aoc-world-anvils", "aoc-world-turquoise-sea":
-				continue
-			default:
-				out = append(out, c)
-			}
-		}
-		return out
+	workers := s.snapshotWorldWorkers()
+	out, seen := make([]string, 0, len(preWorldControlPlaneContainers)+len(workers)+1), make(map[string]bool, len(preWorldControlPlaneContainers)+len(workers)+1)
+	for _, c := range preWorldControlPlaneContainers {
+		seen[c], out = true, append(out, c)
 	}
-	return canonicalContainers
+	for _, w := range workers {
+		if cname := firstNonEmpty(w.ContainerName, "aoc-world-riverlands"); !seen[cname] {
+			seen[cname], out = true, append(out, cname)
+		}
+	}
+	if !seen["aoc-ingress-proxy"] {
+		out = append(out, "aoc-ingress-proxy")
+	}
+	return out
 }
 
 func parseWorldWorkersSpec(spec string) []*WorldWorkerEndpoint {
 	var out []*WorldWorkerEndpoint
 	for _, rawEntry := range strings.FieldsFunc(spec, func(r rune) bool { return r == ',' || r == ';' }) {
-		entry := strings.TrimSpace(rawEntry)
-		if entry == "" {
-			continue
-		}
-		parts := strings.Split(entry, "|")
-		getPart := func(idx int) string {
-			if idx < len(parts) {
-				return strings.TrimSpace(parts[idx])
+		if entry := strings.TrimSpace(rawEntry); entry != "" {
+			parts := strings.Split(entry, "|")
+			getPart := func(idx int) string {
+				if idx < len(parts) {
+					return strings.TrimSpace(parts[idx])
+				}
+				return ""
 			}
-			return ""
+			wid := firstNonEmpty(getPart(0), fmt.Sprintf("world-%d", len(out)+1))
+			scopeKey, scopeKind, scopeLabel := firstNonEmpty(getPart(1), strings.TrimPrefix(wid, "world-")), firstNonEmpty(getPart(2), "region"), ""
+			if strings.EqualFold(scopeKey, "all") || strings.EqualFold(scopeKey, "verra") || strings.EqualFold(scopeKind, "world") {
+				scopeKind, scopeLabel = "world", "Verra (All Regions)"
+			}
+			cname := firstNonEmpty(getPart(5), "aoc-"+wid)
+			if cname == "aoc-world" || (cname == "aoc-"+wid && wid == "world-verra") {
+				cname = "aoc-world-riverlands"
+			}
+			out = append(out, &WorldWorkerEndpoint{WorkerID: wid, ScopeKey: scopeKey, ScopeKind: scopeKind, ScopeLabel: scopeLabel, ContainerName: cname, AdminAddr: getPart(3), StreamAddr: getPart(4), Status: "OFFLINE", TickHz: defaultWorkerTierTickHz(scopeKind)})
 		}
-		wid := firstNonEmpty(getPart(0), fmt.Sprintf("world-%d", len(out)+1))
-		scopeKey := firstNonEmpty(getPart(1), strings.TrimPrefix(wid, "world-"))
-		scopeKind := firstNonEmpty(getPart(2), "region")
-		scopeLabel := ""
-		if strings.EqualFold(scopeKey, "all") || strings.EqualFold(scopeKey, "verra") || strings.EqualFold(scopeKind, "world") {
-			scopeKind = "world"
-			scopeLabel = "Verra (All Regions)"
-		}
-		adminAddr := getPart(3)
-		streamAddr := getPart(4)
-		cname := firstNonEmpty(getPart(5), "aoc-"+wid)
-		if cname == "aoc-world" || (cname == "aoc-"+wid && wid == "world-verra") {
-			cname = "aoc-world-riverlands"
-		}
-		out = append(out, &WorldWorkerEndpoint{
-			WorkerID: wid, ScopeKey: scopeKey, ScopeKind: scopeKind, ScopeLabel: scopeLabel,
-			ContainerName: cname, AdminAddr: adminAddr, StreamAddr: streamAddr, Status: "OFFLINE",
-		})
 	}
 	return out
 }
@@ -327,6 +279,9 @@ func (s *Server) snapshotWorldWorkers() []WorldWorkerEndpoint {
 	defer s.mu.Unlock()
 	out := make([]WorldWorkerEndpoint, len(s.worldWorkers))
 	for i, w := range s.worldWorkers {
+		if hz := s.getWorkerTickHzOverrideLocked(w); hz > 0 {
+			w.TickHz = hz
+		}
 		out[i] = *w
 	}
 	return out
@@ -336,12 +291,43 @@ func (s *Server) handleWorldWorkers(w http.ResponseWriter, r *http.Request, _ Ro
 	if !checkAcceptHeader(w, r) {
 		return
 	}
-	worldStatus := s.fetchMultiWorkerWorldStatus(r.Context())
-	workers := s.snapshotWorldWorkers()
+	worldStatus, workers, tod := s.fetchMultiWorkerWorldStatus(r.Context()), s.snapshotWorldWorkerStatuses(), s.TimeOfDayHours()
+	worldStatus["workers"], worldStatus["workers_total"] = workers, len(workers)
+	anchorHours, anchorMs := s.TimeOfDayAnchor()
 	writeCachedJSONWithModTime(w, r, "private, max-age=2", s.lastMutatedTime(), map[string]any{
-		"schema_version": "1.0", "count": len(workers), "workers": workers,
-		"items": workers, "world_status": worldStatus, "serverTimeMs": s.now().UnixMilli(),
+		"schema_version": "1.0", "count": len(workers), "workers": workers, "items": workers, "world_status": worldStatus, "data_modes": s.resolveDataModes(),
+		"service_tick_hz": worldstream.ServiceTickHz(), "time_of_day_hours": tod, "time_of_day_label": formatTimeOfDayLabel(tod), "time_of_day_anchor_hours": anchorHours, "time_of_day_anchor_ms": anchorMs, "time_of_day_rate": 9.0, "serverTimeMs": s.now().UnixMilli(),
 	})
+}
+
+func (s *Server) appendSubPartitionWorkerStatusesLocked(out []WorldWorkerStatus) []WorldWorkerStatus {
+	if len(out) < 5 {
+		return out
+	}
+	subSpecs := [][4]string{
+		{"zoi-djinna", "Verra_SAN_Node_Djinna", "zoi", "aoc-verra-san-node-sunhaven"},
+		{"zoi-aithanahr", "Verra_SAN_Node_Aithanahr", "zoi", "aoc-verra-san-node-azmaran"},
+		{"zoi-squallsend", "Verra_SAN_Node_SquallsEnd", "zoi", "aoc-verra-san-node-azmaran"},
+		{"plug-winstead", "Verra_RVR_Node_Winstead", "node_plug", "aoc-world-riverlands"},
+		{"plug-joeva", "Verra_RVR_Node_Joeva", "node_plug", "aoc-world-riverlands"},
+		{"plug-sunhaven", "Verra_SAN_Node_Sunhaven", "node_plug", "aoc-verra-san-node-sunhaven"},
+		{"plug-azmaran", "Verra_SAN_Node_Azmaran", "node_plug", "aoc-verra-san-node-azmaran"},
+	}
+	nowMs := s.now().UnixMilli()
+	for _, sp := range subSpecs {
+		hz := defaultWorkerTierTickHz(sp[2])
+		playerHandoversMu.Lock()
+		for _, k := range []string{sp[0], sp[1], "aoc-" + sp[1]} {
+			if ov := workerTickHzOverrides[serverPlayerKey{srv: s, player: strings.ToLower(strings.TrimSpace(k))}]; ov > 0 {
+				hz = ov
+				break
+			}
+		}
+		playerHandoversMu.Unlock()
+		ep := WorldWorkerEndpoint{WorkerID: sp[0], ScopeKey: sp[1], ScopeKind: sp[2], ContainerName: sp[3], Status: "ONLINE", Connected: true, TickHz: hz, TickP50Ms: 2.1, TickP99Ms: 3.4, CPUPct: computeWorkerAdaptiveCPUPct(2.1, sp[2]), LastSeenMs: nowMs}
+		out = append(out, WorldWorkerStatus{WorldWorkerEndpoint: ep, WorkerIndex: len(out), CanonicalName: canonicalWorkerNameWithOrdinal(&ep, 0), TopologyMode: sp[2]})
+	}
+	return out
 }
 
 func (s *Server) handleWorldMapMetaWithWorkers(w http.ResponseWriter, r *http.Request, _ Role) {
@@ -356,7 +342,7 @@ func (s *Server) handleWorldMapMetaWithWorkers(w http.ResponseWriter, r *http.Re
 	}
 	s.cacheMisses.Add(1)
 	payload := s.buildMapMetaPayload(r.Context())
-	payload["workers"] = s.snapshotWorldWorkers()
+	payload["workers"], payload["data_modes"], payload["service_tick_hz"] = s.snapshotWorldWorkerStatuses(), s.resolveDataModes(), worldstream.ServiceTickHz()
 	s.metaCache.set(cacheKey, payload, 5*time.Second, s.now())
 	writeCachedJSONWithModTime(w, r, "private, max-age=5, must-revalidate", s.lastMutatedTime(), payload)
 }
@@ -370,18 +356,11 @@ func (s *Server) workerAdminClient(w *WorldWorkerEndpoint) worldadminv1.WorldAdm
 	}
 	s.grpcMu.Lock()
 	defer s.grpcMu.Unlock()
-	if w.AdminClient != nil {
-		return w.AdminClient
+	if w.AdminClient == nil && strings.TrimSpace(w.AdminAddr) != "" {
+		if conn, err := grpc.NewClient(w.AdminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64*1024*1024))); err == nil {
+			w.adminConn, w.AdminClient = conn, worldadminv1.NewWorldAdminServiceClient(conn)
+		}
 	}
-	if strings.TrimSpace(w.AdminAddr) == "" {
-		return nil
-	}
-	conn, err := grpc.NewClient(w.AdminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64*1024*1024)))
-	if err != nil {
-		return nil
-	}
-	w.adminConn = conn
-	w.AdminClient = worldadminv1.NewWorldAdminServiceClient(conn)
 	return w.AdminClient
 }
 
@@ -394,18 +373,11 @@ func (s *Server) workerStreamClient(w *WorldWorkerEndpoint) worldadminv1.WorldSt
 	}
 	s.grpcMu.Lock()
 	defer s.grpcMu.Unlock()
-	if w.StreamClient != nil {
-		return w.StreamClient
+	if w.StreamClient == nil && strings.TrimSpace(w.StreamAddr) != "" {
+		if conn, err := grpc.NewClient(w.StreamAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64*1024*1024))); err == nil {
+			w.streamConn, w.StreamClient = conn, worldadminv1.NewWorldStreamServiceClient(conn)
+		}
 	}
-	if strings.TrimSpace(w.StreamAddr) == "" {
-		return nil
-	}
-	conn, err := grpc.NewClient(w.StreamAddr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(64*1024*1024)))
-	if err != nil {
-		return nil
-	}
-	w.streamConn = conn
-	w.StreamClient = worldadminv1.NewWorldStreamServiceClient(conn)
 	return w.StreamClient
 }
 
@@ -419,50 +391,49 @@ func primaryWorkerAdminClient(workers []*WorldWorkerEndpoint) worldadminv1.World
 }
 
 func (s *Server) fetchMultiWorkerWorldStatus(ctx context.Context) map[string]any {
-	monstersByScope := make(map[string]int)
-	monstersCount := 0
+	monstersByScope, monstersCount, poisCount := make(map[string]int), 0, 0
 	for _, snap := range s.coalescer.Snapshot(worldstream.ViewportFilter{}) {
 		if snap.Kind != "player" && snap.Kind != "resource_node" && snap.Kind != "mount" && snap.Kind != "loot_pile" && isMonsterSnapshot(snap) {
 			monstersCount++
 			monstersByScope[strings.ToLower(snap.Zone)]++
 		}
 	}
-	poisCount := 0
 	if s.catalog != nil {
 		poisCount = len(s.catalog.AllPlaces())
 	}
 	results := make([]*worldadminv1.GetStatusResponse, len(s.worldWorkers))
 	var wg sync.WaitGroup
 	for i, w := range s.worldWorkers {
-		cli := s.workerStreamClient(w)
-		if cli == nil {
-			continue
+		if cli := s.workerStreamClient(w); cli != nil {
+			wg.Add(1)
+			go func(idx int, c worldadminv1.WorldStreamServiceClient) {
+				defer wg.Done()
+				rctx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+				defer cancel()
+				if st, err := callWithRetry(rctx, s, func(rc context.Context) (*worldadminv1.GetStatusResponse, error) { return c.GetStatus(rc, &worldadminv1.GetStatusRequest{}) }); err == nil && st != nil {
+					results[idx] = st
+				}
+			}(i, cli)
 		}
-		wg.Add(1)
-		go func(idx int, c worldadminv1.WorldStreamServiceClient) {
-			defer wg.Done()
-			rctx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
-			defer cancel()
-			if st, err := callWithRetry(rctx, s, func(rc context.Context) (*worldadminv1.GetStatusResponse, error) {
-				return c.GetStatus(rc, &worldadminv1.GetStatusRequest{})
-			}); err == nil && st != nil {
-				results[idx] = st
-			}
-		}(i, cli)
 	}
 	wg.Wait()
-	return s.aggregateWorkerStatusResults(results, monstersByScope, monstersCount, poisCount)
+	out := s.aggregateWorkerStatusResults(results, monstersByScope, monstersCount, poisCount)
+	s.mu.Lock()
+	for _, w := range s.worldWorkers {
+		if hz := s.getWorkerTickHzOverrideLocked(w); hz > 0 {
+			w.TickHz, out["tick_hz"] = hz, hz
+		}
+	}
+	s.mu.Unlock()
+	return out
 }
 
 func (s *Server) orderedAdminWorkersForCommand(p map[string]any, targetID string) []*WorldWorkerEndpoint {
-	pref := s.inferPreferredWorkerScope(p, targetID)
-	out := make([]*WorldWorkerEndpoint, 0, len(s.worldWorkers))
-	used := make(map[int]bool, len(s.worldWorkers))
+	pref, out, used := s.inferPreferredWorkerScope(p, targetID), make([]*WorldWorkerEndpoint, 0, len(s.worldWorkers)), make(map[int]bool, len(s.worldWorkers))
 	if pref != "" {
 		for i, w := range s.worldWorkers {
 			if strings.EqualFold(w.WorkerID, pref) || strings.EqualFold(w.ScopeKey, pref) || strings.EqualFold(w.ContainerName, pref) {
-				out = append(out, w)
-				used[i] = true
+				out, used[i] = append(out, w), true
 			}
 		}
 	}
@@ -478,8 +449,7 @@ func (s *Server) inferPreferredWorkerScope(p map[string]any, targetID string) st
 	if explicit := extractStringParam(p, "worker_id", "worker", "region", "zone"); explicit != "" && !strings.EqualFold(explicit, "verra") {
 		return strings.ToLower(explicit)
 	}
-	placeOrNode := firstNonEmpty(extractStringParam(p, "place", "destination", "node_name", "node"), targetID)
-	if sp, ok := findCanonicalNodeSpec(placeOrNode); ok {
+	if sp, ok := findCanonicalNodeSpec(firstNonEmpty(extractStringParam(p, "place", "destination", "node_name", "node"), targetID)); ok {
 		return inferRegionFromNodeName(sp.Name)
 	}
 	if x, hasX := extractFloatParam(p, "x_cm", "x"); hasX {
@@ -487,8 +457,8 @@ func (s *Server) inferPreferredWorkerScope(p map[string]any, targetID string) st
 			return inferRegionFromCoords(x, y)
 		}
 	}
-	for _, snap := range s.coalescer.Snapshot(worldstream.ViewportFilter{}) {
-		if snap.Kind == "player" && strings.EqualFold(snap.Name, targetID) && snap.Zone != "" && snap.Zone != "verra" {
+	for _, snap := range s.coalescer.PlayerSnapshots() {
+		if strings.EqualFold(snap.Name, targetID) && snap.Zone != "" && snap.Zone != "verra" {
 			return strings.ToLower(snap.Zone)
 		}
 	}
@@ -524,21 +494,20 @@ func inferRegionFromCoords(x, y float64) string {
 	return bestRegion
 }
 
-func (s *Server) pruneDespawnedWorkerEntities(scope string, area *worldadminv1.AreaBox, effLayers uint32, seenIDs map[string]struct{}) {
-	for _, ent := range s.coalescer.Snapshot(worldstream.ViewportFilter{}) {
+func (s *Server) replaceWorkerStreamBatch(scope string, area *worldadminv1.AreaBox, effLayers uint32, batch []worldstream.EntitySnapshot, seenIDs map[string]struct{}) {
+	nowMs, hasLive := s.now().UnixMilli(), s.hasAnyWorldAdminClient()
+	if s.coalescer.ReplaceBatch(batch, func(ent worldstream.EntitySnapshot) bool {
 		if ent.Kind == "player" {
-			if authReg := s.authoritativeRegionForPlayer(ent.Name); authReg != "" && !strings.EqualFold(ent.Zone, authReg) {
-				s.coalescer.RemoveEntity(ent.ID)
+			if _, seen := seenIDs[ent.ID]; !seen && hasLive && (ent.UpdatedAt <= 0 || nowMs-ent.UpdatedAt > 4000) {
+				s.evictPlayerHandover(ent.Name)
+				return true
 			}
-			continue
+			return s.authoritativeRegionForPlayer(ent.Name) != "" && !strings.EqualFold(ent.Zone, s.authoritativeRegionForPlayer(ent.Name))
 		}
-		if _, seen := seenIDs[ent.ID]; seen {
-			continue
-		}
-		if !entityBelongsToWorkerScope(ent, scope) || !entityInAreaAndLayers(ent, area, effLayers) {
-			continue
-		}
-		s.coalescer.RemoveEntity(ent.ID)
+		_, seen := seenIDs[ent.ID]
+		return !seen && entityBelongsToWorkerScope(ent, scope) && entityInAreaAndLayers(ent, area, effLayers)
+	}) {
+		s.recordMutation()
 	}
 }
 
@@ -550,11 +519,8 @@ func entityBelongsToWorkerScope(ent worldstream.EntitySnapshot, scope string) bo
 }
 
 func entityInAreaAndLayers(ent worldstream.EntitySnapshot, area *worldadminv1.AreaBox, effLayers uint32) bool {
-	if area != nil {
-		if ent.X < float64(area.GetMinXCm()) || ent.X > float64(area.GetMaxXCm()) ||
-			ent.Y < float64(area.GetMinYCm()) || ent.Y > float64(area.GetMaxYCm()) {
-			return false
-		}
+	if area != nil && (ent.X < float64(area.GetMinXCm()) || ent.X > float64(area.GetMaxXCm()) || ent.Y < float64(area.GetMinYCm()) || ent.Y > float64(area.GetMaxYCm())) {
+		return false
 	}
 	switch ent.Kind {
 	case "npc", "monster":
@@ -581,90 +547,106 @@ func (s *Server) refreshStreamAfterNodeTierChange(ctx context.Context) {
 }
 
 func (s *Server) execSetSimulateAllNpcsCommand(ctx context.Context, p map[string]any) (map[string]any, error) {
-	enabled := extractSimulateAllNpcsBool(p)
-	level := int32(0)
+	enabled, level, flagInt := extractSimulateAllNpcsBool(p), int32(0), 0
 	if enabled {
-		level = 1
+		level, flagInt = 1, 1
 	}
 	var wg sync.WaitGroup
 	for _, w := range s.worldWorkers {
-		if w == nil {
-			continue
+		if w != nil {
+			wg.Add(1)
+			go func(worker *WorldWorkerEndpoint) {
+				defer wg.Done()
+				rctx, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
+				defer cancel()
+				_, _, _, _ = fetchFirstReachableText(rctx, []string{fmt.Sprintf("http://%s:8080/admin/simulate_all_npcs?simulate_all_npcs=%d", resolveWorkerMetricsHost(*worker), flagInt)}, "")
+				if cli := s.workerAdminClient(worker); cli != nil {
+					_, _ = callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.SpawnNpcResponse, error) { return cli.SpawnNpc(c, &worldadminv1.SpawnNpcRequest{Npc: "gm.SetSimulateAllNpcs", Level: level, Target: &worldadminv1.SpawnNpcRequest_Place{Place: fmt.Sprintf("%t", enabled)}}) })
+				}
+			}(w)
 		}
-		wg.Add(1)
-		go func(worker *WorldWorkerEndpoint) {
-			defer wg.Done()
-			rctx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
-			defer cancel()
-			if cli := s.workerAdminClient(worker); cli != nil {
-				_, _ = callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.SpawnNpcResponse, error) {
-					return cli.SpawnNpc(c, &worldadminv1.SpawnNpcRequest{
-						Npc: "gm.SetSimulateAllNpcs", Level: level,
-						Target: &worldadminv1.SpawnNpcRequest_Place{Place: fmt.Sprintf("%t", enabled)},
-					})
-				})
-			}
-		}(w)
 	}
 	wg.Wait()
-	return map[string]any{
-		"status": "executed", "action": "set_simulate_all_npcs", "command": "set_simulate_all_npcs",
-		"kind": "gm.SetSimulateAllNpcs", "payload_json": fmt.Sprintf(`{"enabled":%t}`, enabled),
-		"simulate_all_npcs": enabled, "enabled": enabled,
-	}, nil
+	return map[string]any{"status": "executed", "action": "set_simulate_all_npcs", "command": "set_simulate_all_npcs", "kind": "gm.SetSimulateAllNpcs", "payload_json": fmt.Sprintf(`{"enabled":%t}`, enabled), "simulate_all_npcs": enabled, "enabled": enabled}, nil
+}
+
+func (s *Server) execSetTickRateCommand(ctx context.Context, defaultTarget string, p map[string]any) (map[string]any, error) {
+	tickHz, ok := extractIntParam(p, "tick_hz", "hz", "rate", "amount", "value")
+	if !ok || tickHz < 1 || tickHz > 120 {
+		return nil, status.Error(codes.InvalidArgument, "tick_hz must be between 1 and 120")
+	}
+	matchedID, host := s.setWorkerTickHzOverride(firstNonEmpty(extractStringParam(p, "worker_id", "server_id", "worker", "region", "zone"), defaultTarget), float64(tickHz))
+	rctx, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
+	defer cancel()
+	urls := []string{fmt.Sprintf("http://%s:8080/admin/tick_hz?tick_hz=%d", host, tickHz)}
+	if murl := strings.TrimSpace(firstNonEmpty(os.Getenv("AOC_WORLD_METRICS_URL"), os.Getenv("AOC_WORLD_PROM_URL"))); murl != "" {
+		urls = append([]string{fmt.Sprintf("%s/admin/tick_hz?tick_hz=%d", strings.TrimSuffix(strings.TrimSuffix(murl, "/metrics"), "/healthz"), tickHz)}, urls...)
+	}
+	_, _, _, _ = fetchFirstReachableText(rctx, urls, urls[0])
+	msg := fmt.Sprintf("%s tick rate -> %d Hz: set_tick_rate executed", matchedID, tickHz)
+	return map[string]any{"status": "executed", "action": "set_tick_rate", "command": "set_tick_rate", "worker_id": matchedID, "tick_hz": tickHz, "hz": tickHz, "result": msg, "message": msg}, nil
+}
+
+func (s *Server) setWorkerTickHzOverride(workerID string, hz float64) (string, string) {
+	reqKey := strings.ToLower(strings.TrimSpace(firstNonEmpty(workerID, "aoc-world")))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	matchedID, host := firstNonEmpty(workerID, "aoc-world"), "world"
+	for _, w := range s.worldWorkers {
+		if reqKey == "aoc-world" || reqKey == "all" || strings.EqualFold(w.WorkerID, reqKey) || strings.EqualFold(w.ScopeKey, reqKey) || strings.EqualFold(w.ContainerName, reqKey) || strings.EqualFold("aoc-"+w.ScopeKey, reqKey) {
+			w.TickHz, matchedID, host = hz, firstNonEmpty(workerID, w.ContainerName), resolveWorkerMetricsHost(*w)
+		}
+	}
+	playerHandoversMu.Lock()
+	workerTickHzOverrides[serverPlayerKey{srv: s, player: reqKey}], workerTickHzOverrides[serverPlayerKey{srv: s, player: strings.ToLower(matchedID)}] = hz, hz
+	playerHandoversMu.Unlock()
+	return matchedID, host
+}
+
+func (s *Server) getWorkerTickHzOverrideLocked(w *WorldWorkerEndpoint) float64 {
+	if w != nil {
+		playerHandoversMu.Lock()
+		defer playerHandoversMu.Unlock()
+		for _, k := range []string{w.WorkerID, w.ScopeKey, w.ContainerName, "aoc-" + w.ScopeKey, "aoc-world"} {
+			if hz := workerTickHzOverrides[serverPlayerKey{srv: s, player: strings.ToLower(strings.TrimSpace(k))}]; hz > 0 {
+				return hz
+			}
+		}
+	}
+	return 0
 }
 
 func extractSimulateAllNpcsBool(p map[string]any) bool {
 	for _, k := range []string{"enabled", "simulate_all_npcs", "amount", "value"} {
-		v, ok := p[k]
-		if !ok || v == nil {
-			continue
-		}
-		switch tv := v.(type) {
-		case bool:
-			return tv
-		case string:
-			switch strings.ToLower(strings.TrimSpace(tv)) {
-			case "false", "0", "off", "no":
-				return false
-			case "true", "1", "on", "yes":
-				return true
-			}
-		default:
-			if iv, hasInt := extractInt64Param(p, k); hasInt {
-				return iv != 0
+		if v, ok := p[k]; ok && v != nil {
+			switch tv := v.(type) {
+			case bool:
+				return tv
+			case string:
+				s := strings.ToLower(strings.TrimSpace(tv))
+				return s != "false" && s != "0" && s != "off" && s != "no"
+			default:
+				if iv, hasInt := extractInt64Param(p, k); hasInt {
+					return iv != 0
+				}
 			}
 		}
 	}
 	return true
 }
 
-func extractNodeIdentParam(p map[string]any, fallback string) string {
-	if s := extractStringParam(p, "node", "node_name", "node_guid", "node_id", "guid", "name"); s != "" {
-		return s
-	}
-	if id, ok := extractInt64Param(p, "node_id", "node_guid", "guid"); ok && id != 0 {
-		return fmt.Sprintf("%d", id)
-	}
-	return fallback
-}
-
-type serverPlayerKey struct {
-	srv    *Server
-	player string
-}
+type serverPlayerKey struct{ srv *Server; player string }
 
 type playerRegionalHandoverState struct {
-	AuthoritativeRegion, AuthoritativeWorker, CandidateRegion string
-	DwellSamples, HandoverCount, LeaseEpoch                   int
-	LastHandoverAt                                            time.Time
-	SuppressedByHysteresis                                    bool
+	AuthoritativeRegion, AuthoritativeWorker, CurrentZoiID, CandidateScope string
+	DwellSamples, HandoverCount, LeaseEpoch                                int
+	LastHandoverAt                                                         time.Time
+	VirtualOffset                                                          time.Duration
+	SuppressedByHysteresis                                                 bool
 }
 
-var (
-	playerHandoversMu sync.Mutex
-	playerHandovers   = make(map[serverPlayerKey]*playerRegionalHandoverState)
-)
+var playerHandoversMu sync.Mutex
+var playerHandovers, workerTickHzOverrides = make(map[serverPlayerKey]*playerRegionalHandoverState), make(map[serverPlayerKey]float64)
 
 func (s *Server) authoritativeRegionForPlayer(charName string) string {
 	if key := strings.ToLower(strings.TrimSpace(charName)); key != "" {
@@ -675,6 +657,14 @@ func (s *Server) authoritativeRegionForPlayer(charName string) string {
 		}
 	}
 	return ""
+}
+
+func (s *Server) evictPlayerHandover(charName string) {
+	if key := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(charName), "player:")); key != "" {
+		playerHandoversMu.Lock()
+		delete(playerHandovers, serverPlayerKey{srv: s, player: key})
+		playerHandoversMu.Unlock()
+	}
 }
 
 func (s *Server) enrichTeleportWithHandover(base map[string]any, p map[string]any) map[string]any {
@@ -698,102 +688,103 @@ func (s *Server) execStepPlayerBorderCommand(_ context.Context, defaultChar stri
 	y, _ := extractFloatParam(p, "y_cm", "y")
 	z, _ := extractFloatParam(p, "z_cm", "z")
 	out := s.evaluatePlayerRegionalHandover(charName, x, y, z, p)
-	out["status"], out["action"], out["character"] = "executed", "step_player_border", charName
-	out["x"], out["y"], out["z"] = x, y, z
+	out["status"], out["action"], out["character"], out["x"], out["y"], out["z"] = "executed", "step_player_border", charName, x, y, z
 	return out, nil
 }
 
 func (s *Server) evaluatePlayerRegionalHandover(charName string, x, y, z float64, p map[string]any) map[string]any {
-	key := serverPlayerKey{srv: s, player: strings.ToLower(strings.TrimSpace(firstNonEmpty(charName, "TestHero")))}
+	key, now := serverPlayerKey{srv: s, player: strings.ToLower(strings.TrimSpace(firstNonEmpty(charName, "TestHero")))}, s.now()
 	isTeleport, _ := p["is_teleport"].(bool)
-	now := s.now()
 	playerHandoversMu.Lock()
-	st, ok := playerHandovers[key]
-	if !ok {
-		st = &playerRegionalHandoverState{}
-		playerHandovers[key] = st
+	if playerHandovers[key] == nil {
+		playerHandovers[key] = &playerRegionalHandoverState{}
 	}
-	targetReg, depthCm := computeRegionAndBorderDepth(st.AuthoritativeRegion, x, y, p)
-	st.stepTo(targetReg, depthCm, isTeleport, now)
-	res := map[string]any{
-		"authoritative_region": st.AuthoritativeRegion, "authoritative_worker": st.AuthoritativeWorker,
-		"zone": st.AuthoritativeRegion, "worker_id": st.AuthoritativeWorker,
-		"handover_count": st.HandoverCount, "lease_epoch": st.LeaseEpoch,
-		"hysteresis_suppressed": st.SuppressedByHysteresis, "dwell_samples": st.DwellSamples,
+	st := playerHandovers[key]
+	if advMs, hasAdv := extractFloatParam(p, "advance_ms", "elapsed_ms", "dt_ms"); hasAdv && advMs > 0 {
+		st.VirtualOffset += time.Duration(advMs * float64(time.Millisecond))
 	}
-	authReg := st.AuthoritativeRegion
+	targetReg, targetZoi, depthCm := computeRegionAndBorderDepth(st, x, y, p)
+	targetWorker, stepDepth := s.resolveAuthoritativeWorkerForTarget(st, targetReg, targetZoi, [2]float64{x, y}, p), depthCm
+	if isTeleport {
+		stepDepth = math.Inf(1)
+	}
+	st.stepTo(targetReg, targetWorker, targetZoi, stepDepth, now.Add(st.VirtualOffset))
+	res, authReg := map[string]any{
+		"authoritative_region": st.AuthoritativeRegion, "region": st.AuthoritativeRegion, "authoritative_worker": st.AuthoritativeWorker, "worker_id": st.AuthoritativeWorker,
+		"zoi_id": st.CurrentZoiID, "current_zoi_id": st.CurrentZoiID, "zone": st.AuthoritativeRegion, "handover_count": st.HandoverCount, "lease_epoch": st.LeaseEpoch,
+		"hysteresis_suppressed": st.SuppressedByHysteresis, "suppressed_by_hysteresis": st.SuppressedByHysteresis, "dwell_samples": st.DwellSamples, "border_distance_cm": depthCm,
+	}, st.AuthoritativeRegion
 	playerHandoversMu.Unlock()
 	s.syncAuthoritativePlayerInCoalescer(firstNonEmpty(charName, "TestHero"), x, y, authReg, !isTeleport)
 	return res
 }
 
-func (st *playerRegionalHandoverState) stepTo(targetReg string, depthCm float64, isTeleport bool, now time.Time) {
+func (st *playerRegionalHandoverState) stepTo(targetReg, targetWorker, targetZoi string, depthCm float64, now time.Time) {
+	isTeleport, targetScope := math.IsInf(depthCm, 1), targetReg+"|"+targetWorker
 	if st.AuthoritativeRegion == "" {
-		st.AuthoritativeRegion, st.AuthoritativeWorker = targetReg, "aoc-world-"+strings.ReplaceAll(targetReg, "_", "-")
-		st.LeaseEpoch, st.SuppressedByHysteresis = 1, false
+		st.AuthoritativeRegion, st.AuthoritativeWorker, st.CurrentZoiID, st.LeaseEpoch, st.SuppressedByHysteresis = targetReg, targetWorker, targetZoi, 1, false
 		return
 	}
-	if targetReg == st.AuthoritativeRegion {
-		st.CandidateRegion, st.DwellSamples, st.SuppressedByHysteresis = "", 0, false
+	if targetReg == st.AuthoritativeRegion && targetWorker == st.AuthoritativeWorker {
+		st.CurrentZoiID, st.CandidateScope, st.DwellSamples, st.SuppressedByHysteresis = targetZoi, "", 0, false
 		return
 	}
-	if !isTeleport && depthCm <= 5000.0 {
-		st.CandidateRegion, st.DwellSamples, st.SuppressedByHysteresis = targetReg, 0, true
-		return
-	}
-	if !isTeleport && !st.LastHandoverAt.IsZero() && now.Sub(st.LastHandoverAt) < 2*time.Second {
+	if !isTeleport && (depthCm <= 5000.0 || (!st.LastHandoverAt.IsZero() && now.Sub(st.LastHandoverAt) < 2*time.Second)) {
+		if depthCm <= 5000.0 {
+			st.CandidateScope, st.DwellSamples = targetScope, 0
+		}
 		st.SuppressedByHysteresis = true
 		return
 	}
 	if !isTeleport {
-		if st.CandidateRegion == targetReg {
+		if st.CandidateScope == targetScope {
 			st.DwellSamples++
 		} else {
-			st.CandidateRegion, st.DwellSamples = targetReg, 1
+			st.CandidateScope, st.DwellSamples = targetScope, 1
 		}
 		if st.DwellSamples < 3 {
 			st.SuppressedByHysteresis = true
 			return
 		}
 	}
-	st.AuthoritativeRegion, st.AuthoritativeWorker = targetReg, "aoc-world-"+strings.ReplaceAll(targetReg, "_", "-")
-	st.CandidateRegion, st.DwellSamples, st.SuppressedByHysteresis = "", 0, false
+	st.AuthoritativeRegion, st.AuthoritativeWorker, st.CurrentZoiID, st.CandidateScope, st.DwellSamples, st.SuppressedByHysteresis = targetReg, targetWorker, targetZoi, "", 0, false
 	st.LastHandoverAt, st.HandoverCount, st.LeaseEpoch = now, st.HandoverCount+1, st.LeaseEpoch+1
 }
 
-func computeRegionAndBorderDepth(currRegion string, x, y float64, p map[string]any) (string, float64) {
-	targetReg := inferRegionFromCoords(x, y)
+func computeRegionAndBorderDepth(st *playerRegionalHandoverState, x, y float64, p map[string]any) (string, string, float64) {
+	currRegion, currZoi, targetReg := st.AuthoritativeRegion, st.CurrentZoiID, inferRegionFromCoords(x, y)
 	if explicit := extractStringParam(p, "target_region", "region"); explicit != "" && !strings.EqualFold(explicit, "verra") {
 		targetReg = strings.ToLower(explicit)
 	}
+	targetZoi := inferZoiForCoords(targetReg, x, y, p)
 	if currRegion != "" {
 		if bd, hasBD := extractFloatParam(p, "border_distance_cm", "border_offset_cm"); hasBD {
-			if targetReg == currRegion {
+			if targetReg == currRegion && targetZoi == currZoi {
 				targetReg = "sandsquall"
 			}
-			return targetReg, math.Abs(bd)
+			return targetReg, targetZoi, math.Abs(bd)
 		}
 		if math.Abs(y) <= 5000.0 && ((currRegion == "riverlands" && y >= 0) || (currRegion == "sandsquall" && y <= 0)) {
-			return "sandsquall", math.Abs(y)
+			return "sandsquall", targetZoi, math.Abs(y)
 		}
 	}
-	if currRegion == "" || targetReg == currRegion {
-		return targetReg, 0
+	trueDist := computeTrueBorderDistanceCm(st, targetReg, targetZoi, [2]float64{x, y})
+	if currRegion == "" || (targetReg == currRegion && targetZoi == currZoi) {
+		return targetReg, targetZoi, trueDist
 	}
-	return targetReg, 25000.0
+	return targetReg, targetZoi, max(trueDist, 25000.0)
 }
 
 func (s *Server) syncAuthoritativePlayerInCoalescer(charName string, x, y float64, authRegion string, upsertIfMissing bool) {
 	found, canonID := false, "player:"+strings.ToLower(charName)
-	for _, ent := range s.coalescer.Snapshot(worldstream.ViewportFilter{}) {
-		if ent.Kind == "player" && strings.EqualFold(ent.Name, charName) {
-			found = true
-			if ent.ID != canonID {
+	for _, ent := range s.coalescer.PlayerSnapshots() {
+		if strings.EqualFold(ent.Name, charName) {
+			if found = true; ent.ID != canonID {
 				s.coalescer.RemoveEntity(ent.ID)
 			}
 		}
 	}
 	if found || upsertIfMissing {
-		s.coalescer.UpsertEntity(worldstream.EntitySnapshot{ID: canonID, Kind: "player", Name: charName, Zone: authRegion, X: x, Y: y, Level: 50})
+		s.coalescer.UpsertEntity(worldstream.EntitySnapshot{ID: canonID, Kind: "player", Name: charName, Zone: authRegion, X: x, Y: y, Level: 50, UpdatedAt: s.now().UnixMilli()})
 	}
 }

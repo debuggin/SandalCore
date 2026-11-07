@@ -203,6 +203,10 @@ struct ClientTimes {
     double synchronized_time = 0;
 };
 ClientTimes client_times(double world_time);
+void set_global_time_of_day_hours(double hours) noexcept;
+double global_time_of_day_hours() noexcept;
+bool has_global_time_of_day_override() noexcept;
+uint64_t global_time_of_day_epoch() noexcept;
 
 // ---- the storages ------------------------------------------------------------------------------------------------------
 

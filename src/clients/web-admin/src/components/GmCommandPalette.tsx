@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import React from "react";
+import {
+  buildAdminAuthHeaders,
+  getRetryResetEpoch,
+  handleUnauthorizedStatus,
+  registerPendingRetryTimer,
+  RETRY_MAX_DELAY_MS,
+  subscribeRetryReset,
+} from "../state/adminAuthClient";
 import { nodeLevelToPlugTier } from "../state/worldStreamStore";
 
 export type GmCommandDomain =
@@ -49,138 +57,30 @@ export const ITEM_RARITIES: readonly ItemRarity[] = Object.freeze([
   "Legendary",
 ]);
 
-export interface TeleportToPlayerCommand {
-  readonly command: "teleport_player";
-  readonly character: string;
-  readonly target_player: string;
+export interface TeleportToPlayerCommand { readonly command: "teleport_player"; readonly character: string; readonly target_player: string; }
+export interface TeleportToPlaceCommand { readonly command: "teleport_player"; readonly character: string; readonly place: string; }
+export interface TeleportToCoordsCommand { readonly command: "teleport_player"; readonly character: string; readonly x_cm: number; readonly y_cm: number; readonly z_cm: number; }
+export type TeleportPlayerCommandPayload = TeleportToPlayerCommand | TeleportToPlaceCommand | TeleportToCoordsCommand;
+export interface TeleportPlayerInput { readonly character: string; readonly target_player?: string; readonly place?: string; readonly x_cm?: number; readonly y_cm?: number; readonly z_cm?: number; }
+export interface GiveMoneyCommand { readonly command: "give_money"; readonly character: string; readonly gold: number; readonly silver: number; readonly copper: number; }
+export interface GrantItemCommand { readonly command: "grant_item"; readonly character: string; readonly item: string; readonly count: number; readonly rarity: ItemRarity; }
+export interface SpawnNpcCommandInput { readonly npc: string; readonly level?: number; readonly place?: string; readonly x_cm?: number; readonly y_cm?: number; readonly z_cm?: number; }
+export interface SpawnNpcCommand { readonly command: "spawn_npc"; readonly npc: string; readonly place: string; readonly x_cm: number; readonly y_cm: number; readonly z_cm: number; readonly level: number; }
+export interface SetNodeLevelCommand { readonly command: "set_node_level"; readonly node: string; readonly level: number; readonly plug_tier: number; }
+export interface SetTimeOfDayCommand { readonly command: "set_time_of_day"; readonly hour: number; readonly reason: string; }
+
+export function buildSetTimeOfDayCommand(hour: number, reason = "Operator updated server time of day"): SetTimeOfDayCommand {
+  const cleanHour = ((Number.isFinite(hour) ? hour : 12) % 24 + 24) % 24;
+  return { command: "set_time_of_day", hour: cleanHour, reason };
 }
 
-export interface TeleportToPlaceCommand {
-  readonly command: "teleport_player";
-  readonly character: string;
-  readonly place: string;
-}
-
-export interface TeleportToCoordsCommand {
-  readonly command: "teleport_player";
-  readonly character: string;
-  readonly x_cm: number;
-  readonly y_cm: number;
-  readonly z_cm: number;
-}
-
-export type TeleportPlayerCommandPayload =
-  | TeleportToPlayerCommand
-  | TeleportToPlaceCommand
-  | TeleportToCoordsCommand;
-
-export interface TeleportPlayerInput {
-  readonly character: string;
-  readonly target_player?: string;
-  readonly place?: string;
-  readonly x_cm?: number;
-  readonly y_cm?: number;
-  readonly z_cm?: number;
-}
-
-export interface GiveMoneyCommand {
-  readonly command: "give_money";
-  readonly character: string;
-  readonly gold: number;
-  readonly silver: number;
-  readonly copper: number;
-}
-
-export interface GrantItemCommand {
-  readonly command: "grant_item";
-  readonly character: string;
-  readonly item: string;
-  readonly count: number;
-  readonly rarity: ItemRarity;
-}
-
-export interface SpawnNpcCommandInput {
-  readonly npc: string;
-  readonly level?: number;
-  readonly place?: string;
-  readonly x_cm?: number;
-  readonly y_cm?: number;
-  readonly z_cm?: number;
-}
-
-export interface SpawnNpcCommand {
-  readonly command: "spawn_npc";
-  readonly npc: string;
-  readonly place: string;
-  readonly x_cm: number;
-  readonly y_cm: number;
-  readonly z_cm: number;
-  readonly level: number;
-}
-
-export interface SetNodeLevelCommand {
-  readonly command: "set_node_level";
-  readonly node: string;
-  readonly level: number;
-  readonly plug_tier: number;
-}
-
-export type GmActionCommandPayload =
-  | TeleportPlayerCommandPayload
-  | GiveMoneyCommand
-  | GrantItemCommand
-  | SpawnNpcCommand
-  | SetNodeLevelCommand;
-
-export interface PaginatedQueryParams {
-  readonly q?: string;
-  readonly limit?: number;
-  readonly offset?: number;
-  readonly extra?: Readonly<Record<string, string | number>>;
-}
-
-export interface PaginatedListEnvelope<T> {
-  readonly items: readonly T[];
-  readonly total: number;
-  readonly limit: number;
-  readonly offset: number;
-  readonly has_more: boolean;
-  readonly next_cursor: string | null;
-}
-
-export interface Rfc9457ProblemDetails {
-  readonly type: string;
-  readonly title: string;
-  readonly status: number;
-  readonly detail: string;
-  readonly instance?: string;
-  readonly code?: string;
-}
-
-export interface GmCommandDefinition {
-  readonly name: GmCommandName;
-  readonly domain: GmCommandDomain;
-  readonly minRole: GmRole;
-  readonly description: string;
-  readonly keywords: readonly string[];
-}
-
-export interface GmCatalogItem {
-  readonly id: string;
-  readonly label: string;
-  readonly category: "npc" | "item" | "node" | "weather";
-  readonly command: GmCommandName;
-}
-
-export interface GmPaletteOption {
-  readonly id: string;
-  readonly command: GmCommandName;
-  readonly domain: GmCommandDomain;
-  readonly minRole: GmRole;
-  readonly label: string;
-  readonly score: number;
-  readonly catalogItemId: string | null;
-}
+export type GmActionCommandPayload = TeleportPlayerCommandPayload | GiveMoneyCommand | GrantItemCommand | SpawnNpcCommand | SetNodeLevelCommand | SetTimeOfDayCommand;
+export interface PaginatedQueryParams { readonly q?: string; readonly limit?: number; readonly offset?: number; readonly extra?: Readonly<Record<string, string | number>>; }
+export interface PaginatedListEnvelope<T> { readonly items: readonly T[]; readonly total: number; readonly limit: number; readonly offset: number; readonly has_more: boolean; readonly next_cursor: string | null; }
+export interface Rfc9457ProblemDetails { readonly type: string; readonly title: string; readonly status: number; readonly detail: string; readonly instance?: string; readonly code?: string; }
+export interface GmCommandDefinition { readonly name: GmCommandName; readonly domain: GmCommandDomain; readonly minRole: GmRole; readonly description: string; readonly keywords: readonly string[]; }
+export interface GmCatalogItem { readonly id: string; readonly label: string; readonly category: "npc" | "item" | "node" | "weather"; readonly command: GmCommandName; }
+export interface GmPaletteOption { readonly id: string; readonly command: GmCommandName; readonly domain: GmCommandDomain; readonly minRole: GmRole; readonly label: string; readonly score: number; readonly catalogItemId: string | null; }
 
 export interface GmCommandEnvelope {
   readonly endpoint: "/api/v1/gm/command";
@@ -373,6 +273,40 @@ export function buildPaginatedQueryUrl(basePath: string, params: PaginatedQueryP
   return parts.length > 0 ? `${basePath}?${parts.join("&")}` : basePath;
 }
 
+export function formatLogEntryToString(entry: unknown): string {
+  if (typeof entry === "string") return entry;
+  if (entry === null || entry === undefined) return "";
+  if (typeof entry !== "object") return String(entry);
+  const obj = entry as Record<string, unknown>;
+  if (typeof obj.raw === "string" && obj.raw.trim().length > 0) {
+    return obj.raw.trimEnd();
+  }
+  const ts =
+    typeof obj.timestamp === "string" && obj.timestamp.trim().length > 0
+      ? obj.timestamp.trim()
+      : typeof obj.time === "string" && obj.time.trim().length > 0
+        ? obj.time.trim()
+        : "";
+  const container = typeof obj.container === "string" ? obj.container.trim() : "";
+  const stream = typeof obj.stream === "string" ? obj.stream.trim() : "";
+  const level = typeof obj.level === "string" ? obj.level.trim().toUpperCase() : "";
+  const message =
+    typeof obj.message === "string"
+      ? obj.message
+      : typeof obj.msg === "string"
+        ? obj.msg
+        : "";
+  const prefix = [ts, container, stream, level].filter((p) => p.length > 0).join(" | ");
+  if (message.length > 0) {
+    return prefix.length > 0 ? `[${prefix}] ${message}` : message;
+  }
+  try {
+    return JSON.stringify(obj);
+  } catch {
+    return "";
+  }
+}
+
 export function normalizePaginatedEnvelope<T>(
   raw: unknown,
   fallbackKeys: readonly string[] = ["players", "places", "npcs", "containers", "lines"],
@@ -380,14 +314,25 @@ export function normalizePaginatedEnvelope<T>(
   defaultOffset = 0,
 ): PaginatedListEnvelope<T> {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  let items: readonly T[] = Array.isArray(obj.items) ? (obj.items as readonly T[]) : [];
-  if (items.length === 0) {
-    for (const key of fallbackKeys) {
-      if (Array.isArray(obj[key])) {
-        items = obj[key] as readonly T[];
-        break;
-      }
+  let items: readonly T[] = [];
+  let matchedKey = false;
+  for (const key of fallbackKeys) {
+    if (Array.isArray(obj[key])) {
+      items = obj[key] as readonly T[];
+      matchedKey = true;
+      break;
     }
+  }
+  if (!matchedKey && Array.isArray(obj.items)) {
+    items = obj.items as readonly T[];
+  }
+  if (
+    fallbackKeys[0] === "lines" &&
+    items.length > 0 &&
+    typeof items[0] === "object" &&
+    items[0] !== null
+  ) {
+    items = items.map((entry) => formatLogEntryToString(entry)) as unknown as readonly T[];
   }
   const limit = typeof obj.limit === "number" && Number.isFinite(obj.limit) ? obj.limit : defaultLimit;
   const offset = typeof obj.offset === "number" && Number.isFinite(obj.offset) ? obj.offset : defaultOffset;
@@ -434,15 +379,81 @@ export const MAX_TRANSIENT_RETRIES = 2;
 export interface TransientRetryOptions {
   readonly maxRetries?: number;
   readonly baseDelayMs?: number;
+  readonly maxDelayMs?: number;
   readonly fetchImpl?: typeof fetch;
   readonly correlationId?: string;
 }
 
-export function computeBackoffWithJitterMs(attempt: number, baseDelayMs = 25, jitterSeed = 0.5): number {
-  const cleanAttempt = Math.max(0, Math.min(6, Math.trunc(attempt)));
-  const expMs = Math.max(1, baseDelayMs) * Math.pow(2, cleanAttempt);
+export function computeBackoffWithJitterMs(
+  attempt: number,
+  baseDelayMs = 25,
+  jitterSeed = 0.5,
+  maxDelayMs = RETRY_MAX_DELAY_MS,
+): number {
+  const cleanAttempt = Math.max(0, Math.min(20, Math.trunc(attempt)));
+  const expMs = Math.min(Math.max(1, maxDelayMs), Math.max(1, baseDelayMs) * Math.pow(2, cleanAttempt));
   const clampedSeed = Math.max(0, Math.min(1, jitterSeed));
-  return Math.round(expMs * (0.75 + 0.5 * clampedSeed));
+  return Math.round(expMs * (0.5 + 0.5 * clampedSeed));
+}
+
+function waitForRetryOrReset(waitMs: number): Promise<boolean> {
+  const startEpoch = getRetryResetEpoch();
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const unsub = subscribeRetryReset(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsub();
+      resolve(true);
+    });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      unsub();
+      resolve(getRetryResetEpoch() !== startEpoch);
+    }, waitMs);
+    registerPendingRetryTimer(timer);
+  });
+}
+
+interface CachedEtagEntry {
+  readonly etag: string;
+  readonly lastModified?: string;
+  readonly bodyText: string;
+  readonly xPagination?: string;
+}
+
+const etagResponseCache = new Map<string, CachedEtagEntry>();
+const MAX_ETAG_CACHE_ENTRIES = 256;
+
+export function clearEtagResponseCache(): void {
+  etagResponseCache.clear();
+}
+
+subscribeRetryReset(() => clearEtagResponseCache());
+
+async function resolveEtagCachedResponse(url: string, response: Response, cached?: CachedEtagEntry): Promise<Response> {
+  if (response.status === 304 && cached) {
+    return new Response(cached.bodyText, {
+      status: 200,
+      headers: { "Content-Type": "application/json; charset=utf-8", ETag: cached.etag, ...(cached.xPagination ? { "X-Pagination": cached.xPagination } : {}), "X-Cache": "HIT-304" },
+    });
+  }
+  if (response.status === 200 && typeof response.clone === "function") {
+    const etag = response.headers?.get?.("ETag") ?? response.headers?.get?.("etag") ?? "";
+    if (etag) {
+      const bodyText = await response.clone().text().catch(() => "");
+      if (bodyText) {
+        if (etagResponseCache.size >= MAX_ETAG_CACHE_ENTRIES) {
+          const oldest = etagResponseCache.keys().next().value;
+          if (oldest) etagResponseCache.delete(oldest);
+        }
+        etagResponseCache.set(url, { etag, lastModified: response.headers?.get?.("Last-Modified") ?? undefined, bodyText, xPagination: response.headers?.get?.("X-Pagination") ?? undefined });
+      }
+    }
+  }
+  return response;
 }
 
 export async function fetchWithTransientRetry(
@@ -452,28 +463,36 @@ export async function fetchWithTransientRetry(
 ): Promise<Response> {
   const maxRetries = options.maxRetries ?? MAX_TRANSIENT_RETRIES;
   const baseDelayMs = options.baseDelayMs ?? 15;
+  const maxDelayMs = options.maxDelayMs ?? RETRY_MAX_DELAY_MS;
   const fetchFn = options.fetchImpl ?? fetch;
-  const correlationId =
-    options.correlationId ?? formatDeterministicUuidV7(Date.now(), Math.floor(Math.random() * 4096));
-  const baseHeaders: Record<string, string> = {
-    Accept: "application/json",
-    "X-Correlation-ID": correlationId,
-    ...(init.body !== undefined ? { "Content-Type": "application/json; charset=utf-8" } : {}),
-    ...((init.headers as Record<string, string> | undefined) ?? {}),
-  };
+  const correlationId = options.correlationId ?? formatDeterministicUuidV7(Date.now(), Math.floor(Math.random() * 4096));
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") clearEtagResponseCache();
+  const cached = method === "GET" ? etagResponseCache.get(url) : undefined;
   let lastError: unknown = null;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const baseHeaders: Record<string, string> = buildAdminAuthHeaders({
+      Accept: "application/json",
+      "X-Correlation-ID": correlationId,
+      ...(init.body !== undefined ? { "Content-Type": "application/json; charset=utf-8" } : {}),
+      ...(cached ? { "If-None-Match": cached.etag, ...(cached.lastModified ? { "If-Modified-Since": cached.lastModified } : {}) } : {}),
+      ...((init.headers as Record<string, string> | undefined) ?? {}),
+    });
     try {
       const response = await fetchFn(url, { ...init, headers: baseHeaders });
-      if (!TRANSIENT_HTTP_STATUSES.includes(response.status) || attempt === maxRetries) {
+      if ((response.status === 401 || response.status === 403) && url.includes("/api/v1/") && !url.includes("/api/v1/admin/auth/login")) {
+        handleUnauthorizedStatus(response.status);
         return response;
+      }
+      if (!TRANSIENT_HTTP_STATUSES.includes(response.status) || attempt === maxRetries) {
+        return method === "GET" ? await resolveEtagCachedResponse(url, response, cached) : response;
       }
     } catch (err) {
       lastError = err;
       if (attempt === maxRetries) throw err;
     }
-    const waitMs = computeBackoffWithJitterMs(attempt, baseDelayMs, (attempt + 1) * 0.3);
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    const waitMs = computeBackoffWithJitterMs(attempt, baseDelayMs, (attempt + 1) * 0.3, maxDelayMs);
+    await waitForRetryOrReset(waitMs);
   }
   throw lastError ?? new Error(`Transient retry exhausted for ${url}`);
 }
@@ -629,7 +648,7 @@ export function GmCommandPalette(props: GmCommandPaletteProps): React.ReactEleme
       data-testid="gm-command-palette-dialog"
       style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: "64px", backgroundColor: "rgba(9, 13, 22, 0.78)" }}
     >
-      <div style={{ width: "520px", maxWidth: "94vw", borderRadius: "8px", border: "1px solid #30363D", backgroundColor: "#0D1117", color: "#F0F6FC", padding: "12px", fontVariantNumeric: "tabular-nums" }}>
+      <div style={{ width: "520px", maxWidth: "94vw", borderRadius: "8px", border: "1px solid rgba(140, 108, 66, 0.45)", backgroundColor: "rgba(13, 17, 23, 0.96)", color: "rgba(240, 246, 252, 1)", padding: "12px", fontVariantNumeric: "tabular-nums" }}>
         <input
           type="text"
           role="combobox"
@@ -640,7 +659,7 @@ export function GmCommandPalette(props: GmCommandPaletteProps): React.ReactEleme
           value={props.query}
           onChange={(e) => props.onQueryChange?.(e.currentTarget.value)}
           placeholder="Type a GM command or catalog entity..."
-          style={{ width: "100%", minHeight: "34px", padding: "6px 10px", borderRadius: "6px", border: "1px solid #30363D", backgroundColor: "#161B22", color: "#F0F6FC", fontSize: "13px" }}
+          style={{ width: "100%", minHeight: "34px", padding: "6px 10px", borderRadius: "6px", border: "1px solid rgba(140, 108, 66, 0.45)", backgroundColor: "rgba(22, 27, 34, 0.96)", color: "rgba(240, 246, 252, 1)", fontSize: "13px" }}
         />
         <ul
           id="gm-command-palette-listbox"
@@ -657,10 +676,10 @@ export function GmCommandPalette(props: GmCommandPaletteProps): React.ReactEleme
               aria-disabled={!validateGmCommandRbac(props.role, opt.command)}
               data-testid={`gm-command-option-${opt.command}`}
               onClick={() => props.onExecuteCommand?.(opt.command, opt.catalogItemId)}
-              style={{ padding: "6px 8px", borderRadius: "4px", cursor: "pointer", backgroundColor: idx === activeIdx ? "#1F6FEB" : "transparent", color: "#F0F6FC", fontSize: "12px", display: "flex", justifyContent: "space-between" }}
+              style={{ padding: "6px 8px", borderRadius: "4px", cursor: "pointer", backgroundColor: idx === activeIdx ? "rgba(31, 111, 235, 0.85)" : "transparent", color: "rgba(240, 246, 252, 1)", fontSize: "12px", display: "flex", justifyContent: "space-between" }}
             >
               <span>{opt.label}</span>
-              <span style={{ color: "#C9D1D9", fontSize: "11px" }}>{opt.domain} [{opt.minRole}]</span>
+              <span style={{ color: "rgba(201, 209, 217, 1)", fontSize: "11px" }}>{opt.domain} [{opt.minRole}]</span>
             </li>
           ))}
         </ul>

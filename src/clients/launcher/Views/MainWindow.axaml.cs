@@ -302,7 +302,7 @@ namespace SandalLauncher.ViewModels
             if (!ClientLaunchService.TryResolveClientExecutable(candidate, out string resolvedExe))
             {
                 StatusBannerMessage = "Could not find AOCClient-Win64-Shipping.exe at that path.";
-                ClientStatusSummary = "Invalid path — AOCClient-Win64-Shipping.exe not found";
+                ClientStatusSummary = "Invalid path -- AOCClient-Win64-Shipping.exe not found";
                 return;
             }
             _config = _config with { ClientPakDir = candidate };
@@ -332,6 +332,62 @@ namespace SandalLauncher.ViewModels
                 IsSettingsOpen = false;
                 StatusBannerMessage = $"Saved settings ({gw}).";
             }).ConfigureAwait(false);
+        }
+
+        [RelayCommand]
+        public async Task LoginAsync(CancellationToken ct = default)
+        {
+            string user = AuthUsername.Trim();
+            string pass = AuthPassword;
+            AuthPassword = string.Empty;
+            try
+            {
+                AuthSessionResult session = await GatewayClient.LoginAsync(user, pass, ct).ConfigureAwait(false);
+                if (IsTemporaryAccount)
+                    CredentialGuard.SaveTemporaryCredentials($"temp-{session.Username}", session.Username, pass, isTemporaryAccount: true);
+                await ApplyAuthenticatedSessionAsync(session, IsTemporaryAccount, ct).ConfigureAwait(false);
+                if (RememberCredentials && !IsTemporaryAccount)
+                    await TrySaveAccountToStoreAsync(session.Username, pass, isTemp: false, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (IsDesktopInteractiveMode())
+            {
+                IsAuthenticated = false;
+                IsErrorState = true;
+                StatusBannerMessage = ex.Message;
+            }
+        }
+
+        [RelayCommand]
+        public async Task RegisterTempAsync(CancellationToken ct = default)
+        {
+            if (IsAuthenticated && IsTemporaryAccount)
+                Logout();
+            bool desktopClick = IsDesktopInteractiveMode();
+            string user = desktopClick || string.IsNullOrWhiteSpace(AuthUsername)
+                ? LauncherCliOptions.GenerateTempUsername()
+                : AuthUsername.Trim();
+            string pass = desktopClick || string.IsNullOrEmpty(AuthPassword)
+                ? LauncherCliOptions.GenerateStrongPassword()
+                : AuthPassword;
+            AuthUsername = user;
+            AuthPassword = string.Empty;
+            IsTemporaryAccount = true;
+            try
+            {
+                AuthSessionResult session = await GatewayClient.RegisterAsync(user, pass, isTemporaryAccount: true, ct).ConfigureAwait(false);
+                string tempProfileId = $"temp-{session.Username}";
+                CredentialGuard.SaveTemporaryCredentials(tempProfileId, session.Username, pass, isTemporaryAccount: true);
+                ProfileStore.TrackEphemeralSessionProfile(session.Username, _config);
+                await ApplyAuthenticatedSessionAsync(session, isTemp: true, ct).ConfigureAwait(false);
+                if (desktopClick)
+                    await EnsureCharacterAndLaunchAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (IsDesktopInteractiveMode())
+            {
+                IsAuthenticated = false;
+                IsErrorState = true;
+                StatusBannerMessage = ex.Message;
+            }
         }
 
         [RelayCommand]
@@ -398,6 +454,7 @@ namespace SandalLauncher.ViewModels
             if (IsDesktopInteractiveMode() && !ValidateNewAccountInputs(user, email, pass, out string validationMsg))
             {
                 IsRegisterMode = true;
+                IsErrorState = true;
                 StatusBannerMessage = validationMsg;
                 return;
             }
@@ -423,11 +480,13 @@ namespace SandalLauncher.ViewModels
                 httpEx.StatusCode is System.Net.HttpStatusCode.Conflict or System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.UnprocessableEntity)
             {
                 IsRegisterMode = true;
+                IsErrorState = true;
                 StatusBannerMessage = "Username or email is already in use (or rejected by gateway).";
             }
             catch (Exception ex)
             {
                 IsRegisterMode = true;
+                IsErrorState = true;
                 StatusBannerMessage = $"Account creation failed: {ex.Message}";
             }
         }

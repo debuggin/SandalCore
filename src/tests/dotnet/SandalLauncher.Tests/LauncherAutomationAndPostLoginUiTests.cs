@@ -132,12 +132,12 @@ public sealed class LauncherAutomationAndPostLoginUiTests
             HttpResponseMessage regResp = await PostJsonAsync(
                 client,
                 "/automation/register-temp",
-                "{\"username\":\"tmp_auto77\",\"password\":\"Tmp!AutoPass77\"}");
+                "{\"username\":\"TMP HeroNoodleTruck\",\"password\":\"Tmp!AutoPass77\"}");
             Assert.Equal(HttpStatusCode.OK, regResp.StatusCode);
             Assert.True(vm.IsAuthenticated);
             Assert.True(vm.IsTemporaryAccount);
-            Assert.Equal("tmp_auto77", vm.SignedInUsername);
-            Assert.NotNull(await vault.RetrieveTokenAsync("temp-tmp_auto77"));
+            Assert.Equal("TMP HeroNoodleTruck", vm.SignedInUsername);
+            Assert.NotNull(await vault.RetrieveTokenAsync("temp-TMP HeroNoodleTruck"));
             Assert.Single(await store.GetTemporaryProfilesAsync());
 
             await VerifyStateETagAnd304Async(client);
@@ -145,14 +145,14 @@ public sealed class LauncherAutomationAndPostLoginUiTests
             HttpResponseMessage createResp = await PostJsonAsync(
                 client,
                 "/automation/characters/create",
-                "{\"name\":\"TestHero\",\"classId\":1,\"raceId\":1}");
+                "{\"name\":\"TST GruelingBiscuitLauncher\",\"classId\":1,\"raceId\":1}");
             Assert.Equal(HttpStatusCode.OK, createResp.StatusCode);
-            Assert.Contains(vm.Characters, c => c.Name == "TestHero");
+            Assert.Contains(vm.Characters, c => c.Name == "TST GruelingBiscuitLauncher");
 
             HttpResponseMessage selectResp = await PostJsonAsync(
                 client,
                 "/automation/char-select",
-                "{\"characterIdOrName\":\"TestHero\",\"spawnClient\":false}");
+                "{\"characterIdOrName\":\"TST GruelingBiscuitLauncher\",\"spawnClient\":false}");
             Assert.Equal(HttpStatusCode.OK, selectResp.StatusCode);
             Assert.Equal(32, vm.LastJoinTicket.Length);
             Assert.Equal("127.0.0.1:7777", vm.WorldEndpoint);
@@ -170,8 +170,10 @@ public sealed class LauncherAutomationAndPostLoginUiTests
             Assert.Equal(HttpStatusCode.OK, delResp.StatusCode);
             Assert.False(vm.IsAuthenticated);
             Assert.True(vm.IsEmptyState);
-            Assert.Null(await vault.RetrieveTokenAsync("temp-tmp_auto77"));
+            Assert.Null(await vault.RetrieveTokenAsync("temp-TMP HeroNoodleTruck"));
             Assert.Empty(await store.GetTemporaryProfilesAsync());
+            server.Dispose();
+            await server.DisposeAsync();
         }
         finally
         {
@@ -195,10 +197,10 @@ public sealed class LauncherAutomationAndPostLoginUiTests
             LauncherCliOptions opts = LauncherCliOptions.Parse(
             [
                 "--register-temp",
-                "--username=tmp_cli99",
+                "--username=TMP HeroNoodleTruck",
                 "--password=Tmp!CliPass99",
                 "--create-character-if-missing",
-                "--select-character=TestHero",
+                "--select-character=TST GruelingBiscuitLauncher",
                 "--verify-char-select",
                 "--terminate-after-char-select",
                 "--delete-temp-account-on-exit"
@@ -207,7 +209,7 @@ public sealed class LauncherAutomationAndPostLoginUiTests
             int exitCode = await Program.RunCliAutomationAsync(opts, gw, vault, store);
 
             Assert.Equal(0, exitCode);
-            Assert.Null(await vault.RetrieveTokenAsync("temp-tmp_cli99"));
+            Assert.Null(await vault.RetrieveTokenAsync("temp-TMP HeroNoodleTruck"));
             Assert.Empty(await store.GetTemporaryProfilesAsync());
         }
         finally
@@ -269,7 +271,7 @@ public sealed class LauncherAutomationAndPostLoginUiTests
             if (request.Method == HttpMethod.Post && path == "/api/v1/characters")
             {
                 using JsonDocument doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body);
-                string name = doc.RootElement.TryGetProperty("name", out JsonElement n) ? n.GetString() ?? "TestHero" : "TestHero";
+                string name = doc.RootElement.TryGetProperty("name", out JsonElement n) ? n.GetString() ?? "TST GruelingBiscuitLauncher" : "TST GruelingBiscuitLauncher";
                 string id = $"char_{_chars.Count + 1}";
                 _chars.Add((id, name));
                 return Reply(HttpStatusCode.Created, $"{{\"character_id\":\"{id}\",\"name\":\"{name}\",\"class_id\":1,\"race_id\":1,\"level\":1}}", "\"chars-v2\"");
@@ -278,7 +280,7 @@ public sealed class LauncherAutomationAndPostLoginUiTests
             {
                 return Reply(
                     HttpStatusCode.OK,
-                    "{\"character_id\":\"char_1\",\"character_name\":\"TestHero\",\"join_ticket\":\"fedcba9876543210fedcba9876543210\",\"world_endpoint\":\"127.0.0.1:7777\"}",
+                    "{\"character_id\":\"char_1\",\"character_name\":\"TST GruelingBiscuitLauncher\",\"join_ticket\":\"fedcba9876543210fedcba9876543210\",\"world_endpoint\":\"127.0.0.1:7777\"}",
                     "\"sel-v1\"");
             }
             if (request.Method == HttpMethod.Post && path == "/api/v1/world/enter")

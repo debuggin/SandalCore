@@ -8,6 +8,7 @@ export interface VerraZoiPolygon {
   readonly region: string;
   readonly biome: string;
   readonly color: string;
+  readonly has_in_game_border: boolean;
   readonly centroid_u: number;
   readonly centroid_v: number;
   readonly rings: readonly (readonly (readonly [number, number])[])[];
@@ -87,29 +88,56 @@ const IN_GAME_ZOI_BANNER_COLORS: Readonly<Record<number, string>> = Object.freez
   17: "#64AF88",
   18: "#50D2C8",
   19: "#B0BB71",
-  22: "#BA79F2",
   23: "#F0780A",
-  24: "#5C5C5C",
+  24: "#7A8468",
   25: "#BBC046",
   26: "#B38BAD",
   27: "#609C50",
   30: "#D7487B",
+  36: "#BA79F2",
   41: "#95AAAD",
   43: "#93C47D",
   44: "#E19122",
   45: "#C5B650",
   46: "#BD9B73",
+  49: "#FFFFFF",
 });
+
+export function clipZoiRingToValidMinimapTiles(
+  zoiIndex: number,
+  ring: ReadonlyArray<readonly [number, number]>,
+): ReadonlyArray<readonly [number, number]> {
+  if (ring.length === 0) return [];
+  if (ring.every(([, rv]) => rv >= 23500.0)) return [];
+  return ring.map(([rawU, rawV]): readonly [number, number] => {
+    const maxV = zoiIndex === 27 || rawU >= 14336.0 ? 22016.0 : 23552.0;
+    const v = Math.max(0.0, Math.min(maxV, rawV));
+    const maxU = v <= 8704.0 ? 17408.0 : v <= 13824.0 ? 19456.0 : 25600.0;
+    const minU = zoiIndex === 34 || zoiIndex === 35 || zoiIndex === 37 ? 2560.0 : Math.min(rawU, 2560.0);
+    const u = Math.max(minU, Math.min(maxU, rawU));
+    return [u, v];
+  });
+}
 
 function parseZoiSpec(spec: string): VerraZoiPolygon {
   const [idx, guid, name, display_name, region, biome, , cu, cv, ringsRaw] = spec.split("|");
   const zoi_index = Number(idx || 0);
-  const rings = (ringsRaw || "").split(";").filter(Boolean).map((rStr) =>
-    rStr.split(",").filter(Boolean).map((pair): readonly [number, number] => {
-      const [uStr, vStr] = pair.split(":");
-      return [Number(uStr || 0), Number(vStr || 0)];
-    }),
-  );
+  const rings = (ringsRaw || "")
+    .split(";")
+    .filter(Boolean)
+    .map((rStr) =>
+      clipZoiRingToValidMinimapTiles(
+        zoi_index,
+        rStr
+          .split(",")
+          .filter(Boolean)
+          .map((pair): readonly [number, number] => {
+            const [uStr, vStr] = pair.split(":");
+            return [Number(uStr || 0), Number(vStr || 0)];
+          }),
+      ),
+    )
+    .filter((r) => r.length >= 3);
   return {
     zoi_index,
     guid: guid || "",
@@ -118,7 +146,8 @@ function parseZoiSpec(spec: string): VerraZoiPolygon {
     region: region || "Verra",
     biome: biome || region || "Verra",
     color: IN_GAME_ZOI_BANNER_COLORS[zoi_index] ?? "#E8B25A",
-    centroid_u: Number(cu || 0),
+    has_in_game_border: zoi_index in IN_GAME_ZOI_BANNER_COLORS && zoi_index !== 36,
+    centroid_u: Math.min(Number(cv || 0) <= 8704.0 ? 17408.0 : 25600.0, Number(cu || 0)),
     centroid_v: Number(cv || 0),
     rings,
   };
@@ -127,3 +156,39 @@ function parseZoiSpec(spec: string): VerraZoiPolygon {
 export const VERRA_ZOI_POLYGONS: readonly VerraZoiPolygon[] = Object.freeze(
   RAW_ZOI_SPECS.map(parseZoiSpec),
 );
+
+export function hydrateVerraZoiPolygonsFromTsvApi(entries: unknown): ReadonlyArray<VerraZoiPolygon> {
+  const obj = entries && typeof entries === "object" ? (entries as Record<string, unknown>) : null;
+  const rawList = Array.isArray(entries)
+    ? entries
+    : Array.isArray(obj?.zois)
+      ? obj.zois
+      : Array.isArray(obj?.items)
+        ? obj.items
+        : [];
+  if (rawList.length === 0) return VERRA_ZOI_POLYGONS;
+  const byIdx = new Map<number, VerraZoiPolygon>(VERRA_ZOI_POLYGONS.map((z) => [z.zoi_index, z]));
+  for (const item of rawList as readonly Record<string, unknown>[]) {
+    const idx = Number(item.zoi_index ?? item.index ?? -1);
+    const base = byIdx.get(idx);
+    if (!base) continue;
+    const rawRings = Array.isArray(item.rings) ? item.rings : null;
+    const clippedRings = rawRings
+      ? (rawRings as ReadonlyArray<ReadonlyArray<readonly [number, number]>>)
+          .map((r) => clipZoiRingToValidMinimapTiles(idx, r))
+          .filter((r) => r.length >= 3)
+      : base.rings;
+    byIdx.set(idx, {
+      ...base,
+      guid: typeof item.guid === "string" && item.guid.length > 0 ? item.guid : base.guid,
+      name: typeof item.name === "string" && item.name.length > 0 ? item.name : base.name,
+      display_name: typeof item.display_name === "string" && item.display_name.length > 0 ? item.display_name : base.display_name,
+      region: typeof item.region === "string" && item.region.length > 0 ? item.region : base.region,
+      biome: typeof item.biome === "string" && item.biome.length > 0 ? item.biome : base.biome,
+      color: IN_GAME_ZOI_BANNER_COLORS[idx] ?? (typeof item.color === "string" ? item.color : base.color),
+      has_in_game_border: idx in IN_GAME_ZOI_BANNER_COLORS && idx !== 36,
+      rings: clippedRings.length > 0 ? clippedRings : base.rings,
+    });
+  }
+  return Array.from(byIdx.values());
+}

@@ -12,7 +12,7 @@ namespace SandalLauncher.Config;
 public sealed record LauncherCliOptions
 {
     public const string DefaultGatewayUrl = "http://127.0.0.1:8080";
-    public const string DefaultHeroName = "TestHero";
+    public const string DefaultHeroName = "TST GruelingBiscuitLauncher";
     public const int DefaultTimeoutSeconds = 30;
 
     public bool ShowHelp { get; init; }
@@ -51,7 +51,7 @@ public sealed record LauncherCliOptions
     [JsonIgnore]
     public string Email => string.IsNullOrWhiteSpace(Username)
         ? string.Empty
-        : (Username.Contains('@', StringComparison.Ordinal) ? Username : $"{Username}@sandalcore.local");
+        : (Username.Contains('@', StringComparison.Ordinal) ? Username : $"{ToEffAccountSlug(Username)}@sandalcore.local");
 
     [JsonIgnore]
     public Uri GatewayUri => Uri.TryCreate(NormalizeGatewayUrl(GatewayUrl), UriKind.Absolute, out Uri? u)
@@ -63,8 +63,43 @@ public sealed record LauncherCliOptions
         RegisterTemp || AutoLogin || VerifyCharSelect || !string.IsNullOrWhiteSpace(SelectCharacter) ||
         CreateCharacterIfMissing || SpawnClient || TerminateAfterCharSelect || KillExistingClient || DeleteTempAccountOnExit;
 
-    public static string GenerateTempUsername() =>
-        $"tmp_{Convert.ToHexString(RandomNumberGenerator.GetBytes(4)).ToLowerInvariant()}";
+    public static IReadOnlyList<string> EffAccountWords { get; } =
+    [
+        "Hero", "Noodle", "Truck", "Grueling", "Biscuit", "Launcher", "Amber", "Falcon",
+        "Lantern", "Cobalt", "Badger", "Harbor", "Velvet", "Compass", "Glacier", "Cinder",
+        "Meadow", "Anchor", "Quartz", "Timber", "Summit", "Breeze", "Walnut", "Canyon",
+        "Rocket", "Pebble", "Kettle", "Saddle", "Beacon", "Banjo", "Clover", "Marble",
+        "Acorn", "Bramble", "Cedar", "Dagger", "Ember", "Fable", "Granite", "Helmet",
+        "Ivory", "Jasper", "Kernel", "Locket", "Magnet", "Nectar", "Onyx", "Pillar",
+        "Quiver", "Raven", "Silver", "Thistle", "Upland", "Vortex", "Willow", "Yonder",
+        "Zenith", "Anvil", "Bastion", "Citadel", "Drifter", "Eclipse", "Forge", "Griffin"
+    ];
+
+    public static string GenerateEffTempAccountName(string prefix = "TMP")
+    {
+        string normalizedPrefix = string.IsNullOrWhiteSpace(prefix) ? "TMP" : prefix.Trim().ToUpperInvariant();
+        string w1 = EffAccountWords[RandomNumberGenerator.GetInt32(EffAccountWords.Count)];
+        string w2 = EffAccountWords[RandomNumberGenerator.GetInt32(EffAccountWords.Count)];
+        string w3 = EffAccountWords[RandomNumberGenerator.GetInt32(EffAccountWords.Count)];
+        return $"{normalizedPrefix} {w1}{w2}{w3}";
+    }
+
+    public static string ToEffAccountSlug(string? accountName)
+    {
+        if (string.IsNullOrWhiteSpace(accountName)) return "tmp_account";
+        string trimmed = accountName.Trim();
+        if (!trimmed.Contains(' ', StringComparison.Ordinal)) return trimmed;
+        var sb = new System.Text.StringBuilder(trimmed.Length);
+        foreach (char c in trimmed)
+        {
+            if (char.IsLetterOrDigit(c)) sb.Append(char.ToLowerInvariant(c));
+            else if (char.IsWhiteSpace(c) || c is '_' or '-') sb.Append('_');
+        }
+        return sb.Length > 0 ? sb.ToString() : "tmp_account";
+    }
+
+    public static string GenerateTempUsername(string prefix = "TMP") =>
+        GenerateEffTempAccountName(prefix);
 
     private const string EffLargeWordlistUrl = "https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt";
     private const int EffLargeWordlistCount = 7776;
@@ -155,10 +190,10 @@ public sealed record LauncherCliOptions
         "  --gateway <url>                    Gateway base URL (AOC_GATEWAY_URL, default http://127.0.0.1:8080)\n" +
         "  --username, --email <user>         Account username or email (AOC_LAUNCHER_USERNAME / AOC_LAUNCHER_EMAIL)\n" +
         "  --password <pass>                  Account password (AOC_LAUNCHER_PASSWORD)\n" +
-        "  --register-temp                    Register temporary account tmp_<8hex> (AOC_LAUNCHER_REGISTER_TEMP=1)\n" +
+        "  --register-temp                    Register temporary account TMP <Word1><Word2><Word3> (AOC_LAUNCHER_REGISTER_TEMP=1)\n" +
         "  --auto-login                       Automatically authenticate on startup (AOC_LAUNCHER_AUTO_LOGIN=1)\n" +
         "  --select-character <name-or-id>    Select character by name or ID (AOC_LAUNCHER_CHARACTER)\n" +
-        "  --create-character-if-missing      Create character (default TestHero) if missing (AOC_LAUNCHER_CREATE_CHAR=1)\n" +
+        "  --create-character-if-missing      Create character (default TST GruelingBiscuitLauncher) if missing (AOC_LAUNCHER_CREATE_CHAR=1)\n" +
         "  --verify-char-select               Verify Character Select & Play join ticket (AOC_LAUNCHER_VERIFY_CHAR_SELECT=1)\n" +
         "  --spawn-client                     Spawn Ashes of Creation game client (AOC_LAUNCHER_SPAWN_CLIENT=1)\n" +
         "  --terminate-after-char-select      Terminate client after character select (AOC_LAUNCHER_TERMINATE_AFTER_CHAR_SELECT=1)\n" +

@@ -72,6 +72,7 @@ if (-not $opts.DryRun) {
         $null = & $certsScript -OutputDir $certsDir -RepoRoot $rootPath -Json
     }
     $null = Sync-SandalDeployStage -RepoRoot $rootPath
+    $null = Update-SandalAdminBootSecrets -DeployDir $deployDir
     $srcDockerIgnore = Join-Path $rootPath 'src\deploy\.dockerignore'
     $destDockerIgnore = Join-Path $deployDir '.dockerignore'
     if (Test-Path -LiteralPath $srcDockerIgnore -PathType Leaf) {

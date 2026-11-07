@@ -60,8 +60,7 @@ type PlayerInfo struct {
 }
 
 func normalizePlayerInfo(p PlayerInfo) PlayerInfo {
-	p.Character = firstNonEmpty(p.Character, p.Name)
-	p.Name = firstNonEmpty(p.Name, p.Character)
+	p.Character, p.Name = firstNonEmpty(p.Character, p.Name), firstNonEmpty(p.Name, firstNonEmpty(p.Character, p.Name))
 	if p.X == 0 && p.XCm != 0 {
 		p.X = p.XCm
 	}
@@ -71,8 +70,7 @@ func normalizePlayerInfo(p PlayerInfo) PlayerInfo {
 	if p.Z == 0 && p.ZCm != 0 {
 		p.Z = p.ZCm
 	}
-	p.XCm, p.YCm, p.ZCm = p.X, p.Y, p.Z
-	p.Zone = firstNonEmpty(p.Zone, "verra")
+	p.XCm, p.YCm, p.ZCm, p.Zone = p.X, p.Y, p.Z, firstNonEmpty(p.Zone, "verra")
 	if p.Level == 0 {
 		p.Level = 1
 	}
@@ -84,15 +82,15 @@ func normalizePlayerInfo(p PlayerInfo) PlayerInfo {
 
 const (
 	StreamLayerUnspecified   uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_UNSPECIFIED)
-	StreamLayerPlayers       uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_PLAYERS)        // 1
-	StreamLayerNpcs          uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_NPCS)           // 2
-	StreamLayerResourceNodes uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_RESOURCE_NODES) // 4
-	StreamLayerMounts        uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_MOUNTS)         // 8
-	StreamLayerLootPiles     uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_LOOT_PILES)     // 16
-	StreamLayerAll           uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_ALL)            // 31
-	LayerPois                uint32 = 32                                                           // 1 << 5
-	LayerMonsters            uint32 = 64                                                           // 1 << 6
-	LayerDefaultAll          uint32 = StreamLayerAll | LayerPois | LayerMonsters                   // 127
+	StreamLayerPlayers       uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_PLAYERS)
+	StreamLayerNpcs          uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_NPCS)
+	StreamLayerResourceNodes uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_RESOURCE_NODES)
+	StreamLayerMounts        uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_MOUNTS)
+	StreamLayerLootPiles     uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_LOOT_PILES)
+	StreamLayerAll           uint32 = uint32(worldadminv1.StreamLayer_STREAM_LAYER_ALL)
+	LayerPois                uint32 = 32
+	LayerMonsters            uint32 = 64
+	LayerDefaultAll          uint32 = StreamLayerAll | LayerPois | LayerMonsters
 )
 
 type layerSelection struct {
@@ -117,15 +115,9 @@ func toStreamLayers(mask uint32) uint32 {
 
 func selectionFromMask(mask uint32) layerSelection {
 	return layerSelection{
-		LayerMask:     mask,
-		StreamLayers:  toStreamLayers(mask),
-		Players:       (mask & StreamLayerPlayers) != 0,
-		Npcs:          (mask & StreamLayerNpcs) != 0,
-		Monsters:      (mask & LayerMonsters) != 0,
-		ResourceNodes: (mask & StreamLayerResourceNodes) != 0,
-		Mounts:        (mask & StreamLayerMounts) != 0,
-		LootPiles:     (mask & StreamLayerLootPiles) != 0,
-		Pois:          (mask & LayerPois) != 0,
+		LayerMask: mask, StreamLayers: toStreamLayers(mask), Players: (mask & StreamLayerPlayers) != 0,
+		Npcs: (mask & StreamLayerNpcs) != 0, Monsters: (mask & LayerMonsters) != 0, ResourceNodes: (mask & StreamLayerResourceNodes) != 0,
+		Mounts: (mask & StreamLayerMounts) != 0, LootPiles: (mask & StreamLayerLootPiles) != 0, Pois: (mask & LayerPois) != 0,
 	}
 }
 
@@ -179,114 +171,121 @@ func (s *Server) handleWorldState(w http.ResponseWriter, r *http.Request, _ Role
 		writeProblem(w, r, http.StatusBadRequest, "invalid-viewport", err.Error())
 		return
 	}
-	sel := parseLayerSelection(r)
+	sel, q := parseLayerSelection(r), r.URL.Query()
 	if sel.StreamLayers != 0 {
 		s.pullWorldStreamSnapshot(r.Context(), filter, sel.StreamLayers)
 	}
-	players := make([]PlayerInfo, 0)
-	entities := make([]worldstream.EntitySnapshot, 0)
-	pois := make([]admincatalog.PlaceEntry, 0)
-	nodes := make([]PmTilesNodeMeta, 0)
-
+	players, entities, pois, nodes, onlinePlayersCount := make([]PlayerInfo, 0), make([]worldstream.EntitySnapshot, 0), make([]admincatalog.PlaceEntry, 0), make([]PmTilesNodeMeta, 0), 0
+	stateTimeMs := s.lastMutatedTime().UnixMilli()
 	if sel.Players {
 		players = s.collectPlayersInViewport(r.Context(), filter)
 		for _, p := range players {
 			if p.Online {
+				onlinePlayersCount++
 				entities = append(entities, worldstream.EntitySnapshot{
-					ID: fmt.Sprintf("player:%d:%s", p.ID, p.Character), Kind: "player",
-					Name: p.Character, Zone: firstNonEmpty(p.Zone, "verra"),
-					X: float64(p.X), Y: float64(p.Y), Z: float64(p.Z),
-					HealthPct: computeHealthPct(p.Health, p.MaxHealth), Level: int(p.Level),
-					State: "online", UpdatedAt: s.now().UnixMilli(),
+					ID: fmt.Sprintf("player:%d:%s", p.ID, p.Character), Kind: "player", Name: p.Character, Zone: firstNonEmpty(p.Zone, "verra"),
+					X: float64(p.X), Y: float64(p.Y), Z: float64(p.Z), HealthPct: computeHealthPct(p.Health, p.MaxHealth), Level: int(p.Level), State: "online", UpdatedAt: stateTimeMs,
 				})
 			}
 		}
 	}
 	npcs, monsters, resourceNodes, mounts, lootPiles := s.collectNonPlayerLayers(filter, sel)
-	entities = append(entities, npcs...)
-	entities = append(entities, monsters...)
-	entities = append(entities, resourceNodes...)
-	entities = append(entities, mounts...)
-	entities = append(entities, lootPiles...)
-
-	if sel.Pois {
-		liveLevels := s.fetchCityNodeLevels(r.Context())
-		worldPlaces := s.fetchWorldPlaces(r.Context())
-		nodes = s.buildMapMetaNodes(s.getPmTilesArchive(), liveLevels)
-		pois, _ = s.catalog.SearchPlacesFiltered(r.Context(), admincatalog.PlaceFilter{
-			Limit: 10000, ExtraPlaces: worldPlaces, NodeLevels: liveLevels,
-		})
+	entities = slices.Concat(entities, npcs, monsters, resourceNodes, mounts, lootPiles)
+	for _, e := range entities {
+		if e.UpdatedAt > stateTimeMs {
+			stateTimeMs = e.UpdatedAt
+		}
 	}
+	compact, includePois := q.Get("compact") == "1", q.Get("include_pois") != "0"
+	if sel.Pois && includePois {
+		nodes, pois = s.resolveWorldNodesAndPois(r.Context())
+	}
+	todHours, anchorHours, anchorMs := s.TimeOfDayHoursAt(time.UnixMilli(stateTimeMs)), 12.0, int64(0)
+	anchorHours, anchorMs = s.TimeOfDayAnchor()
 	payload := map[string]any{
-		"schema_version": "1.0",
-		"layer_mask":     sel.LayerMask,
-		"stream_layers":  sel.StreamLayers,
-		"layers":         sel,
-		"layer_counts": map[string]int{
-			"players": len(players), "npcs": len(npcs), "monsters": len(monsters),
-			"resource_nodes": len(resourceNodes), "mounts": len(mounts),
-			"loot_piles": len(lootPiles), "pois": len(pois), "city_nodes": len(nodes),
-		},
-		"players":        players,
-		"npcs":           npcs,
-		"monsters":       monsters,
-		"resource_nodes": resourceNodes,
-		"mounts":         mounts,
-		"loot_piles":     lootPiles,
-		"pois":           pois,
-		"places":         pois,
-		"nodes":          nodes,
-		"city_nodes":     nodes,
-		"workers":        s.snapshotWorldWorkers(),
-		"entities":       entities,
-		"count":          len(entities),
-		"serverTimeMs":   s.now().UnixMilli(),
+		"schema_version": "1.0", "layer_mask": sel.LayerMask, "stream_layers": sel.StreamLayers, "layers": sel,
+		"layer_counts": map[string]int{"players": onlinePlayersCount, "npcs": len(npcs), "monsters": len(monsters), "resource_nodes": len(resourceNodes), "mounts": len(mounts), "loot_piles": len(lootPiles), "pois": len(pois), "city_nodes": len(nodes)},
+		"players": players, "workers": s.snapshotWorldWorkerStatuses(), "data_modes": s.resolveDataModes(), "service_tick_hz": worldstream.ServiceTickHz(),
+		"time_of_day_hours": todHours, "time_of_day_label": formatTimeOfDayLabel(todHours), "time_of_day_anchor_hours": anchorHours, "time_of_day_anchor_ms": anchorMs, "time_of_day_rate": 9.0, "entities": entities, "count": len(entities), "serverTimeMs": stateTimeMs,
 	}
-	writeCachedJSONWithModTime(w, r, "private, no-cache", s.lastMutatedTime(), payload)
+	if !compact {
+		payload["npcs"], payload["monsters"], payload["resource_nodes"], payload["mounts"], payload["loot_piles"] = npcs, monsters, resourceNodes, mounts, lootPiles
+		payload["pois"], payload["places"], payload["nodes"], payload["city_nodes"] = pois, pois, nodes, nodes
+	} else if includePois {
+		payload["pois"], payload["nodes"] = pois, nodes
+	}
+	cc := "private, no-cache"
+	if filter.HasBounds {
+		cc = "no-cache"
+	}
+	writeCachedJSONWithModTime(w, r, cc, s.lastMutatedTime(), payload)
 }
 
-func (s *Server) pullWorldStreamSnapshot(ctx context.Context, filter worldstream.ViewportFilter, streamLayers uint32) {
+type cachedWorldNodesAndPois struct {
+	nodes []PmTilesNodeMeta
+	pois  []admincatalog.PlaceEntry
+}
+
+func (s *Server) resolveWorldNodesAndPois(ctx context.Context) ([]PmTilesNodeMeta, []admincatalog.PlaceEntry) {
+	now, key := s.now(), fmt.Sprintf("world:pois:%d", s.lastMutatedUnixNano.Load())
+	if v, ok := s.metaCache.get(key, now); ok {
+		if c, ok := v.(cachedWorldNodesAndPois); ok {
+			return c.nodes, c.pois
+		}
+	}
+	liveLevels := s.fetchCityNodeLevels(ctx)
+	worldPlaces := s.fetchWorldPlaces(ctx)
+	nodes := s.buildMapMetaNodes(s.getPmTilesArchive(), liveLevels)
+	pois, _ := s.catalog.SearchPlacesFiltered(ctx, admincatalog.PlaceFilter{Limit: 10000, ExtraPlaces: worldPlaces, NodeLevels: liveLevels})
+	s.metaCache.set(key, cachedWorldNodesAndPois{nodes: nodes, pois: pois}, 1500*time.Millisecond, now)
+	return nodes, pois
+}
+
+func (s *Server) pullWorldStreamSnapshot(ctx context.Context, _ worldstream.ViewportFilter, streamLayers uint32) {
 	effLayers := streamLayers & StreamLayerAll
 	if effLayers == 0 {
 		return
 	}
-	now := s.now()
-	if !filter.HasBounds && filter.Zone == "" {
-		s.mu.Lock()
-		lastAt, ok := s.lastStreamAt[effLayers]
+	now, warm := s.now(), s.coalescer.EntityCount() > 0
+	s.mu.Lock()
+	lastAt, ok := s.lastStreamAt[effLayers]
+	if warm && ok && now.Sub(lastAt) < 250*time.Millisecond {
 		s.mu.Unlock()
-		if ok && now.Sub(lastAt) < 400*time.Millisecond {
-			return
+		return
+	}
+	s.lastStreamAt[effLayers] = now
+	s.mu.Unlock()
+	area, nowMs := &worldadminv1.AreaBox{MinXCm: -2500000, MinYCm: -1500000, MaxXCm: 1000000, MaxYCm: 2000000}, now.UnixMilli()
+	if warm && ok {
+		if s.streamPullInFlight.CompareAndSwap(false, true) {
+			go func() {
+				defer s.streamPullInFlight.Store(false)
+				bgCtx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
+				defer cancel()
+				s.pullAllWorkersSync(bgCtx, area, effLayers, nowMs)
+			}()
 		}
+		return
 	}
-	area := &worldadminv1.AreaBox{MinXCm: -2500000, MinYCm: -1500000, MaxXCm: 1000000, MaxYCm: 2000000}
-	if filter.HasBounds {
-		area = &worldadminv1.AreaBox{MinXCm: int32(filter.MinX), MinYCm: int32(filter.MinY), MaxXCm: int32(filter.MaxX), MaxYCm: int32(filter.MaxY)}
-	}
-	nowMs := now.UnixMilli()
-	var wg sync.WaitGroup
-	for _, w := range s.worldWorkers {
-		if filter.Zone != "" && !strings.EqualFold(filter.Zone, w.ScopeKey) && !strings.EqualFold(filter.Zone, w.WorkerID) {
-			continue
-		}
-		if s.workerStreamClient(w) == nil {
-			continue
-		}
-		wg.Add(1)
-		go func(worker *WorldWorkerEndpoint) {
-			defer wg.Done()
-			s.pullOneWorkerStream(ctx, worker, area, effLayers, nowMs)
-		}(w)
-	}
-	wg.Wait()
-	if !filter.HasBounds && filter.Zone == "" {
-		s.mu.Lock()
-		s.lastStreamAt[effLayers] = now
-		s.mu.Unlock()
-	}
+	s.pullAllWorkersSync(ctx, area, effLayers, nowMs)
 }
 
-func (s *Server) pullOneWorkerStream(ctx context.Context, w *WorldWorkerEndpoint, area *worldadminv1.AreaBox, effLayers uint32, nowMs int64) {
+func (s *Server) pullAllWorkersSync(ctx context.Context, area *worldadminv1.AreaBox, effLayers uint32, nowMs int64) {
+	var wg sync.WaitGroup
+	for _, w := range s.worldWorkers {
+		if s.workerStreamClient(w) != nil {
+			wg.Add(1)
+			go func(worker *WorldWorkerEndpoint) {
+				defer wg.Done()
+				s.pullOneWorkerStream(ctx, worker, area, effLayers, nowMs)
+			}(w)
+		}
+	}
+	wg.Wait()
+}
+
+func (s *Server) pullOneWorkerStream(ctx context.Context, w *WorldWorkerEndpoint, area *worldadminv1.AreaBox, effLayers uint32, _ int64) {
+	s.syncWorkerTimeOfDayIfNeeded(ctx, w)
 	cli := s.workerStreamClient(w)
 	if cli == nil {
 		return
@@ -305,18 +304,24 @@ func (s *Server) pullOneWorkerStream(ctx context.Context, w *WorldWorkerEndpoint
 	if err != nil || frame == nil || frame.GetSnapshot() == nil {
 		return
 	}
-	scope := strings.ToLower(strings.TrimSpace(firstNonEmpty(w.ScopeKey, w.WorkerID)))
-	seenIDs := make(map[string]struct{}, len(frame.GetSnapshot().GetEntities()))
-	for _, ent := range frame.GetSnapshot().GetEntities() {
-		snap := protoEntityToSnapshot(ent, nowMs)
+	scope, rawEnts := strings.ToLower(strings.TrimSpace(firstNonEmpty(w.ScopeKey, w.WorkerID))), frame.GetSnapshot().GetEntities()
+	seenIDs, batch := make(map[string]struct{}, len(rawEnts)), make([]worldstream.EntitySnapshot, 0, len(rawEnts))
+	for _, ent := range rawEnts {
+		snap := protoEntityToSnapshot(ent, 0)
 		if scope != "" && scope != "verra" {
-			snap.ID = scope + ":" + snap.ID
-			snap.Zone = scope
+			snap.ID, snap.Zone = scope+":"+snap.ID, scope
+		}
+		if snap.Kind == "resource_node" {
+			snap.Name, snap.ResourceType, snap.Quality = ent.GetName(), "", ""
+			enrichResourceNodeSnapshot(&snap, scope, ent.GetId())
+		}
+		if (ent.GetState()&uint32(worldadminv1.EntityState_ENTITY_STATE_DEAD)) != 0 || s.isEntityDespawned(snap.ID) {
+			continue
 		}
 		seenIDs[snap.ID] = struct{}{}
-		s.coalescer.UpsertEntity(snap)
+		batch = append(batch, snap)
 	}
-	s.pruneDespawnedWorkerEntities(scope, area, effLayers, seenIDs)
+	s.replaceWorkerStreamBatch(scope, area, effLayers, batch, seenIDs)
 }
 
 func protoEntityToSnapshot(ent *worldadminv1.Entity, nowMs int64) worldstream.EntitySnapshot {
@@ -328,8 +333,6 @@ func protoEntityToSnapshot(ent *worldadminv1.Entity, nowMs int64) worldstream.En
 	case worldadminv1.EntityKind_ENTITY_KIND_NPC:
 		if (stFlags&4) != 0 || (stFlags&uint32(worldadminv1.EntityState_ENTITY_STATE_IN_COMBAT)) != 0 || isHostileNpcName(ent.GetName()) {
 			kind = "monster"
-		} else {
-			kind = "npc"
 		}
 	case worldadminv1.EntityKind_ENTITY_KIND_RESOURCE_NODE:
 		kind = "resource_node"
@@ -346,12 +349,33 @@ func protoEntityToSnapshot(ent *worldadminv1.Entity, nowMs int64) worldstream.En
 	} else if (stFlags&4) != 0 || kind == "monster" {
 		state = "hostile"
 	}
-	hp := min(float64(ent.GetHealthPct()), 100.0)
-	name := firstNonEmpty(ent.GetName(), fmt.Sprintf("%s:%d", kind, ent.GetId()))
-	return worldstream.EntitySnapshot{
+	hp, name := min(float64(ent.GetHealthPct()), 100.0), firstNonEmpty(ent.GetName(), fmt.Sprintf("%s:%d", kind, ent.GetId()))
+	snap := worldstream.EntitySnapshot{
 		ID: fmt.Sprintf("%s:%d", kind, ent.GetId()), Kind: kind, Name: name,
 		Zone: "verra", X: float64(ent.GetXCm()), Y: float64(ent.GetYCm()), Z: float64(ent.GetZCm()),
 		Yaw: float64(ent.GetYaw()) * 360.0 / 256.0, HealthPct: hp, Level: int(ent.GetLevel()), State: state, UpdatedAt: nowMs,
+	}
+	if kind == "resource_node" {
+		enrichResourceNodeSnapshot(&snap, snap.Zone, ent.GetId())
+	}
+	return snap
+}
+
+func enrichResourceNodeSnapshot(snap *worldstream.EntitySnapshot, scope string, rawID uint64) {
+	raw := strings.TrimSpace(snap.Name)
+	if lb, rb := strings.IndexByte(raw, '['), strings.LastIndexByte(raw, ']'); lb > 0 && rb > lb {
+		snap.Name = strings.TrimSpace(raw[:lb])
+		if parts := strings.SplitN(raw[lb+1:rb], "|", 2); len(parts) == 2 {
+			snap.ResourceType, snap.Quality = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		}
+	}
+	catName, catType, catQual, catLv := resolveRegionalGatherableDef(scope, rawID)
+	if snap.Name == "" || snap.Name == "GatherableActor" || strings.HasPrefix(strings.ToLower(snap.Name), "resource_node:") || strings.HasPrefix(strings.ToLower(snap.Name), "gatherable") {
+		snap.Name = catName
+	}
+	snap.ResourceType, snap.Quality = firstNonEmpty(snap.ResourceType, catType), firstNonEmpty(snap.Quality, catQual)
+	if snap.Level <= 0 {
+		snap.Level = catLv
 	}
 }
 
@@ -431,15 +455,20 @@ func sortPlayers(items []PlayerInfo, sortSpec string) {
 }
 
 func (s *Server) collectPlayers(ctx context.Context) []PlayerInfo {
-	seen := make(map[string]bool)
+	seen, nowMs, hasLive := make(map[string]bool), s.now().UnixMilli(), s.hasAnyWorldAdminClient()
 	out := s.collectMultiWorkerOnlinePlayers(ctx, seen)
-	for _, snap := range s.coalescer.Snapshot(worldstream.ViewportFilter{}) {
-		if snap.Kind == "player" && !seen[strings.ToLower(snap.Name)] {
-			seen[strings.ToLower(snap.Name)] = true
+	for _, snap := range s.coalescer.PlayerSnapshots() {
+		nameKey := strings.ToLower(snap.Name)
+		if hasLive && !seen[nameKey] && (snap.UpdatedAt <= 0 || nowMs-snap.UpdatedAt > 4000) {
+			s.coalescer.RemoveEntity(snap.ID)
+			s.evictPlayerHandover(snap.Name)
+			continue
+		}
+		if !seen[nameKey] {
+			seen[nameKey] = true
 			out = append(out, normalizePlayerInfo(PlayerInfo{
 				ID: uint64(len(out) + 1), GUID: snap.ID, Character: snap.Name, Level: uint32(snap.Level),
-				X: snap.X, Y: snap.Y, Z: snap.Z,
-				Health: uint32(snap.HealthPct), MaxHealth: 100, Online: true, Zone: snap.Zone,
+				X: snap.X, Y: snap.Y, Z: snap.Z, Health: uint32(snap.HealthPct), MaxHealth: 100, Online: true, Zone: snap.Zone,
 			}))
 		}
 	}
@@ -471,17 +500,12 @@ func (s *Server) collectPlayersInViewport(ctx context.Context, filter worldstrea
 func (s *Server) collectNonPlayerLayers(
 	filter worldstream.ViewportFilter, sel layerSelection,
 ) ([]worldstream.EntitySnapshot, []worldstream.EntitySnapshot, []worldstream.EntitySnapshot, []worldstream.EntitySnapshot, []worldstream.EntitySnapshot) {
-	npcs := make([]worldstream.EntitySnapshot, 0)
-	monsters := make([]worldstream.EntitySnapshot, 0)
-	resourceNodes := make([]worldstream.EntitySnapshot, 0)
-	mounts := make([]worldstream.EntitySnapshot, 0)
-	lootPiles := make([]worldstream.EntitySnapshot, 0)
+	npcs, monsters, resourceNodes, mounts, lootPiles := make([]worldstream.EntitySnapshot, 0), make([]worldstream.EntitySnapshot, 0), make([]worldstream.EntitySnapshot, 0), make([]worldstream.EntitySnapshot, 0), make([]worldstream.EntitySnapshot, 0)
 	if !sel.Npcs && !sel.Monsters && !sel.ResourceNodes && !sel.Mounts && !sel.LootPiles {
 		return npcs, monsters, resourceNodes, mounts, lootPiles
 	}
 	for _, snap := range s.coalescer.Snapshot(filter) {
-		k := strings.ToLower(strings.TrimSpace(snap.Kind))
-		switch k {
+		switch strings.ToLower(strings.TrimSpace(snap.Kind)) {
 		case "player":
 			continue
 		case "resource_node", "resource", "gatherable":
@@ -515,12 +539,8 @@ func (s *Server) collectNonPlayerLayers(
 }
 
 func isMonsterSnapshot(snap worldstream.EntitySnapshot) bool {
-	k := strings.ToLower(strings.TrimSpace(snap.Kind))
-	if k == "monster" || k == "mob" || k == "hostile" || k == "boss" {
-		return true
-	}
-	st := strings.ToLower(strings.TrimSpace(snap.State))
-	if st == "hostile" || st == "combat" || st == "aggressive" {
+	k, st := strings.ToLower(strings.TrimSpace(snap.Kind)), strings.ToLower(strings.TrimSpace(snap.State))
+	if k == "monster" || k == "mob" || k == "hostile" || k == "boss" || st == "hostile" || st == "combat" || st == "aggressive" {
 		return true
 	}
 	if st == "friendly" || st == "vendor" || st == "guard" || st == "quest" || st == "citizen" {
@@ -537,9 +557,9 @@ func isHostileNpcName(name string) bool {
 		}
 	}
 	for _, hostile := range []string{
-		"goblin", "wolf", "skeleton", "zombie", "bandit", "spider", "bear", "elemental",
-		"dragon", "boss", "raider", "cultist", "minotaur", "orc", "troll", "demon",
-		"undead", "slime", "boar", "scorpion", "wyvern", "golem", "stalker", "brute",
+		"goblin", "wolf", "skeleton", "zombie", "bandit", "spider", "bear", "elemental", "dragon", "boss", "raider", "cultist", "minotaur", "orc", "troll", "demon",
+		"undead", "slime", "boar", "scorpion", "wyvern", "golem", "stalker", "brute", "raven", "mycel", "rabid", "grem", "gryphon", "raptor", "bullywog", "crox",
+		"scarab", "beetle", "broodling", "skinwalker", "hoarder", "construct", "ooze", "imp", "drake", "crab", "turtle", "deer", "stag", "ram", "buck", "doe", "fox", "badger",
 	} {
 		if strings.Contains(nameLower, hostile) {
 			return true
@@ -556,8 +576,7 @@ func computeHealthPct(health, maxHealth uint32) float64 {
 }
 
 func normalizeNodeKey(raw string) string {
-	s := strings.ToLower(strings.TrimSpace(raw))
-	s = strings.TrimPrefix(s, "verra_rvr_")
+	s := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(raw)), "verra_rvr_")
 	var b strings.Builder
 	for _, r := range s {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
@@ -681,34 +700,21 @@ func (s *Server) RemoveEntity(entityGuid string) {
 	if id == "" {
 		return
 	}
-	s.coalescer.RemoveEntity(id)
-	s.coalescer.RemoveEntity("npc:" + id)
-	s.coalescer.RemoveEntity("monster:" + id)
+	parts := strings.Split(id, ":")
+	rawID, _ := strconv.ParseUint(parts[len(parts)-1], 10, 64)
+	s.markEntityDespawned(id, "", rawID)
+	s.evictPlayerHandover(id)
+	s.evictPlayerHandover(parts[len(parts)-1])
+	for _, prefix := range []string{"", "npc:", "monster:", "player:"} {
+		s.coalescer.RemoveEntity(prefix + strings.ToLower(id))
+		s.coalescer.RemoveEntity(prefix + id)
+	}
 	for _, snap := range s.coalescer.Snapshot(worldstream.ViewportFilter{}) {
-		if strings.EqualFold(snap.ID, id) || strings.HasSuffix(strings.ToLower(snap.ID), ":"+strings.ToLower(id)) {
+		if strings.EqualFold(snap.ID, id) || strings.EqualFold(snap.Name, id) || strings.HasSuffix(strings.ToLower(snap.ID), ":"+strings.ToLower(id)) || (rawID > 0 && strings.HasSuffix(snap.ID, fmt.Sprintf(":%d", rawID))) {
 			s.coalescer.RemoveEntity(snap.ID)
+			s.evictPlayerHandover(snap.Name)
 		}
 	}
-}
-
-func (s *Server) recordGMAudit(role Role, domain, action, targetID, summary string) AuditEntry {
-	seq := s.auditSeq.Add(1)
-	entry := AuditEntry{
-		AuditID:        fmt.Sprintf("aud-%d", seq),
-		ActorSub:       strings.ToLower(string(role)),
-		ActorRole:      role,
-		CommandDomain:  domain,
-		ActionName:     action,
-		TargetEntityID: targetID,
-		DiffSummary:    summary,
-		SnapshotEpoch:  s.snapshotEpoch.Load(),
-		AppliedAt:      s.now().UTC().Format(time.RFC3339),
-	}
-	s.mu.Lock()
-	s.auditLog = append(s.auditLog, entry)
-	s.mu.Unlock()
-	s.recordMutation()
-	return entry
 }
 
 func (s *Server) serveSSEStream(w http.ResponseWriter, r *http.Request, sub *worldstream.Subscription, maxFrames int) {

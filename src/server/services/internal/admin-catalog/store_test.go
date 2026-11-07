@@ -177,3 +177,74 @@ func TestLoadPlacesWithGzipRecordsAndVisuals(t *testing.T) {
 		t.Fatalf("unexpected PlaceEntry wire JSON: %+v", wire)
 	}
 }
+
+func TestResolveDataModeAndStoreDataMode(t *testing.T) {
+	for _, k := range []string{"AOC_DATA_MODE", "AOC_DATA_MODE_DEFAULT", "AOC_DATA_MODE_ZOIS", "AOC_DATA_MODE_CITY_NODES", "AOC_DATA_MODE_POIS", "AOC_DATA_MODE_NPCS", "AOC_DATA_MODE_ITEMS"} {
+		t.Setenv(k, "")
+	}
+	store := NewCatalog()
+	if got := ResolveDataMode("zois"); got != "memory" {
+		t.Fatalf("expected default memory mode, got %q", got)
+	}
+	if got := store.DataMode("city_nodes"); got != "memory" {
+		t.Fatalf("expected store.DataMode(city_nodes)=memory, got %q", got)
+	}
+
+	t.Setenv("AOC_DATA_MODE_ZOIS", "disk")
+	t.Setenv("AOC_DATA_MODE_POIS", "disk")
+	if got := store.DataMode("zois"); got != "disk" {
+		t.Fatalf("expected zois disk override, got %q", got)
+	}
+	if got := store.DataMode("items"); got != "memory" {
+		t.Fatalf("expected items memory default, got %q", got)
+	}
+
+	t.Setenv("AOC_DATA_MODE", "disk")
+	t.Setenv("AOC_DATA_MODE_ITEMS", "memory")
+	modes := store.DataModes()
+	if modes["city_nodes"] != "disk" || modes["items"] != "memory" {
+		t.Fatalf("unexpected store.DataModes(): %+v", modes)
+	}
+}
+
+func TestZoisAndPlacesTSVRoundTripAndDiskMode(t *testing.T) {
+	dir := t.TempDir()
+	zoisPath := filepath.Join(dir, "zois.tsv")
+	zoiIn := []ZoiRecord{
+		{Index: 0, Guid: 108646108518008, Name: "Verra_RVR_Node_Winstead", DisplayName: "Winstead", Region: "riverlands", ZoneType: "Node", BorderImage: "Zoi_Winstead", MinX: -744519.11, MinY: 276773.24, MaxX: -544519.11, MaxY: 476773.24},
+		{Index: 1, Guid: 6064632734268915716, Name: "Verra_SAN_Node_Sunhaven", DisplayName: "Sunhaven", Region: "sandsquall", ZoneType: "Node", BorderImage: "Zoi_Sunhaven", MinX: -719803.28, MinY: 773514.22, MaxX: -519803.28, MaxY: 973514.22},
+	}
+	if err := WriteZoisTSV(zoisPath, zoiIn); err != nil {
+		t.Fatalf("WriteZoisTSV: %v", err)
+	}
+	zoiOut, err := LoadZoisTSV(zoisPath)
+	if err != nil {
+		t.Fatalf("LoadZoisTSV: %v", err)
+	}
+	if len(zoiOut) != len(zoiIn) || zoiOut[0] != zoiIn[0] || zoiOut[1] != zoiIn[1] {
+		t.Fatalf("ZOI TSV round-trip mismatch: got %+v, want %+v", zoiOut, zoiIn)
+	}
+
+	poisPath := filepath.Join(dir, "pois.tsv")
+	placesIn := []PlaceRecord{
+		{GUID: "99001", Name: "POI_Sanctum_Vault", DisplayName: "Sanctum Vault", NodeName: "Sanctum Vault", NodeType: "Dungeon", Kind: "poi", X: -512000.5, Y: 398000.25, Z: 14200.0, Yaw: 90.0, Radius: 12000.0, Levelable: false, Level: 0, StageName: ""},
+	}
+	if err := WritePlacesTSV(poisPath, placesIn); err != nil {
+		t.Fatalf("WritePlacesTSV: %v", err)
+	}
+	placesOut, err := LoadPlacesTSV(poisPath)
+	if err != nil {
+		t.Fatalf("LoadPlacesTSV: %v", err)
+	}
+	if len(placesOut) != 1 || placesOut[0] != placesIn[0] {
+		t.Fatalf("Places TSV round-trip mismatch: got %+v, want %+v", placesOut, placesIn)
+	}
+
+	t.Setenv("AOC_CONTENT_TSV_DIR", dir)
+	t.Setenv("AOC_DATA_MODE_POIS", "disk")
+	cat := NewCatalog()
+	hits := cat.SearchPlaces(context.Background(), "Sanctum Vault", 10)
+	if len(hits) != 1 || hits[0].GUID != "99001" || hits[0].X != -512000.5 {
+		t.Fatalf("expected disk-mode pois.tsv entry in SearchPlaces, got %+v", hits)
+	}
+}

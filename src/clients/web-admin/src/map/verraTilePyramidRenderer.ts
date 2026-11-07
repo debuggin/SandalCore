@@ -1,29 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { normalizePaginatedEnvelope } from "../components/GmCommandPalette";
-import { VERRA_ZOI_POLYGONS, type VerraZoiPolygon } from "./verraZoiPolygons";
-
-export { VERRA_ZOI_POLYGONS, type VerraZoiPolygon };
 import {
-  type CameraViewport,
-  computeNodePlugTileOverlay,
-  computeVisibleBaseTiles,
-  DEFAULT_VERRA_MAP_META,
-  getCityNodeCenterCm,
-  type LayerEntityCounts,
-  type LayerToggles,
-  type LngLatTuple,
-  mosaicPxToWorldCm,
-  NODE_STAGE_NAMES,
-  type OverlayLayerKey,
-  type PoiOverlay,
-  type VerraCityNodeMeta,
-  type VerraMapMeta,
-  type VerraUnrealPoint,
-  verraUnrealToLngLat,
-  worldCmToMosaicPx,
-  type WorldEntity,
-  type WorldStreamState,
+  appendAdminAccessTokenToUrl,
+  CIRCUIT_FAILURE_THRESHOLD,
+  CIRCUIT_OPEN_COOLDOWN_MS,
+  computeExponentialBackoffMs,
+  isUnauthenticatedViewOnly,
+  recordRetryFailure,
+  recordRetrySuccess,
+  registerPendingRetryTimer,
+  RETRY_BASE_DELAY_MS,
+  RETRY_MAX_ATTEMPTS,
+  RETRY_MAX_DELAY_MS,
+  subscribeRetryReset,
+} from "../state/adminAuthClient";
+import { clipZoiRingToValidMinimapTiles, hydrateVerraZoiPolygonsFromTsvApi, VERRA_ZOI_POLYGONS, type VerraZoiPolygon } from "./verraZoiPolygons";
+export { clipZoiRingToValidMinimapTiles, hydrateVerraZoiPolygonsFromTsvApi, VERRA_ZOI_POLYGONS, type VerraZoiPolygon };
+import {
+  type CameraViewport, computeNodePlugTileOverlay, computeVisibleBaseTiles, DEFAULT_CAMERA_VIEWPORT, DEFAULT_VERRA_MAP_META, getCityNodeCenterCm,
+  type LayerEntityCounts, type LayerToggles, type LngLatTuple, mosaicPxToWorldCm, NODE_STAGE_NAMES, type OverlayLayerKey,
+  type PoiOverlay, type VerraCityNodeMeta, type VerraMapMeta, type VerraUnrealPoint, verraUnrealToLngLat, worldCmToMosaicPx,
+  type WorldEntity, type WorldStreamState,
 } from "../state/worldStreamStore";
 
 export const DEFAULT_VERRA_PMTILES_URL = "/api/v1/world/pmtiles";
@@ -92,21 +90,53 @@ const tileFetchState = new Map<string, "loading" | "error">();
 export class VerraTileCache {
   private readonly map = new Map<string, TileCacheEntry>();
   private readonly queue: TileCacheEntry[] = [];
+  private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
   private readonly onLoaded: () => void;
   private readonly maxEntries: number;
   public readonly maxInflight: number;
   private inflight = 0;
   private frame = 0;
   private preloaded = false;
+  private lastTokenUrl = "";
+  private consecutiveFailures = 0;
+  private circuitOpenUntilMs = 0;
 
-  constructor(onLoaded: () => void, maxEntries = 1024, maxInflight = 16) {
+  constructor(onLoaded: () => void, maxEntries = 2048, maxInflight = 32) {
     this.onLoaded = onLoaded;
     this.maxEntries = maxEntries;
     this.maxInflight = maxInflight;
+    subscribeRetryReset(() => this.resetAllRetries());
   }
 
   beginFrame(): void {
     this.frame += 1;
+    const curTokenUrl = appendAdminAccessTokenToUrl("/t");
+    if (curTokenUrl !== this.lastTokenUrl) {
+      this.lastTokenUrl = curTokenUrl;
+      this.resetAllRetries();
+    }
+  }
+
+  resetAllRetries(): void {
+    for (const timer of this.retryTimers) clearTimeout(timer);
+    this.retryTimers.clear();
+    this.consecutiveFailures = 0;
+    this.circuitOpenUntilMs = 0;
+    tileFetchState.clear();
+    for (const entry of this.map.values()) {
+      if (entry.state === "error" || entry.state === "missing") {
+        entry.state = "queued";
+        entry.retries = 0;
+        entry.retryAfterMs = 0;
+        this.queue.push(entry);
+      }
+    }
+    this.pump();
+    this.onLoaded();
+  }
+
+  resetFailedEntries(): void {
+    this.resetAllRetries();
   }
 
   notifyLoaded(): void {
@@ -122,12 +152,9 @@ export class VerraTileCache {
     this.preloaded = true;
     for (let z = 0; z <= Math.min(maxCoarseZ, meta.max_zoom); z += 1) {
       const span = meta.tile_px * Math.pow(2, meta.max_zoom - z);
-      const cols = Math.ceil(meta.width_px / span);
-      const rows = Math.ceil(meta.height_px / span);
+      const cols = Math.ceil(meta.width_px / span), rows = Math.ceil(meta.height_px / span);
       for (let y = 0; y < rows; y += 1) {
-        for (let x = 0; x < cols; x += 1) {
-          this.enqueueTile(z, x, y, 0, true);
-        }
+        for (let x = 0; x < cols; x += 1) this.enqueueTile(z, x, y, 0, true);
       }
     }
     this.pump();
@@ -148,32 +175,18 @@ export class VerraTileCache {
 
   findAncestorFallback(z: number, tx: number, ty: number, tilePx = 256): AncestorTileFallback | null {
     for (let dz = 1; dz <= z; dz += 1) {
-      const upZ = z - dz;
-      const factor = 1 << dz;
-      const upX = tx >> dz;
-      const upY = ty >> dz;
-      const upImg =
-        dz === 1
-          ? this.getTile(upZ, upX, upY, 1e9 + dz)
-          : (this.peekTile(upZ, upX, upY) ?? this.getTile(upZ, upX, upY, 2e9 + dz));
+      const upZ = z - dz, factor = 1 << dz, upX = tx >> dz, upY = ty >> dz;
+      const upImg = this.peekTile(upZ, upX, upY) ?? this.getTile(upZ, upX, upY, 1e6 + dz);
       if (upImg) {
         const part = tilePx / factor;
-        return {
-          img: upImg,
-          sx: (tx % factor) * part,
-          sy: (ty % factor) * part,
-          sw: part,
-          sh: part,
-          ancestorZ: upZ,
-        };
+        return { img: upImg, sx: (tx % factor) * part, sy: (ty % factor) * part, sw: part, sh: part, ancestorZ: upZ };
       }
     }
     return null;
   }
 
   private enqueueTile(z: number, x: number, y: number, dist: number, pinned: boolean): TileCacheEntry {
-    const key = `${z}/${x}/${y}`;
-    const url = `/api/v1/world/tiles/${z}/${x}/${y}`;
+    const key = `${z}/${x}/${y}`, url = `/api/v1/world/tiles/${z}/${x}/${y}`;
     let entry = this.map.get(key);
     if (!entry) {
       entry = { key, url, state: "queued", img: null, used: this.frame, dist, retries: 0, retryAfterMs: 0, pinned };
@@ -184,12 +197,45 @@ export class VerraTileCache {
       entry.used = this.frame;
       entry.dist = dist;
       if (pinned) entry.pinned = true;
-      if (entry.state === "error" && entry.retries < 3 && Date.now() >= entry.retryAfterMs) {
+      if ((entry.state === "error" || entry.state === "missing") && Date.now() >= entry.retryAfterMs) {
         entry.state = "queued";
+        entry.retries = 0;
         this.queue.push(entry);
       }
     }
     return entry;
+  }
+
+  private handleTileError(entry: TileCacheEntry): void {
+    this.inflight = Math.max(0, this.inflight - 1);
+    this.consecutiveFailures += 1;
+    recordRetryFailure();
+    if (this.consecutiveFailures >= CIRCUIT_FAILURE_THRESHOLD) {
+      this.circuitOpenUntilMs = Date.now() + CIRCUIT_OPEN_COOLDOWN_MS;
+    }
+    if (entry.retries < RETRY_MAX_ATTEMPTS) {
+      const backoffMs = computeExponentialBackoffMs(entry.retries, RETRY_BASE_DELAY_MS, RETRY_MAX_DELAY_MS);
+      const delay = Math.max(Math.max(0, this.circuitOpenUntilMs - Date.now()), backoffMs);
+      entry.retries += 1;
+      entry.state = "error";
+      entry.retryAfterMs = Date.now() + delay;
+      if (typeof setTimeout === "function") {
+        const timer = setTimeout(() => {
+          this.retryTimers.delete(timer);
+          if (entry.state === "error" || entry.state === "missing") {
+            entry.state = "queued";
+            this.queue.push(entry);
+            this.pump();
+          }
+        }, delay);
+        this.retryTimers.add(timer);
+        registerPendingRetryTimer(timer);
+      }
+    } else {
+      entry.state = "missing";
+      entry.retryAfterMs = Date.now() + RETRY_MAX_DELAY_MS;
+    }
+    this.pump();
   }
 
   private pump(): void {
@@ -197,7 +243,7 @@ export class VerraTileCache {
     this.queue.sort((a, b) => a.dist - b.dist);
     while (this.inflight < this.maxInflight && this.queue.length > 0) {
       const entry = this.queue.shift()!;
-      if (!entry.pinned && entry.used < this.frame - 64) {
+      if (!entry.pinned && entry.used < this.frame - 600) {
         this.map.delete(entry.key);
         continue;
       }
@@ -209,44 +255,24 @@ export class VerraTileCache {
       img.onload = () => {
         entry.img = img;
         entry.state = "ready";
+        entry.retries = 0;
+        this.consecutiveFailures = 0;
+        this.circuitOpenUntilMs = 0;
+        recordRetrySuccess();
         tileImageCache.set(entry.url, img);
         this.inflight = Math.max(0, this.inflight - 1);
         this.pump();
         this.onLoaded();
       };
-      img.onerror = () => {
-        this.inflight = Math.max(0, this.inflight - 1);
-        if (entry.retries < 2) {
-          entry.retries += 1;
-          entry.state = "error";
-          const delay = 250 * Math.pow(2, entry.retries);
-          entry.retryAfterMs = Date.now() + delay;
-          if (typeof setTimeout === "function") {
-            setTimeout(() => {
-              if (entry.state === "error") {
-                entry.state = "queued";
-                this.queue.push(entry);
-                this.pump();
-              }
-            }, delay);
-          }
-        } else {
-          entry.state = "missing";
-        }
-        this.pump();
-      };
+      img.onerror = () => this.handleTileError(entry);
       img.src = entry.url;
     }
   }
 
   private evictIfNeeded(): void {
     if (this.map.size <= this.maxEntries) return;
-    const candidates = [...this.map.values()]
-      .filter((e) => !e.pinned && (e.state === "ready" || e.state === "missing"))
-      .sort((a, b) => a.used - b.used);
-    for (const item of candidates.slice(0, Math.ceil(this.maxEntries * 0.25))) {
-      this.map.delete(item.key);
-    }
+    const candidates = [...this.map.values()].filter((e) => !e.pinned && (e.state === "ready" || e.state === "missing")).sort((a, b) => a.used - b.used);
+    for (const item of candidates.slice(0, Math.ceil(this.maxEntries * 0.25))) this.map.delete(item.key);
   }
 }
 
@@ -262,34 +288,20 @@ export function formatOverlayLayerLabel(layerKey: OverlayLayerKey, counts: Layer
 
 let pmtilesProtocolRegistered = false;
 
-export function registerPmtilesProtocol(
-  addProtocol?: MapLibreAddProtocolFn,
-  removeProtocol?: MapLibreRemoveProtocolFn,
-): () => void {
-  if (!pmtilesProtocolRegistered && addProtocol) {
-    addProtocol("pmtiles", async () => ({ data: new ArrayBuffer(0) }));
-    pmtilesProtocolRegistered = true;
-  }
-  return () => {
-    if (pmtilesProtocolRegistered && removeProtocol) removeProtocol("pmtiles");
-    pmtilesProtocolRegistered = false;
-  };
+export function registerPmtilesProtocol(addProtocol?: MapLibreAddProtocolFn, removeProtocol?: MapLibreRemoveProtocolFn): () => void {
+  if (!pmtilesProtocolRegistered && addProtocol) { addProtocol("pmtiles", async () => ({ data: new ArrayBuffer(0) })); pmtilesProtocolRegistered = true; }
+  return () => { if (pmtilesProtocolRegistered && removeProtocol) removeProtocol("pmtiles"); pmtilesProtocolRegistered = false; };
 }
 
 export function resolveVerraMapViewState(
-  state: Pick<
-    WorldStreamState,
-    "connectionState" | "error" | "lastSeq" | "needsSnapshotResync" | "entities" | "navmeshSegments"
-  > & { readonly cityNodes?: readonly VerraCityNodeMeta[]; readonly pois?: readonly PoiOverlay[] },
+  state: Pick<WorldStreamState, "connectionState" | "error" | "lastSeq" | "needsSnapshotResync" | "entities" | "navmeshSegments"> & {
+    readonly cityNodes?: readonly VerraCityNodeMeta[]; readonly pois?: readonly PoiOverlay[];
+  },
 ): VerraMapViewState {
   if (state.connectionState === "offline" || state.error !== null) return "error";
   if (state.connectionState === "connecting" && state.lastSeq === 0) return "loading";
   if (state.connectionState === "degraded" || state.needsSnapshotResync) return "degraded";
-  const hasSpatial =
-    state.entities.size > 0 ||
-    (state.cityNodes?.length ?? 0) > 0 ||
-    (state.pois?.length ?? 0) > 0 ||
-    state.navmeshSegments.length > 0;
+  const hasSpatial = state.entities.size > 0 || (state.cityNodes?.length ?? 0) > 0 || (state.pois?.length ?? 0) > 0 || state.navmeshSegments.length > 0;
   return hasSpatial ? "populated" : "empty";
 }
 
@@ -305,48 +317,24 @@ export function isEntityVisibleForLayers(entity: WorldEntity, layers: LayerToggl
 }
 
 export function buildVerraDeckOverlayLayers(
-  state: Pick<
-    WorldStreamState,
-    "entities" | "selectedEntityGuid" | "layers" | "camera" | "navmeshSegments" | "lastSeq"
-  >,
+  state: Pick<WorldStreamState, "entities" | "selectedEntityGuid" | "layers" | "camera" | "navmeshSegments" | "lastSeq">,
 ): readonly VerraDeckLayerDescriptor[] {
-  const activeEntities = [...state.entities.values()].filter((e) =>
-    isEntityVisibleForLayers(e, state.layers, state.camera.zoom),
-  );
+  const activeEntities = [...state.entities.values()].filter((e) => isEntityVisibleForLayers(e, state.layers, state.camera.zoom));
   const iconEntities = state.camera.zoom >= SEMANTIC_LOD_ICON_MIN_ZOOM ? activeEntities : [];
   const mode3d = state.camera.mode === "3d";
   return [
+    { id: "verra-navmesh-links-path", layerType: "PathLayer", visible: state.layers.navmesh, pickable: false, data: state.layers.navmesh ? state.navmeshSegments : [], props: { widthMinPixels: 1.5, getColor: [34, 197, 94, 160] } },
     {
-      id: "verra-navmesh-links-path",
-      layerType: "PathLayer",
-      visible: state.layers.navmesh,
-      pickable: false,
-      data: state.layers.navmesh ? state.navmeshSegments : [],
-      props: { widthMinPixels: 1.5, getColor: [34, 197, 94, 160] },
-    },
-    {
-      id: "verra-live-entities-scatterplot",
-      layerType: "ScatterplotLayer",
-      visible: activeEntities.length > 0,
-      pickable: true,
-      data: activeEntities,
+      id: "verra-live-entities-scatterplot", layerType: "ScatterplotLayer", visible: activeEntities.length > 0, pickable: true, data: activeEntities,
       props: {
-        radiusMinPixels: 4,
-        radiusMaxPixels: 14,
-        getPosition: (e: WorldEntity): readonly [number, number, number] => {
-          const [lng, lat] = verraUnrealToLngLat(e.xCm, e.yCm);
-          return [lng, lat, mode3d ? e.zCm * 0.01 : 0.0];
-        },
+        radiusMinPixels: 4, radiusMaxPixels: 14,
+        getPosition: (e: WorldEntity): readonly [number, number, number] => { const [lng, lat] = verraUnrealToLngLat(e.xCm, e.yCm); return [lng, lat, mode3d ? e.zCm * 0.01 : 0.0]; },
         getRadius: (e: WorldEntity): number => (e.guid === state.selectedEntityGuid ? 12 : 6),
         updateTriggers: { getPosition: [state.lastSeq, mode3d], getRadius: [state.selectedEntityGuid] },
       },
     },
     {
-      id: "verra-entity-heading-icon",
-      layerType: "IconLayer",
-      visible: iconEntities.length > 0,
-      pickable: true,
-      data: iconEntities,
+      id: "verra-entity-heading-icon", layerType: "IconLayer", visible: iconEntities.length > 0, pickable: true, data: iconEntities,
       props: {
         sizeScale: 1,
         getPosition: (e: WorldEntity): LngLatTuple => verraUnrealToLngLat(e.xCm, e.yCm),
@@ -399,9 +387,14 @@ function requestTileImage(url: string, onReady: () => void): HTMLImageElement | 
   img.onerror = () => {
     tileFetchState.set(url, "error");
   };
-  img.src = url;
+  img.src = appendAdminAccessTokenToUrl(url);
   return null;
 }
+
+const VALID_MINIMAP_TILE_CONTOUR: ReadonlyArray<readonly [number, number]> = Object.freeze([
+  [2560, 0], [17408, 0], [17408, 8704], [19456, 8704], [19456, 13824],
+  [25600, 13824], [25600, 22016], [14336, 22016], [14336, 23552], [2560, 23552],
+]);
 
 export function drawCanvasScene(
   ctx: CanvasRenderingContext2D,
@@ -415,13 +408,14 @@ export function drawCanvasScene(
   ctx.fillRect(0, 0, viewport.width, viewport.height);
   tileCache.beginFrame();
   tileCache.preloadCoarseLevels(meta, 2);
-  const [centerU, centerV] = worldCmToMosaicPx(state.camera.centerXCm, state.camera.centerYCm);
-  const scale = Math.pow(2, state.camera.zoom - 5);
+  const cam = isUnauthenticatedViewOnly() ? DEFAULT_CAMERA_VIEWPORT : state.camera;
+  const [centerU, centerV] = worldCmToMosaicPx(cam.centerXCm, cam.centerYCm);
+  const scale = Math.pow(2, cam.zoom - 5);
   const visibleTiles = computeVisibleBaseTiles(
     meta,
-    state.camera.centerXCm,
-    state.camera.centerYCm,
-    state.camera.zoom,
+    cam.centerXCm,
+    cam.centerYCm,
+    cam.zoom,
     viewport,
   );
   for (const tile of visibleTiles) {
@@ -441,6 +435,7 @@ export function drawCanvasScene(
       ctx.drawImage(fallback.img, fallback.sx, fallback.sy, fallback.sw, fallback.sh, sx, sy, sw, sw);
     }
   }
+  if (isUnauthenticatedViewOnly() || (state.connectionState === "offline" && state.cityNodes.length === 0)) return;
   const onAsyncAssetLoaded = () => tileCache.notifyLoaded();
   if (state.layers.nodePlugs) drawNodePlugOverlays(ctx, viewport, state, onAsyncAssetLoaded);
   if (state.layers.zoiBorders) drawZoiBorderOverlays(ctx, viewport, state);
@@ -456,35 +451,36 @@ function drawZoiBorderOverlays(
   const [centerU, centerV] = worldCmToMosaicPx(state.camera.centerXCm, state.camera.centerYCm);
   const scale = Math.pow(2, state.camera.zoom - 5);
   ctx.save();
+  ctx.beginPath();
+  for (let i = 0; i < VALID_MINIMAP_TILE_CONTOUR.length; i += 1) {
+    const cx = viewport.width / 2 + (VALID_MINIMAP_TILE_CONTOUR[i][0] - centerU) * scale;
+    const cy = viewport.height / 2 + (VALID_MINIMAP_TILE_CONTOUR[i][1] - centerV) * scale;
+    if (i === 0) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy);
+  }
+  ctx.closePath?.();
+  ctx.clip?.();
   for (const zoi of VERRA_ZOI_POLYGONS) {
+    if (!zoi.has_in_game_border) continue;
     for (const ring of zoi.rings) {
       if (ring.length < 3) continue;
       ctx.beginPath();
       for (let i = 0; i < ring.length; i += 1) {
-        const sx = viewport.width / 2 + (ring[i][0] - centerU) * scale;
-        const sy = viewport.height / 2 + (ring[i][1] - centerV) * scale;
-        if (i === 0) ctx.moveTo(sx, sy);
-        else ctx.lineTo(sx, sy);
+        const sx = viewport.width / 2 + (ring[i][0] - centerU) * scale, sy = viewport.height / 2 + (ring[i][1] - centerV) * scale;
+        if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
       }
       ctx.closePath?.();
-      ctx.fillStyle = "rgba(232, 178, 90, 0.025)";
-      ctx.fill();
-      ctx.setLineDash?.([]);
-      ctx.strokeStyle = "rgba(8, 10, 16, 0.62)";
-      ctx.lineWidth = 2.0;
-      ctx.stroke();
-      ctx.setLineDash?.([6, 4]);
-      ctx.strokeStyle = zoi.color || "#E8B25A";
-      ctx.lineWidth = 1.0;
-      ctx.stroke();
+      ctx.save(); ctx.clip?.(); ctx.fillStyle = zoi.color || "#E8B25A"; ctx.globalAlpha = 0.06; ctx.fill(); ctx.restore();
+      ctx.save(); ctx.setLineDash?.([]); ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.strokeStyle = "rgba(6, 9, 15, 0.88)"; ctx.globalAlpha = 0.92; ctx.lineWidth = 4.4; ctx.stroke();
+      ctx.strokeStyle = zoi.color || "#E8B25A"; ctx.globalAlpha = 0.38; ctx.lineWidth = 6.0; ctx.stroke();
+      ctx.strokeStyle = zoi.color || "#F6CC7E"; ctx.globalAlpha = 0.98; ctx.lineWidth = 2.4; ctx.stroke();
+      ctx.restore();
     }
-    const cx = viewport.width / 2 + (zoi.centroid_u - centerU) * scale;
-    const cy = viewport.height / 2 + (zoi.centroid_v - centerV) * scale;
+    const cx = viewport.width / 2 + (zoi.centroid_u - centerU) * scale, cy = viewport.height / 2 + (zoi.centroid_v - centerV) * scale;
     if (cx >= -60 && cy >= -20 && cx <= viewport.width + 60 && cy <= viewport.height + 20 && state.camera.zoom >= 1.8) {
-      ctx.setLineDash?.([]);
-      ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
-      ctx.fillStyle = "#F6CC7E";
-      ctx.fillText(zoi.display_name, cx - 24, cy);
+      ctx.save(); ctx.setLineDash?.([]); ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
+      ctx.strokeStyle = "rgba(6, 9, 15, 0.9)"; ctx.lineWidth = 3; ctx.strokeText?.(zoi.display_name, cx - 24, cy);
+      ctx.fillStyle = "#F6CC7E"; ctx.fillText(zoi.display_name, cx - 24, cy); ctx.restore();
     }
   }
   ctx.setLineDash?.([]);
@@ -502,14 +498,7 @@ function drawNodePlugOverlays(
     if (!overlay) continue;
     const [sx, sy] = worldCmToScreenOffset(overlay.cxCm, overlay.cyCm, viewport, state.camera);
     const sizeScreenPx = overlay.drawSpanPx;
-    if (
-      sx + sizeScreenPx < 0 ||
-      sy + sizeScreenPx < 0 ||
-      sx - sizeScreenPx > viewport.width ||
-      sy - sizeScreenPx > viewport.height
-    ) {
-      continue;
-    }
+    if (sx + sizeScreenPx < 0 || sy + sizeScreenPx < 0 || sx - sizeScreenPx > viewport.width || sy - sizeScreenPx > viewport.height) continue;
     const img = requestTileImage(overlay.tileUrl, onTileLoaded);
     if (!img) continue;
     // Node plug tiles are full 1024x1024 squares rotated by +yaw_deg (never clip into rings).
@@ -519,6 +508,15 @@ function drawNodePlugOverlays(
     ctx.drawImage(img, -sizeScreenPx / 2, -sizeScreenPx / 2, sizeScreenPx, sizeScreenPx);
     ctx.restore();
   }
+}
+
+export function resolveCityNodeIconName(node: { readonly name?: string; readonly display_name?: string; readonly level?: number; readonly stage?: number; readonly icon_name?: string; readonly iconName?: string }): string {
+  const custom = (node.icon_name ?? node.iconName ?? "").trim().replace(/\.png$/i, "");
+  if (custom.startsWith("TUI_Icon_")) return custom;
+  const lvl = Number.isFinite(node.level) ? Number(node.level) : Number(node.stage ?? 1);
+  if (lvl >= 6) return "TUI_Icon_Node_Sovereignty";
+  const clamped = Math.min(4, Math.max(0, lvl > 0 ? lvl - 1 : 0));
+  return `TUI_Icon_Node_LVL${clamped}`;
 }
 
 function drawPoiAndCityNodeMarkers(
@@ -535,14 +533,8 @@ function drawPoiAndCityNodeMarkers(
     const [sx, sy] = worldCmToScreenOffset(poi.x_cm, poi.y_cm, viewport, state.camera);
     if (sx < -40 || sy < -30 || sx > viewport.width + 40 || sy > viewport.height + 30) continue;
     const iconImg = poi.icon_url ? requestTileImage(poi.icon_url, onIconLoaded) : null;
-    if (iconImg) {
-      ctx.drawImage(iconImg, sx - iconPx / 2, sy - iconPx / 2, iconPx, iconPx);
-    } else {
-      ctx.beginPath();
-      ctx.arc(sx, sy, 5.5, 0, Math.PI * 2);
-      ctx.fillStyle = poi.tint_color || "#d4af37";
-      ctx.fill();
-    }
+    if (iconImg) ctx.drawImage(iconImg, sx - iconPx / 2, sy - iconPx / 2, iconPx, iconPx);
+    else { ctx.beginPath(); ctx.arc(sx, sy, 5.5, 0, Math.PI * 2); ctx.fillStyle = poi.tint_color || "#d4af37"; ctx.fill(); }
     if (state.camera.zoom >= 3.2 || state.selectedPoiGuid === poi.guid) {
       drawCollisionSafeLabel(ctx, poi.display_name || poi.name, sx + iconPx / 2 + 4, sy, takenLabels);
     }
@@ -552,20 +544,20 @@ function drawPoiAndCityNodeMarkers(
     const { cx_cm, cy_cm } = getCityNodeCenterCm(node);
     const [sx, sy] = worldCmToScreenOffset(cx_cm, cy_cm, viewport, state.camera);
     if (sx < -80 || sy < -30 || sx > viewport.width + 80 || sy > viewport.height + 30) continue;
-    ctx.fillStyle = node.level >= 1 ? "#d4af37" : "#64748b";
-    ctx.strokeStyle = state.selectedCityNodeName === node.name ? "#ffffff" : "#080b11";
-    ctx.lineWidth = state.selectedCityNodeName === node.name ? 2.5 : 1.5;
-    ctx.beginPath();
-    ctx.rect(sx - 6, sy - 6, 12, 12);
-    ctx.fill();
-    ctx.stroke();
-    drawCollisionSafeLabel(
-      ctx,
-      `${node.display_name} (${NODE_STAGE_NAMES[node.level] ?? `Lv ${node.level}`})`,
-      sx + 10,
-      sy,
-      takenLabels,
-    );
+    const nodeIconName = resolveCityNodeIconName(node);
+    const nodeImg = requestTileImage(`/api/v1/world/icons/${nodeIconName}.png`, onIconLoaded);
+    if (nodeImg) {
+      ctx.beginPath(); ctx.arc(sx, sy, 14, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(8, 11, 17, 0.78)"; ctx.fill();
+      if (state.selectedCityNodeName === node.name) { ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.stroke(); }
+      ctx.drawImage(nodeImg, sx - 13, sy - 13, 26, 26);
+    } else {
+      ctx.fillStyle = node.level >= 1 ? "#d4af37" : "#64748b";
+      ctx.strokeStyle = state.selectedCityNodeName === node.name ? "#ffffff" : "#080b11";
+      ctx.lineWidth = state.selectedCityNodeName === node.name ? 2.5 : 1.5;
+      ctx.beginPath(); ctx.rect(sx - 6, sy - 6, 12, 12); ctx.fill(); ctx.stroke();
+    }
+    drawCollisionSafeLabel(ctx, `${node.display_name} (${NODE_STAGE_NAMES[node.level] ?? `Lv ${node.level}`})`, sx + 16, sy, takenLabels);
   }
 }
 
@@ -699,43 +691,18 @@ export function filterMapSearchItems(
     if (ent.name.toLowerCase().includes(q) || ent.guid.toLowerCase().includes(q) || ent.kind.toLowerCase().includes(q)) {
       const category =
         ent.kind === "player" ? "player" : ent.kind === "monster" ? "monster" : ent.kind === "resource_node" ? "resource_node" : "npc";
-      results.push({
-        id: `ent:${ent.guid}`,
-        label: `${ent.name} (${ent.kind} Lv ${ent.level})`,
-        category,
-        xCm: ent.xCm,
-        yCm: ent.yCm,
-        zCm: ent.zCm,
-        playerName: ent.kind === "player" ? ent.name : undefined,
-        entityGuid: ent.guid,
-      });
+      results.push({ id: `ent:${ent.guid}`, label: `${ent.name} (${ent.kind} Lv ${ent.level})`, category, xCm: ent.xCm, yCm: ent.yCm, zCm: ent.zCm, playerName: ent.kind === "player" ? ent.name : undefined, entityGuid: ent.guid });
     }
   }
   for (const node of cityNodes) {
     if (node.display_name.toLowerCase().includes(q) || node.name.toLowerCase().includes(q) || node.guid.toLowerCase().includes(q)) {
       const { cx_cm, cy_cm } = getCityNodeCenterCm(node);
-      results.push({
-        id: `node:${node.name}`,
-        label: `${node.display_name} (City Node Lv ${node.level})`,
-        category: "node",
-        xCm: cx_cm,
-        yCm: cy_cm,
-        zCm: node.oz ?? 0,
-        nodeName: node.name,
-      });
+      results.push({ id: `node:${node.name}`, label: `${node.display_name} (City Node Lv ${node.level})`, category: "node", xCm: cx_cm, yCm: cy_cm, zCm: node.oz ?? 0, nodeName: node.name });
     }
   }
   for (const poi of pois) {
     if (poi.display_name.toLowerCase().includes(q) || poi.name.toLowerCase().includes(q) || poi.category.toLowerCase().includes(q)) {
-      results.push({
-        id: `poi:${poi.guid}`,
-        label: `${poi.display_name || poi.name} (${poi.category || "POI"})`,
-        category: "poi",
-        xCm: poi.x_cm,
-        yCm: poi.y_cm,
-        zCm: poi.z_cm,
-        poiGuid: poi.guid,
-      });
+      results.push({ id: `poi:${poi.guid}`, label: `${poi.display_name || poi.name} (${poi.category || "POI"})`, category: "poi", xCm: poi.x_cm, yCm: poi.y_cm, zCm: poi.z_cm, poiGuid: poi.guid });
     }
   }
   for (const hit of remoteHits) {

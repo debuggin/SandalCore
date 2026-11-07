@@ -2,18 +2,25 @@
 
 import React from "react";
 import { createRoot } from "react-dom/client";
+import {
+  AdminAuthSessionBadge,
+  AdminLoginModal,
+} from "./components/AdminLoginModal";
 import { LogsAndContainersTab } from "./components/LogsAndContainersTab";
 import {
   PlayersAndSpawnerTab,
   SANDAL_LAUNCHER_TOKENS,
 } from "./components/PlayersAndSpawnerTab";
 import { VerraMapCanvas } from "./map/VerraMapCanvas";
+import { installGlobalAdminAuthFetchInterceptor } from "./state/adminAuthClient";
 import {
   type AdminTabId,
   parseModalFromUrlHash,
   parseTabFromUrlHash,
   useWorldStreamStore,
 } from "./state/worldStreamStore";
+
+installGlobalAdminAuthFetchInterceptor();
 
 export interface AdminTabDefinition {
   readonly id: AdminTabId;
@@ -94,6 +101,92 @@ export class WebAdminErrorBoundary extends React.Component<
   }
 }
 
+function renderAdminTabButtons(
+  activeTab: AdminTabId,
+  isAnalyticsUnified: boolean,
+  onSelectTab: (tabId: AdminTabId) => void,
+): React.ReactElement {
+  return (
+    <div role="tablist" aria-label="Admin Workspace Tabs" style={{ display: "flex", gap: "8px" }}>
+      {ADMIN_TABS.map((tab) => {
+        const isActive = tab.id === "analytics" ? isAnalyticsUnified : activeTab === tab.id;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            data-testid={`admin-tab-${tab.id}`}
+            onClick={() => onSelectTab(tab.id)}
+            style={{
+              minHeight: "34px",
+              padding: "6px 14px",
+              borderRadius: "8px",
+              border: isActive
+                ? `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraRelicGold500}`
+                : `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
+              backgroundColor: isActive
+                ? "rgba(232, 178, 90, 0.2)"
+                : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush,
+              color: isActive
+                ? SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400
+                : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100,
+              fontSize: "12px",
+              fontWeight: 700,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              cursor: "pointer",
+            }}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function renderAdminTopBar(
+  activeTab: AdminTabId,
+  isAnalyticsUnified: boolean,
+  onSelectTab: (tabId: AdminTabId) => void,
+): React.ReactElement {
+  return (
+    <nav
+      aria-label="SandalCore Web Admin Navigation"
+      data-testid="web-admin-tab-bar"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: "10px",
+        padding: "8px 18px",
+        borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
+        background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush,
+        backdropFilter: "blur(16px)",
+      }}
+    >
+      <div
+        data-testid="web-admin-brand-title"
+        style={{
+          fontWeight: 700,
+          fontSize: "13px",
+          letterSpacing: "0.14em",
+          textTransform: "uppercase",
+          color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500,
+        }}
+      >
+        SANDALCORE
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+        {renderAdminTabButtons(activeTab, isAnalyticsUnified, onSelectTab)}
+        <AdminAuthSessionBadge />
+      </div>
+    </nav>
+  );
+}
+
 export function App(): React.ReactElement {
   const storeSnap = useWorldStreamStore();
   React.useEffect(() => {
@@ -127,81 +220,14 @@ export function App(): React.ReactElement {
         display: "flex",
         flexDirection: "column",
         minHeight: "100vh",
+        scrollbarGutter: "stable",
         backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100,
         color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100,
         fontFamily: '"Segoe UI", system-ui, -apple-system, sans-serif',
       }}
     >
-      <nav
-        aria-label="SandalCore Web Admin Navigation"
-        data-testid="web-admin-tab-bar"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "8px 18px",
-          borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
-          background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush,
-          backdropFilter: "blur(16px)",
-        }}
-      >
-        <div
-          data-testid="web-admin-brand-title"
-          style={{
-            fontWeight: 700,
-            fontSize: "13px",
-            letterSpacing: "0.14em",
-            textTransform: "uppercase",
-            color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500,
-          }}
-        >
-          SANDALCORE
-        </div>
-        <div
-          role="tablist"
-          aria-label="Admin Workspace Tabs"
-          style={{ display: "flex", gap: "8px" }}
-        >
-          {ADMIN_TABS.map((tab) => {
-            const isActive =
-              tab.id === "analytics"
-                ? isAnalyticsUnified
-                : storeSnap.activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={isActive}
-                data-testid={`admin-tab-${tab.id}`}
-                onClick={() => storeSnap.setActiveTab(tab.id)}
-                style={{
-                  minHeight: "34px",
-                  padding: "6px 14px",
-                  borderRadius: "8px",
-                  border: isActive
-                    ? `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraRelicGold500}`
-                    : `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
-                  backgroundColor: isActive
-                    ? "rgba(232, 178, 90, 0.2)"
-                    : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush,
-                  color: isActive
-                    ? SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400
-                    : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100,
-                  fontSize: "12px",
-                  fontWeight: 700,
-                  letterSpacing: "0.06em",
-                  textTransform: "uppercase",
-                  cursor: "pointer",
-                }}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-      </nav>
-      <main style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+      {renderAdminTopBar(storeSnap.activeTab, isAnalyticsUnified, storeSnap.setActiveTab)}
+      <main data-testid="web-admin-main-view" style={{ flex: 1, display: "flex", flexDirection: "column", scrollbarGutter: "stable" }}>
         <WebAdminErrorBoundary>
           {storeSnap.activeTab === "map" ? (
             <VerraMapCanvas />
@@ -212,11 +238,16 @@ export function App(): React.ReactElement {
           )}
         </WebAdminErrorBoundary>
       </main>
+      <AdminLoginModal />
     </div>
   );
 }
 
 if (typeof document !== "undefined") {
+  if (document.documentElement?.style) {
+    document.documentElement.style.scrollbarGutter = "stable";
+    document.documentElement.style.overflowY = "scroll";
+  }
   const rootElement = document.getElementById("root");
   if (rootElement) {
     createRoot(rootElement).render(

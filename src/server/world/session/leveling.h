@@ -49,6 +49,8 @@ public:
     static std::optional<LevelCurve> from(const content::LevelingType& type, std::string& error);
 
     int     cap() const { return cap_; }
+    void    set_cap(int cap) noexcept { cap_ = cap < 1 ? 1 : (cap > max_level() ? max_level() : cap); }
+    void    extend_to_level(int target_max_level = content::kMaxLevel);
     int     max_level() const { return static_cast<int>(thresholds_.size()); }   // the curve's last level
     /// The XP total at which `level` is reached (level 1: 0); the last threshold for a level past the curve.
     int64_t xp_for(int level) const;

@@ -241,6 +241,7 @@ public sealed class LauncherAutomationServer : IAsyncDisposable, IDisposable
     private readonly TcpListener _listener;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _acceptLoopTask;
+    private int _disposed;
 
     public LauncherAutomationServer(LauncherAutomationController controller, int port = 0)
     {
@@ -357,17 +358,23 @@ public sealed class LauncherAutomationServer : IAsyncDisposable, IDisposable
 
     public void Dispose()
     {
-        _cts.Cancel();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try { _cts.Cancel(); }
+        catch (ObjectDisposedException ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
         _listener.Stop();
-        _cts.Dispose();
+        try { _cts.Dispose(); }
+        catch (ObjectDisposedException ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
     }
 
     public async ValueTask DisposeAsync()
     {
-        _cts.Cancel();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try { _cts.Cancel(); }
+        catch (ObjectDisposedException ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
         _listener.Stop();
         try { await _acceptLoopTask.ConfigureAwait(false); }
         catch (OperationCanceledException ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
-        _cts.Dispose();
+        try { _cts.Dispose(); }
+        catch (ObjectDisposedException ex) { System.Diagnostics.Trace.WriteLine(ex.Message); }
     }
 }

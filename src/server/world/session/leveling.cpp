@@ -8,8 +8,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace aoc::worldd::leveling {
+
+void LevelCurve::extend_to_level(int target_max_level) {
+    if (thresholds_.empty() || target_max_level <= max_level()) {
+        if (target_max_level > cap_ && target_max_level <= max_level()) cap_ = target_max_level;
+        return;
+    }
+    const int64_t step = std::max<int64_t>(1000, span_of(max_level()));
+    while (max_level() < target_max_level) {
+        thresholds_.push_back(thresholds_.back() + step);
+    }
+    cap_ = std::max(cap_, target_max_level);
+}
 
 std::optional<LevelCurve> LevelCurve::from(const content::LevelingType& type, std::string& error) {
     LevelCurve c;
@@ -29,7 +42,13 @@ std::optional<LevelCurve> LevelCurve::from(const content::LevelingType& type, st
         last = xp;
         ++expect;
     }
-    c.cap_ = type.level_cap > 0 ? type.level_cap : c.max_level();
+    const char* unclamp_env = std::getenv("AOC_WORLD_UNCLAMP_LEVEL_50");
+    const bool unclamp_50 = (type.level_cap == content::kMaxLevel) ||
+                            (unclamp_env && (unclamp_env[0] == '1' || unclamp_env[0] == 't' || unclamp_env[0] == 'T'));
+    if (unclamp_50 && c.max_level() < content::kMaxLevel) {
+        c.extend_to_level(content::kMaxLevel);
+    }
+    c.cap_ = unclamp_50 ? content::kMaxLevel : (type.level_cap > 0 ? type.level_cap : c.max_level());
     if (c.cap_ > c.max_level() || c.cap_ < 1) {
         error = "the level cap " + std::to_string(type.level_cap) + " of " + type.name + " is past its curve of " + std::to_string(c.max_level()) + " levels";
         return std::nullopt;

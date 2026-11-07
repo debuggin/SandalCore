@@ -35,8 +35,11 @@ PlayerSession::TickPlan PlayerSession::tick_logic(Connection& conn, Clock::time_
     sync_item_abilities(conn);
     // Update the registry before view passes run so concurrent view threads observe a stable snapshot.
     sync_presence(now);
-    if (phase_in_done_ && !time_syncs_.empty() && now >= time_syncs_.front() && room_for(1)) {
-        time_syncs_.pop_front();
+    const uint64_t tod_epoch = bootstrap::global_time_of_day_epoch();
+    const bool tod_changed = phase_in_done_ && tod_epoch != seen_time_of_day_epoch_;
+    if (phase_in_done_ && (tod_changed || (!time_syncs_.empty() && now >= time_syncs_.front())) && room_for(1)) {
+        seen_time_of_day_epoch_ = tod_epoch;
+        if (!time_syncs_.empty() && now >= time_syncs_.front()) time_syncs_.pop_front();
         if (time_syncs_.empty()) time_syncs_.push_back(now + kTimeSyncInterval);
         const double world_time = pb_.setup().world_time + session_seconds(now);
         ++time_syncs_sent_;

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	worldadminv1 "aocrop/services/gen/aoc/worldadmin/v1"
+	admincatalog "aocrop/services/internal/admin-catalog"
 	worldstream "aocrop/services/internal/world-stream"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -46,6 +47,7 @@ type WorldWorkerEndpoint struct {
 	TickHz            float64                               `json:"tick_hz"`
 	TickP50Ms         float64                               `json:"tick_p50_ms"`
 	TickP99Ms         float64                               `json:"tick_p99_ms"`
+	CPUPct            float64                               `json:"cpu_pct"`
 	LastSeenMs        int64                                 `json:"last_seen_ms"`
 	AdminClient       worldadminv1.WorldAdminServiceClient  `json:"-"`
 	StreamClient      worldadminv1.WorldStreamServiceClient `json:"-"`
@@ -148,11 +150,12 @@ func (s *Server) scrapePrometheusReport(ctx context.Context, worldStatus map[str
 	tickMs, _ := worldStatus["tick_ms"].(float64)
 	pubMs, _ := worldStatus["publish_ms"].(float64)
 	pubMaxMs, _ := worldStatus["publish_max_ms"].(float64)
+	tierHz := defaultWorkerTierTickHz("region")
 	tickHz := 0.0
-	if tickMs > 0 {
-		tickHz = math.Min(30.0, math.Round((1000.0/tickMs)*100.0)/100.0)
-	} else if worldConnected {
-		tickHz = 30.0
+	if tickMs > 1000.0/tierHz {
+		tickHz = math.Round((1000.0/tickMs)*100.0) / 100.0
+	} else if tickMs > 0 || worldConnected {
+		tickHz = tierHz
 	}
 	worldTargetStatus := "DOWN"
 	if worldConnected {
@@ -182,7 +185,7 @@ func (s *Server) scrapePrometheusReport(ctx context.Context, worldStatus map[str
 			"connected":           worldConnected,
 			"tick_hz":             tickHz,
 			"tick_p50_ms":         tickMs,
-			"tick_p99_ms":         max(tickMs, pubMaxMs),
+			"tick_p99_ms":         max(pubMaxMs, math.Round(tickMs*1.25*100.0)/100.0),
 			"npc_count":           worldStatus["npcs_total"],
 			"resource_node_count": worldStatus["resource_nodes"],
 			"city_node_count":     26,
@@ -577,5 +580,205 @@ func defaultVerraMapIcons(arch *PmTilesArchive) []map[string]any {
 	return out
 }
 
+func tierTickHzEnv(envKey string, defVal float64) float64 {
+	if raw := strings.TrimSpace(os.Getenv(envKey)); raw != "" {
+		if v, err := strconv.ParseFloat(raw, 64); err == nil && v >= 1.0 && v <= 240.0 {
+			return v
+		}
+	}
+	return defVal
+}
 
+func computeWorkerAdaptiveCPUPct(tMs float64, scopeKind string) float64 {
+	tierHz := defaultWorkerTierTickHz(scopeKind)
+	budgetMs := 1000.0 / max(tierHz, 1.0)
+	ratio := min(max(tMs/max(budgetMs, 0.1), 0.15), 1.0)
+	return math.Round((30.0+ratio*15.0)*100.0) / 100.0
+}
 
+func (s *Server) execSetTimeOfDayCommand(ctx context.Context, p map[string]any) (map[string]any, error) {
+	hour, ok := extractTimeOfDayHours(p)
+	if !ok {
+		return nil, status.Error(codes.InvalidArgument, "hour or time_of_day (0..24 or HH:MM) is required")
+	}
+	now := s.now()
+	s.timeOfDayMu.Lock()
+	s.timeOfDayHours, s.timeOfDayUpdatedAt = hour, now
+	s.timeOfDayMu.Unlock()
+	s.recordMutation()
+	var wg sync.WaitGroup
+	for _, w := range s.worldWorkers {
+		if w != nil {
+			s.markWorkerTimeSyncedAt(w.WorkerID, now)
+			wg.Add(1)
+			go func(worker *WorldWorkerEndpoint) { defer wg.Done(); s.pushTimeOfDayToWorker(ctx, worker, hour) }(w)
+		}
+	}
+	wg.Wait()
+	updatedCount, label := max(len(s.worldWorkers), 1), formatTimeOfDayLabel(hour)
+	msg := fmt.Sprintf("Set server time of day to %s (%.2fh) across %d world workers", label, hour, updatedCount)
+	return map[string]any{
+		"status": "executed", "action": "set_time_of_day", "command": "set_time_of_day",
+		"time_of_day_hours": hour, "time_of_day_label": label, "time_of_day_anchor_hours": hour,
+		"time_of_day_anchor_ms": now.UnixMilli(), "time_of_day_rate": 9.0, "workers_updated": updatedCount, "message": msg,
+	}, nil
+}
+
+func (s *Server) syncWorkerTimeOfDayIfNeeded(ctx context.Context, w *WorldWorkerEndpoint) {
+	if w == nil {
+		return
+	}
+	s.timeOfDayMu.RLock()
+	updatedAt := s.timeOfDayUpdatedAt
+	s.timeOfDayMu.RUnlock()
+	hour := s.TimeOfDayHours()
+	s.mu.Lock()
+	meta := s.workerMeta[w.WorkerID]
+	needsSync := meta.SyncedTimeAt.Before(updatedAt)
+	if needsSync {
+		meta.SyncedTimeAt, s.workerMeta[w.WorkerID] = updatedAt, meta
+	}
+	s.mu.Unlock()
+	if needsSync {
+		s.pushTimeOfDayToWorker(ctx, w, hour)
+	}
+}
+
+func (s *Server) markWorkerTimeSyncedAt(workerID string, ts time.Time) {
+	s.mu.Lock()
+	meta := s.workerMeta[workerID]
+	meta.SyncedTimeAt, s.workerMeta[workerID] = ts, meta
+	s.mu.Unlock()
+}
+
+func (s *Server) pushTimeOfDayToWorker(ctx context.Context, w *WorldWorkerEndpoint, hour float64) {
+	rctx, cancel := context.WithTimeout(ctx, 900*time.Millisecond)
+	defer cancel()
+	urls := []string{fmt.Sprintf("http://%s:8080/admin/time_of_day?time_of_day=%.4f", resolveWorkerMetricsHost(*w), hour)}
+	if murl := strings.TrimSpace(firstNonEmpty(os.Getenv("AOC_WORLD_METRICS_URL"), os.Getenv("AOC_WORLD_PROM_URL"))); murl != "" {
+		urls = append([]string{fmt.Sprintf("%s/admin/time_of_day?time_of_day=%.4f", strings.TrimSuffix(strings.TrimSuffix(murl, "/metrics"), "/healthz"), hour)}, urls...)
+	}
+	_, _, _, _ = fetchFirstReachableText(rctx, urls, urls[0])
+	if cli := s.workerAdminClient(w); cli != nil {
+		_, _ = callWithRetry(rctx, s, func(c context.Context) (*worldadminv1.SpawnNpcResponse, error) {
+			return cli.SpawnNpc(c, &worldadminv1.SpawnNpcRequest{Npc: "gm.SetTimeOfDay", YawDegrees: float32(hour), Target: &worldadminv1.SpawnNpcRequest_Place{Place: fmt.Sprintf("%.4f", hour)}})
+		})
+	}
+}
+
+func (s *Server) collectMultiWorkerOnlinePlayers(ctx context.Context, seen map[string]bool) []PlayerInfo {
+	results := make([][]*worldadminv1.Player, len(s.worldWorkers))
+	var wg sync.WaitGroup
+	for i, w := range s.worldWorkers {
+		if cli := s.workerAdminClient(w); cli != nil {
+			wg.Add(1)
+			go func(idx int, c worldadminv1.WorldAdminServiceClient) {
+				defer wg.Done()
+				rctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+				defer cancel()
+				if resp, err := callWithRetry(rctx, s, func(rc context.Context) (*worldadminv1.ListPlayersResponse, error) { return c.ListPlayers(rc, &worldadminv1.ListPlayersRequest{}) }); err == nil && resp != nil {
+					results[idx] = resp.GetPlayers()
+				}
+			}(i, cli)
+		}
+	}
+	wg.Wait()
+	var out []PlayerInfo
+	for i, list := range results {
+		zone := firstNonEmpty(s.worldWorkers[i].ScopeKey, "verra")
+		for _, p := range list {
+			key := strings.ToLower(p.GetName())
+			if key == "" || seen[key] {
+				continue
+			}
+			seen[key] = true
+			var x, y, z float64
+			if pos := p.GetPosition(); pos != nil {
+				x, y, z = pos.GetX(), pos.GetY(), pos.GetZ()
+			}
+			hp := uint32(100)
+			if p.GetDead() {
+				hp = 0
+			}
+			out = append(out, normalizePlayerInfo(PlayerInfo{
+				ID: uint64(len(out) + 1), Character: p.GetName(), CharacterID: p.GetCharacterId(), Level: 1,
+				X: x, Y: y, Z: z, YawDegrees: p.GetYawDegrees(), Health: hp, MaxHealth: 100, Mounted: p.GetMounted(), Dead: p.GetDead(), Online: true, Zone: zone,
+			}))
+		}
+	}
+	return out
+}
+
+func computeTrueBorderDistanceCm(st *playerRegionalHandoverState, targetReg, targetZoi string, pt [2]float64) float64 {
+	x, y := pt[0], pt[1]
+	currReg, currZoi := st.AuthoritativeRegion, st.CurrentZoiID
+	minDist, bestSame, bestOther := 250000.0, math.MaxFloat64, math.MaxFloat64
+	var sameNode, otherNode admincatalog.LevelableNodeSpec
+	for _, n := range admincatalog.DefaultLevelableNodes() {
+		d := math.Hypot(x-n.Ox, y-n.Oy)
+		if inferRegionFromNodeName(n.Name) == targetReg {
+			if d < bestSame {
+				bestSame, sameNode = d, n
+			}
+		} else if d < bestOther {
+			bestOther, otherNode = d, n
+		}
+	}
+	if bestSame < math.MaxFloat64 && bestOther < math.MaxFloat64 {
+		if ab := math.Hypot(otherNode.Ox-sameNode.Ox, otherNode.Oy-sameNode.Oy); ab > 1.0 {
+			minDist = math.Min(minDist, math.Abs(bestOther*bestOther-bestSame*bestSame)/(2.0*ab))
+		}
+	}
+	if currReg == "sandsquall" && targetReg == "sandsquall" && currZoi != targetZoi {
+		dSun, dAzm := math.Hypot(x-(-619803.28), y-873514.22), math.Hypot(x-(-278767.94), y-987391.03)
+		ab := math.Hypot(-278767.94-(-619803.28), 987391.03-873514.22)
+		minDist = math.Min(minDist, math.Min(math.Abs(dAzm*dAzm-dSun*dSun)/(2.0*ab), math.Abs(y-560000.0)))
+	}
+	for _, borderVal := range []float64{math.Abs(y), math.Abs(y - 560000.0), math.Abs(x - (-600000.0)), math.Abs(y - 650000.0), math.Abs(y - (-650000.0))} {
+		if borderVal <= 5000.0 {
+			minDist = math.Min(minDist, borderVal)
+		}
+	}
+	return math.Round(minDist*100.0) / 100.0
+}
+
+func resolveRegionalGatherableDef(scope string, rawID uint64) (string, string, string, int) {
+	catalog := [][2]string{
+		{"Granite Deposit", "Mining · Stone"}, {"Copper Vein", "Mining · Metal Ore"}, {"Ruby Geode", "Mining · Gem"},
+		{"Weeping Willow", "Lumberjacking · Timber"}, {"Oak Tree", "Lumberjacking · Timber"}, {"Daffodil Patch", "Herbalism · Flora"}, {"Spiritbloom", "Herbalism · Arcane Herb"},
+	}
+	sc := strings.ToLower(strings.TrimSpace(scope))
+	if strings.Contains(sc, "anvil") {
+		catalog = [][2]string{
+			{"Basalt Outcrop", "Mining · Volcanic Stone"}, {"Mourning Slate", "Mining · Stone"}, {"Tharaxite Vein", "Mining · Metal Ore"}, {"Tendonite Seam", "Mining · Metal Ore"},
+			{"Roughrime Crystal", "Mining · Gem"}, {"Eddledorn Tree", "Lumberjacking · Timber"}, {"Furnace Moss", "Herbalism · Cavern Flora"}, {"Salvewort", "Herbalism · Medicinal Herb"},
+		}
+	} else if strings.Contains(sc, "sand") {
+		catalog = [][2]string{
+			{"Obsidian Outcrop", "Mining · Volcanic Glass"}, {"Sandstone Ledge", "Mining · Stone"}, {"Acacia Tree", "Lumberjacking · Desert Timber"},
+			{"Date Palm", "Lumberjacking · Timber"}, {"Saguaro Cactus", "Herbalism · Desert Flora"}, {"Desert Agave", "Herbalism · Flora"}, {"Sun Poppy", "Herbalism · Flora"},
+		}
+	} else if strings.Contains(sc, "turq") || strings.Contains(sc, "jund") {
+		catalog = [][2]string{
+			{"Coveglass Formation", "Mining · Coastal Stone"}, {"Dead Coral Bed", "Mining · Reef Stone"}, {"Volcanic Rock", "Mining · Stone"},
+			{"Banyan Tree", "Lumberjacking · Tropical Timber"}, {"Dragon Tree", "Lumberjacking · Rare Timber"}, {"Fungal Anemone", "Herbalism · Reef Flora"}, {"Giant Fern", "Herbalism · Jungle Flora"},
+		}
+	}
+	mix := (rawID ^ (rawID >> 3) ^ (rawID >> 7) ^ (rawID >> 13)) * 11400714819323198485
+	pick := catalog[(mix>>32)%uint64(len(catalog))]
+	roll := (mix >> 16) % 1000
+	switch {
+	case roll < 500:
+		return pick[0], pick[1], "Common · Tier 1 (Novice)", 10
+	case roll < 750:
+		return pick[0], pick[1], "Uncommon · Tier 2 (Apprentice)", 20
+	case roll < 880:
+		return pick[0], pick[1], "Rare · Tier 3 (Journeyman)", 30
+	case roll < 950:
+		return pick[0], pick[1], "Heroic · Tier 4 (Master)", 40
+	case roll < 985:
+		return pick[0], pick[1], "Epic · Tier 5 (GrandMaster)", 50
+	default:
+		return pick[0], pick[1], "Legendary · Tier 5 (GrandMaster)", 50
+	}
+}

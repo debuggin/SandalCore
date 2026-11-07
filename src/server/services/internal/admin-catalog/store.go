@@ -114,6 +114,22 @@ type npcNameTable struct {
 	byArchetype map[string]string
 }
 
+type Store = Catalog
+
+func (c *Store) DataMode(dataType string) string {
+	return ResolveDataMode(dataType)
+}
+
+func (c *Store) DataModes() map[string]string {
+	return map[string]string{
+		"zois":       ResolveDataMode("zois"),
+		"city_nodes": ResolveDataMode("city_nodes"),
+		"pois":       ResolveDataMode("pois"),
+		"npcs":       ResolveDataMode("npcs"),
+		"items":      ResolveDataMode("items"),
+	}
+}
+
 func NewCatalogFromContentDB(dbPath string) (*Catalog, error) {
 	c := NewCatalog()
 	if err := c.LoadContentDB(dbPath); err != nil {
@@ -158,6 +174,7 @@ func (c *Catalog) AttachContentDB(ctx context.Context, db *sql.DB, contentDir st
 	if err != nil {
 		return fmt.Errorf("admincatalog: load places: %w", err)
 	}
+	places = mergeDiskTSVPlaces(places, contentDir)
 
 	c.mu.Lock()
 	if c.db != nil && c.db != db {

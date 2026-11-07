@@ -158,9 +158,19 @@ function Test-SandalEnvSchemaTemplates {
         $Violations.Add("Missing env schema template: $examplePath")
         return
     }
-    $schemaKeys = @([regex]::Matches([System.IO.File]::ReadAllText($examplePath), '(?m)^(?:AOC|SANDAL)_[A-Z0-9_]+(?==)') | ForEach-Object { $_.Value })
-    if ($schemaKeys.Count -ne 72) {
-        $Violations.Add("sandal.env.example expected 72 keys, found $($schemaKeys.Count)")
+    $exampleText = [System.IO.File]::ReadAllText($examplePath)
+    $expectedCount = 130
+    $schemaKeys = @([regex]::Matches($exampleText, '(?m)^(?:AOC|SANDAL)_[A-Z0-9_]+(?==)') | ForEach-Object { $_.Value })
+    if ($schemaKeys.Count -ne $expectedCount) {
+        $Violations.Add("sandal.env.example expected $expectedCount keys, found $($schemaKeys.Count)")
+    }
+    $rootExamplePath = Join-Path $RootPath '.env.example'
+    if (Test-Path -LiteralPath $rootExamplePath -PathType Leaf) {
+        if ([System.IO.File]::ReadAllText($rootExamplePath) -cne $exampleText) {
+            $Violations.Add("Root .env.example does not match src/config/sandal.env.example")
+        }
+    } elseif ($schemaKeys.Count -eq $expectedCount) {
+        $Violations.Add("Missing root env template: $rootExamplePath")
     }
     foreach ($stem in @('local-dev', 'docker-single', 'prod-mesh')) {
         $exCandidate = Join-Path $profilesDir "$stem.env.example"
@@ -209,7 +219,7 @@ function Test-SandalNoPythonInScripts {
         }
         foreach ($bat in @(Get-ChildItem -LiteralPath $scriptsDir -Filter '*.bat' -Recurse -File -Force -ErrorAction SilentlyContinue)) {
             $rel = [System.IO.Path]::GetRelativePath($RootPath, $bat.FullName).Replace('\', '/')
-            if ($rel -ine 'scripts/ensure_pwsh.bat') {
+            if ($rel -notin @('scripts/ensure_pwsh.bat', 'scripts/test.bat')) {
                 $findings.Add("NoBatInScripts: forbidden .bat script in scripts/: $rel")
             }
         }
@@ -262,7 +272,7 @@ function Test-SandalRootDirectoryHierarchy {
     $findings = [System.Collections.Generic.List[string]]::new()
     $null = Test-SandalNoPythonInScripts -RootPath $RepoRoot -Violations $findings
     $allowedRootDirs = @('src', 'build', 'dist', 'deploy', 'docs', 'scripts', '.github')
-    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'GEMINI.md', '.gitignore', '.gitattributes', '.graphifyignore', 'sandal.ps1', 'start.bat', 'stop.bat', 'build.bat')
+    $allowedRootFiles = @('README.md', 'LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'AGENTS.md', 'GEMINI.md', '.gitignore', '.gitattributes', '.graphifyignore', '.env', '.env.example', 'SandalLauncher.lnk', 'sandal.ps1', 'start.bat', 'stop.bat', 'build.bat')
     $stealthDirs = @('.git', '.agents', '.claude', '_workspace', '.beads', 'graphify-out')
     foreach ($bat in @(Get-ChildItem -LiteralPath $RepoRoot -Filter '*.bat' -File -Force -ErrorAction SilentlyContinue)) {
         if ($bat.Name -notin @('start.bat', 'stop.bat', 'build.bat')) {
@@ -321,7 +331,7 @@ function Test-SandalDocumentationRealityHygiene {
     if (Test-Path -LiteralPath $rootReadme -PathType Leaf) { $docFiles.Add($rootReadme) }
     $docsDir = Join-Path $RootPath 'docs'
     if (Test-Path -LiteralPath $docsDir -PathType Container) {
-        foreach ($f in @(Get-ChildItem -LiteralPath $docsDir -Filter '*.md' -File -ErrorAction SilentlyContinue)) { $docFiles.Add($f.FullName) }
+        foreach ($f in @(Get-ChildItem -LiteralPath $docsDir -Filter '*.md' -Recurse -File -ErrorAction SilentlyContinue)) { $docFiles.Add($f.FullName) }
     }
     $srcDir = Join-Path $RootPath 'src'
     if (Test-Path -LiteralPath $srcDir -PathType Container) {

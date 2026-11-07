@@ -205,6 +205,11 @@ public:
     uint64_t actor_id() const { return actor_; }
     const world::WorldActor* mount() const { return actor_ ? registry_.find(actor_) : nullptr; }
     int64_t  item_record() const { return item_record_; }
+    const repl::GuidValue& item_guid() const noexcept { return req_.item_guid; }
+    void reposition_active(double x, double y, double z) {
+        if (actor_ == 0) return;
+        if (const world::WorldActor* a = registry_.find(actor_)) registry_.move(actor_, x, y, z, a->yaw_degrees);
+    }
     const Owner& owner() const { return owner_; }
     const Stats& stats() const { return stats_; }
     /// A summon (or a refusal) is in progress: its steps are pending.

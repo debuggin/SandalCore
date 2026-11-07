@@ -20,7 +20,7 @@ public sealed record DiscoveredClientInstall(
     string PakDir,
     string ExecutablePath)
 {
-    public string DisplayLabel => $"{Label}  —  {InstallDir}";
+    public string DisplayLabel => $"{Label}  --  {InstallDir}";
 }
 
 public sealed record SavedAccountRecord(
@@ -119,7 +119,10 @@ public sealed class ProfileStoreService
     {
         if (string.IsNullOrWhiteSpace(username)) return false;
         string u = username.Trim();
-        return u.StartsWith("tmp_", StringComparison.OrdinalIgnoreCase)
+        return u.StartsWith("TMP ", StringComparison.OrdinalIgnoreCase)
+            || u.StartsWith("TST ", StringComparison.OrdinalIgnoreCase)
+            || u.StartsWith("tmp_", StringComparison.OrdinalIgnoreCase)
+            || u.StartsWith("tst_", StringComparison.OrdinalIgnoreCase)
             || u.StartsWith("temp_", StringComparison.OrdinalIgnoreCase)
             || u.StartsWith("e2e_", StringComparison.OrdinalIgnoreCase)
             || string.Equals(u, "ephem_hero", StringComparison.OrdinalIgnoreCase);

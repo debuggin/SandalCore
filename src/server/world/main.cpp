@@ -42,7 +42,6 @@
 #include "world/node_wire.h"
 #include "world_loop.h"
 #include <CLI/CLI.hpp>
-#include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -87,6 +86,8 @@ struct WorldCliOptions {
     double area_radius_m = -1;
     bool no_zone_filter = false, gm_garden = false, no_node_scenery = false, no_node_people = false;
     std::string node_origin = "captured", roads_levels_path = "dist/content/roads_levels.tsv", area_region, area_zoi, area_exclude_zoi, area_node_plug, area_exclude_node_plug;
+    std::string area_polygon, area_exclude_polygon;
+    int worker_index = -1;
     double scenery_radius_m = 1450.0;
     std::string area_nav_path = "dist/content/area_nav.bin", npc_motion_path = "dist/content/npc_motion.tsv";
     bool no_npc_movement = false, no_generic_npcs = false, no_spawn_filter = false, spawn_humanoids = false;
@@ -107,8 +108,7 @@ struct WorldCliOptions {
     double loop_stats_seconds = 0;
     bool no_view_spread = false;
     unsigned view_threads = 4;
-    CLI::Option* view_threads_option = nullptr;
-    CLI::Option* loop_stats_option = nullptr;
+    CLI::Option *view_threads_option = nullptr, *loop_stats_option = nullptr, *tick_hz_option = nullptr;
     std::string share_updates_text = "on";
 };
 
@@ -129,49 +129,33 @@ void register_service_cli_options(CLI::App& app, WorldCliOptions& o) {
     app.add_option("--gateway", o.gateway, "gateway internal gRPC address (RedeemTicket)")->envname("AOC_GATEWAY_GRPC_ADDR");
     app.add_option("--character", o.character, "character service gRPC address")->envname("AOC_CHAR_GRPC_ADDR");
     app.add_option("--citynode", o.citynode, "citynode service gRPC address (WatchNodes)")->envname("AOC_CITYNODE_GRPC_ADDR")->capture_default_str();
-    app.add_option("--citynode-seed", o.citynode_seed,
-                   "the node seed (config/seeds/citynode_seed.json): the levels world uses until the citynode service answers, and while it cannot be reached")
-        ->envname("AOC_CITYNODE_SEED")->capture_default_str();
+    app.add_option("--citynode-seed", o.citynode_seed, "the node seed (config/seeds/citynode_seed.json): the levels world uses until the citynode service answers")->envname("AOC_CITYNODE_SEED")->capture_default_str();
     app.add_flag("--no-citynode", o.no_citynode, "do not call the citynode service: the nodes stay at the seed's levels")->envname("AOC_NO_CITYNODE");
-    app.add_option("--world-admin", o.world_admin, "the address world's admin API (WorldAdminService: list players and places, teleport, run speed; services/cmd/worldctl) listens on; calls need the service token")
-        ->envname("AOC_WORLD_ADMIN_ADDR")->capture_default_str();
+    app.add_option("--world-admin", o.world_admin, "the address world's admin API (WorldAdminService) listens on; calls need the service token")->envname("AOC_WORLD_ADMIN_ADDR")->capture_default_str();
     app.add_flag("--no-world-admin", o.no_world_admin, "do not serve the admin API")->envname("AOC_NO_WORLD_ADMIN");
-    app.add_option("--world-stream", o.world_stream,
-                   "the address world's world stream (WorldStreamService: the players, NPCs and resource nodes of an area five times a second, inspect, search; services/cmd/worldctl watch) listens on; calls need the service token")
-        ->envname("AOC_WORLD_STREAM_ADDR")->capture_default_str();
+    app.add_option("--world-stream", o.world_stream, "the address world's world stream (WorldStreamService) listens on; calls need the service token")->envname("AOC_WORLD_STREAM_ADDR")->capture_default_str();
     app.add_flag("--no-world-stream", o.no_world_stream, "do not serve the world stream")->envname("AOC_NO_WORLD_STREAM");
-    app.add_flag("--gm-commands", o.gm_commands,
-                 "answer the game client's own GM teleport commands (ServerTeleportXYZ, ServerTeleport, ServerTeleportPlayer on the PlayerController); off by default. Each one the client sends is logged either way")
-        ->envname("AOC_GM_COMMANDS");
-    app.add_flag("--no-reactions", o.no_reactions, "the game's reactions do not run (the extra effects of a weapon's finisher, the Bard's Resonance and melodies): abilities and hits land as before reactions were built")
-        ->envname("AOC_NO_REACTIONS");
-    app.add_option("--combat-seed", o.combat_seed,
-                   "the number the hit, block and critical rolls start from: 0 (the default) takes a new one on every start, so each run rolls differently; any other number repeats the same rolls for the same fights")
-        ->envname("AOC_COMBAT_SEED")->capture_default_str();
+    app.add_flag("--gm-commands", o.gm_commands, "answer the game client's own GM teleport commands (ServerTeleportXYZ, ServerTeleport, ServerTeleportPlayer); off by default")->envname("AOC_GM_COMMANDS");
+    app.add_flag("--no-reactions", o.no_reactions, "the game's reactions do not run: abilities and hits land as before reactions were built")->envname("AOC_NO_REACTIONS");
+    app.add_option("--combat-seed", o.combat_seed, "the number the hit, block and critical rolls start from (0: fresh seed on every start)")->envname("AOC_COMBAT_SEED")->capture_default_str();
     app.add_option("--service-token-file", o.token_file, "the internal services' shared token");
     app.add_option("--log-file", o.log_file, "also write the log to this file");
-    app.add_option("--content-db", o.content_db_path, "content.db, the game numbers contentc builds (cd services && go run ./cmd/contentc); without it every login is refused")
-        ->envname("AOC_CONTENT_DB")->capture_default_str();
-    app.add_option("--catalog-db", o.catalog_db_path, "optional AOCDB01 runtime design-data catalog (System 16); falls back to built-in tables when absent")
-        ->envname("AOC_CATALOG_DB")->capture_default_str();
-    app.add_option("--gamestate-mode", o.gamestate_mode,
-                   "how much of the GameState a joining player gets: tier1, tier2, tier3 (tier 2 and the city nodes: the default) or captured (the original's whole open: an escape hatch for in-game debugging only)")
-        ->envname("AOC_GAMESTATE_MODE")->transform(CLI::IsMember({"tier1", "tier2", "tier3", "captured"}, CLI::ignore_case))->capture_default_str();
-    app.add_option("--max-move-speed", o.movement.limits.max_speed,
-                   "the fastest a player may move along the ground, cm/s: a move that is further from the last good position than this allows is refused and the client put back. The default is 1.5 x the fastest the captures show; lower it (say 500) to see the corrections in game")
-        ->envname("AOC_MAX_MOVE_SPEED")->check(CLI::PositiveNumber)->capture_default_str();
+    app.add_option("--content-db", o.content_db_path, "content.db, the game numbers contentc builds; without it every login is refused")->envname("AOC_CONTENT_DB")->capture_default_str();
+    app.add_option("--catalog-db", o.catalog_db_path, "optional AOCDB01 runtime design-data catalog (System 16)")->envname("AOC_CATALOG_DB")->capture_default_str();
+    app.add_option("--gamestate-mode", o.gamestate_mode, "how much of the GameState a joining player gets: tier1, tier2, tier3 or captured")->envname("AOC_GAMESTATE_MODE")->transform(CLI::IsMember({"tier1", "tier2", "tier3", "captured"}, CLI::ignore_case))->capture_default_str();
+    app.add_option("--max-move-speed", o.movement.limits.max_speed, "the fastest a player may move along the ground, cm/s")->envname("AOC_MAX_MOVE_SPEED")->check(CLI::PositiveNumber)->capture_default_str();
 }
 
 void register_area_cli_options(CLI::App& app, WorldCliOptions& o) {
-    app.add_option("--area-radius", o.area_radius_m,
-                   "the area filled with NPCs, resource nodes and the GM vendors: -1 (the default) the whole Verra continent (all 55 zones of influence); "
-                   "a radius in metres > 0 a circle of that radius around the login spot (E1's was 1000); 0: no other actors")
-        ->envname("AOC_AREA_RADIUS_M")->check(CLI::Range(-1.0, 20000.0))->capture_default_str();
+    app.add_option("--area-radius", o.area_radius_m, "the area filled with NPCs, resource nodes and the GM vendors (-1: continent, >0: circle radius m, 0: empty)")->envname("AOC_AREA_RADIUS_M")->check(CLI::Range(-1.0, 20000.0))->capture_default_str();
     app.add_option("--area-region", o.area_region, "worker region partition (riverlands, sandsquall, jundark, anvils, turquoise_sea, continent)")->envname("AOC_WORLD_REGION");
     app.add_option("--area-zoi", o.area_zoi, "comma-separated ZOI GUID/name allowlist for per-ZOI worker partitioning")->envname("AOC_WORLD_ZOI");
     app.add_option("--area-exclude-zoi", o.area_exclude_zoi, "comma-separated ZOI GUIDs/names carved out of the worker's region")->envname("AOC_WORLD_EXCLUDE_ZOI");
     app.add_option("--area-node-plug", o.area_node_plug, "comma-separated CityNode names/GUIDs included as rotated 1 km x 1 km Node Plug OBBs")->envname("AOC_WORLD_NODE_PLUG");
     app.add_option("--area-exclude-node-plug", o.area_exclude_node_plug, "comma-separated CityNode names/GUIDs carved out of the surrounding ZOI/region worker")->envname("AOC_WORLD_EXCLUDE_NODE_PLUG");
+    app.add_option("--area-polygon", o.area_polygon, "convex polygon cutout in cm (x1,y1;x2,y2;x3,y3...)")->envname("AOC_WORLD_POLYGON_CUTOUT");
+    app.add_option("--area-exclude-polygon", o.area_exclude_polygon, "excluded convex polygon cutouts in cm (x1,y1;x2,y2;x3,y3|...)")->envname("AOC_WORLD_EXCLUDE_POLYGON_CUTOUT");
+    app.add_option("--worker-index", o.worker_index, "worker index assigned and registered with the mesh")->envname("AOC_WORLD_WORKER_INDEX");
     app.add_flag("--no-zone-filter", o.no_zone_filter, "points have no zone of influence: a spawn filter that names one never passes, as in E1's circle")->envname("AOC_NO_ZONE_FILTER");
     app.add_flag("--gm-garden", o.gm_garden, "a GM garden near the login spot: 15 resource nodes across Mining, Lumberjacking, and Herbalism (Novice to GrandMaster)")->envname("AOC_GM_GARDEN");
     app.add_flag("--no-node-scenery", o.no_node_scenery, "no town replicators: the nodes' buildings and props are not sent (the towns are empty holes, as before stage 3a)")->envname("AOC_NO_NODE_SCENERY");
@@ -249,7 +233,7 @@ void register_combat_and_gather_cli_options(CLI::App& app, WorldCliOptions& o) {
 }
 
 void register_tick_cli_options(CLI::App& app, WorldCliOptions& o) {
-    app.add_option("--tick-hz", o.tick_hz,
+    o.tick_hz_option = app.add_option("--tick-hz", o.tick_hz,
                    "the server's tick, times a second (10 to 120): every session's due work and every client's packets; the original server sent every 33 ms, 30 times a second. "
                    "The NPCs keep their 15 Hz step and each player's view of the world about 15 passes a second (the length of 67 ms in whole ticks: 20 a second at 20 Hz, 12.5 at 25 Hz, "
                    "10 at 10 Hz). 0: the old loop, a tick after every datagram")
@@ -320,17 +304,23 @@ bool init_logging_token_and_content(WorldCliOptions& o, std::string& token_out,
     if (!o.world_stream.empty() && o.world_stream[0] == ':') o.world_stream = "0.0.0.0" + o.world_stream;
     if (const char* env_tf = std::getenv("AOC_SERVICE_TOKEN_FILE"); env_tf && *env_tf && o.token_file == "dist/services/service.token") o.token_file = env_tf;
     std::vector<spdlog::sink_ptr> sinks{std::make_shared<spdlog::sinks::stderr_color_sink_mt>()};
-    if (!o.log_file.empty()) sinks.push_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>(o.log_file, true));
     auto logger = std::make_shared<spdlog::logger>("world", sinks.begin(), sinks.end());
-    logger->flush_on(spdlog::level::info);
     spdlog::set_default_logger(logger);
     o.area = spawns::AreaConfig::resolve_worker_area(
-        spawns::WorkerAreaSpec{o.area_radius_m, o.area_region, o.area_zoi, o.area_exclude_zoi, o.area_node_plug, o.area_exclude_node_plug, o.no_zone_filter});
-    if (o.area.whole_world) {
-        spdlog::info("[world] worker region={} (region_mask=0x{:02x}, zoi_filter={}, exclude_zoi={}, node_plugs={}, exclude_plugs={})",
-                     o.area.region_label, o.area.region_mask, o.area.zoi_guids.size(), o.area.exclude_zoi_guids.size(),
-                     o.area.include_node_plugs.size(), o.area.exclude_node_plugs.size());
+        spawns::WorkerAreaSpec{o.area_radius_m, o.area_region, o.area_zoi, o.area_exclude_zoi, o.area_node_plug, o.area_exclude_node_plug,
+                               o.no_zone_filter, o.area_polygon, o.area_exclude_polygon, o.worker_index});
+    const char *env_thz = std::getenv("AOC_WORLD_TICK_HZ"), *env_thz2 = std::getenv("AOC_TICK_HZ");
+    if (!o.tick_hz_option || o.tick_hz_option->count() == 0) {
+        if (env_thz && *env_thz) o.tick_hz = std::clamp(static_cast<int>(std::strtol(env_thz, nullptr, 10)), 1, 120);
+        else if (!env_thz2 || !*env_thz2) o.tick_hz = std::clamp(o.area.default_tick_hz_for_scope(), 1, 120);
     }
+#ifndef _WIN32
+    if (o.tick_hz > 0) ::setenv("AOC_WORLD_TICK_HZ", std::to_string(o.tick_hz).c_str(), 1);
+#endif
+    if (o.area.dynamic_scaling_stub) spdlog::info("[world] dynamic worker scaling stub active (min_workers=1, dynamic_spawns=0)");
+    spdlog::info("[world] worker={} index={} region={} scope_kind={} tick_hz={} data_mode={} (region_mask=0x{:02x}, zoi_filter={}, exclude_zoi={}, node_plugs={}, exclude_plugs={}, poly_pts={})",
+                 o.area.worker_name, o.area.worker_index, o.area.region_label, o.area.scope_kind(), o.tick_hz, aoc::world::telemetry::ResolveDataMode(),
+                 o.area.region_mask, o.area.zoi_guids.size(), o.area.exclude_zoi_guids.size(), o.area.include_node_plugs.size(), o.area.exclude_node_plugs.size(), o.area.polygon_cutout_cm.size());
 
     std::string error;
     auto token = svc::load_service_token(o.token_file, &error);
@@ -667,8 +657,11 @@ std::unique_ptr<aoc::world::telemetry::HealthMetricsHttpServer> start_metrics_se
     return std::make_unique<aoc::world::telemetry::HealthMetricsHttpServer>([&, monsters, resources, npcs, started] {
         const auto up = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
         return aoc::world::telemetry::HealthMetricsState{o.area.region_label, players.ready(), true, g_stop.load(),
-            static_cast<uint32_t>(endpoint.session_count()), static_cast<uint32_t>(o.tick_hz),
-            static_cast<uint64_t>(std::max<int64_t>(0, up)), loop_stats.datagrams, loop_stats.packets_out, npcs, monsters, resources};
+            static_cast<uint32_t>(endpoint.session_count()), static_cast<uint32_t>(TickLoop::effective_tick_hz(o.tick_hz)),
+            static_cast<uint64_t>(std::max<int64_t>(0, up)), loop_stats.datagrams, loop_stats.packets_out, npcs, monsters, resources,
+            aoc::worldd::npc::NpcWorld::global_simulate_all_npcs(), static_cast<uint32_t>(std::max(0, o.area.worker_index)),
+            o.area.worker_name, std::string(o.area.scope_kind()), std::string(aoc::world::telemetry::ResolveDataMode()),
+            o.area.dynamic_scaling_stub, bootstrap::global_time_of_day_hours(), 37.5};
     });
 }
 

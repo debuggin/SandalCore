@@ -16,23 +16,37 @@ import {
   dispatchAuxiliaryGmAction,
   GmActionModalsDock,
   NodeGovernanceModalCard,
+  refreshWorldEntitiesAfterNodeTierChange,
   renderNodeGovernanceModalCard,
   SANDAL_LAUNCHER_TOKENS,
 } from "../components/PlayersAndSpawnerTab";
 import { StreamStatus } from "../components/StreamStatus";
+import { isUnauthenticatedViewOnly, useRetryResetEpoch } from "../state/adminAuthClient";
 import {
   buildActiveLayersParam,
   buildWorldStatePollUrl,
   computeLayerEntityCounts,
+  computeLiveTimeOfDayHours,
   computeStreamLayerMask,
+  computeViewportWorldBoundsCm,
+  DEFAULT_CAMERA_VIEWPORT,
   DEFAULT_VERRA_CITY_NODES,
   DEFAULT_VERRA_MAP_META,
+  formatCanonicalWorkerName,
+  formatTimeOfDayClock,
+  formatTimeOfDayLabel,
+  formatTimePhaseLabel,
   getCityNodeCenterCm,
+  getMapPollHzForZoom,
+  getMapPollIntervalMsForZoom,
+  getVisibleWorkersForViewport,
   type LayerToggles,
   type NpcInstanceAction,
   OVERLAY_LAYER_KEYS,
+  parseTimeOfDayInput,
   resolveWorkerForCoordinateOrZone,
   shouldFetchPoisCatalog,
+  useAdminAuthStore,
   useWorldStreamStore,
   VERRA_MAP_SOURCE_CM,
   VERRA_MAP_SOURCE_PX,
@@ -40,6 +54,9 @@ import {
   type VerraUnrealPoint,
   type WorldEntity,
   type WorldStreamState,
+  type WorldWorkerInfo,
+  WORKER_TICK_HZ_OPTIONS,
+  zoomToWorkerArea,
 } from "../state/worldStreamStore";
 import {
   buildVerraDeckOverlayLayers,
@@ -49,6 +66,7 @@ import {
   findNearestEntityOrNodeAtScreen,
   formatOverlayLayerLabel,
   handleCanvasRightClickClear,
+  hydrateVerraZoiPolygonsFromTsvApi,
   isEntityVisibleForLayers,
   type MapSearchResultItem,
   MAX_VERRA_MAP_ZOOM,
@@ -82,51 +100,74 @@ export const NPC_INSTANCE_ACTIONS: readonly { readonly id: NpcInstanceAction; re
   { id: "despawn_npc", label: "Despawn" },
 ]);
 
-function useWorldMapPolling(storeSnap: WorldStreamState, onMetaLoaded: (meta: VerraMapMeta) => void): void {
+function useWorldMapPolling(storeSnap: WorldStreamState, onMetaLoaded: (meta: VerraMapMeta) => void, canvasRef: React.RefObject<HTMLCanvasElement | null>): void {
+  const authSnap = useAdminAuthStore();
+  const retryEpoch = useRetryResetEpoch();
+  const isUnauthed = Boolean(authSnap.authRequired || authSnap.loginPromptOpen);
   const activeLayersParam = buildActiveLayersParam(storeSnap.layers);
+  const pollIntervalMs = getMapPollIntervalMsForZoom(storeSnap.camera.zoom);
+  const storeSnapRef = React.useRef(storeSnap);
+  storeSnapRef.current = storeSnap;
+  const pollRef = React.useRef<(() => void) | null>(null);
   React.useEffect(() => {
+    if (isUnauthed) { storeSnapRef.current.resetForUnauthenticatedSession(); return; }
     if (typeof window === "undefined" || typeof fetch !== "function") return;
     let cancelled = false;
     Promise.all([
       fetchWithTransientRetry("/api/v1/world/map-meta").then((r) => (r.ok ? r.json() : null)).catch(() => null),
       fetchWithTransientRetry("/api/v1/world/tiles/metadata.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
-    ]).then(([metaData, tileMeta]) => {
-      if (cancelled) return;
+      fetchWithTransientRetry("/api/v1/world/zois").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]).then(([metaData, tileMeta, zoisData]) => {
+      if (cancelled || isUnauthenticatedViewOnly()) return;
+      const zoiItems = Array.isArray((zoisData as { zois?: unknown })?.zois) ? (zoisData as { zois: unknown[] }).zois : Array.isArray(zoisData) ? zoisData : [];
+      if (zoiItems.length > 0) hydrateVerraZoiPolygonsFromTsvApi(zoiItems as Parameters<typeof hydrateVerraZoiPolygonsFromTsvApi>[0]);
       const merged = { ...(tileMeta ?? {}), ...(metaData ?? {}) } as Partial<VerraMapMeta>;
       const nodes = Array.isArray(merged.nodes) && merged.nodes.length > 0 ? merged.nodes : DEFAULT_VERRA_CITY_NODES;
       onMetaLoaded({ ...DEFAULT_VERRA_MAP_META, ...merged, nodes });
-      storeSnap.setCityNodes(nodes);
-      storeSnap.setConnectionState("live");
+      storeSnapRef.current.setCityNodes(nodes);
+      storeSnapRef.current.setConnectionState("live");
     });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    return () => { cancelled = true; };
+  }, [isUnauthed, authSnap.token, retryEpoch]);
 
   React.useEffect(() => {
-    if (typeof window === "undefined" || typeof fetch !== "function") return;
-    const pollUrl = buildWorldStatePollUrl(storeSnap.layers);
-    if (!pollUrl) return;
-    let cancelled = false;
+    if (isUnauthed || typeof window === "undefined" || typeof fetch !== "function" || !buildWorldStatePollUrl(storeSnap.layers)) { pollRef.current = null; return; }
+    let cancelled = false, inflight = false, rerunAfterInflight = false, tickCount = 0;
     const poll = (): void => {
-      fetchWithTransientRetry(pollUrl)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((stateData) => {
-          if (cancelled || !stateData) return;
-          const added = parseWorldStateResponse(stateData, storeSnap.layers);
-          const pois = parsePoisFromPayload(stateData);
-          if (pois.length > 0) storeSnap.setPois(pois);
-          storeSnap.applyWorldDelta({ seq: storeSnap.lastSeq + 1, isSnapshot: true, added });
-        })
-        .catch(() => {});
+      if (cancelled || isUnauthenticatedViewOnly()) return;
+      if (inflight) { rerunAfterInflight = true; return; }
+      const snap = storeSnapRef.current;
+      const w = canvasRef.current?.clientWidth || (typeof window !== "undefined" && window.innerWidth > 0 ? window.innerWidth : 1920);
+      const h = canvasRef.current?.clientHeight || (typeof window !== "undefined" && window.innerHeight > 0 ? window.innerHeight : 1080);
+      const baseUrl = buildWorldStatePollUrl(snap.layers, computeViewportWorldBoundsCm(snap.camera, w, h));
+      if (!baseUrl) return;
+      tickCount += 1;
+      const pollUrl = `${baseUrl}&compact=1${snap.pois.length > 0 && tickCount % 90 !== 1 ? "&include_pois=0" : ""}`;
+      inflight = true;
+      fetchWithTransientRetry(pollUrl).then((r) => (r.ok ? r.json() : null)).then((stateData) => {
+        if (cancelled || !stateData || isUnauthenticatedViewOnly()) return;
+        const added = parseWorldStateResponse(stateData, snap.layers), pois = parsePoisFromPayload(stateData);
+        if (pois.length > 0) snap.setPois(pois);
+        if (Array.isArray((stateData as { workers?: unknown }).workers)) snap.setWorkers((stateData as { workers: readonly WorldWorkerInfo[] }).workers);
+        const sd = stateData as { time_of_day_anchor_hours?: unknown; time_of_day_anchor_ms?: unknown; time_of_day_label?: unknown };
+        const anchorH = typeof sd.time_of_day_anchor_hours === "number" ? sd.time_of_day_anchor_hours : null;
+        const anchorMs = typeof sd.time_of_day_anchor_ms === "number" && sd.time_of_day_anchor_ms > 0 ? sd.time_of_day_anchor_ms : null;
+        if (anchorH !== null && Number.isFinite(anchorH) && (Math.abs(anchorH - snap.timeOfDayHours) > 1e-3 || (anchorMs !== null && Math.abs(anchorMs - snap.timeOfDaySyncedAtMs) > 1000))) {
+          snap.patchSessionUi({ timeOfDayHours: anchorH, timeOfDaySyncedAtMs: anchorMs ?? Date.now(), timeOfDayLabel: typeof sd.time_of_day_label === "string" ? sd.time_of_day_label : formatTimeOfDayLabel(anchorH) });
+        }
+        snap.applyWorldDelta({ seq: snap.lastSeq + 1, isSnapshot: true, added });
+      }).catch(() => {}).finally(() => {
+        inflight = false;
+        if (rerunAfterInflight && !cancelled) { rerunAfterInflight = false; poll(); }
+      });
     };
+    pollRef.current = poll;
     poll();
-    const timer = window.setInterval(poll, 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [activeLayersParam]);
+    const timer = window.setInterval(poll, pollIntervalMs);
+    return () => { cancelled = true; pollRef.current = null; window.clearInterval(timer); };
+  }, [isUnauthed, authSnap.token, retryEpoch, activeLayersParam]);
+
+  React.useEffect(() => { pollRef.current?.(); }, [storeSnap.camera.centerXCm, storeSnap.camera.centerYCm, storeSnap.camera.zoom]);
 }
 
 export function parseWorldStateResponse(raw: unknown, layers: LayerToggles): readonly WorldEntity[] {
@@ -159,23 +200,22 @@ export function parseWorldStateResponse(raw: unknown, layers: LayerToggles): rea
       rawKind === "poi"
         ? rawKind
         : "npc";
+    const rawName = String(e.name ?? kind);
+    const defaultResType = /ore|iron|copper|stone|rock|gem/i.test(rawName) ? "Mining / Ore Vein" : /tree|wood|oak|ash|lumber/i.test(rawName) ? "Lumberjacking / Timber" : /herb|flower|plant|flax/i.test(rawName) ? "Herbalism / Flora" : "Gathering Resource";
     const ent: WorldEntity = {
       guid: String(e.id ?? e.guid ?? e.name ?? "entity"),
-      name: String(e.name ?? kind),
+      name: rawName,
       kind,
       xCm: Number(e.x_cm ?? e.x ?? 0),
       yCm: Number(e.y_cm ?? e.y ?? 0),
       zCm: Number(e.z_cm ?? e.z ?? 0),
-      yawDeg: Number(e.yaw_deg ?? 0),
+      yawDeg: Number(e.yaw_deg ?? e.yaw ?? 0),
       level: Number(e.level ?? 1),
       healthPct: Number(e.health_pct ?? e.hp ?? 100),
       npc_subkind: typeof e.npc_subkind === "string" ? e.npc_subkind : undefined,
-      zoneId:
-        typeof e.zone === "string"
-          ? e.zone
-          : typeof e.zone_id === "string"
-            ? e.zone_id
-            : undefined,
+      resourceType: typeof e.resource_type === "string" && e.resource_type.length > 0 ? e.resource_type : typeof e.resourceType === "string" && e.resourceType.length > 0 ? e.resourceType : kind === "resource_node" ? defaultResType : undefined,
+      quality: typeof e.quality === "string" && e.quality.length > 0 ? e.quality : typeof e.rarity === "string" && e.rarity.length > 0 ? e.rarity : kind === "resource_node" ? "Common · Tier 1 (Novice)" : undefined,
+      zoneId: typeof e.zone === "string" ? e.zone : typeof e.zone_id === "string" ? e.zone_id : undefined,
     };
     if (isEntityVisibleForLayers(ent, layers, 5)) added.push(ent);
   }
@@ -232,6 +272,61 @@ function useMapRemoteSearch(searchText: string, layers: LayerToggles): readonly 
   return hits;
 }
 
+export function ServerTimeOfDayControl(props: { readonly storeSnap: WorldStreamState; readonly compact?: boolean }): React.ReactElement {
+  const { storeSnap, compact } = props;
+  const anchorRef = React.useRef<{ hours: number; atMs: number }>({ hours: storeSnap.timeOfDayHours ?? 12, atMs: Date.now() });
+  if (Math.abs((storeSnap.timeOfDayHours ?? 12) - anchorRef.current.hours) > 1e-4) {
+    anchorRef.current = { hours: storeSnap.timeOfDayHours ?? 12, atMs: Date.now() };
+  }
+  const [nowMs, setNowMs] = React.useState(() => Date.now());
+  const [popoverOpen, setPopoverOpen] = React.useState(false);
+  const [draftTime, setDraftTime] = React.useState(() => formatTimeOfDayLabel(storeSnap.timeOfDayHours ?? 12));
+  React.useEffect(() => { setDraftTime(formatTimeOfDayLabel(storeSnap.timeOfDayHours ?? 12)); }, [storeSnap.timeOfDayHours]);
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const t = window.setInterval(() => setNowMs(Date.now()), 100);
+    return () => window.clearInterval(t);
+  }, []);
+  const liveHours = computeLiveTimeOfDayHours(anchorRef.current.hours, anchorRef.current.atMs, nowMs);
+  const liveClock = formatTimeOfDayClock(liveHours);
+  const draftHours = parseTimeOfDayInput(draftTime);
+  const draftMinutes = Math.max(0, Math.min(1439, Math.round(draftHours * 60)));
+  const applyHours = (h: number): void => {
+    const clean = (((Number.isFinite(h) ? h : 12) % 24) + 24) % 24;
+    anchorRef.current = { hours: clean, atMs: Date.now() };
+    setDraftTime(formatTimeOfDayLabel(clean));
+    setPopoverOpen(false);
+    void storeSnap.executeSetTimeOfDayAction(clean);
+  };
+  return (
+    <div style={{ position: "relative", zIndex: popoverOpen ? 100 : 10, display: "inline-flex", alignItems: "center", gap: "6px", padding: compact ? "2px 6px" : "3px 8px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush }}>
+      <span aria-hidden="true" style={{ fontSize: "12px", color: liveHours >= 6 && liveHours < 20 ? SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400 : "#93C5FD" }}>{liveHours >= 6 && liveHours < 20 ? "\u2600" : "\u263E"}</span>
+      <span data-testid="world-current-time-display" title="Authoritative Verra Server Time (advances at 9x real time across all world workers)" style={{ fontFamily: "ui-monospace, monospace", fontVariantNumeric: "tabular-nums", fontSize: "11px", fontWeight: 700, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400 }}>
+        Time {liveClock}
+      </span>
+      <button type="button" data-testid="world-time-picker-btn" aria-expanded={popoverOpen} title="Open Server Time of Day editor" onClick={() => { if (!popoverOpen) setDraftTime(formatTimeOfDayLabel(liveHours)); setPopoverOpen((v) => !v); }} style={{ height: compact ? "22px" : "24px", padding: "0 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: popoverOpen ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: popoverOpen ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
+        Set Time
+      </button>
+      <div data-testid="world-time-picker-popover" style={{ display: popoverOpen ? "flex" : "none", position: "absolute", top: "calc(100% + 6px)", right: 0, width: "268px", flexDirection: "column", gap: "8px", padding: "10px 12px", borderRadius: "8px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(18px)", boxShadow: "0 12px 32px rgba(0,0,0,0.65)", zIndex: 120 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px" }}>
+          <strong style={{ color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, letterSpacing: "0.04em", textTransform: "uppercase" }}>Server Time of Day</strong>
+          <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>{formatTimeOfDayLabel(draftHours)} ({formatTimePhaseLabel(draftHours)})</span>
+        </div>
+        <input type="range" min={0} max={1439} step={1} aria-label="Scrub 24-hour server time" data-testid="world-time-slider" value={draftMinutes} onChange={(e) => setDraftTime(formatTimeOfDayLabel(Number(e.currentTarget.value) / 60))} style={{ width: "100%", height: "8px", borderRadius: "4px", appearance: "none", background: "linear-gradient(90deg, #0d1326 0%, #c87d55 25%, #f6cc7e 50%, #d97736 75%, #0d1326 100%)", cursor: "pointer" }} />
+        <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+          <input type="text" aria-label="Server Time of Day (HH:MM)" data-testid="world-time-of-day-select" placeholder="HH:MM" value={draftTime} onChange={(e) => setDraftTime(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === "Enter") applyHours(parseTimeOfDayInput(draftTime)); }} style={{ flex: 1, height: "28px", padding: "0 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontFamily: "ui-monospace, monospace", fontSize: "12px" }} />
+          <button type="button" data-testid="world-time-apply-btn" onClick={() => applyHours(parseTimeOfDayInput(draftTime))} style={{ height: "28px", padding: "0 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, color: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>Apply Time</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "4px" }}>
+          {[{ h: 6, label: "06:00 Dawn" }, { h: 12, label: "12:00 Noon" }, { h: 18, label: "18:00 Dusk" }, { h: 0, label: "00:00 Night" }].map((p) => (
+            <button key={p.h} type="button" onClick={() => applyHours(p.h)} style={{ height: "24px", padding: "0 4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "10px", cursor: "pointer" }}>{p.label}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function renderMapHeader(
   searchText: string,
   searchResults: readonly MapSearchResultItem[],
@@ -241,174 +336,105 @@ function renderMapHeader(
 ): React.ReactElement {
   const counts = computeLayerEntityCounts(storeSnap);
   return (
-    <header style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "8px", padding: "8px 14px", background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}` }}>
+    <header style={{ position: "relative", zIndex: 60, display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: "8px", padding: "8px 14px", background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}` }}>
       <StreamStatus />
       <div style={{ position: "relative", minWidth: "240px" }}>
-        <input
-          type="search"
-          aria-label="Search online players on map"
-          data-testid="verra-map-search-input"
-          value={searchText}
-          onChange={(e) => onSearchChange(e.currentTarget.value)}
-          placeholder="Search online players on map..."
-          style={{ width: "100%", minHeight: "32px", padding: "5px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "12px" }}
-        />
+        <input type="search" aria-label="Search online players on map" data-testid="verra-map-search-input" value={searchText} onChange={(e) => onSearchChange(e.currentTarget.value)} placeholder="Search online players on map..." style={{ width: "100%", minHeight: "32px", padding: "5px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "12px" }} />
         {searchResults.length > 0 ? (
           <ul role="listbox" aria-label="Player search results" data-testid="verra-map-search-results" style={{ position: "absolute", top: "36px", left: 0, right: 0, maxHeight: "240px", overflowY: "auto", zIndex: 40, margin: 0, padding: "4px", listStyle: "none", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100 }}>
             {searchResults.map((hit) => (
               <li key={hit.id}>
-                <button type="button" onClick={() => onSelectHit(hit)} style={{ width: "100%", minHeight: "32px", padding: "4px 8px", textAlign: "left", border: "none", background: "transparent", color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, fontSize: "12px", cursor: "pointer" }}>
-                  {hit.label}
-                </button>
+                <button type="button" onClick={() => onSelectHit(hit)} style={{ width: "100%", minHeight: "32px", padding: "4px 8px", textAlign: "left", border: "none", background: "transparent", color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, fontSize: "12px", cursor: "pointer" }}>{hit.label}</button>
               </li>
             ))}
           </ul>
         ) : null}
       </div>
       <GmActionModalsDock />
-      <div role="toolbar" aria-label="Map layer visibility toggles" style={{ display: "flex", gap: "5px", flexWrap: "wrap" }}>
+      <div role="toolbar" aria-label="Map layer visibility toggles" style={{ display: "flex", gap: "5px", flexWrap: "wrap", alignItems: "center" }}>
         {OVERLAY_LAYER_KEYS.map((layerKey) => (
-          <button
-            key={layerKey}
-            type="button"
-            data-testid={`layer-toggle-${layerKey}`}
-            aria-pressed={storeSnap.layers[layerKey]}
-            onClick={() => storeSnap.toggleLayer(layerKey)}
-            style={{
-              minHeight: "32px",
-              padding: "4px 10px",
-              borderRadius: "4px",
-              border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
-              backgroundColor: storeSnap.layers[layerKey] ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush,
-              color: storeSnap.layers[layerKey] ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100,
-              fontSize: "11px",
-              fontWeight: 700,
-              cursor: "pointer",
-            }}
-          >
+          <button key={layerKey} type="button" data-testid={`layer-toggle-${layerKey}`} aria-pressed={storeSnap.layers[layerKey]} onClick={() => storeSnap.toggleLayer(layerKey)} style={{ minHeight: "32px", padding: "4px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: storeSnap.layers[layerKey] ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: storeSnap.layers[layerKey] ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
             {formatOverlayLayerLabel(layerKey, counts)}
           </button>
         ))}
-        <button
-          type="button"
-          data-testid="layer-toggle-zoiBorders"
-          aria-pressed={storeSnap.layers.zoiBorders}
-          onClick={() => storeSnap.toggleLayer("zoiBorders")}
-          style={{
-            minHeight: "32px",
-            padding: "4px 10px",
-            borderRadius: "4px",
-            border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
-            backgroundColor: storeSnap.layers.zoiBorders
-              ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500
-              : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush,
-            color: storeSnap.layers.zoiBorders
-              ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100
-              : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100,
-            fontSize: "11px",
-            fontWeight: 700,
-            cursor: "pointer",
-          }}
-        >
-          ZOI Borders
-        </button>
-        <button
-          type="button"
-          data-testid="toggle-simulate-all-npcs"
-          aria-pressed={storeSnap.simulateAllNpcs}
-          onClick={() => void storeSnap.setSimulateAllNpcs(!storeSnap.simulateAllNpcs)}
-          style={{
-            minHeight: "32px",
-            padding: "4px 10px",
-            borderRadius: "4px",
-            border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
-            backgroundColor: storeSnap.simulateAllNpcs
-              ? SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500
-              : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush,
-            color: storeSnap.simulateAllNpcs
-              ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100
-              : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100,
-            fontSize: "11px",
-            fontWeight: 700,
-            cursor: "pointer",
-          }}
-        >
+        <button type="button" data-testid="layer-toggle-zoiBorders" aria-pressed={storeSnap.layers.zoiBorders} onClick={() => storeSnap.toggleLayer("zoiBorders")} style={{ minHeight: "32px", padding: "4px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: storeSnap.layers.zoiBorders ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: storeSnap.layers.zoiBorders ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>ZOI Borders</button>
+        <button type="button" data-testid="toggle-simulate-all-npcs" aria-pressed={storeSnap.simulateAllNpcs} onClick={() => void storeSnap.setSimulateAllNpcs(!storeSnap.simulateAllNpcs)} style={{ minHeight: "32px", padding: "4px 10px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: storeSnap.simulateAllNpcs ? SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: storeSnap.simulateAllNpcs ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", fontWeight: 700, cursor: "pointer" }}>
           Sim All NPCs: {storeSnap.simulateAllNpcs ? "ON" : "OFF"}
         </button>
+        <ServerTimeOfDayControl storeSnap={storeSnap} />
       </div>
     </header>
   );
 }
 
-function renderZoomAndNodeControls(storeSnap: WorldStreamState): React.ReactElement {
-  const pin = storeSnap.lastClickedPoint ?? storeSnap.pickedCoordinate;
-  const selectedNode = storeSnap.selectedCityNodeName
-    ? storeSnap.cityNodes.find((n) => n.name === storeSnap.selectedCityNodeName) ?? null
-    : null;
-  const selectedEntity = storeSnap.selectedEntityGuid
-    ? storeSnap.entities.get(storeSnap.selectedEntityGuid) ?? null
-    : null;
-  const nodeCenter = selectedNode ? getCityNodeCenterCm(selectedNode) : null;
-  const targetX = selectedEntity
-    ? selectedEntity.xCm
-    : nodeCenter
-      ? nodeCenter.cx_cm
-      : Number(pin?.xCm ?? storeSnap.camera.centerXCm);
-  const targetY = selectedEntity
-    ? selectedEntity.yCm
-    : nodeCenter
-      ? nodeCenter.cy_cm
-      : Number(pin?.yCm ?? storeSnap.camera.centerYCm);
-  const worker = resolveWorkerForCoordinateOrZone(
-    targetX,
-    targetY,
-    selectedEntity?.zoneId,
-    undefined,
-    selectedNode?.name,
-  );
+function renderZoomAndNodeControls(
+  storeSnap: WorldStreamState,
+  cityFilterText: string,
+  onCityFilterChange: (q: string) => void,
+): React.ReactElement {
+  const q = cityFilterText.trim().toLowerCase();
+  const filteredNodes = q ? storeSnap.cityNodes.filter((n) => `${n.display_name} ${n.name}`.toLowerCase().includes(q)) : storeSnap.cityNodes;
+  const jumpToCityNode = (name: string | null): void => {
+    storeSnap.selectCityNode(name);
+    const found = storeSnap.cityNodes.find((n) => n.name === name);
+    if (found) { const { cx_cm, cy_cm } = getCityNodeCenterCm(found); storeSnap.setCameraViewport({ centerXCm: cx_cm, centerYCm: cy_cm, zoom: 5.5 }); }
+  };
   return (
-    <div style={{ position: "absolute", right: "12px", top: "12px", display: "flex", flexDirection: "column", gap: "4px", zIndex: 20 }}>
-      <button type="button" aria-label="Zoom in" data-testid="map-zoom-in" onClick={() => storeSnap.setCameraViewport({ zoom: Math.min(MAX_VERRA_MAP_ZOOM, storeSnap.camera.zoom + 1) })} style={{ width: "32px", height: "32px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, cursor: "pointer" }}>+</button>
-      <button type="button" aria-label="Zoom out" data-testid="map-zoom-out" onClick={() => storeSnap.setCameraViewport({ zoom: Math.max(MIN_VERRA_MAP_ZOOM, storeSnap.camera.zoom - 1) })} style={{ width: "32px", height: "32px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, cursor: "pointer" }}>-</button>
-      <select
-        aria-label="Select City Node to inspect or change stage"
-        data-testid="city-node-quick-select"
-        value={storeSnap.selectedCityNodeName ?? ""}
-        onChange={(e) => {
-          const name = e.currentTarget.value || null;
-          storeSnap.selectCityNode(name);
-          const found = storeSnap.cityNodes.find((n) => n.name === name);
-          if (found) {
-            const { cx_cm, cy_cm } = getCityNodeCenterCm(found);
-            storeSnap.setCameraViewport({ centerXCm: cx_cm, centerYCm: cy_cm, zoom: 5.5 });
-          }
-        }}
-        style={{ minHeight: "32px", padding: "4px 6px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px" }}
-      >
-        <option value="">26 City Nodes...</option>
-        {storeSnap.cityNodes.map((n) => (
-          <option key={n.name} value={n.name}>{n.display_name} (Lv {n.level})</option>
-        ))}
-      </select>
-      <div
-        data-testid="map-authority-worker-badge"
-        style={{
-          padding: "5px 8px",
-          borderRadius: "6px",
-          border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`,
-          background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush,
-          color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400,
-          fontSize: "11px",
-          fontWeight: 600,
-        }}
-      >
-        {worker.worker_id} · {worker.region_label}
-      </div>
-      {pin ? (
-        <div data-testid="picked-coordinate-readout" style={{ padding: "6px 8px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px" }}>
-          Pin: ({Number(pin.xCm ?? 0).toFixed(0)}, {Number(pin.yCm ?? 0).toFixed(0)}) cm
+    <div style={{ position: "absolute", left: "12px", top: "12px", display: "flex", flexDirection: "column", gap: "6px", zIndex: 18, width: "220px" }}>
+      <div style={{ display: "flex", gap: "4px", alignItems: "center", flexWrap: "wrap" }}>
+        <button type="button" aria-label="Zoom in" data-testid="map-zoom-in" onClick={() => storeSnap.setCameraViewport({ zoom: Math.min(MAX_VERRA_MAP_ZOOM, storeSnap.camera.zoom + 1) })} style={{ width: "32px", height: "32px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, cursor: "pointer" }}>+</button>
+        <button type="button" aria-label="Zoom out" data-testid="map-zoom-out" onClick={() => storeSnap.setCameraViewport({ zoom: Math.max(MIN_VERRA_MAP_ZOOM, storeSnap.camera.zoom - 1) })} style={{ width: "32px", height: "32px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, cursor: "pointer" }}>-</button>
+        <button type="button" aria-label="Reset zoom" data-testid="map-zoom-reset" onClick={() => storeSnap.setCameraViewport(DEFAULT_CAMERA_VIEWPORT)} style={{ height: "32px", padding: "0 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", cursor: "pointer" }}>Reset</button>
+        <div data-testid="map-zoom-hz-badge" style={{ padding: "4px 8px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "11px", fontWeight: 600 }}>
+          Zoom {storeSnap.camera.zoom.toFixed(1)}
         </div>
-      ) : null}
+      </div>
+      <div data-testid="city-quick-jump-combobox" style={{ display: "flex", flexDirection: "column", gap: "4px", padding: "6px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush }}>
+        <input type="search" aria-label="Filter city nodes" data-testid="city-quick-jump-search" placeholder="Search city / node..." value={cityFilterText} onChange={(e) => onCityFilterChange(e.currentTarget.value)} onKeyDown={(e) => { if (e.key === "Enter" && filteredNodes.length > 0) jumpToCityNode(filteredNodes[0].name); }} style={{ minHeight: "28px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px" }} />
+        <select aria-label="Select City Node to inspect or change stage" data-testid="city-node-quick-select" data-city-quick-jump-select="true" value={storeSnap.selectedCityNodeName ?? ""} onChange={(e) => jumpToCityNode(e.currentTarget.value || null)} style={{ minHeight: "32px", padding: "4px 6px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px" }}>
+          <option value="">26 City Nodes...</option>
+          {filteredNodes.map((n) => (<option key={n.name} value={n.name}>{n.display_name} (Lv {n.level})</option>))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+function renderBottomRightToastAndWorkersDock(storeSnap: WorldStreamState): React.ReactElement {
+  const viewportBounds = computeViewportWorldBoundsCm(storeSnap.camera);
+  const visibleWorkers = getVisibleWorkersForViewport(storeSnap.workers, viewportBounds);
+  return (
+    <div style={{ position: "absolute", bottom: "12px", right: "12px", zIndex: 18, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: "8px", width: "320px", minWidth: "320px", maxWidth: "320px" }}>
+      <div data-testid="gm-action-toast-stack" role="status" aria-live="polite" style={{ display: "flex", flexDirection: "column", gap: "6px", width: "100%" }}>
+        {storeSnap.toasts.map((toast) => (
+          <div key={toast.id} data-testid="gm-action-toast-item" data-toast-tone={toast.tone} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", padding: "8px 10px", borderRadius: "6px", border: `1px solid ${toast.tone === "error" ? SANDAL_LAUNCHER_TOKENS.VerraRuinCrimson500 : SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", color: toast.tone === "error" ? SANDAL_LAUNCHER_TOKENS.VerraRuinCrimson500 : SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "11px", fontWeight: 600 }}>
+            <span style={{ flex: 1, wordBreak: "break-word" }}>{toast.text}</span>
+            <button type="button" aria-label="Dismiss toast" onClick={() => storeSnap.dismissToast(toast.id)} style={{ border: "none", background: "transparent", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, cursor: "pointer", fontSize: "11px", padding: "2px 4px" }}>x</button>
+          </div>
+        ))}
+      </div>
+      <div data-testid="visible-server-workers-panel" style={{ width: "320px", minWidth: "320px", maxWidth: "320px", height: "208px", minHeight: "208px", maxHeight: "208px", boxSizing: "border-box", display: "flex", flexDirection: "column", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", overflow: "hidden" }}>
+        <div style={{ padding: "6px 10px", borderBottom: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, fontWeight: 700, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>Visible Server Workers ({visibleWorkers.length})</span>
+        </div>
+        <div data-testid="visible-server-workers-scroll" style={{ height: "176px", minHeight: "176px", maxHeight: "176px", boxSizing: "border-box", overflowY: "scroll", scrollbarGutter: "stable", display: "flex", flexDirection: "column", gap: "4px", padding: "6px" }}>
+          {visibleWorkers.map((w) => {
+            const curHz = Math.round(Number(w.tick_hz ?? 30));
+            const opts = WORKER_TICK_HZ_OPTIONS.includes(curHz) ? WORKER_TICK_HZ_OPTIONS : [...WORKER_TICK_HZ_OPTIONS, curHz].sort((a, b) => a - b);
+            return (
+              <div key={w.worker_id} role="button" tabIndex={0} data-testid={`visible-worker-row-${w.worker_id}`} onClick={() => zoomToWorkerArea(w, storeSnap)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") zoomToWorkerArea(w, storeSnap); }} style={{ width: "100%", height: "30px", minHeight: "30px", maxHeight: "30px", flexShrink: 0, overflow: "hidden", whiteSpace: "nowrap", padding: "4px 6px", boxSizing: "border-box", textAlign: "left", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontSize: "11px", fontWeight: 600, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
+                <span>{formatCanonicalWorkerName(w.scope_kind, w.scope_key)}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: "4px", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontWeight: 400, fontSize: "10px" }}>
+                  <span>{w.region_label}</span>
+                  <select aria-label={`Tick rate for ${w.worker_id}`} data-testid={`worker-tick-rate-select-${w.worker_id}`} value={curHz} onClick={(e) => e.stopPropagation()} onChange={(e) => { e.stopPropagation(); void storeSnap.executeSetWorkerTickRateAction(w.worker_id, Number(e.currentTarget.value)); }} style={{ height: "20px", padding: "0 4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "10px", fontWeight: 700, cursor: "pointer" }}>
+                    {opts.map((hz) => (<option key={hz} value={hz}>{hz} Hz</option>))}
+                  </select>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -433,7 +459,6 @@ function handleCanvasLeftClick(
   }
   if (hit?.poi) {
     storeSnap.selectPoi(hit.poi.guid);
-    storeSnap.setPickedCoordinate({ xCm: hit.poi.x_cm, yCm: hit.poi.y_cm, zCm: hit.poi.z_cm });
     return;
   }
   const pt = screenOffsetToWorldCm(sx, sy, viewport, storeSnap.camera);
@@ -490,75 +515,86 @@ function renderInteractiveMapCanvas(
   );
 }
 
-function renderSelectedEntityQuickActions(entity: WorldEntity, storeSnap: WorldStreamState): React.ReactElement {
-  const playerX = storeSnap.selectedPlayer;
-  const npcTemplate = storeSnap.selectedNpcTemplate || "DesignData_NPC_Goblin";
-  const worker = resolveWorkerForCoordinateOrZone(entity.xCm, entity.yCm, entity.zoneId, undefined, entity.name);
-  const tpReceipt = storeSnap.lastReceiptsByScope.teleport;
-  const spawnReceipt = storeSnap.lastReceiptsByScope.spawnNpc;
-  const entReceipt = storeSnap.lastReceiptsByScope.entityAction;
+function formatNpcActionProse(actId: string, entity: WorldEntity): string {
+  const pos = `(${Math.round(entity.xCm)}, ${Math.round(entity.yCm)}, ${Math.round(entity.zCm)})`;
+  if (actId === "kill_npc") return `Killed ${entity.name} (${entity.guid}) at ${pos}`;
+  if (actId === "heal_npc") return `Healed ${entity.name} (${entity.guid}) to 100% HP`;
+  if (actId === "reset_npc") return `Reset ${entity.name} (${entity.guid})`;
+  if (actId === "respawn_npc") return `Respawned ${entity.name} (${entity.guid}) at ${pos}`;
+  return `Despawned ${entity.name} (${entity.guid})`;
+}
+
+function SelectedEntityQuickActions(props: { readonly entity: WorldEntity; readonly storeSnap: WorldStreamState }): React.ReactElement {
+  const { entity, storeSnap } = props;
+  const nudgeMeters = storeSnap.nudgeMeters ?? "8";
+  const setNudgeMeters = (val: string): void => storeSnap.patchSessionUi({ nudgeMeters: val });
+  const worker = resolveWorkerForCoordinateOrZone(entity.xCm, entity.yCm, entity.zoneId, storeSnap.workers, entity.name);
+  const isNpcOrMonster = entity.kind === "npc" || entity.kind === "monster";
+  const isPlayer = entity.kind === "player";
+  const triggerAxisNudge = (axis: "X" | "Y" | "Z"): void => {
+    const meters = Number(nudgeMeters) || 0, deltaCm = Math.round(meters * 100);
+    const nextX = Math.round(entity.xCm + (axis === "X" ? deltaCm : 0)), nextY = Math.round(entity.yCm + (axis === "Y" ? deltaCm : 0)), nextZ = Math.round(entity.zCm + (axis === "Z" ? deltaCm : 0));
+    void dispatchAuxiliaryGmAction({ action: "nudge_npc", entity_guid: entity.guid, x_cm: nextX, y_cm: nextY, z_cm: nextZ, zone: worker.scope_key, worker_id: worker.worker_id }).then((r) => {
+      storeSnap.setScopedReceipt("entityAction", { ok: r.ok, message: `Nudged ${entity.name} (${entity.guid}) ${meters >= 0 ? "+" : ""}${meters}m ${axis} to (${nextX}, ${nextY}, ${nextZ})` });
+      storeSnap.applyWorldDelta({ seq: storeSnap.lastSeq + 1, updated: [{ ...entity, xCm: nextX, yCm: nextY, zCm: nextZ }] });
+    });
+  };
+  const nudgeBtnStyle = { minHeight: "28px", padding: "3px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontSize: "11px", cursor: "pointer" } as const;
   return (
     <div data-testid="selected-entity-quick-actions" style={{ position: "relative", width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "12px", zIndex: 20 }}>
-      <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "6px" }}>
-        {NPC_INSTANCE_ACTIONS.map((act) => (
-          <button
-            key={act.id}
-            type="button"
-            data-testid={`npc-instance-${act.id}`}
-            onClick={() =>
-              void dispatchAuxiliaryGmAction({
-                action: act.id,
-                entity_guid: entity.guid,
-                zone: worker.scope_key,
-                worker_id: worker.worker_id,
-              }).then((r) =>
-                storeSnap.setScopedReceipt("entityAction", { ok: r.ok, message: `${entity.name} (${act.label}): ${r.message}` }),
-              )
-            }
-            style={{ minHeight: "32px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", cursor: "pointer" }}
-          >
-            {act.label}
-          </button>
-        ))}
-      </div>
+      {entity.kind === "resource_node" ? (
+        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "6px", fontSize: "11px" }}>
+          <span data-testid="selected-resource-type" style={{ padding: "2px 7px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontWeight: 700 }}>Type: {entity.resourceType || "Gathering Resource"}</span>
+          <span data-testid="selected-resource-quality" style={{ padding: "2px 7px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontWeight: 700 }}>Quality: {entity.quality || "Common · Tier 1 (Novice)"}</span>
+        </div>
+      ) : null}
+      {isNpcOrMonster ? (
+        <>
+          <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "6px" }}>
+            {NPC_INSTANCE_ACTIONS.map((act) => (
+              <button key={act.id} type="button" data-testid={`npc-instance-${act.id}`} onClick={() => void dispatchAuxiliaryGmAction({ action: act.id, entity_guid: entity.guid, zone: worker.scope_key, worker_id: worker.worker_id }).then((r) => { const prose = formatNpcActionProse(act.id, entity); storeSnap.setScopedReceipt("entityAction", { ok: r.ok, message: r.ok ? prose : `${prose}: ${r.message}` }); if (r.ok && (act.id === "kill_npc" || act.id === "despawn_npc")) { storeSnap.applyWorldDelta({ seq: storeSnap.lastSeq + 1, removed: [entity.guid] }); storeSnap.selectEntity(null); void refreshWorldEntitiesAfterNodeTierChange(storeSnap); } })} style={{ minHeight: "30px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", cursor: "pointer" }}>{act.label}</button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", alignItems: "center", marginBottom: "6px" }}>
+            <span style={{ fontSize: "11px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>Nudge (m)</span>
+            <input type="number" step="any" aria-label="Nudge distance (m)" data-testid="npc-nudge-amount-input" value={nudgeMeters} onChange={(e) => setNudgeMeters(e.currentTarget.value)} style={{ width: "54px", minHeight: "28px", padding: "2px 6px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCInputFillBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px" }} />
+            <button type="button" data-testid="npc-instance-nudge" onClick={() => triggerAxisNudge("X")} style={nudgeBtnStyle}>Nudge X</button>
+            <button type="button" data-testid="npc-instance-nudge-y" onClick={() => triggerAxisNudge("Y")} style={nudgeBtnStyle}>Nudge Y</button>
+            <button type="button" data-testid="npc-instance-nudge-z" onClick={() => triggerAxisNudge("Z")} style={nudgeBtnStyle}>Nudge Z</button>
+          </div>
+        </>
+      ) : null}
       <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-        <button
-          type="button"
-          data-testid="inspector-teleport-here-btn"
-          onClick={() => {
-            if (!playerX) return;
-            void sendGmCommand({
-              ...buildTeleportToCoordsCommand(playerX, entity.xCm, entity.yCm, entity.zCm),
-              zone: worker.scope_key,
-              worker_id: worker.worker_id,
-            } as never).then((r) =>
-              storeSnap.setScopedReceipt("teleport", { ok: r.ok, message: r.message, correlationId: r.correlationId }),
-            );
-          }}
-          style={{ minHeight: "32px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, color: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, fontWeight: 700, fontSize: "11px", cursor: "pointer" }}
-        >
-          Teleport {playerX || "Player X"} Here
-        </button>
-        <button
-          type="button"
-          data-testid="inspector-spawn-next-btn"
-          onClick={() => {
-            void sendGmCommand({
-              ...buildSpawnNpcCommand({ npc: npcTemplate, x_cm: entity.xCm + 150, y_cm: entity.yCm + 150, z_cm: entity.zCm, level: entity.level || 15 }),
-              zone: worker.scope_key,
-              worker_id: worker.worker_id,
-            } as never).then((r) =>
-              storeSnap.setScopedReceipt("spawnNpc", { ok: r.ok, message: r.message, correlationId: r.correlationId }),
-            );
-          }}
-          style={{ minHeight: "32px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", cursor: "pointer" }}
-        >
-          Spawn {npcTemplate} Here
-        </button>
+        {isPlayer ? (
+          <>
+            <button type="button" data-testid="inspector-give-item-btn" onClick={() => { storeSnap.setSelectedPlayer(entity.name); storeSnap.setActiveModal("give-item"); }} style={{ minHeight: "32px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, color: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, fontWeight: 700, fontSize: "11px", cursor: "pointer" }}>Give Item...</button>
+            <button type="button" data-testid="inspector-give-gold-btn" onClick={() => { storeSnap.setSelectedPlayer(entity.name); storeSnap.setActiveModal("give-currency"); }} style={{ minHeight: "32px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, color: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, fontWeight: 700, fontSize: "11px", cursor: "pointer" }}>Give Gold...</button>
+            <button type="button" data-testid="inspector-teleport-here-btn" onClick={() => { storeSnap.setSelectedPlayer(entity.name); storeSnap.setPickedCoordinate({ xCm: Math.round(entity.xCm), yCm: Math.round(entity.yCm), zCm: Math.round(entity.zCm) }); storeSnap.setActiveModal("teleport"); }} style={{ minHeight: "32px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontWeight: 700, fontSize: "11px", cursor: "pointer" }}>Teleport Player...</button>
+          </>
+        ) : (
+          <button type="button" data-testid="inspector-teleport-here-btn" onClick={() => { storeSnap.setPickedCoordinate({ xCm: Math.round(entity.xCm), yCm: Math.round(entity.yCm), zCm: Math.round(entity.zCm) }); storeSnap.setTeleportMode("coords"); storeSnap.setActiveModal("teleport"); }} style={{ minHeight: "32px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, color: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, fontWeight: 700, fontSize: "11px", cursor: "pointer" }}>Teleport Player Here...</button>
+        )}
+        <button type="button" data-testid="inspector-spawn-next-btn" onClick={() => { storeSnap.setPickedCoordinate({ xCm: Math.round(entity.xCm + 150), yCm: Math.round(entity.yCm + 150), zCm: Math.round(entity.zCm) }); storeSnap.setSpawnTargetMode("coords"); storeSnap.setActiveModal("spawn-npc"); }} style={{ minHeight: "32px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", cursor: "pointer" }}>Spawn NPC / Monster Here...</button>
       </div>
-      {entReceipt ? <div data-testid="inspector-entity-action-receipt" style={{ marginTop: "4px", color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontSize: "11px" }}>{entReceipt.message}</div> : null}
-      {tpReceipt ? <div data-testid="inspector-teleport-receipt" style={{ marginTop: "4px", color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "11px" }}>{tpReceipt.message}</div> : null}
-      {spawnReceipt ? <div data-testid="inspector-spawn-receipt" style={{ marginTop: "4px", color: SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500, fontSize: "11px" }}>{spawnReceipt.message}</div> : null}
+    </div>
+  );
+}
+
+function renderPickedCoordinateCard(pin: VerraUnrealPoint, storeSnap: WorldStreamState): React.ReactElement {
+  const xCm = Math.round(Number(pin.xCm ?? 0)), yCm = Math.round(Number(pin.yCm ?? 0)), zCm = Math.round(Number(pin.zCm ?? 0));
+  const worker = resolveWorkerForCoordinateOrZone(xCm, yCm, undefined, storeSnap.workers);
+  return (
+    <div data-testid="picked-coordinate-readout" style={{ padding: "12px", borderRadius: "8px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, background: SANDAL_LAUNCHER_TOKENS.AoCFiligreeDeckBrush, backdropFilter: "blur(16px)", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <strong style={{ color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, textTransform: "uppercase", letterSpacing: "0.06em" }}>Selected Position</strong>
+        <button type="button" data-testid="pin-close-btn" onClick={() => handleCanvasRightClickClear(storeSnap)} style={{ minHeight: "26px", padding: "2px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, fontSize: "11px", cursor: "pointer" }}>Close</button>
+      </div>
+      <div>Coordinates: <strong>({xCm}, {yCm}, {zCm}) cm</strong></div>
+      <div style={{ color: SANDAL_LAUNCHER_TOKENS.VerraChampagneGold400, fontSize: "11px" }}>Worker: {worker.canonical_name ?? worker.worker_id} ({worker.region_label})</div>
+      <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+        <button type="button" data-testid="pin-teleport-here-btn" onClick={() => { storeSnap.setPickedCoordinate({ xCm, yCm, zCm }); storeSnap.setTeleportMode("coords"); storeSnap.setActiveModal("teleport"); }} style={{ minHeight: "32px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500, color: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, fontWeight: 700, fontSize: "11px", cursor: "pointer" }}>Teleport Player Here...</button>
+        <button type="button" data-testid="pin-spawn-here-btn" onClick={() => { storeSnap.setPickedCoordinate({ xCm, yCm, zCm }); storeSnap.setSpawnTargetMode("coords"); storeSnap.setActiveModal("spawn-npc"); }} style={{ minHeight: "32px", padding: "4px 8px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", cursor: "pointer" }}>Spawn NPC / Monster Here...</button>
+      </div>
     </div>
   );
 }
@@ -614,26 +650,17 @@ function renderUnifiedInspectorSlot(
   const selectedEntity = storeSnap.selectedEntityGuid ? storeSnap.entities.get(storeSnap.selectedEntityGuid) ?? null : null;
   const selectedCityNode = storeSnap.selectedCityNodeName ? storeSnap.cityNodes.find((n) => n.name === storeSnap.selectedCityNodeName) ?? null : null;
   const selectedPoi = storeSnap.selectedPoiGuid ? storeSnap.pois.find((p) => p.guid === storeSnap.selectedPoiGuid) ?? null : null;
+  const pin = storeSnap.lastClickedPoint ?? storeSnap.pickedCoordinate;
   const inspectedEntity: WorldEntity | null = selectedEntity
     ? selectedEntity
     : selectedPoi
-      ? {
-          guid: selectedPoi.guid,
-          name: selectedPoi.display_name || selectedPoi.name,
-          kind: "poi",
-          xCm: selectedPoi.x_cm,
-          yCm: selectedPoi.y_cm,
-          zCm: selectedPoi.z_cm,
-          yawDeg: 0,
-          level: 1,
-          healthPct: 100,
-        }
+      ? { guid: selectedPoi.guid, name: selectedPoi.display_name || selectedPoi.name, kind: "poi", xCm: selectedPoi.x_cm, yCm: selectedPoi.y_cm, zCm: selectedPoi.z_cm, yawDeg: 0, level: 1, healthPct: 100 }
       : null;
-  if (!selectedCityNode && !inspectedEntity) return null;
+  if (!selectedCityNode && !inspectedEntity && !pin) return null;
   return (
     <div
       data-testid="unified-map-inspector-slot"
-      style={{ position: "absolute", top: "56px", right: "12px", width: "360px", zIndex: 25, display: "flex", flexDirection: "column", gap: "8px" }}
+      style={{ position: "absolute", top: "12px", right: "12px", width: "360px", zIndex: 25, display: "flex", flexDirection: "column", gap: "8px" }}
     >
       {selectedCityNode ? (
         <NodeGovernanceModalCard storeSnap={storeSnap} />
@@ -654,8 +681,10 @@ function renderUnifiedInspectorSlot(
               onEntitySelect?.(null);
             }}
           />
-          {selectedEntity ? renderSelectedEntityQuickActions(selectedEntity, storeSnap) : null}
+          <SelectedEntityQuickActions entity={inspectedEntity} storeSnap={storeSnap} />
         </>
+      ) : pin ? (
+        renderPickedCoordinateCard(pin, storeSnap)
       ) : null}
     </div>
   );
@@ -667,13 +696,14 @@ export function VerraMapCanvas(props: VerraMapCanvasProps): React.ReactElement {
   const dragRef = React.useRef<{ active: boolean; x: number; y: number; moved: boolean }>({ active: false, x: 0, y: 0, moved: false });
   const [mapMeta, setMapMeta] = React.useState<VerraMapMeta>(DEFAULT_VERRA_MAP_META);
   const [searchText, setSearchText] = React.useState("");
+  const [cityFilterText, setCityFilterText] = React.useState("");
   const [, setRenderTick] = React.useState(0);
   const tileCacheRef = React.useRef<VerraTileCache | null>(null);
   if (!tileCacheRef.current) {
     tileCacheRef.current = new VerraTileCache(() => setRenderTick((t) => t + 1));
   }
 
-  useWorldMapPolling(storeSnap, setMapMeta);
+  useWorldMapPolling(storeSnap, setMapMeta, canvasRef);
   useCanvasNativeWheelAndDraw(canvasRef, mapMeta, storeSnap, tileCacheRef);
   const remoteSearchHits = useMapRemoteSearch(searchText, storeSnap.layers);
   const viewState = resolveVerraMapViewState(storeSnap);
@@ -696,10 +726,11 @@ export function VerraMapCanvas(props: VerraMapCanvasProps): React.ReactElement {
         else if (hit.poiGuid) storeSnap.selectPoi(hit.poiGuid);
         setSearchText("");
       })}
-      <div style={{ position: "relative", flex: 1, minHeight: "460px" }}>
+      <div style={{ position: "relative", zIndex: 1, flex: 1, minHeight: "460px" }}>
         {renderInteractiveMapCanvas(canvasRef, dragRef, storeSnap, deckLayers.filter((l) => l.visible).length, props.onCoordinatePick)}
-        {renderZoomAndNodeControls(storeSnap)}
+        {renderZoomAndNodeControls(storeSnap, cityFilterText, setCityFilterText)}
         {renderUnifiedInspectorSlot(storeSnap, viewState, props.onEntitySelect)}
+        {renderBottomRightToastAndWorkersDock(storeSnap)}
         <GmCommandPalette isOpen={Boolean(props.isCommandPaletteOpen)} query={props.commandQuery ?? ""} role={props.gmRole ?? "GM_OPERATOR"} />
       </div>
     </section>

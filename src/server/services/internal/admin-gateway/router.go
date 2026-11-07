@@ -47,6 +47,7 @@ type ProblemDetails struct {
 	Detail        string `json:"detail"`
 	Instance      string `json:"instance,omitempty"`
 	Code          string `json:"code,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 	CorrelationID string `json:"correlation_id,omitempty"`
 	RetryAfter    int    `json:"retryAfter,omitempty"`
 }
@@ -75,6 +76,11 @@ type AuditEntry struct {
 	AuditID           string `json:"audit_id"`
 	ActorSub          string `json:"actor_sub"`
 	ActorRole         Role   `json:"actor_role"`
+	Who               string `json:"who,omitempty"`
+	What              string `json:"what,omitempty"`
+	Where             string `json:"where,omitempty"`
+	When              string `json:"when,omitempty"`
+	TargetContainer   string `json:"target_container,omitempty"`
 	CommandDomain     string `json:"command_domain"`
 	ActionName        string `json:"action_name"`
 	TargetEntityID    string `json:"target_entity_id,omitempty"`
@@ -119,18 +125,21 @@ type Server struct {
 	coalescer                                                  *worldstream.Coalescer
 	roleTokens                                                 map[string]Role
 	now                                                        func() time.Time
-	startedAt                                                  time.Time
+	startedAt, timeOfDayUpdatedAt                              time.Time
 	lastMutatedUnixNano                                        atomic.Int64
-	ready                                                      atomic.Bool
+	ready, streamPullInFlight                                  atomic.Bool
 	subSeq, snapshotEpoch, auditSeq, reloadCount               atomic.Uint64
 	requestsTotal, errorsTotal, cacheHits, cacheMisses         atomic.Uint64
 	transientRetries                                           atomic.Uint64
 	mu, pmtilesMu, grpcMu                                      sync.Mutex
+	timeOfDayMu                                                sync.RWMutex
+	timeOfDayHours                                             float64
 	idemStore                                                  map[string]idempotencyRecord
 	hotfixIdem                                                 map[string]hotfixIdemRecord
 	overlayState                                               map[string]HotfixRowDiff
 	localNodeLevels                                            map[string]int
 	nodeGovernance                                             map[string]nodeGovernanceState
+	despawnedEntities                                          map[string]struct{}
 	lastStreamAt                                               map[uint32]time.Time
 	auditLog                                                   []AuditEntry
 	catalogCache, metaCache, containersCache                   *ttlCache
@@ -144,6 +153,8 @@ type Server struct {
 	dockerClient                                               *http.Client
 	offlinePlayers                                             []PlayerInfo
 	worldWorkers                                               []*WorldWorkerEndpoint
+	authCfg                                                    AdminAuthConfig
+	workerMeta                                                 map[string]workerTopologyMeta
 	mux                                                        *http.ServeMux
 	etagHandler                                                http.Handler
 }
@@ -161,7 +172,8 @@ func NewRouter(cfg Config) *Server {
 	if cfg.Coalescer == nil {
 		cfg.Coalescer = worldstream.NewCoalescer(worldstream.DefaultTickInterval)
 	}
-	if len(cfg.RoleTokens) == 0 {
+	customRoleTokens := len(cfg.RoleTokens) > 0
+	if !customRoleTokens {
 		cfg.RoleTokens = DefaultRoleTokens()
 	}
 	if cfg.Now == nil {
@@ -172,7 +184,8 @@ func NewRouter(cfg Config) *Server {
 		catalog: cfg.Catalog, coalescer: cfg.Coalescer, roleTokens: cfg.RoleTokens, now: cfg.Now, startedAt: nowTime,
 		idemStore: make(map[string]idempotencyRecord), hotfixIdem: make(map[string]hotfixIdemRecord),
 		overlayState: make(map[string]HotfixRowDiff), localNodeLevels: make(map[string]int),
-		nodeGovernance: make(map[string]nodeGovernanceState), lastStreamAt: make(map[uint32]time.Time),
+		nodeGovernance: make(map[string]nodeGovernanceState), despawnedEntities: make(map[string]struct{}),
+		lastStreamAt: make(map[uint32]time.Time), workerMeta: make(map[string]workerTopologyMeta),
 		catalogCache: newTTLCache(), metaCache: newTTLCache(), containersCache: newTTLCache(),
 		pmtilesPath: cfg.PmTilesPath, pmtilesArch: cfg.PmTilesArchive,
 		worldAdminAddr:  firstNonEmpty(cfg.WorldAdminAddr, os.Getenv("AOC_WORLD_ADMIN_ADDR")),
@@ -184,6 +197,7 @@ func NewRouter(cfg Config) *Server {
 		cityNode: cfg.CityNodeClient, dockerSocketPath: cfg.DockerSocketPath, dockerClient: cfg.DockerClient,
 		offlinePlayers: cfg.OfflinePlayers, worldWorkers: cfg.WorldWorkers, mux: http.NewServeMux(),
 	}
+	s.initAdminAuth(customRoleTokens)
 	s.initWorldWorkers()
 	s.lastMutatedUnixNano.Store(nowTime.UnixNano())
 	s.ready.Store(true)
@@ -319,6 +333,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /metrics", s.handleOpenMetrics)
 	s.mux.HandleFunc("HEAD /metrics", s.handleOpenMetrics)
+	s.mux.HandleFunc("POST /api/v1/admin/auth/login", s.handleAdminLogin)
+	s.mux.HandleFunc("POST /api/v1/gm/auth/login", s.handleAdminLogin)
+	s.mux.HandleFunc("GET /api/v1/admin/auth/session", s.handleAdminSession)
+	s.mux.HandleFunc("GET /api/v1/gm/auth/session", s.handleAdminSession)
 	s.mux.HandleFunc("GET /api/v1/catalog/search", s.requireRole(RoleObserver, s.handleCatalogSearch))
 	s.registerReadRoute("/api/v1/catalog/items", s.optionalRole(RoleObserver, s.handleCatalogItems))
 	s.registerReadRoute("/api/v1/catalog/npcs", s.optionalRole(RoleObserver, s.handleCatalogNpcs))
@@ -327,15 +345,17 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/v1/world/stream", s.requireRole(RoleObserver, s.handleWorldStream))
 	s.registerReadRoute("/api/v1/world/state", s.optionalRole(RoleObserver, s.handleWorldState))
 	s.registerReadRoute("/api/v1/gm/world/state", s.optionalRole(RoleObserver, s.handleWorldState))
+	s.registerReadRoute("/api/v1/world/zois", s.optionalRole(RoleObserver, s.handleWorldZois))
+	s.registerReadRoute("/api/v1/gm/world/zois", s.optionalRole(RoleObserver, s.handleWorldZois))
 	s.registerReadRoute("/api/v1/world/players", s.optionalRole(RoleObserver, s.handleWorldPlayers))
 	s.registerReadRoute("/api/v1/gm/world/players", s.optionalRole(RoleObserver, s.handleWorldPlayers))
 	s.registerReadRoute("/api/v1/world/map-meta", s.optionalRole(RoleObserver, s.handleWorldMapMetaWithWorkers))
 	s.registerReadRoute("/api/v1/world/tiles/metadata.json", s.optionalRole(RoleObserver, s.handleWorldMapMetaWithWorkers))
 	s.registerReadRoute("/api/v1/gm/world/tiles/metadata.json", s.optionalRole(RoleObserver, s.handleWorldMapMetaWithWorkers))
-	s.registerReadRoute("/api/v1/world/pmtiles", s.optionalRole(RoleObserver, s.handleWorldPmTiles))
-	s.registerReadRoute("/api/v1/world/tiles/{z}/{x}/{y}", s.optionalRole(RoleObserver, s.handleWorldTile))
-	s.registerReadRoute("/api/v1/world/icons/{icon}", s.optionalRole(RoleObserver, s.handleWorldIcon))
-	s.registerReadRoute("/api/v1/gm/world/icons/{icon}", s.optionalRole(RoleObserver, s.handleWorldIcon))
+	s.registerReadRoute("/api/v1/world/pmtiles", func(w http.ResponseWriter, r *http.Request) { s.handleWorldPmTiles(w, r, RoleObserver) })
+	s.registerReadRoute("/api/v1/world/tiles/{z}/{x}/{y}", func(w http.ResponseWriter, r *http.Request) { s.handleWorldTile(w, r, RoleObserver) })
+	s.registerReadRoute("/api/v1/world/icons/{icon}", func(w http.ResponseWriter, r *http.Request) { s.handleWorldIcon(w, r, RoleObserver) })
+	s.registerReadRoute("/api/v1/gm/world/icons/{icon}", func(w http.ResponseWriter, r *http.Request) { s.handleWorldIcon(w, r, RoleObserver) })
 	s.mux.HandleFunc("PUT /api/v1/world/nodes/{node}", s.optionalRole(RoleArchitect, s.handlePutWorldNode))
 	s.mux.HandleFunc("POST /api/v1/world/nodes/{node}/mayor", s.optionalRole(RoleOperator, s.handleSetNodeMayor))
 	s.mux.HandleFunc("POST /api/v1/world/nodes/{node}/election", s.optionalRole(RoleOperator, s.handleTriggerNodeElection))
@@ -344,11 +364,11 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/world/nodes/{node}", s.methodNotAllowed("PUT"))
 	s.mux.HandleFunc("GET /api/v1/gm/commands", s.requireRole(RoleObserver, s.wrapHandler(s.HandleCommandList)))
 	s.mux.HandleFunc("HEAD /api/v1/gm/commands", s.requireRole(RoleObserver, s.wrapHandler(s.HandleCommandList)))
-	s.mux.HandleFunc("POST /api/v1/gm/commands", s.handleGMCommandsEndpoint)
+	s.mux.HandleFunc("POST /api/v1/gm/commands", s.guardGMCommandsAuth(s.handleGMCommandsEndpoint))
 	s.mux.HandleFunc("/api/v1/gm/commands", s.methodNotAllowed("GET, HEAD, POST"))
 	s.mux.HandleFunc("POST /api/v1/gm/command", s.optionalRole(RoleArchitect, s.handleGMCommand))
 	for _, p := range []string{"/api/v1/gm/give_currency", "/api/v1/gm/currency", "/api/v1/gm/give_item", "/api/v1/gm/item", "/api/v1/gm/teleport", "/api/v1/gm/spawn_npc", "/api/v1/gm/spawn"} {
-		s.mux.HandleFunc("POST "+p, s.handleGMCommandsEndpoint)
+		s.mux.HandleFunc("POST "+p, s.guardGMCommandsAuth(s.handleGMCommandsEndpoint))
 	}
 	s.mux.HandleFunc("POST /api/v1/gm/hotfix/dry-run", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleHotfixDryRun)))
 	s.mux.HandleFunc("POST /api/v1/gm/hotfix/apply", s.requireRole(RoleArchitect, s.wrapHandler(s.HandleHotfixApply)))
@@ -357,6 +377,9 @@ func (s *Server) registerRoutes() {
 	s.registerReadRoute("/api/v1/gm/containers", s.optionalRole(RoleObserver, s.handleGMContainers))
 	s.registerReadRoute("/api/v1/gm/workers", s.optionalRole(RoleObserver, s.handleWorldWorkers))
 	s.registerReadRoute("/api/v1/world/workers", s.optionalRole(RoleObserver, s.handleWorldWorkers))
+	s.mux.HandleFunc("POST /api/v1/mesh/workers/register", s.optionalRole(RoleOperator, s.handleRegisterMeshWorker))
+	s.mux.HandleFunc("POST /api/v1/world/workers", s.optionalRole(RoleOperator, s.handleRegisterMeshWorker))
+	s.mux.HandleFunc("POST /api/v1/gm/workers", s.optionalRole(RoleOperator, s.handleRegisterMeshWorker))
 	s.registerReadRoute("/api/v1/gm/metrics", s.optionalRole(RoleObserver, s.handlePrometheusMetrics))
 	s.registerReadRoute("/api/v1/metrics", s.optionalRole(RoleObserver, s.handlePrometheusMetrics))
 	s.registerReadRoute("/api/v1/gm/logs", s.optionalRole(RoleObserver, s.handleGMLogs))
@@ -426,49 +449,28 @@ func (s *Server) currentAuditETag() string {
 
 func (s *Server) requireRole(min Role, next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token, ok := extractBearerToken(r)
-		if !ok {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="admingateway"`)
-			writeProblem(w, r, http.StatusUnauthorized, "unauthorized", "Missing or malformed Bearer token.")
-			return
+		if role, ok := s.authenticateRequest(w, r, min, requiredScopeForPath(r), true); ok {
+			next(w, r, role)
 		}
-		role, valid := s.resolveRole(token)
-		if !valid {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="admingateway", error="invalid_token"`)
-			writeProblem(w, r, http.StatusUnauthorized, "invalid-token", "Provided Bearer token is not recognized.")
-			return
-		}
-		if !role.AtLeast(min) {
-			writeProblem(w, r, http.StatusForbidden, "insufficient-role", fmt.Sprintf("Role %s does not satisfy required minimum role %s.", role, min))
-			return
-		}
-		next(w, r, role)
 	}
 }
 
 func (s *Server) optionalRole(defaultRole Role, next authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		role := defaultRole
-		if token, ok := extractBearerToken(r); ok {
-			resolved, valid := s.resolveRole(token)
-			if !valid {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="admingateway", error="invalid_token"`)
-				writeProblem(w, r, http.StatusUnauthorized, "invalid-token", "Provided Bearer token is not recognized.")
-				return
-			}
-			role = resolved
+		if role, ok := s.authenticateRequest(w, r, defaultRole, requiredScopeForPath(r), false); ok {
+			next(w, r, role)
 		}
-		next(w, r, role)
 	}
 }
 
 func extractBearerToken(r *http.Request) (string, bool) {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return "", false
+	if strings.HasPrefix(auth, "Bearer ") {
+		if tok := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")); tok != "" {
+			return tok, true
+		}
 	}
-	tok := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
-	return tok, tok != ""
+	return "", false
 }
 
 func extractIdempotencyKey(r *http.Request) (string, bool) {
@@ -476,11 +478,13 @@ func extractIdempotencyKey(r *http.Request) (string, bool) {
 	return key, len(key) >= 1 && len(key) <= 128
 }
 
-func firstNonEmpty(a, b string) string {
-	if strings.TrimSpace(a) != "" {
-		return strings.TrimSpace(a)
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
 	}
-	return strings.TrimSpace(b)
+	return ""
 }
 
 func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
@@ -494,6 +498,12 @@ func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 func (s *Server) resolveRole(candidate string) (Role, bool) {
+	if strings.Count(candidate, ".") == 2 {
+		if claims, err := s.verifyAdminJWT(candidate); err == nil {
+			return claims.Role, true
+		}
+		return "", false
+	}
 	var matched Role
 	found, candBytes := false, []byte(candidate)
 	for tok, role := range s.roleTokens {
@@ -638,7 +648,6 @@ func (s *Server) handleWorldEntities(w http.ResponseWriter, r *http.Request, _ R
 	entities := s.coalescer.Snapshot(filter)
 	writeJSON(w, http.StatusOK, map[string]any{"zone": filter.Zone, "count": len(entities), "entities": entities, "serverTimeMs": s.now().UnixMilli()})
 }
-
 func parseViewportFilter(r *http.Request) (worldstream.ViewportFilter, error) {
 	q := r.URL.Query()
 	z := strings.TrimSpace(q.Get("zone"))
@@ -646,7 +655,8 @@ func parseViewportFilter(r *http.Request) (worldstream.ViewportFilter, error) {
 		z = ""
 	}
 	filter := worldstream.ViewportFilter{Zone: z}
-	minXStr, minYStr, maxXStr, maxYStr := q.Get("minX"), q.Get("minY"), q.Get("maxX"), q.Get("maxY")
+	minXStr, minYStr := firstNonEmpty(q.Get("minX"), q.Get("min_x"), q.Get("min_x_cm")), firstNonEmpty(q.Get("minY"), q.Get("min_y"), q.Get("min_y_cm"))
+	maxXStr, maxYStr := firstNonEmpty(q.Get("maxX"), q.Get("max_x"), q.Get("max_x_cm")), firstNonEmpty(q.Get("maxY"), q.Get("max_y"), q.Get("max_y_cm"))
 	if minXStr == "" && minYStr == "" && maxXStr == "" && maxYStr == "" {
 		return filter, nil
 	}
@@ -660,15 +670,13 @@ func parseViewportFilter(r *http.Request) (worldstream.ViewportFilter, error) {
 	filter.HasBounds, filter.MinX, filter.MinY, filter.MaxX, filter.MaxY = true, minX, minY, maxX, maxY
 	return filter, nil
 }
-
 func (s *Server) handleWorldStream(w http.ResponseWriter, r *http.Request, _ Role) {
 	filter, err := parseViewportFilter(r)
 	if err != nil {
 		writeProblem(w, r, http.StatusBadRequest, "invalid-viewport", err.Error())
 		return
 	}
-	sel := parseLayerSelection(r)
-	if sel.StreamLayers != 0 {
+	if sel := parseLayerSelection(r); sel.StreamLayers != 0 {
 		s.pullWorldStreamSnapshot(r.Context(), filter, sel.StreamLayers)
 	}
 	maxFrames, _ := strconv.Atoi(r.URL.Query().Get("maxFrames"))
@@ -681,7 +689,6 @@ func (s *Server) handleWorldStream(w http.ResponseWriter, r *http.Request, _ Rol
 	}
 	s.serveSSEStream(w, r, sub, maxFrames)
 }
-
 func (s *Server) handleGMCommand(w http.ResponseWriter, r *http.Request, role Role) {
 	if !checkJSONContentType(w, r) || !checkAcceptHeader(w, r) {
 		return
@@ -705,53 +712,85 @@ func (s *Server) handleGMCommand(w http.ResponseWriter, r *http.Request, role Ro
 	}
 	s.dispatchIdempotentCommandWithGRPC(w, r, role, idemKey, req)
 }
-
 func requiredRoleForCommand(cmd string) Role {
 	if cmd == "set_node_level" || cmd == "set_node_stage" || cmd == "world_broadcast" || cmd == "reset_encounter" || cmd == "shutdown_zone" {
 		return RoleArchitect
 	}
 	return RoleOperator
 }
-
 func (s *Server) applyCommandSideEffect(req CommandRequest) {
-	if req.TargetID == "" {
-		return
-	}
-	if req.Command == "despawn_entity" || req.Command == "despawn_npc" || req.Command == "kill_npc" {
+	if req.TargetID != "" && (req.Command == "despawn_entity" || req.Command == "despawn_npc" || req.Command == "kill_npc" || req.Command == "kill" || req.Command == "despawn") {
 		s.RemoveEntity(req.TargetID)
-		return
-	}
-	if req.Command == "spawn_npc" {
-		s.coalescer.UpsertEntity(worldstream.EntitySnapshot{
-			ID: req.TargetID, Kind: "npc", Name: req.Command + ":" + req.TargetID,
-			Zone: firstNonEmpty(req.Zone, "riverlands"), HealthPct: 100, Level: 50,
-			State: "active", UpdatedAt: s.now().UnixMilli(),
-		})
 	}
 }
 
+func (s *Server) hasAnyWorldAdminClient() bool {
+	if s.getWorldAdminClient() != nil {
+		return true
+	}
+	for _, w := range s.worldWorkers {
+		if s.workerAdminClient(w) != nil {
+			return true
+		}
+	}
+	return false
+}
+func (s *Server) markEntityDespawned(entityGuid string, scope string, rawID uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if g := strings.ToLower(strings.TrimSpace(entityGuid)); g != "" {
+		s.despawnedEntities[g] = struct{}{}
+	}
+	if rawID > 0 {
+		for _, k := range []string{fmt.Sprintf("%d", rawID), fmt.Sprintf("npc:%d", rawID), fmt.Sprintf("monster:%d", rawID)} {
+			s.despawnedEntities[k] = struct{}{}
+			if scope != "" {
+				s.despawnedEntities[strings.ToLower(scope)+":"+k] = struct{}{}
+			}
+		}
+	}
+}
+func (s *Server) clearEntityDespawned(entityGuid string, rawID uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.despawnedEntities, strings.ToLower(strings.TrimSpace(entityGuid)))
+	if rawID > 0 {
+		delete(s.despawnedEntities, fmt.Sprintf("%d", rawID))
+		for k := range s.despawnedEntities {
+			if strings.HasSuffix(k, fmt.Sprintf(":%d", rawID)) {
+				delete(s.despawnedEntities, k)
+			}
+		}
+	}
+}
+func (s *Server) isEntityDespawned(id string) bool {
+	k := strings.ToLower(strings.TrimSpace(id))
+	if k == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.despawnedEntities[k]; ok {
+		return true
+	}
+	if idx := strings.IndexByte(k, ':'); idx > 0 {
+		_, ok := s.despawnedEntities[k[idx+1:]]
+		return ok
+	}
+	return false
+}
 func writeProblem(w http.ResponseWriter, r *http.Request, status int, code, detail string) {
-	corrID := w.Header().Get("X-Correlation-ID")
+	corrID, inst := w.Header().Get("X-Correlation-ID"), ""
 	w.Header().Set("Content-Type", "application/problem+json; charset=utf-8")
 	w.WriteHeader(status)
 	if r != nil && r.Method == http.MethodHead {
 		return
 	}
-	inst := ""
 	if r != nil && r.URL != nil {
 		inst = r.URL.Path
 	}
-	_ = json.NewEncoder(w).Encode(ProblemDetails{
-		Type:          "https://sandalcore.dev/problems/" + code,
-		Title:         http.StatusText(status),
-		Status:        status,
-		Detail:        detail,
-		Instance:      inst,
-		Code:          code,
-		CorrelationID: corrID,
-	})
+	_ = json.NewEncoder(w).Encode(ProblemDetails{Type: "https://sandalcore.dev/problems/" + code, Title: http.StatusText(status), Status: status, Detail: detail, Instance: inst, Code: code, CorrelationID: corrID})
 }
-
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)

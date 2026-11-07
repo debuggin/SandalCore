@@ -1,91 +1,34 @@
-# Patch notes
+# SandalCore Patch Notes (`docs/PATCH_NOTES.md`)
 
-## 2026-11-05: 11-container Linux stack, Avalonia `SandalLauncher`, `content.db` v40 auto-rebuild, and E2E API verification
+**Primary Diataxis Quadrant**: `Technical Reference` (`DOC-01`)
+**Related Guides**: [Root Architecture Overview](../README.md) | [Configuration Reference](CONFIGURATION.md) | [Server Workers & Spatial Authority](SERVER_WORKERS.md) | [Control-Plane Services Reference](SERVICES.md) | [Web Admin & GM Studio Reference](WEB_ADMIN.md) | [Roadmap](ROADMAP.md) | [Known Issues](KNOWN_ISSUES.md)
 
-### New
-- Containerized 11-container Linux server stack (`src/deploy/compose.yml` & `deploy/compose.yml`): all C++23 (`world` / `aoc-world`) and Go (`gateway`, `auth`, `character`, `citynode`, `quest`, `mesh`, `mesh-gateway`) services plus `ingress-proxy` (Envoy v1.33 `envoyproxy/envoy:v1.33-latest`), `web-admin` (Nginx + Admin UI/BFF), and `postgres` (PostgreSQL 17) build and run inside multi-stage Linux Docker containers (`src/deploy/docker/cpp.Dockerfile`, `src/deploy/docker/go.Dockerfile`) across isolated `edge_net`, `service_net`, and `data_net` networks.
-- Envoy edge ingress (`src/deploy/envoy/envoy.yaml`): unified routing on `127.0.0.1:8080` (HTTP/1.1 & WebSocket/SSE routing `/api/v1/auth`, `/api/v1/characters`, `/api/v1/world`, and `/api/v1/sessions` to `gateway_http`, `/api/v1/gm` to `mesh_gateway_http`, and `/` to `web_admin_http`), `127.0.0.1:9090` (gRPC HTTP/2 ingress for `auth.v1`, `character.v1`, `citynode.v1`, `quest.v1`, `mesh.v1`, `gateway.v1`, and `worldadmin.v1`), `127.0.0.1:50061` (ICS TLS 1.3 passthrough edge listener forwarded to `gateway:50061`), and `:9901` (container-internal admin).
-- Authoritative C++23 `world` (`aoc-world`) on `:7777/udp` with `content.db` v40 auto-rebuild: `start.bat` (`pwsh -File sandal.ps1 run`) and `pwsh -File sandal.ps1 extract` verify `dist/content/content.db` against `contentc` schema version `40` (`Ensure-SandalContentDbCurrent`), trigger fast `contentc` rebuild or full extraction when out of date, hardlink/sync `deploy/content/content.db`, and restart `content.db` consumer containers (`aoc-world`, `aoc-character`, `aoc-citynode`).
-- `.NET 10` Avalonia desktop launcher (`SandalLauncher`, `src/clients/launcher/SandalLauncher.csproj`): single semi-transparent card UI over 3 randomized backgrounds with multi-drive Steam library discovery, `PLAY` pre-authentication, `Create Account` (`409 Conflict` uniqueness validation), `Temp Account` ephemeral sessions, saved logins via `LauncherProfiles.json` / Windows Credential Manager, in-process `LocalTetherListener` on `127.0.0.1:19021/udp` serving `ActiveAccessToken` and `127.0.0.1:50061` directly from memory (zero token files on disk), and native in-game character creation over ICS `:50061`.
-- TLS certificate reuse and user-scoped trust (`scripts/sandal/certs.ps1`): preserves user-supplied certificates (`dist/certs/server.pem` + `server.key`, such as Let's Encrypt wildcard ECDSA P-256 certs) untouched while purging stale `ca.*`/`client.*` files, or generates local development certificates and imports `ca.crt` into `Cert:\CurrentUser\Root` (user-scoped, zero administrator privileges required) alongside `SandalLauncher` `X509ChainPolicy.CustomTrustStore`.
-- Live functional API and 10-stage fake-client play-flow verification (`scripts/test_functional_apis.ps1` & `pwsh -File sandal.ps1 test`): automated end-to-end verification across all HTTP, gRPC, ICS TLS `:50061`, and UDP `:7777` world entry/gameplay stages.
+---
 
-## 2026-11-04: Summoner pets, multiplayer presence, mob debuffs, consumables and 30 Hz tick scaling
+## 2026-11-07 (`v0.9.40` -- Multi-Tier Server Workers, Scoped JWT Web Admin, `.tsv` Data Modes & `content.db` `v41`)
 
-### New
-- Summoner pets: the Guardian, Hunter and Mystic summon after their 8 s cast, follow the Summoner, fight using the
-  owner's stats, take pet bar commands and stances (Attack, Follow, Stay, Go To within 40 m, Aggressive, Defensive,
-  Passive, Dismiss), cast their ten pet abilities manually or in auto mode, and accept Summoner abilities cast on them.
-- Multiplayer presence (stage A): players within 150 m of each other see each other's characters and `PlayerState`
-  records in the world, standing, walking and stopping with their name, race, gender, level and equipped gear, and
-  leaving other players' views on logout.
-- Mob damage-over-time and stat debuffs: mobs take the Burning debuff (1 s fire ticks for 8 s, up to 24 s), Bleeding
-  (1 s ticks for 6 s per attacker), Hemorrhage (0.5 s ticks for 5 s on a bleeding mob) and Poison (2 s ticks for 20 s,
-  scaling with up to 10 stacks), plus Shaken, Volatile, Demoralized, Blinded, Shocked and Wounded. Debuffs persist
-  while a mob walks home after leashing and re-engage once it reaches home.
-- Consumables (scrolls and elixirs): using a scroll or elixir from the item bag consumes one from the stack, triggers
-  the 1 s cooldown, and applies its stat and artisan rating buff for its duration (300 s to 10,800 s for scrolls,
-  3,600 s for elixirs) at the item's quality, with one active scroll and one active elixir at a time.
-- Weapon talent trees: extended finisher talents (Burning, Chilled, Volatile, Bleed, Snare, Wound, Stagger, Daze,
-  Concussion, Heartseeker, Arrowstorm, Unstoppable, Swordmaster's Swiftness and Bullseye) fire on deadly finishing hits
-  (25 % base roll plus 10 % per Proc Chance talent), and weapon damage talents (Damage Focus, Projectile Damage,
-  Finisher Damage, Deadly Finisher Damage) scale hits for the active weapon across swaps.
-- Crowded-area 30 Hz tick scaling: a fixed-rate server tick, round-robin view updates, shared mob replication bunches
-  across observers, parallel view evaluation on up to 4 processor cores, and retail-paced movement acknowledgements
-  sustain 30 updates per second with roughly twice as many simulated walking players in one area.
+### Server Workers, Spatial Authority & Multi-Boundary Handover ([`docs/SERVER_WORKERS.md`](SERVER_WORKERS.md))
+- **6 Server Worker Topologies + Convex Polygon Cutouts + Mix-and-Match Composition**:
+  - Supported authority topologies: (`1`) Whole-World (`aoc-world` at `10 Hz`), (`2`) Per-Region (`aoc-<region-name>` at `20 Hz`), (`3`) Per-ZOI (`aoc-<zoi-name>` at `30 Hz`), (`4`) Per-Node-Plug + Per-ZOI (`aoc-<city-name>` + `aoc-<zoi-name>` at `30 Hz`), (`5`) Dynamic Node-Plug + Dynamic ZOI Stub (`aoc-<city-name>-alpha..zulu` + `aoc-<zoi-name>-alpha..zulu`, `min = 1`, `max = 26` NATO alphabet per city/ZOI, currently a stub running `-alpha`), (`6`) Dynamic ZOI Stub (`aoc-<zoi-name>-alpha..zulu`, `min = 1`, `max = 26` NATO alphabet per ZOI, currently a stub running `-alpha`), (`7`) Additive Convex Polygon Cutout workers (`--area-polygon`), and (`8`) Mix-and-Match composition (such as Sandsquall running in `30 Hz` ZOI mode alongside `20 Hz` regional workers).
+- **Mesh Worker Index (`worker_index`) Registration**: Every booting server worker registers with `aoc-mesh` (`:50055`) and receives a sequential `worker_index` (`1..N`) that seeds `ServerGuidAllocator(worker_index, randomizer)` for collision-free 128-bit `FGuid` allocation across shards.
+- **Seamless Multi-Boundary Player Handover & Anti-Hysteresis**: Enforces a `5,000 cm` (`50 m`) inward border buffer, `3` consecutive dwell samples, a `2,000 ms` handover cooldown, and monotonic `lease_epoch` fencing across `region <-> region`, `region <-> zoi`, `zoi <-> zoi`, `zoi <-> node_plug`, and `polygon_cutout` boundaries.
+- **Live CityNode Stage (`0..6`) Population Scaling & GM Actor Lifecycle**: Dynamic `NodePopulations` scaling with `reap_placed_stations` and `town_platforms.bin` (`AOCTPF01`) vertical $Z$-floor rescue, plus full GM actor lifecycle RPCs (`SpawnNpc`, `KillNpc`, `DespawnNpc`, `HealNpc`, `ResetNpc`, `RespawnNpc`, `MoveNpc`, `TeleportPlayer`).
 
-### Fixed
-- Ranged weapon auto-attacks and class projectiles: Wand, Shortbow, Longbow and Book swings, plus Mock, Quick Wit,
-  Jest, Sleep Dart, Throw, Salvo, Mend, Discordance (with 10 m bounces) and Firebolt/Frostbolt land when their
-  projectiles reach the target and carry the character's class animation speed rate.
-- Elevated platform mount riding: tracked player positions when standing on or beside a mount on an elevated base so
-  mounting is no longer refused as out of range.
-- Combat rolls, Guard and level-ups: seeded hit, block and critical rolls per server start; restored Stamina recovery
-  after a quick tap of Guard; restored Health, Mana and Stamina on level-up; and kept Options menu choices across
-  logins.
-- Harvesting, crafting and data extraction: dropped overflow harvests even if the player disconnects immediately,
-  routed GM vendor material purchases into material bags when the backpack is full, capped gathering channels and
-  quantities against overflow, and skipped `navmesh` rebuilds in `scripts\extract_game_data.ps1` unless map geometry or
-  city node inputs in `src/server/world` change.
+### Configuration SSoT, Default Fallback, Tick Rates & `.tsv` Storage Modes ([`docs/CONFIGURATION.md`](CONFIGURATION.md))
+- **Persistent Root `.env` SSoT & Single-Worker Riverlands Default Fallback**: Root `.env` persists across `build/`, `dist/`, and `deploy/` resets (`Sync-SandalDeployStage`). When root `.env` is absent, SandalCore defaults to `AOC_WORLD_SHARD_MODE=single` and `AOC_WORLD_REGION=riverlands`, launching **1 server worker (`aoc-riverlands` / `aoc-world-riverlands`, `11` containers total)** and spawning only Riverlands entities.
+- **Configurable Tick Rates (`Hz`)**: `AOC_WORLD_TICK_HZ_ZOI=30` (`30 Hz`), `AOC_WORLD_TICK_HZ_REGION=20` (`20 Hz`), `AOC_WORLD_TICK_HZ_WORLD=10` (`10 Hz`), and `AOC_SERVICE_TICK_HZ=30` (`30 Hz` Go control-plane tick).
+- **Per-Data-Type `.tsv` Storage Modes (`memory` vs. `disk`)**: Added `AOC_DATA_MODE_DEFAULT=memory|disk` and per-type overrides (`AOC_DATA_MODE_ZOIS`, `AOC_DATA_MODE_CITY_NODES`, `AOC_DATA_MODE_POIS`, `AOC_DATA_MODE_NPCS`, `AOC_DATA_MODE_ITEMS`) backed by `deploy/content/*.tsv`.
+- **`content.db` Schema `v41` & 25 Mandatory Runtime Artifacts**: Automatic schema ratchet (`Ensure-SandalContentDbCurrent`), 13 SQLite covering indexes + `ANALYZE`, `$HOME/.aoc/certs/*` TLS certificate preservation, and `$HOME/.aoc/usmap/*` automatic v4 -> v3 compatibility normalization.
 
-## 2026-10-17: The towns' ground, the launcher (historical — superseded by `.NET 10` Avalonia `SandalLauncher` in `2026-11-05`) and hardening
+### Web Admin & GM Studio ([`docs/WEB_ADMIN.md`](WEB_ADMIN.md) & [`src/clients/web-admin/README.md`](../src/clients/web-admin/README.md))
+- **Startup Passphrase -> Scoped `HS256` JWT Authentication**: Console startup banner prints `Username: admin` and ephemeral `Passphrase: <passphrase>`, exchanged via `POST /api/v1/admin/auth/login` for a scoped `HS256` JWT carrying `boot_id` (`AOC_ADMIN_BOOT_ID`) so browser tabs automatically re-prompt on server restart.
+- **Viewport-Bounded Entity Streaming & Zoom-Tiered Update Hz (`5 Hz -> 30 Hz`)**: Server-side `minX, minY, maxX, maxY` viewport culling paired with non-linear zoom rate scaling (`z0: 5 Hz`, `z1: 6 Hz`, `z2: 7 Hz`, `z3: 9 Hz`, `z4: 12 Hz`, `z5: 16 Hz`, `z6: 22 Hz`, `z7: 30 Hz`).
+- **27 Tile-Clipped Inward ZOI Borders, Mutually Exclusive Selection & Searchable GM Modals**: Renders all 27 Settlement and Divine Gate ZOIs with inward-offset border strokes, enforces mutually exclusive selection (`Entity` vs `Map Position` vs `CityNode` vs `POI`), and provides searchable `Teleport Player Here...` and `Spawn NPC / Monster Here...` modals plus the 4-zone Golden-Signals / Worker-Shards / USE-RED / Structured-Logs explorer.
 
-### New
-- Solid ground in the five towns: Winstead, Joeva, New Aela, Halcyon and Miraleth have their real floor, read from the
-  game's own town platforms. Logins, teleports, mount summons, dismounts and respawns inside a town land on its streets.
-- A safety net under the towns: a player who falls far below a town is put back on its floor within a few seconds.
-- *(Historical — superseded by `.NET 10` Avalonia `SandalLauncher` in `2026-11-05`)* Keep me signed in: a box on the legacy launcher's sign-in form saved credentials in Windows Credential Manager and retried sign-in against local loopback.
-- *(Historical — superseded by `.NET 10` Avalonia `SandalLauncher` **`PLAY`** button and in-memory `LocalTetherListener` `:19021/udp` in `2026-11-05`)* LAUNCH GAME: started the game client after sign-in and prevented duplicate client launches.
-- The data extractor builds the towns' floor: a new step, `townfloors`, reads the two town platform maps of your own
-  install into `dist\content\town_platforms.bin` (a few seconds).
+---
 
-### Fixed
-- Logging in inside a town takes about 30 seconds instead of about two minutes: the server sends a town's buildings and
-  streets during the login, before the character appears, so the client finds its floor.
-- *(Historical — superseded by `.NET 10` Avalonia `SandalLauncher` in `2026-11-05`)* Legacy launcher path persistence (`dist\config\paths.json`) and loopback sign-in request bounds (`127.0.0.1`, `localhost`, `::1`, 64 KB response limit, 15 s timeout).
-- Hardening, thanks to DuskyProjects for the bounds and overflow checks: the packet reader, packet framing, bunch
-  headers and replication handles check sizes and numbers instead of reading past their end; so do the navigation mesh,
-  geometry, road, city node and UDP address readers and the map tool's geometry reader. The per-account character limit
-  holds even when two sessions create characters at the same moment. The sign-in API accepts exactly one JSON value per
-  request, and the stat curves refuse non-finite keys and NaN lookups. The test client splits a burst of requests into
-  valid packets under the packet size limit. The property-update bunch builder test, which failed before, passes.
+## 2026-10-28 (`v0.9.35` -- 4-Tier Repository Layout, Native ICS `:50061` Character Creation & 10-Stage Live Play-Flow Gate)
 
-## 2026-10-16: Gathering
-
-### New
-- Gathering professions: every character has the 22 gathering professions, with levels,
-  XP and certification tiers.
-- Node gathering: the Riverlands' mining, lumberjacking and herbalism nodes can be harvested,
-  using the game's own quantity, XP and tool-wear values. Nodes respawn.
-- World foliage: the painted trees, plants and stones of the Riverlands can be cut, picked
-  and mined. They grow back in stages, and every player sees the same state.
-- Hunting: huntable versions of animals spawn and are huntable.
-- Resource bags: gathered items go to the resource bag; older harvests in the Backpack move
-  there at login. When the bag is full, the rest drops on the ground.
-- Pick-up popup: every harvest shows "Acquired [item] xN" with the item's icon.
-- GM tools: artisan level scrolls and T3 gathering tools in the GM vendors.
-- The client starts with -UseEOS=false; no game files are modified.
-
-### Fixed
-- Tree gathering now finishes.
-- Timid creatures no longer attack on sight; they fight back when hit.
+- **4-Tier Directory Layout (`src/`, `build/`, `dist/`, `deploy/`)**: Unified all tracked source code under `src/`, out-of-tree build artifacts under `build/`, shippable binaries and extracted game data under `dist/`, and runtime state under `deploy/` with three root entrypoints (`start.bat`, `stop.bat`, `build.bat` -> `sandal.ps1`).
+- **`.NET 10` `SandalLauncher` & Host `LocalTetherListener` (`127.0.0.1:19021/udp`)**: In-process UDP ARQ `AskWindow` / `TellWindow` (`0x04`) responder and native `:50061` ICS TLS 1.3 in-game character creation (`0` pre-launch stub characters).
+- **100% Live Functional API & 10-Stage `fake::Client` Gate (`scripts/test_functional_apis.ps1`)**: End-to-end verification covering HTTP Auth (`:8080`), UDP Tether (`:19021`), ICS TLS 1.3 (`:50061`), and a 10-stage UDP `:7777` `fake::Client` session inside `aoc-world`.

@@ -3,9 +3,11 @@
 import React from "react";
 import {
   resolveWorkerForCoordinateOrZone,
+  useWorldStreamStore,
   verraUnrealToLngLat,
   worldCmToMosaicPx,
   type WorldEntity,
+  type WorldStreamState,
 } from "../state/worldStreamStore";
 
 export type InspectorViewState =
@@ -22,6 +24,9 @@ export interface InspectorGridRow {
 }
 
 export interface InspectedWorldEntity extends WorldEntity {
+  readonly x?: number;
+  readonly y?: number;
+  readonly z?: number;
   readonly hp?: number;
   readonly maxHp?: number;
   readonly stateFlags?: readonly string[];
@@ -33,7 +38,15 @@ export interface EntityInspectorProps {
   readonly viewState?: InspectorViewState;
   readonly activeRowIndex?: number;
   readonly errorDetail?: string;
+  readonly showQuickActions?: boolean;
   readonly onClose?: () => void;
+}
+
+export interface ExclusiveInspectorResolution {
+  readonly activeKind: "none" | "entity" | "poi" | "city_node" | "position";
+  readonly entity: InspectedWorldEntity | null;
+  readonly cityNodeName: string | null;
+  readonly pickedPosition: { readonly xCm: number; readonly yCm: number; readonly zCm: number } | null;
 }
 
 export interface EntityInspectorModel {
@@ -117,40 +130,28 @@ function buildEntityAttributeRows(
     entity.xCm,
     entity.yCm,
     entity.zoneId,
-    undefined,
+    useWorldStreamStore.getState().workers,
     entity.name,
   );
+  const resourceRows: InspectorGridRow[] =
+    entity.kind === "resource_node"
+      ? [
+          { rowId: "resource_type", label: "Resource Type", value: entity.resourceType || "Gathering Resource" },
+          { rowId: "resource_quality", label: "Quality / Rarity", value: entity.quality || "Common · Tier 1 (Novice)" },
+        ]
+      : [];
   return [
     { rowId: "guid", label: "GUID", value: formatSafeValue(entity.guid) },
     { rowId: "name", label: "Name", value: formatSafeValue(entity.name) },
     { rowId: "kind", label: "Kind", value: formatSafeValue(entity.kind) },
-    {
-      rowId: "worker",
-      label: "Server Worker",
-      value: `${worker.worker_id} · ${worker.region_label}`,
-    },
+    ...resourceRows,
+    { rowId: "worker", label: "Server Worker", value: `${worker.worker_id} · ${worker.region_label}` },
     { rowId: "level", label: "Level", value: formatSafeValue(entity.level) },
     { rowId: "hp", label: "HP / MaxHP", value: hpText },
-    {
-      rowId: "unreal_cm",
-      label: "Unreal (cm)",
-      value: `X=${entity.xCm.toFixed(1)}, Y=${entity.yCm.toFixed(1)}, Z=${entity.zCm.toFixed(1)}`,
-    },
-    {
-      rowId: "mosaic_px",
-      label: "Mosaic (px)",
-      value: `U=${mosaicU.toFixed(1)}, V=${mosaicV.toFixed(1)}`,
-    },
-    {
-      rowId: "lng_lat",
-      label: "WGS84 (lng, lat)",
-      value: `${lng.toFixed(5)}, ${lat.toFixed(5)}`,
-    },
-    {
-      rowId: "state_flags",
-      label: "State / Buffs",
-      value: `${resolveStateFlagsList(entity)} (${buffs})`,
-    },
+    { rowId: "unreal_cm", label: "Unreal (cm)", value: `X=${entity.xCm.toFixed(1)}, Y=${entity.yCm.toFixed(1)}, Z=${entity.zCm.toFixed(1)}` },
+    { rowId: "mosaic_px", label: "Mosaic (px)", value: `U=${mosaicU.toFixed(1)}, V=${mosaicV.toFixed(1)}` },
+    { rowId: "lng_lat", label: "WGS84 (lng, lat)", value: `${lng.toFixed(5)}, ${lat.toFixed(5)}` },
+    { rowId: "state_flags", label: "State / Buffs", value: `${resolveStateFlagsList(entity)} (${buffs})` },
   ];
 }
 
@@ -188,10 +189,150 @@ export function buildEntityInspectorModel(
   };
 }
 
+export function resolveMutuallyExclusiveInspectorTarget(
+  storeSnap: Pick<
+    WorldStreamState,
+    | "entities"
+    | "pois"
+    | "selectedEntityGuid"
+    | "selectedPoiGuid"
+    | "selectedCityNodeName"
+    | "pickedCoordinate"
+    | "lastClickedPoint"
+  >,
+): ExclusiveInspectorResolution {
+  const pin = storeSnap.pickedCoordinate ?? storeSnap.lastClickedPoint;
+  if (pin) {
+    return {
+      activeKind: "position",
+      entity: null,
+      cityNodeName: null,
+      pickedPosition: { xCm: pin.xCm, yCm: pin.yCm, zCm: pin.zCm },
+    };
+  }
+  if (storeSnap.selectedCityNodeName) {
+    return {
+      activeKind: "city_node",
+      entity: null,
+      cityNodeName: storeSnap.selectedCityNodeName,
+      pickedPosition: null,
+    };
+  }
+  if (storeSnap.selectedPoiGuid) {
+    const poi = storeSnap.pois.find((p) => p.guid === storeSnap.selectedPoiGuid);
+    return {
+      activeKind: poi ? "poi" : "none",
+      entity: poi
+        ? {
+            guid: poi.guid,
+            name: poi.display_name || poi.name,
+            kind: "poi",
+            xCm: poi.x_cm,
+            yCm: poi.y_cm,
+            zCm: poi.z_cm,
+            yawDeg: 0,
+            level: 1,
+            healthPct: 100,
+          }
+        : null,
+      cityNodeName: null,
+      pickedPosition: null,
+    };
+  }
+  if (storeSnap.selectedEntityGuid) {
+    const ent = storeSnap.entities.get(storeSnap.selectedEntityGuid) ?? null;
+    return {
+      activeKind: ent ? "entity" : "none",
+      entity: ent,
+      cityNodeName: null,
+      pickedPosition: null,
+    };
+  }
+  return { activeKind: "none", entity: null, cityNodeName: null, pickedPosition: null };
+}
+
+export function openTeleportModalFromEntity(
+  entity: InspectedWorldEntity,
+  storeSnap: WorldStreamState = useWorldStreamStore.getState(),
+): void {
+  const xCm = Math.round(Number(entity.x ?? entity.xCm ?? 0));
+  const yCm = Math.round(Number(entity.y ?? entity.yCm ?? 0));
+  const zCm = Math.round(Number(entity.z ?? entity.zCm ?? 0));
+  storeSnap.setPickedCoordinate({ xCm, yCm, zCm });
+  storeSnap.setTeleportMode("coords");
+  storeSnap.setActiveModal("teleport");
+}
+
+export function openSpawnNpcModalFromEntity(
+  entity: InspectedWorldEntity,
+  storeSnap: WorldStreamState = useWorldStreamStore.getState(),
+): void {
+  const xCm = Math.round(Number(entity.x ?? entity.xCm ?? 0));
+  const yCm = Math.round(Number(entity.y ?? entity.yCm ?? 0));
+  const zCm = Math.round(Number(entity.z ?? entity.zCm ?? 0));
+  storeSnap.setPickedCoordinate({ xCm, yCm, zCm });
+  storeSnap.setSpawnTargetMode("coords");
+  storeSnap.setActiveModal("spawn-npc");
+}
+
+function renderEntityInspectorActionButtons(
+  entity: InspectedWorldEntity,
+  storeSnap: WorldStreamState,
+): React.ReactElement {
+  return (
+    <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "8px" }}>
+      <button
+        type="button"
+        data-testid="inspector-teleport-here-btn"
+        onClick={() => openTeleportModalFromEntity(entity, storeSnap)}
+        style={{
+          minHeight: "32px",
+          padding: "4px 8px",
+          borderRadius: "4px",
+          border: "1px solid rgba(140, 108, 66, 0.67)",
+          backgroundColor: "#E8B25A",
+          color: "#0B0E17",
+          fontWeight: 700,
+          fontSize: "11px",
+          cursor: "pointer",
+        }}
+      >
+        Teleport Player Here...
+      </button>
+      <button
+        type="button"
+        data-testid="inspector-spawn-next-btn"
+        onClick={() => openSpawnNpcModalFromEntity(entity, storeSnap)}
+        style={{
+          minHeight: "32px",
+          padding: "4px 8px",
+          borderRadius: "4px",
+          border: "1px solid rgba(140, 108, 66, 0.47)",
+          backgroundColor: "rgba(22, 30, 46, 0.92)",
+          color: "#F4F1EA",
+          fontSize: "11px",
+          cursor: "pointer",
+        }}
+      >
+        Spawn NPC / Monster Here...
+      </button>
+    </div>
+  );
+}
+
 export function EntityInspector(
   props: EntityInspectorProps,
 ): React.ReactElement | null {
+  const storeSnap = useWorldStreamStore();
   if (!props.entity && (!props.viewState || props.viewState === "empty")) {
+    return null;
+  }
+  if (
+    props.entity &&
+    (storeSnap.pickedCoordinate !== null || storeSnap.selectedCityNodeName !== null) &&
+    storeSnap.selectedEntityGuid === null &&
+    storeSnap.selectedPoiGuid === null
+  ) {
     return null;
   }
   const model = buildEntityInspectorModel(props);
@@ -215,71 +356,35 @@ export function EntityInspector(
         zIndex: 20,
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          marginBottom: "8px",
-        }}
-      >
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
         <strong>{props.entity?.name ?? "Entity Inspector"}</strong>
         {props.onClose ? (
           <button
             type="button"
             aria-label="Close entity inspector"
             onClick={props.onClose}
-            style={{
-              minWidth: "24px",
-              minHeight: "24px",
-              border: "1px solid #30363D",
-              borderRadius: "4px",
-              backgroundColor: "#21262D",
-              color: "#E6EDF3",
-              cursor: "pointer",
-            }}
+            style={{ minWidth: "24px", minHeight: "24px", border: "1px solid #30363D", borderRadius: "4px", backgroundColor: "#21262D", color: "#E6EDF3", cursor: "pointer" }}
           >
             Close
           </button>
         ) : null}
       </div>
       {model.statusMessage ? (
-        <div
-          role={model.viewState === "error" ? "alert" : "status"}
-          data-testid="inspector-view-state-banner"
-          style={{
-            marginBottom: "8px",
-            color: model.viewState === "error" ? "#FFA198" : "#E3B341",
-          }}
-        >
+        <div role={model.viewState === "error" ? "alert" : "status"} data-testid="inspector-view-state-banner" style={{ marginBottom: "8px", color: model.viewState === "error" ? "#FFA198" : "#E3B341" }}>
           {model.statusMessage}
         </div>
       ) : null}
-      <div
-        role="grid"
-        aria-label="Entity Telemetry Grid"
-        data-testid="entity-inspector-grid"
-      >
+      <div role="grid" aria-label="Entity Telemetry Grid" data-testid="entity-inspector-grid">
         {model.rows.map((row, idx) => (
-          <div
-            key={row.rowId}
-            role="row"
-            tabIndex={idx === model.activeRowIndex ? 0 : -1}
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              padding: "2px 0",
-              borderBottom: "1px solid #21262D",
-            }}
-          >
-            <span role="gridcell" style={{ color: "#8B949E" }}>
-              {row.label}
-            </span>
-            <span role="gridcell" style={{ color: "#E6EDF3", fontWeight: 500 }}>
-              {row.value}
-            </span>
+          <div key={row.rowId} role="row" tabIndex={idx === model.activeRowIndex ? 0 : -1} style={{ display: "flex", justifyContent: "space-between", padding: "2px 0", borderBottom: "1px solid #21262D" }}>
+            <span role="gridcell" style={{ color: "#8B949E" }}>{row.label}</span>
+            <span role="gridcell" style={{ color: "#E6EDF3", fontWeight: 500 }}>{row.value}</span>
           </div>
         ))}
       </div>
+      {props.entity && (props.showQuickActions ?? !props.onClose)
+        ? renderEntityInspectorActionButtons(props.entity, storeSnap)
+        : null}
     </aside>
   );
 }

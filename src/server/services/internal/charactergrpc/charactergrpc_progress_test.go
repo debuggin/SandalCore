@@ -180,12 +180,12 @@ func TestCreateCharacterWithTheStarterSetPutsItInTheBagAfterTheKitAndMarksTheCha
 
 // C O A - C Y B
 
-// The game's maximum level is 25: a creation above it is refused before the starter set is chosen or anything is stored.
+// The game's maximum level is 50: a creation above it is refused before the starter set is chosen or anything is stored.
 func TestCreateCharacterAboveTheGamesMaximumLevelIsRefused(t *testing.T) {
 	st := &recStore{ret: fullCharacter()}
 	sets := &recSets{}
 	c := dialServer(t, New(st, acceptAll{}, WithKits(&recKits{}), WithStarterSet(sets)))
-	for _, level := range []int32{character.MaxLevel + 1, 50, -1} {
+	for _, level := range []int32{character.MaxLevel + 1, 100, -1} {
 		_, err := c.CreateCharacter(context.Background(), &characterv1.CreateCharacterRequest{AccountId: 41, Name: "Zed", ClassId: 7, AppearanceJson: "{}", Level: level})
 		if status.Code(err) != codes.InvalidArgument {
 			t.Errorf("level %d: %v, want InvalidArgument", level, err)

@@ -135,32 +135,19 @@ func PlugTierForLevel(level int) int {
 
 func DefaultLevelableNodes() []LevelableNodeSpec {
 	return []LevelableNodeSpec{
-		{0, 108646108518008, "Verra_RVR_Winstead", "Winstead", "Winstead", -644519.11, 376773.24, 12012.23, 319.20846, 100000},
-		{1, 108646121231993, "Verra_RVR_Joeva", "Joeva", "Joeva", -1094396.04, 521336.34, 11836.45, 292.625506, 100000},
-		{2, 108646608033403, "Verra_RVR_NewAela", "New Aela", "New_Aela", -1134183.5439466983, 853387.2772475089, 11761.82381661977, -90.21495968964565, 100000},
-		{3, 108646610851452, "Verra_RVR_Halcyon", "Halcyon", "Halcyon", -891024.50, 296919.66, 11657.05, 180.0, 100000},
-		{4, 108646615701117, "Verra_RVR_Miraleth", "Miraleth", "Miraleth", -459889.634548, 599317.092515, 11000.972636, -20.0, 100000},
-		{5, 6064632225073725498, "Verra_TUR_Windansea", "Windansea", "Windansea", -1100624.184211, 246466.992911, 6674.000004, 55.41214, 100000},
-		{6, 6064632734251679746, "Verra_SAN_Aithanahr", "Aithanahr", "Aithanahr", -232617.63, 762558.56, 6679.26, 304.121675, 100000},
-		{7, 6064632734253907971, "Verra_SAN_Azmaran", "Azmaran", "Azmaran", -278767.94, 987391.03, 7227.0, 351.156897, 100000},
-		{8, 6064632734268915716, "Verra_SAN_Sunhaven", "Sunhaven", "Sunhaven", -619803.283992, 873514.222232, 12073.59434, -127.073107, 100000},
-		{9, 6064633097318170624, "Verra_SAN_Djinna", "Djinna", "Djinna", 63370.908474, 861198.365739, 5066.0, -187.137862, 100000},
-		{10, 6064633097371058177, "Verra_SAN_SquallsEnd", "Squall's End", "Squall_s_End", -37370.0, 1133335.0, 16385.348318, -217.228668, 100000},
-		{11, 6064633334652600320, "Verra_TUR_Korrin", "Korrin", "Korrin", -1764281.284871, 114557.650316, 5066.0, 90.707388, 100000},
-		{12, 6064633334741794817, "Verra_TUR_Brinebarrel", "Brinebarrel", "Brinebarrel", -1860980.218817, -171832.947158, 7472.764935, -46.566062, 100000},
-		{13, 6064633407845105664, "Verra_TUR_Seahook", "Seahook", "Seahook", -1764263.887544, 539283.279654, 5066.0, 14.228906, 100000},
-		{14, 6064633407846088705, "Verra_TUR_Shorefoot", "Shorefoot", "Shorefoot", -1372642.268119, 57374.666533, 5066.0, -66.900158, 100000},
-		{15, 6064633425419042816, "Verra_JUN_Wildport", "Wildport", "Wildport", -1783982.0, 809682.0, 9777.0, 16.0, 100000},
-		{16, 6064633425517019141, "Verra_JUN_Hecribba", "Hecribba", "Hecribba", -1708500.0, 1053019.0, 9620.0, 246.0, 100000},
-		{17, 6064633425555816457, "Verra_JUN_Vinebreach", "Vinebreach", "Vinebreach", -1476480.0, 1178456.0, 7013.0, 200.0, 100000},
-		{18, 6064633429404090381, "Verra_JUN_Arisalon", "Arisalon", "Arisalon", -1250506.0, 1062377.0, 5379.0, -35.0, 100000},
-		{19, 6064633429423882257, "Verra_JUN_TangledPost", "Tangled Post", "Tangled_Post", -1031419.0, 1098848.0, 7264.0, -3.5, 100000},
-		{20, 6064633429437251605, "Verra_JUN_Mythbreak", "Mythbreak", "Mythbreak", -742705.0, 1087738.0, 5066.0, -159.058146, 100000},
-		{21, 6064633651969589265, "Verra_ANV_Vexhelm", "Vexhelm", "Vexhelm", -1463243.0, -341306.0, 25074.0, 60.0, 100000},
-		{22, 6064633651985711129, "Verra_ANV_Duunhold", "Duunhold", "Duunhold", -1069784.0, -150970.0, 24891.0, 0.0, 100000},
-		{23, 6064633652009173023, "Verra_ANV_Dhurgrum", "Dhurgrum", "Dhurgrum", -937374.0, -411205.0, 24983.0, -15.0, 100000},
-		{24, 6064633652023394340, "Verra_ANV_Vhalgadim", "Vhalgadim", "Vhalgadim", -762862.0, -563881.0, 17256.0, 349.999997, 100000},
-		{25, 6064633652044300331, "Verra_ANV_KalTorhum", "Kal Torhum", "Kal_Torhum", -1271772.0, -462821.0, 5066.0, 5.0, 100000},
+		{0, 108646108518008, "Verra_RVR_Winstead", "Winstead", "Winstead", -644519.11, 376773.24, 12012.23, 319.20846, 100000}, {1, 108646121231993, "Verra_RVR_Joeva", "Joeva", "Joeva", -1094396.04, 521336.34, 11836.45, 292.625506, 100000},
+		{2, 108646608033403, "Verra_RVR_NewAela", "New Aela", "New_Aela", -1134183.5439466983, 853387.2772475089, 11761.82381661977, -90.21495968964565, 100000}, {3, 108646610851452, "Verra_RVR_Halcyon", "Halcyon", "Halcyon", -891024.50, 296919.66, 11657.05, 180.0, 100000},
+		{4, 108646615701117, "Verra_RVR_Miraleth", "Miraleth", "Miraleth", -459889.634548, 599317.092515, 11000.972636, -20.0, 100000}, {5, 6064632225073725498, "Verra_TUR_Windansea", "Windansea", "Windansea", -1100624.184211, 246466.992911, 6674.000004, 55.41214, 100000},
+		{6, 6064632734251679746, "Verra_SAN_Aithanahr", "Aithanahr", "Aithanahr", -232617.63, 762558.56, 6679.26, 304.121675, 100000}, {7, 6064632734253907971, "Verra_SAN_Azmaran", "Azmaran", "Azmaran", -278767.94, 987391.03, 7227.0, 351.156897, 100000},
+		{8, 6064632734268915716, "Verra_SAN_Sunhaven", "Sunhaven", "Sunhaven", -619803.283992, 873514.222232, 12073.59434, -127.073107, 100000}, {9, 6064633097318170624, "Verra_SAN_Djinna", "Djinna", "Djinna", 63370.908474, 861198.365739, 5066.0, -187.137862, 100000},
+		{10, 6064633097371058177, "Verra_SAN_SquallsEnd", "Squall's End", "Squall_s_End", -37370.0, 1133335.0, 16385.348318, -217.228668, 100000}, {11, 6064633334652600320, "Verra_TUR_Korrin", "Korrin", "Korrin", -1764281.284871, 114557.650316, 5066.0, 90.707388, 100000},
+		{12, 6064633334741794817, "Verra_TUR_Brinebarrel", "Brinebarrel", "Brinebarrel", -1860980.218817, -171832.947158, 7472.764935, -46.566062, 100000}, {13, 6064633407845105664, "Verra_TUR_Seahook", "Seahook", "Seahook", -1764263.887544, 539283.279654, 5066.0, 14.228906, 100000},
+		{14, 6064633407846088705, "Verra_TUR_Shorefoot", "Shorefoot", "Shorefoot", -1372642.268119, 57374.666533, 5066.0, -66.900158, 100000}, {15, 6064633425419042816, "Verra_JUN_Wildport", "Wildport", "Wildport", -1783982.0, 809682.0, 9777.0, 16.0, 100000},
+		{16, 6064633425517019141, "Verra_JUN_Hecribba", "Hecribba", "Hecribba", -1708500.0, 1053019.0, 9620.0, 246.0, 100000}, {17, 6064633425555816457, "Verra_JUN_Vinebreach", "Vinebreach", "Vinebreach", -1476480.0, 1178456.0, 7013.0, 200.0, 100000},
+		{18, 6064633429404090381, "Verra_JUN_Arisalon", "Arisalon", "Arisalon", -1250506.0, 1062377.0, 5379.0, -35.0, 100000}, {19, 6064633429423882257, "Verra_JUN_TangledPost", "Tangled Post", "Tangled_Post", -1031419.0, 1098848.0, 7264.0, -3.5, 100000},
+		{20, 6064633429437251605, "Verra_JUN_Mythbreak", "Mythbreak", "Mythbreak", -742705.0, 1087738.0, 5066.0, -159.058146, 100000}, {21, 6064633651969589265, "Verra_ANV_Vexhelm", "Vexhelm", "Vexhelm", -1463243.0, -341306.0, 25074.0, 60.0, 100000},
+		{22, 6064633651985711129, "Verra_ANV_Duunhold", "Duunhold", "Duunhold", -1069784.0, -150970.0, 24891.0, 0.0, 100000}, {23, 6064633652009173023, "Verra_ANV_Dhurgrum", "Dhurgrum", "Dhurgrum", -937374.0, -411205.0, 24983.0, -15.0, 100000},
+		{24, 6064633652023394340, "Verra_ANV_Vhalgadim", "Vhalgadim", "Vhalgadim", -762862.0, -563881.0, 17256.0, 349.999997, 100000}, {25, 6064633652044300331, "Verra_ANV_KalTorhum", "Kal Torhum", "Kal_Torhum", -1271772.0, -462821.0, 5066.0, 5.0, 100000},
 	}
 }
 
@@ -698,16 +685,18 @@ func defaultTintForKind(kind, _ string) string {
 }
 
 func (c *Catalog) AllPlaces() []PlaceEntry {
+	var contentDir string
 	if c != nil {
 		c.mu.RLock()
-		base := c.places
+		base, dir := c.places, c.contentDir
 		c.mu.RUnlock()
+		contentDir = dir
 		if len(base) > 0 {
-			return append([]PlaceEntry(nil), base...)
+			return mergeDiskTSVPlaces(append([]PlaceEntry(nil), base...), contentDir)
 		}
 	}
 	places, _ := loadPlacesFromDB(context.Background(), nil)
-	return places
+	return mergeDiskTSVPlaces(places, contentDir)
 }
 
 func (c *Catalog) SearchPlaces(ctx context.Context, q string, limit int) []PlaceEntry {

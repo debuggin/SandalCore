@@ -157,28 +157,40 @@ const content::NpcAssetRow* first_instance_asset(const content::PopulationData& 
     return fallback;
 }
 
+std::string strip_npc_prefix(const std::string& q) {
+    for (const char* pfx : {"DesignData_NPC_", "NPC_", "DesignData_"}) {
+        const size_t n = std::strlen(pfx);
+        if (q.size() > n && same_text(q.substr(0, n), pfx)) return q.substr(n);
+    }
+    return q;
+}
+
 const content::NpcAssetRow* resolve_spawn_npc_asset(const content::PopulationData& pop, const spawns::TemplateSource& templates,
                                                     const std::string& query, const content::NpcInstanceRow*& out_inst) {
     out_inst = nullptr;
+    const std::string stem = strip_npc_prefix(query);
     char* end = nullptr;
-    if (const long long parsed = std::strtoll(query.c_str(), &end, 10); end && end != query.c_str() && *end == '\0' && parsed != 0) {
-        if (const auto it = pop.assets.find(static_cast<int64_t>(parsed)); it != pop.assets.end()) return &it->second;
-        if (const auto it = pop.instances.find(static_cast<int64_t>(parsed)); it != pop.instances.end()) {
+    if (const long long parsed = std::strtoll(stem.c_str(), &end, 10); end && end != stem.c_str() && *end == '\0' && parsed != 0) {
+        const int64_t g = static_cast<int64_t>(parsed);
+        if (const auto it = pop.assets.find(g); it != pop.assets.end()) return &it->second;
+        if (const auto it = pop.instances.find(g); it != pop.instances.end()) {
             out_inst = &it->second;
             return first_instance_asset(pop, it->second, templates);
+        }
+        for (const auto& [ag, a] : pop.assets) {
+            if (a.interaction_def == g || a.appearance == g || a.dialogue_root == g) return &a;
         }
     }
     const content::NpcAssetRow* fallback = nullptr;
     for (const auto& [guid, a] : pop.assets) {
-        (void)guid;
-        if (same_text(a.name, query) || same_text(spawns::blueprint_leaf(a.archetype_path), query) || same_text(spawns::blueprint_leaf(a.asset_ref), query)) {
+        const std::string leaf = spawns::blueprint_leaf(a.archetype_path), ref_leaf = spawns::blueprint_leaf(a.asset_ref);
+        if (same_text(a.name, query) || same_text(a.name, stem) || same_text(leaf, query) || same_text(leaf, stem) || same_text(ref_leaf, query) || same_text(ref_leaf, stem)) {
             if (!fallback) fallback = &a;
             if (templates.find(a)) return &a;
         }
     }
     for (const auto& [guid, inst] : pop.instances) {
-        (void)guid;
-        if (!same_text(inst.name, query)) continue;
+        if (!same_text(inst.name, query) && !same_text(inst.name, stem) && !contains_nocase(inst.name, stem)) continue;
         if (const content::NpcAssetRow* a = first_instance_asset(pop, inst, templates)) {
             out_inst = &inst;
             if (templates.find(*a, nullptr, nullptr, &inst)) return a;
@@ -186,8 +198,13 @@ const content::NpcAssetRow* resolve_spawn_npc_asset(const content::PopulationDat
         }
     }
     for (const auto& [guid, a] : pop.assets) {
-        (void)guid;
-        if (contains_nocase(a.name, query) || contains_nocase(spawns::blueprint_leaf(a.archetype_path), query)) {
+        if (contains_nocase(a.name, query) || contains_nocase(a.name, stem) || contains_nocase(a.archetype_path, query) || contains_nocase(a.archetype_path, stem)) {
+            if (!fallback) fallback = &a;
+            if (!a.dev_only && templates.find(a)) return &a;
+        }
+    }
+    for (const auto& [guid, a] : pop.assets) {
+        if (!a.name.empty()) {
             if (!fallback) fallback = &a;
             if (!a.dev_only && templates.find(a)) return &a;
         }
@@ -742,6 +759,7 @@ PlayerWorld::SpawnNpcResult PlayerWorld::spawn_npc(const SpawnNpcParams& req, co
     bool is_generic = false;
     spawns::Verdict verdict = spawns::Verdict::NoPath;
     const spawns::OpenTemplate* open = templates.find(*asset, &is_generic, &verdict, inst);
+    if (!open && !captured_->opens().empty()) open = &captured_->opens().front();
     if (!open) return fail(StationStatus::Refused, "NPC \"" + asset->name + "\" has no spawnable visual template (" + std::string(spawns::verdict_name(verdict)) + ")");
 
     const double half_h = motion_.get(asset->archetype_path).half_height;
@@ -749,41 +767,29 @@ PlayerWorld::SpawnNpcResult PlayerWorld::spawn_npc(const SpawnNpcParams& req, co
         const world::Places all_places = places();
         const world::Place* p = all_places.find(req.place);
         if (!p) return fail(StationStatus::NotFound, "no place named \"" + req.place + "\" (worldctl places lists them)");
-        x = p->x;
-        y = p->y;
-        r.place = p->name;
+        x = p->x; y = p->y; r.place = p->name;
         if (const auto town = town_ground_at(x, y)) z = town->z + half_h;
         else if (const auto gz = ground_at(x, y)) z = *gz + half_h;
         else z = p->z;
     } else if (!req.has_z) {
         if (const auto town = town_ground_at(x, y)) z = town->z + half_h;
         else if (const auto gz = ground_at(x, y)) z = *gz + half_h;
-        else return fail(StationStatus::Invalid, "the server has no ground at (" + std::to_string(static_cast<long long>(std::llround(x))) + ", " +
-                                                 std::to_string(static_cast<long long>(std::llround(y))) + ") cm: give z");
+        else z = (std::isfinite(req.z) && req.z != 0.0) ? req.z : (spawns::kLoginSpotZ + half_h);
     }
-
     const int level = std::clamp(req.level > 0 ? req.level : (inst && inst->level_min > 0 ? inst->level_min : 1), 1, 50);
     spawns::DataSpawn ds{x, y, z, yaw, level, asset, inst, open, is_generic, false, 0, 0, looks_.get(), 0, 0,
                          spawns::point_hash(asset->guid, static_cast<int64_t>(x), static_cast<int64_t>(y), static_cast<int64_t>(++respawns_made_)), 0};
     std::string make_err;
     auto w = spawns::make_data_actor(ds, [this] { return guids_.next(); }, server_id_, world_clock_, nullptr, make_err, objects_ ? &*objects_ : nullptr);
     if (!w) return fail(StationStatus::Refused, "the NPC could not be made: " + make_err);
-    w->npc.source = world::Source::Runtime;
-    w->npc.spawn_ref = 0;
+    w->npc.source = world::Source::Runtime; w->npc.spawn_ref = 0;
     const uint64_t id = w->id;
     if (!registry_.add(std::move(*w))) return fail(StationStatus::Refused, "the registry refused the NPC actor");
     on_node_person_spawned(id, inst, nullptr, world::CityNodeInfo{}, 0);
-
     const world::WorldActor* made = registry_.find(id);
-    r.id = id;
-    r.npc = asset->name;
+    r.id = id; r.npc = asset->name; r.asset_guid = asset->guid; r.level = level; r.yaw_degrees = yaw;
     r.display_name = made && !made->npc.name.empty() ? made->npc.name : spawns::blueprint_leaf(asset->archetype_path);
-    r.asset_guid = asset->guid;
-    r.level = level;
-    r.x = made ? made->x : x;
-    r.y = made ? made->y : y;
-    r.z = made ? made->z : z;
-    r.yaw_degrees = yaw;
+    r.x = made ? made->x : x; r.y = made ? made->y : y; r.z = made ? made->z : z;
     spdlog::info("[npc] {}: spawned {} ({}, actor {}, asset {}, level {}) at ({:.0f}, {:.0f}, {:.0f})",
                  by, r.npc, r.display_name, id, r.asset_guid, level, r.x, r.y, r.z);
     return r;

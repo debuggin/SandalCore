@@ -52,9 +52,8 @@ type Progress struct {
 
 // C-Y-B x C O A
 
-// MaxLevel is the game's maximum level, and the highest level the store takes: Adventuring's LevelCapOverride is 25, so a
-// character cannot be above it (content.db's tables go further, to 50, but no character reaches them).
-const MaxLevel = 25
+// MaxLevel is the game's maximum level, and the highest level the store takes (content.db's tables go to 50).
+const MaxLevel = 50
 
 // ValidateLevel says whether a level can be stored: 0 (which a request reads as "unset"), or 1 to MaxLevel.
 func ValidateLevel(level int32) error {

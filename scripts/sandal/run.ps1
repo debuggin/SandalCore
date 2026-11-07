@@ -113,24 +113,27 @@ function Ensure-SandalLauncherBinary {
     $launcherExe = Join-Path $RootDirPath "dist/launcher/SandalLauncher$ExeExtension"
     $releaseExe = Join-Path $RootDirPath "dist/Release/SandalLauncher$ExeExtension"
     $launcherDll = Join-Path $RootDirPath 'dist/launcher/SandalLauncher.dll'
+    $depsFile = Join-Path $RootDirPath 'dist/launcher/SandalLauncher.deps.json'
+    $rcFile = Join-Path $RootDirPath 'dist/launcher/SandalLauncher.runtimeconfig.json'
     $launcherSrcDir = Join-Path $RootDirPath 'src/clients/launcher'
-    $hasBinary = (Test-Path -LiteralPath $launcherExe -PathType Leaf) -or (Test-Path -LiteralPath $releaseExe -PathType Leaf) -or (Test-Path -LiteralPath $launcherDll -PathType Leaf)
+    $hasBinary = ((Test-Path -LiteralPath $launcherExe -PathType Leaf) -or (Test-Path -LiteralPath $releaseExe -PathType Leaf)) -and (Test-Path -LiteralPath $launcherDll -PathType Leaf) -and (Test-Path -LiteralPath $depsFile -PathType Leaf) -and (Test-Path -LiteralPath $rcFile -PathType Leaf)
     $needsBuild = (-not $hasBinary) -or (Test-SandalLauncherSourceNewer -LauncherSrcDir $launcherSrcDir -LauncherDllPath $launcherDll)
-    if (-not $needsBuild) {
-        return
+    if ($needsBuild) {
+        $launcherCsproj = Join-Path $launcherSrcDir 'SandalLauncher.csproj'
+        if (Test-Path -LiteralPath $launcherCsproj -PathType Leaf) {
+            $dotnetExe = Resolve-SandalDotnetExe
+            if ($dotnetExe) {
+                Write-RunStep -Message '[Step 3/6] Building and publishing SandalLauncher desktop client...' -Quiet $Quiet
+                $distRelDir = Join-Path $RootDirPath 'dist/Release'
+                $null = & $dotnetExe build $launcherCsproj -c Release --nologo 2>&1
+                $null = & $dotnetExe publish $launcherCsproj -c Release -o (Join-Path $RootDirPath 'dist/launcher') -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
+                $null = & $dotnetExe publish $launcherCsproj -c Release -o $distRelDir -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
+                Write-RunStep -Message '[Step 3/6] SandalLauncher publish complete.' -Quiet $Quiet
+            }
+        }
     }
-    $launcherCsproj = Join-Path $launcherSrcDir 'SandalLauncher.csproj'
-    if (-not (Test-Path -LiteralPath $launcherCsproj -PathType Leaf)) {
-        return
-    }
-    $dotnetExe = Resolve-SandalDotnetExe
-    if ($dotnetExe) {
-        Write-RunStep -Message '[Step 3/6] Building and publishing SandalLauncher desktop client...' -Quiet $Quiet
-        $distRelDir = Join-Path $RootDirPath 'dist/Release'
-        $null = & $dotnetExe build $launcherCsproj -c Release --nologo 2>&1
-        $null = & $dotnetExe publish $launcherCsproj -c Release -o (Join-Path $RootDirPath 'dist/launcher') -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
-        $null = & $dotnetExe publish $launcherCsproj -c Release -o $distRelDir -p:DebugType=None -p:DebugSymbols=false --nologo 2>&1
-        Write-RunStep -Message '[Step 3/6] SandalLauncher publish complete.' -Quiet $Quiet
+    if (Get-Command Ensure-SandalRootLauncherShortcut -ErrorAction SilentlyContinue) {
+        $null = Ensure-SandalRootLauncherShortcut -RepoRoot $RootDirPath
     }
 }
 
@@ -165,20 +168,33 @@ function Start-SandalLauncherProcess {
         throw "SandalLauncher binary not found at '$primary' or '$fallback'."
     }
     $workDir = if ($exePath -eq 'dotnet') { Split-Path -Parent $dllPath } else { Split-Path -Parent $exePath }
-    $proc = if ($launchArgs.Count -gt 0) {
-        Start-Process -FilePath $exePath -ArgumentList $launchArgs.ToArray() -WorkingDirectory $workDir -PassThru
-    } else {
-        Start-Process -FilePath $exePath -WorkingDirectory $workDir -PassThru
-    }
-    if ($Port -eq 0 -and $IsWindows) {
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        while ($sw.ElapsedMilliseconds -lt 2500 -and -not $proc.HasExited) {
-            $proc.Refresh()
-            if ($proc.MainWindowHandle -ne [IntPtr]::Zero) { break }
-            Start-Sleep -Milliseconds 100
+    $savedAutoEnv = @{}
+    if ($Port -eq 0) {
+        foreach ($ev in @(Get-ChildItem Env: | Where-Object { $_.Name -like 'AOC_LAUNCHER_*' -or $_.Name -eq 'SANDAL_AUTOMATION_PORT' })) {
+            $savedAutoEnv[$ev.Name] = $ev.Value
+            Remove-Item "Env:\$($ev.Name)" -ErrorAction SilentlyContinue
         }
     }
-    return [int]$proc.Id
+    try {
+        $proc = if ($launchArgs.Count -gt 0) {
+            Start-Process -FilePath $exePath -ArgumentList $launchArgs.ToArray() -WorkingDirectory $workDir -PassThru
+        } else {
+            Start-Process -FilePath $exePath -WorkingDirectory $workDir -PassThru
+        }
+        if ($Port -eq 0 -and $IsWindows) {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            while ($sw.ElapsedMilliseconds -lt 2500 -and -not $proc.HasExited) {
+                $proc.Refresh()
+                if ($proc.MainWindowHandle -ne [IntPtr]::Zero) { break }
+                Start-Sleep -Milliseconds 100
+            }
+        }
+        return [int]$proc.Id
+    } finally {
+        foreach ($kv in $savedAutoEnv.GetEnumerator()) {
+            [System.Environment]::SetEnvironmentVariable($kv.Key, $kv.Value, 'Process')
+        }
+    }
 }
 
 function Invoke-RunPipeline {

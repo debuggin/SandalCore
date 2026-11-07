@@ -45,32 +45,7 @@ services:
     cpus: 2.0
     mem_limit: 1g
     shm_size: 256m
-    command:
-      - "postgres"
-      - "-c"
-      - "shared_buffers=256MB"
-      - "-c"
-      - "effective_cache_size=768MB"
-      - "-c"
-      - "work_mem=4MB"
-      - "-c"
-      - "maintenance_work_mem=64MB"
-      - "-c"
-      - "wal_buffers=8MB"
-      - "-c"
-      - "min_wal_size=64MB"
-      - "-c"
-      - "max_wal_size=512MB"
-      - "-c"
-      - "checkpoint_completion_target=0.9"
-      - "-c"
-      - "random_page_cost=1.1"
-      - "-c"
-      - "effective_io_concurrency=200"
-      - "-c"
-      - "jit=off"
-      - "-c"
-      - "max_connections=120"
+    command: ["postgres", "-c", "shared_buffers=256MB", "-c", "effective_cache_size=768MB", "-c", "work_mem=4MB", "-c", "maintenance_work_mem=64MB", "-c", "wal_buffers=8MB", "-c", "min_wal_size=64MB", "-c", "max_wal_size=512MB", "-c", "checkpoint_completion_target=0.9", "-c", "random_page_cost=1.1", "-c", "effective_io_concurrency=200", "-c", "jit=off", "-c", "max_connections=120"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-aoc}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in deploy/.env}
@@ -113,11 +88,8 @@ services:
       AOC_AUTH_GRPC_ADDR: ":${AUTH_GRPC_PORT:-50052}"
       AOC_AUTH_GRPC_BIND_ADDR: ":${AUTH_GRPC_PORT:-50052}"
     depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - service_net
-      - data_net
+      postgres: { condition: service_healthy }
+    networks: [service_net, data_net]
     healthcheck:
       test: ["CMD", "/usr/local/bin/service", "-healthcheck"]
       interval: 5s
@@ -153,11 +125,8 @@ services:
     volumes:
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
     depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - service_net
-      - data_net
+      postgres: { condition: service_healthy }
+    networks: [service_net, data_net]
     healthcheck:
       test: ["CMD", "/usr/local/bin/service", "-healthcheck"]
       interval: 5s
@@ -190,11 +159,8 @@ services:
       AOC_CITYNODE_GRPC_BIND_ADDR: ":${CITYNODE_GRPC_PORT:-50056}"
       AOC_CITYNODE_SEED: /app/config/seeds/citynode_seed.json
     depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - service_net
-      - data_net
+      postgres: { condition: service_healthy }
+    networks: [service_net, data_net]
     healthcheck:
       test: ["CMD", "/usr/local/bin/service", "-healthcheck"]
       interval: 5s
@@ -227,11 +193,8 @@ services:
       AOC_QUEST_GRPC_ADDR: ":${QUEST_GRPC_PORT:-50057}"
       AOC_QUEST_GRPC_BIND_ADDR: ":${QUEST_GRPC_PORT:-50057}"
     depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - service_net
-      - data_net
+      postgres: { condition: service_healthy }
+    networks: [service_net, data_net]
     healthcheck:
       test: ["CMD", "/usr/local/bin/service", "-healthcheck"]
       interval: 5s
@@ -263,11 +226,8 @@ services:
       AOC_MESH_GRPC_ADDR: ":${MESH_GRPC_PORT:-50054}"
       AOC_MESH_GRPC_BIND_ADDR: ":${MESH_GRPC_PORT:-50054}"
     depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - service_net
-      - data_net
+      postgres: { condition: service_healthy }
+    networks: [service_net, data_net]
     healthcheck:
       test: ["CMD", "/usr/local/bin/service", "-healthcheck"]
       interval: 5s
@@ -292,17 +252,7 @@ services:
     mem_limit: 1g
     sysctls:
       net.core.somaxconn: 65535
-    command:
-      - "-http=:${GATEWAY_HTTP_PORT:-8081}"
-      - "-grpc=:${GATEWAY_GRPC_PORT:-50050}"
-      - "-auth=${AUTH_GRPC_ADDR:-auth:50052}"
-      - "-char=${CHAR_GRPC_ADDR:-character:50053}"
-      - "-citynode=${CITYNODE_GRPC_ADDR:-citynode:50056}"
-      - "-quest=${QUEST_GRPC_ADDR:-quest:50057}"
-      - "-mesh=${MESH_GRPC_ADDR:-mesh:50054}"
-      - "-world-host=${WORLD_PUBLIC_HOST:-127.0.0.1}"
-      - "-world-port=${WORLD_UDP_PORT:-7777}"
-      - "-content-db=/app/dist/content/content.db"
+    command: ["-http=:${GATEWAY_HTTP_PORT:-8081}", "-grpc=:${GATEWAY_GRPC_PORT:-50050}", "-auth=${AUTH_GRPC_ADDR:-auth:50052}", "-char=${CHAR_GRPC_ADDR:-character:50053}", "-citynode=${CITYNODE_GRPC_ADDR:-citynode:50056}", "-quest=${QUEST_GRPC_ADDR:-quest:50057}", "-mesh=${MESH_GRPC_ADDR:-mesh:50054}", "-world-host=${WORLD_PUBLIC_HOST:-127.0.0.1}", "-world-port=${WORLD_UDP_PORT:-7777}", "-content-db=/app/dist/content/content.db"]
     environment:
       AOC_ENV: ${AOC_ENV:-production}
       AOC_ALLOW_INSECURE_DB: "1"
@@ -341,21 +291,13 @@ services:
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
       - ${AOC_DIST_CERTS_DIR:-./certs}:/app/certs:ro
     depends_on:
-      postgres:
-        condition: service_healthy
-      auth:
-        condition: service_healthy
-      character:
-        condition: service_healthy
-      citynode:
-        condition: service_healthy
-      quest:
-        condition: service_healthy
-      mesh:
-        condition: service_healthy
-    networks:
-      - service_net
-      - data_net
+      postgres: { condition: service_healthy }
+      auth: { condition: service_healthy }
+      character: { condition: service_healthy }
+      citynode: { condition: service_healthy }
+      quest: { condition: service_healthy }
+      mesh: { condition: service_healthy }
+    networks: [service_net, data_net]
     healthcheck:
       test: ["CMD", "/usr/local/bin/service", "-healthcheck"]
       interval: 5s
@@ -376,19 +318,8 @@ services:
         SERVICE_HTTP_PORT: ${MESH_GATEWAY_HTTP_PORT:-8082}
     image: sandal-mesh-gateway:local
     user: "65532:0"
-    group_add:
-      - "0"
-      - "986"
-      - "998"
-      - "999"
-      - "1001"
-    command:
-      - "-http=:${MESH_GATEWAY_HTTP_PORT:-8082}"
-      - "-mesh=${MESH_GRPC_ADDR:-mesh:50054}"
-      - "-citynode=${CITYNODE_GRPC_ADDR:-citynode:50056}"
-      - "-quest=${QUEST_GRPC_ADDR:-quest:50057}"
-      - "-world-admin=${WORLD_ADMIN_GRPC_ADDR:-world:50061}"
-      - "-catalog-db=/content/content.db"
+    group_add: ["0", "986", "998", "999", "1001"]
+    command: ["-http=:${MESH_GATEWAY_HTTP_PORT:-8082}", "-mesh=${MESH_GRPC_ADDR:-mesh:50054}", "-citynode=${CITYNODE_GRPC_ADDR:-citynode:50056}", "-quest=${QUEST_GRPC_ADDR:-quest:50057}", "-world-admin=${WORLD_ADMIN_GRPC_ADDR:-world:50061}", "-catalog-db=/content/content.db"]
     environment:
       AOC_ENV: ${AOC_ENV:-production}
       AOC_ALLOW_INSECURE_DB: "1"
@@ -405,8 +336,46 @@ services:
       AOC_WORLD_ADMIN_ADDR: ${WORLD_ADMIN_GRPC_ADDR:-world:50061}
       WORLD_ADMIN_GRPC_ADDR: ${WORLD_ADMIN_GRPC_ADDR:-world:50061}
       AOC_WORLD_STREAM_ADDR: ${WORLD_STREAM_GRPC_ADDR:-world:50062}
-      AOC_WORLD_SHARD_MODE: ${AOC_WORLD_SHARD_MODE:-regional}
-      AOC_WORLD_WORKERS: ${AOC_WORLD_WORKERS:-world-riverlands|riverlands|region|world:50061|world:50062|aoc-world-riverlands,world-sandsquall|sandsquall|region|world-sandsquall:50061|world-sandsquall:50062|aoc-world-sandsquall,world-jundark|jundark|region|world-jundark:50061|world-jundark:50062|aoc-world-jundark,world-anvils|anvils|region|world-anvils:50061|world-anvils:50062|aoc-world-anvils,world-turquoise-sea|turquoise_sea|region|world-turquoise-sea:50061|world-turquoise-sea:50062|aoc-world-turquoise-sea}
+      AOC_WORLD_TOPOLOGY_MODE: ${AOC_WORLD_TOPOLOGY_MODE:-${AOC_WORLD_SHARD_MODE:-single}}
+      AOC_WORLD_SHARD_MODE: ${AOC_WORLD_SHARD_MODE:-single}
+      AOC_WORLD_PARTITION_MODE: ${AOC_WORLD_PARTITION_MODE:-single_riverlands}
+      AOC_WORLD_PARTITION_REGION: ${AOC_WORLD_PARTITION_REGION:-riverlands}
+      AOC_TEST_PARTITION_MODES: ${AOC_TEST_PARTITION_MODES:-single_riverlands,single_world,per_region,per_zoi,per_zoi_and_nodes,per_zoi_nodes_and_pois}
+      AOC_TEST_PARTITION_REGION: ${AOC_TEST_PARTITION_REGION:-random}
+      AOC_WORLD_ZOI_REGIONS: ${AOC_WORLD_ZOI_REGIONS:-}
+      AOC_WORLD_NODE_PLUGS: ${AOC_WORLD_NODE_PLUGS:-}
+      AOC_WORLD_POLYGON_CUTOUTS: ${AOC_WORLD_POLYGON_CUTOUTS:-}
+      AOC_WORLD_POI_CUTOUT: ${AOC_WORLD_POI_CUTOUT:-}
+      AOC_WORLD_EXCLUDE_POI_CUTOUT: ${AOC_WORLD_EXCLUDE_POI_CUTOUT:-}
+      AOC_WORLD_TICK_HZ_WORLD: ${AOC_WORLD_TICK_HZ_WORLD:-30}
+      AOC_WORLD_TICK_HZ_REGION: ${AOC_WORLD_TICK_HZ_REGION:-45}
+      AOC_WORLD_TICK_HZ_ZOI: ${AOC_WORLD_TICK_HZ_ZOI:-60}
+      AOC_WORLD_TICK_HZ_NODE: ${AOC_WORLD_TICK_HZ_NODE:-100}
+      AOC_WORLD_TICK_HZ_POI: ${AOC_WORLD_TICK_HZ_POI:-100}
+      AOC_WORLD_NPC_SIM_STEP_CAP_WORLD: ${AOC_WORLD_NPC_SIM_STEP_CAP_WORLD:-5200}
+      AOC_WORLD_NPC_SIM_STEP_CAP_REGION: ${AOC_WORLD_NPC_SIM_STEP_CAP_REGION:-3600}
+      AOC_WORLD_NPC_SIM_STEP_CAP_ZOI: ${AOC_WORLD_NPC_SIM_STEP_CAP_ZOI:-2600}
+      AOC_WORLD_NPC_SIM_STEP_CAP_NODE: ${AOC_WORLD_NPC_SIM_STEP_CAP_NODE:-1500}
+      AOC_WORLD_NPC_SIM_STEP_CAP_POI: ${AOC_WORLD_NPC_SIM_STEP_CAP_POI:-1500}
+      AOC_WORLD_CPU_TARGET_PCT: ${AOC_WORLD_CPU_TARGET_PCT:-38}
+      AOC_WORLD_AOI_HALO_CM: ${AOC_WORLD_AOI_HALO_CM:-35000}
+      AOC_WORLD_HANDOVER_HYSTERESIS_CM: ${AOC_WORLD_HANDOVER_HYSTERESIS_CM:-5000}
+      AOC_WORLD_HANDOVER_DWELL_SAMPLES: ${AOC_WORLD_HANDOVER_DWELL_SAMPLES:-3}
+      AOC_WORLD_HANDOVER_COOLDOWN_MS: ${AOC_WORLD_HANDOVER_COOLDOWN_MS:-2000}
+      AOC_TIME_OF_DAY_HOURS: ${AOC_TIME_OF_DAY_HOURS:-12.0}
+      AOC_SERVICE_TICK_HZ: ${AOC_SERVICE_TICK_HZ:-30}
+      AOC_WEB_ADMIN_HZ_TIERS: ${AOC_WEB_ADMIN_HZ_TIERS:-5,6,7,9,12,16,22,30}
+      AOC_DATA_MODE_DEFAULT: ${AOC_DATA_MODE_DEFAULT:-memory}
+      AOC_DATA_MODE_ZOIS: ${AOC_DATA_MODE_ZOIS:-memory}
+      AOC_DATA_MODE_CITY_NODES: ${AOC_DATA_MODE_CITY_NODES:-memory}
+      AOC_DATA_MODE_POIS: ${AOC_DATA_MODE_POIS:-memory}
+      AOC_DATA_MODE_NPCS: ${AOC_DATA_MODE_NPCS:-memory}
+      AOC_DATA_MODE_ITEMS: ${AOC_DATA_MODE_ITEMS:-memory}
+      AOC_ADMIN_USERNAME: ${AOC_ADMIN_USERNAME:-admin}
+      AOC_ADMIN_PASSPHRASE: ${AOC_ADMIN_PASSPHRASE:-}
+      AOC_ADMIN_JWT_SECRET: ${AOC_ADMIN_JWT_SECRET:-}
+      AOC_ADMIN_BOOT_ID: ${AOC_ADMIN_BOOT_ID:-}
+      AOC_WORLD_WORKERS: ${AOC_WORLD_WORKERS:-world-riverlands|riverlands|region|world:50061|world:50062|aoc-world|0}
       AOC_CONTENT_DB: /content/content.db
       AOC_PMTILES_PATH: /content/verra.pmtiles
       AOC_JWT_SECRET: ${AOC_JWT_SECRET:?AOC_JWT_SECRET must be set in deploy/.env}
@@ -417,19 +386,12 @@ services:
       - ${AOC_DIST_CONTENT_DIR:-./content}:/app/dist/content:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
-      postgres:
-        condition: service_healthy
-      mesh:
-        condition: service_healthy
-      citynode:
-        condition: service_healthy
-      quest:
-        condition: service_healthy
-      world:
-        condition: service_healthy
-    networks:
-      - service_net
-      - data_net
+      postgres: { condition: service_healthy }
+      mesh: { condition: service_healthy }
+      citynode: { condition: service_healthy }
+      quest: { condition: service_healthy }
+      world: { condition: service_healthy }
+    networks: [service_net, data_net]
     healthcheck:
       test: ["CMD", "/usr/local/bin/service", "-healthcheck"]
       interval: 5s
@@ -454,8 +416,21 @@ services:
       - /app/logs:rw,noexec,nosuid,nodev
     environment:
       WEB_PORT: ${WEB_ADMIN_PORT:-8088}
-    networks:
-      - service_net
+      AOC_SERVICE_TICK_HZ: ${AOC_SERVICE_TICK_HZ:-30}
+      AOC_WEB_ADMIN_HZ_TIERS: ${AOC_WEB_ADMIN_HZ_TIERS:-5,6,7,9,12,16,22,30}
+      AOC_DATA_MODE_DEFAULT: ${AOC_DATA_MODE_DEFAULT:-memory}
+      AOC_DATA_MODE_ZOIS: ${AOC_DATA_MODE_ZOIS:-memory}
+      AOC_DATA_MODE_CITY_NODES: ${AOC_DATA_MODE_CITY_NODES:-memory}
+      AOC_DATA_MODE_POIS: ${AOC_DATA_MODE_POIS:-memory}
+      AOC_DATA_MODE_NPCS: ${AOC_DATA_MODE_NPCS:-memory}
+      AOC_DATA_MODE_ITEMS: ${AOC_DATA_MODE_ITEMS:-memory}
+      AOC_ADMIN_USERNAME: ${AOC_ADMIN_USERNAME:-admin}
+      AOC_ADMIN_PASSPHRASE: ${AOC_ADMIN_PASSPHRASE:-}
+      AOC_ADMIN_JWT_SECRET: ${AOC_ADMIN_JWT_SECRET:-}
+      AOC_ADMIN_BOOT_ID: ${AOC_ADMIN_BOOT_ID:-}
+    depends_on:
+      mesh-gateway: { condition: service_healthy }
+    networks: [service_net]
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/healthz"]
       interval: 5s
@@ -465,7 +440,7 @@ services:
 
   world:
     <<: *hardened
-    container_name: aoc-world-riverlands
+    container_name: aoc-world
     hostname: world
     build:
       context: ..
@@ -486,14 +461,52 @@ services:
       - "--citynode=citynode:50056"
       - "--port=${WORLD_UDP_PORT:-7777}"
       - "--admin-port=${WORLD_ADMIN_PORT:-50061}"
+      - "--tick-hz=${AOC_WORLD_TICK_HZ_REGION:-45}"
     environment: &world_env
       WORLD_UDP_PORT: ${WORLD_UDP_PORT:-7777}
       WORLD_ADMIN_PORT: ${WORLD_ADMIN_PORT:-50061}
       AOC_WORLD_UDP_PORT: ${WORLD_UDP_PORT:-7777}
       AOC_WORLD_ADMIN_ADDR: ":${WORLD_ADMIN_PORT:-50061}"
       AOC_WORLD_STREAM_ADDR: ":${WORLD_STREAM_PORT:-50062}"
+      AOC_WORLD_TOPOLOGY_MODE: "${AOC_WORLD_TOPOLOGY_MODE:-${AOC_WORLD_SHARD_MODE:-single}}"
+      AOC_WORLD_SHARD_MODE: "${AOC_WORLD_SHARD_MODE:-single}"
+      AOC_WORLD_PARTITION_MODE: "${AOC_WORLD_PARTITION_MODE:-single_riverlands}"
+      AOC_WORLD_PARTITION_REGION: "${AOC_WORLD_PARTITION_REGION:-riverlands}"
+      AOC_TEST_PARTITION_MODES: "${AOC_TEST_PARTITION_MODES:-single_riverlands,single_world,per_region,per_zoi,per_zoi_and_nodes,per_zoi_nodes_and_pois}"
+      AOC_TEST_PARTITION_REGION: "${AOC_TEST_PARTITION_REGION:-random}"
       AOC_WORLD_REGION: "${AOC_WORLD_REGION:-riverlands}"
+      AOC_WORLD_ZOI_REGIONS: "${AOC_WORLD_ZOI_REGIONS:-}"
+      AOC_WORLD_NODE_PLUGS: "${AOC_WORLD_NODE_PLUGS:-}"
+      AOC_WORLD_POLYGON_CUTOUTS: "${AOC_WORLD_POLYGON_CUTOUTS:-}"
+      AOC_WORLD_POI_CUTOUT: "${AOC_WORLD_POI_CUTOUT:-}"
+      AOC_WORLD_EXCLUDE_POI_CUTOUT: "${AOC_WORLD_EXCLUDE_POI_CUTOUT:-}"
       AOC_WORLD_WORKER_ID: "${AOC_WORLD_WORKER_ID:-world-riverlands}"
+      AOC_WORLD_WORKER_INDEX: "${AOC_WORLD_WORKER_INDEX:-0}"
+      AOC_WORLD_TICK_RATE_HZ: "${AOC_WORLD_TICK_HZ_REGION:-45}"
+      AOC_WORLD_TICK_HZ_WORLD: "${AOC_WORLD_TICK_HZ_WORLD:-30}"
+      AOC_WORLD_TICK_HZ_REGION: "${AOC_WORLD_TICK_HZ_REGION:-45}"
+      AOC_WORLD_TICK_HZ_ZOI: "${AOC_WORLD_TICK_HZ_ZOI:-60}"
+      AOC_WORLD_TICK_HZ_NODE: "${AOC_WORLD_TICK_HZ_NODE:-100}"
+      AOC_WORLD_TICK_HZ_POI: "${AOC_WORLD_TICK_HZ_POI:-100}"
+      AOC_WORLD_NPC_SIM_STEP_CAP: "${AOC_WORLD_NPC_SIM_STEP_CAP_REGION:-3600}"
+      AOC_WORLD_NPC_SIM_STEP_CAP_WORLD: "${AOC_WORLD_NPC_SIM_STEP_CAP_WORLD:-5200}"
+      AOC_WORLD_NPC_SIM_STEP_CAP_REGION: "${AOC_WORLD_NPC_SIM_STEP_CAP_REGION:-3600}"
+      AOC_WORLD_NPC_SIM_STEP_CAP_ZOI: "${AOC_WORLD_NPC_SIM_STEP_CAP_ZOI:-2600}"
+      AOC_WORLD_NPC_SIM_STEP_CAP_NODE: "${AOC_WORLD_NPC_SIM_STEP_CAP_NODE:-1500}"
+      AOC_WORLD_NPC_SIM_STEP_CAP_POI: "${AOC_WORLD_NPC_SIM_STEP_CAP_POI:-1500}"
+      AOC_WORLD_CPU_TARGET_PCT: "${AOC_WORLD_CPU_TARGET_PCT:-38}"
+      AOC_DATA_MODE_DEFAULT: "${AOC_DATA_MODE_DEFAULT:-memory}"
+      AOC_DATA_MODE_ZOIS: "${AOC_DATA_MODE_ZOIS:-memory}"
+      AOC_DATA_MODE_CITY_NODES: "${AOC_DATA_MODE_CITY_NODES:-memory}"
+      AOC_DATA_MODE_POIS: "${AOC_DATA_MODE_POIS:-memory}"
+      AOC_DATA_MODE_NPCS: "${AOC_DATA_MODE_NPCS:-memory}"
+      AOC_DATA_MODE_ITEMS: "${AOC_DATA_MODE_ITEMS:-memory}"
+      AOC_WORLD_SIMULATE_ALL_NPCS: "${AOC_WORLD_SIMULATE_ALL_NPCS:-1}"
+      AOC_WORLD_AOI_HALO_CM: "${AOC_WORLD_AOI_HALO_CM:-35000}"
+      AOC_WORLD_HANDOVER_HYSTERESIS_CM: "${AOC_WORLD_HANDOVER_HYSTERESIS_CM:-5000}"
+      AOC_WORLD_HANDOVER_DWELL_SAMPLES: "${AOC_WORLD_HANDOVER_DWELL_SAMPLES:-3}"
+      AOC_WORLD_HANDOVER_COOLDOWN_MS: "${AOC_WORLD_HANDOVER_COOLDOWN_MS:-2000}"
+      AOC_TIME_OF_DAY_HOURS: "${AOC_TIME_OF_DAY_HOURS:-12.0}"
       AOC_ADVERTISE_HOST: "world"
       AOC_CITYNODE_GRPC_ADDR: citynode:50056
       AOC_QUESTS_GRPC_ADDR: quest:50057
@@ -524,27 +537,13 @@ services:
       - ${AOC_DIST_NAV_DIR:-./nav}:/app/nav:ro
       - ${AOC_DIST_CONFIG_DIR:-./config}:/app/config:ro
     depends_on:
-      mesh:
-        condition: service_healthy
-      gateway:
-        condition: service_healthy
-      character:
-        condition: service_healthy
-      citynode:
-        condition: service_healthy
+      mesh: { condition: service_healthy }
+      gateway: { condition: service_healthy }
+      character: { condition: service_healthy }
+      citynode: { condition: service_healthy }
     networks:
-      edge_net:
-        aliases:
-          - world
-          - world-riverlands
-          - aoc-world
-          - aoc-world-riverlands
-      service_net:
-        aliases:
-          - world
-          - world-riverlands
-          - aoc-world
-          - aoc-world-riverlands
+      edge_net: { aliases: [world, world-riverlands, aoc-world, aoc-riverlands, aoc-world-riverlands] }
+      service_net: { aliases: [world, world-riverlands, aoc-world, aoc-riverlands, aoc-world-riverlands] }
     healthcheck: &world_healthcheck
       test: ["CMD", "/app/world", "--healthcheck", "http://127.0.0.1:50061/livez"]
       interval: 5s
@@ -554,75 +553,169 @@ services:
 
   world-sandsquall: &world_regional_worker
     <<: *hardened
-    container_name: aoc-world-sandsquall
+    profiles: ["regional", "region"]
+    container_name: aoc-sandsquall
     hostname: world-sandsquall
     image: sandal-world:local
     pull_policy: never
     cpus: 2.0
-    mem_limit: 2g
+    mem_limit: ${AOC_WORLD_WORKER_MEM_LIMIT:-2560M}
+    deploy: { resources: { limits: { memory: "${AOC_WORLD_WORKER_MEM_LIMIT:-2560M}" } } }
     entrypoint: ["/app/world"]
     command: *world_cmd
     environment:
       <<: *world_env
       AOC_WORLD_REGION: "sandsquall"
       AOC_WORLD_WORKER_ID: "world-sandsquall"
+      AOC_WORLD_WORKER_INDEX: "4"
       AOC_ADVERTISE_HOST: "world-sandsquall"
       AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
-    ports:
-      - "127.0.0.1:7778:7777/udp"
+    ports: ["127.0.0.1:7778:7777/udp"]
     volumes: *world_volumes
     depends_on: &world_regional_deps
-      world:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      citynode:
-        condition: service_healthy
-      mesh:
-        condition: service_healthy
-    networks: &world_networks
-      - edge_net
-      - service_net
+      world: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      citynode: { condition: service_healthy }
+      mesh: { condition: service_healthy }
+    networks:
+      edge_net: { aliases: [world-sandsquall, aoc-sandsquall, aoc-world-sandsquall] }
+      service_net: { aliases: [world-sandsquall, aoc-sandsquall, aoc-world-sandsquall] }
     healthcheck: *world_healthcheck
 
   world-jundark:
     <<: *world_regional_worker
-    container_name: aoc-world-jundark
+    profiles: ["regional", "region", "mixed"]
+    container_name: aoc-jundark
     hostname: world-jundark
     environment:
       <<: *world_env
       AOC_WORLD_REGION: "jundark"
       AOC_WORLD_WORKER_ID: "world-jundark"
+      AOC_WORLD_WORKER_INDEX: "1"
       AOC_ADVERTISE_HOST: "world-jundark"
       AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
-    ports:
-      - "127.0.0.1:7779:7777/udp"
+    networks:
+      edge_net: { aliases: [world-jundark, aoc-jundark, aoc-world-jundark] }
+      service_net: { aliases: [world-jundark, aoc-jundark, aoc-world-jundark] }
+    ports: ["127.0.0.1:7779:7777/udp"]
 
   world-anvils:
     <<: *world_regional_worker
-    container_name: aoc-world-anvils
+    profiles: ["regional", "region", "mixed"]
+    container_name: aoc-anvils
     hostname: world-anvils
     environment:
       <<: *world_env
       AOC_WORLD_REGION: "anvils"
       AOC_WORLD_WORKER_ID: "world-anvils"
+      AOC_WORLD_WORKER_INDEX: "2"
       AOC_ADVERTISE_HOST: "world-anvils"
       AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
-    ports:
-      - "127.0.0.1:7780:7777/udp"
+    networks:
+      edge_net: { aliases: [world-anvils, aoc-anvils, aoc-world-anvils] }
+      service_net: { aliases: [world-anvils, aoc-anvils, aoc-world-anvils] }
+    ports: ["127.0.0.1:7780:7777/udp"]
 
   world-turquoise-sea:
     <<: *world_regional_worker
-    container_name: aoc-world-turquoise-sea
+    profiles: ["regional", "region", "mixed"]
+    container_name: aoc-turquoise-sea
     hostname: world-turquoise-sea
     environment:
       <<: *world_env
       AOC_WORLD_REGION: "turquoise_sea"
       AOC_WORLD_WORKER_ID: "world-turquoise-sea"
+      AOC_WORLD_WORKER_INDEX: "3"
       AOC_ADVERTISE_HOST: "world-turquoise-sea"
       AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
-    ports:
-      - "127.0.0.1:7781:7777/udp"
+    networks:
+      edge_net: { aliases: [world-turquoise-sea, aoc-turquoise-sea, aoc-world-turquoise-sea] }
+      service_net: { aliases: [world-turquoise-sea, aoc-turquoise-sea, aoc-world-turquoise-sea] }
+    ports: ["127.0.0.1:7781:7777/udp"]
+
+  world-sandsquall-sunhaven:
+    <<: *world_regional_worker
+    profiles: ["zoi-sandsquall", "zoi", "node_plug_zoi", "mixed"]
+    container_name: aoc-verra-san-node-sunhaven
+    hostname: world-sandsquall-sunhaven
+    command: ["--mesh=mesh:50054", "--gateway=gateway:50050", "--character=character:50053", "--citynode=citynode:50056", "--port=${WORLD_UDP_PORT:-7777}", "--admin-port=${WORLD_ADMIN_PORT:-50061}", "--area-zoi=Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Djinna,Verra_SAN_HARBOR_SandsquallRiver,Verra_SAN_Lawless_Desert", "--tick-hz=${AOC_WORLD_TICK_HZ_ZOI:-60}"]
+    environment:
+      <<: *world_env
+      AOC_WORLD_REGION: "sandsquall"
+      AOC_WORLD_ZOI: "Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Djinna,Verra_SAN_HARBOR_SandsquallRiver,Verra_SAN_Lawless_Desert"
+      AOC_WORLD_WORKER_ID: "world-sandsquall-sunhaven"
+      AOC_WORLD_WORKER_INDEX: "4"
+      AOC_ADVERTISE_HOST: "world-sandsquall-sunhaven"
+      AOC_WORLD_TICK_RATE_HZ: "${AOC_WORLD_TICK_HZ_ZOI:-60}"
+      AOC_WORLD_NPC_SIM_STEP_CAP: "${AOC_WORLD_NPC_SIM_STEP_CAP_ZOI:-2600}"
+      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
+    networks:
+      edge_net: { aliases: [world-sandsquall-sunhaven, aoc-verra-san-node-sunhaven, aoc-zoi-sunhaven, aoc-world-sandsquall-sunhaven] }
+      service_net: { aliases: [world-sandsquall-sunhaven, aoc-verra-san-node-sunhaven, aoc-zoi-sunhaven, aoc-world-sandsquall-sunhaven] }
+    ports: ["127.0.0.1:7782:7777/udp"]
+
+  world-sandsquall-azmaran:
+    <<: *world_regional_worker
+    profiles: ["zoi-sandsquall", "zoi", "node_plug_zoi", "mixed"]
+    container_name: aoc-verra-san-node-azmaran
+    hostname: world-sandsquall-azmaran
+    command: ["--mesh=mesh:50054", "--gateway=gateway:50050", "--character=character:50053", "--citynode=citynode:50056", "--port=${WORLD_UDP_PORT:-7777}", "--admin-port=${WORLD_ADMIN_PORT:-50061}", "--area-zoi=Verra_SAN_Node_Azmaran,Verra_SAN_Node_Aithanahr,Verra_SAN_Node_SquallsEnd,Verra_SAN_HARBOR_SandsquallEastern", "--tick-hz=${AOC_WORLD_TICK_HZ_ZOI:-60}"]
+    environment:
+      <<: *world_env
+      AOC_WORLD_REGION: "sandsquall"
+      AOC_WORLD_ZOI: "Verra_SAN_Node_Azmaran,Verra_SAN_Node_Aithanahr,Verra_SAN_Node_SquallsEnd,Verra_SAN_HARBOR_SandsquallEastern"
+      AOC_WORLD_WORKER_ID: "world-sandsquall-azmaran"
+      AOC_WORLD_WORKER_INDEX: "5"
+      AOC_ADVERTISE_HOST: "world-sandsquall-azmaran"
+      AOC_WORLD_TICK_RATE_HZ: "${AOC_WORLD_TICK_HZ_ZOI:-60}"
+      AOC_WORLD_NPC_SIM_STEP_CAP: "${AOC_WORLD_NPC_SIM_STEP_CAP_ZOI:-2600}"
+      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
+    networks:
+      edge_net: { aliases: [world-sandsquall-azmaran, aoc-verra-san-node-azmaran, aoc-zoi-azmaran, aoc-world-sandsquall-azmaran] }
+      service_net: { aliases: [world-sandsquall-azmaran, aoc-verra-san-node-azmaran, aoc-zoi-azmaran, aoc-world-sandsquall-azmaran] }
+    ports: ["127.0.0.1:7783:7777/udp"]
+
+  world-node-sunhaven:
+    <<: *world_regional_worker
+    profiles: ["node-plug-sandsquall", "node_plug_zoi"]
+    container_name: aoc-sunhaven
+    hostname: world-node-sunhaven
+    command: ["--mesh=mesh:50054", "--gateway=gateway:50050", "--character=character:50053", "--citynode=citynode:50056", "--port=${WORLD_UDP_PORT:-7777}", "--admin-port=${WORLD_ADMIN_PORT:-50061}", "--area-zoi=Verra_SAN_Node_Sunhaven", "--tick-hz=${AOC_WORLD_TICK_HZ_NODE:-100}"]
+    environment:
+      <<: *world_env
+      AOC_WORLD_REGION: "sandsquall"
+      AOC_WORLD_ZOI: "Verra_SAN_Node_Sunhaven"
+      AOC_WORLD_WORKER_ID: "world-node-sunhaven"
+      AOC_WORLD_WORKER_INDEX: "6"
+      AOC_ADVERTISE_HOST: "world-node-sunhaven"
+      AOC_WORLD_TICK_RATE_HZ: "${AOC_WORLD_TICK_HZ_NODE:-100}"
+      AOC_WORLD_NPC_SIM_STEP_CAP: "${AOC_WORLD_NPC_SIM_STEP_CAP_NODE:-1500}"
+      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
+    networks:
+      edge_net: { aliases: [world-node-sunhaven, aoc-sunhaven] }
+      service_net: { aliases: [world-node-sunhaven, aoc-sunhaven] }
+    ports: ["127.0.0.1:7784:7777/udp"]
+
+  world-node-azmaran:
+    <<: *world_regional_worker
+    profiles: ["node-plug-sandsquall", "node_plug_zoi"]
+    container_name: aoc-azmaran
+    hostname: world-node-azmaran
+    command: ["--mesh=mesh:50054", "--gateway=gateway:50050", "--character=character:50053", "--citynode=citynode:50056", "--port=${WORLD_UDP_PORT:-7777}", "--admin-port=${WORLD_ADMIN_PORT:-50061}", "--area-zoi=Verra_SAN_Node_Azmaran", "--tick-hz=${AOC_WORLD_TICK_HZ_NODE:-100}"]
+    environment:
+      <<: *world_env
+      AOC_WORLD_REGION: "sandsquall"
+      AOC_WORLD_ZOI: "Verra_SAN_Node_Azmaran"
+      AOC_WORLD_WORKER_ID: "world-node-azmaran"
+      AOC_WORLD_WORKER_INDEX: "7"
+      AOC_ADVERTISE_HOST: "world-node-azmaran"
+      AOC_WORLD_TICK_RATE_HZ: "${AOC_WORLD_TICK_HZ_NODE:-100}"
+      AOC_WORLD_NPC_SIM_STEP_CAP: "${AOC_WORLD_NPC_SIM_STEP_CAP_NODE:-1500}"
+      AOC_WORLD_CACHE_PRELOAD_CONTENT_DB: "0"
+    networks:
+      edge_net: { aliases: [world-node-azmaran, aoc-azmaran] }
+      service_net: { aliases: [world-node-azmaran, aoc-azmaran] }
+    ports: ["127.0.0.1:7785:7777/udp"]
 
   ingress-proxy:
     <<: *hardened
@@ -649,24 +742,15 @@ services:
       - "127.0.0.1:${INGRESS_GRPC_PORT:-9090}:9090/tcp"
       - "127.0.0.1:${GATEWAY_TLS_PORT:-50061}:50061/tcp"
     depends_on:
-      gateway:
-        condition: service_healthy
-      mesh-gateway:
-        condition: service_healthy
-      web-admin:
-        condition: service_healthy
-      auth:
-        condition: service_healthy
-      character:
-        condition: service_healthy
-      citynode:
-        condition: service_healthy
-      quest:
-        condition: service_healthy
-      mesh:
-        condition: service_healthy
-      world:
-        condition: service_healthy
+      gateway: { condition: service_healthy }
+      mesh-gateway: { condition: service_healthy }
+      web-admin: { condition: service_healthy }
+      auth: { condition: service_healthy }
+      character: { condition: service_healthy }
+      citynode: { condition: service_healthy }
+      quest: { condition: service_healthy }
+      mesh: { condition: service_healthy }
+      world: { condition: service_healthy }
     networks:
       - edge_net
       - service_net

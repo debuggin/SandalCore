@@ -68,19 +68,30 @@ PlayerSession::GmMoveResult PlayerSession::move_to(Connection& conn, double x, d
         r.status = GmMoveResult::Status::Busy;
         return r;
     }
-    if (mounted()) {
-        dismount(conn, now, DismountWhy::GmTeleport);   // the ride is over; the mount stays where it was and desummons by distance (run_mounts)
-        r.dismounted = true;
-    }
     const double yaw = checker_.good().yaw_degrees;
-    checker_.teleport(x, y, z, yaw);
+    const double t = session_seconds(now);
+    if (mounted() && ride_) {
+        ride_->reposition(x, y, z, yaw, t);
+        if (mounts_) mounts_->reposition_active(x, y, z);
+        checker_.teleport(x, y, z, yaw);
+        checker_.rebase(ride_->limits(base_limits_, t), checker_.good());
+        r.dismounted = false;
+    } else {
+        checker_.teleport(x, y, z, yaw);
+    }
     pending_fix_.reset();   // a correction a refused move left would put the client back where it was
     based_fix_.reset();
     const float ts = checker_.good().has_time_stamp ? checker_.good().time_stamp : 0.0f;
     constexpr uint8_t mode = repl::kMoveFalling;   // the client lands and walks again by itself
     queue(gm ? "GM teleport" : "floor net teleport", [ts, x, y, z, mode](bootstrap::PlayerBootstrap& pb) { return pb.correction(ts, repl::Vec3d{x, y, z}, repl::Vec3d{}, mode); }, conn, /*must_build=*/true);
     if (gm) ++gm_teleports_;
-    if (npc_world_) std::ignore = npc_world_->update_border_authority(static_cast<uint64_t>(pb_.setup().player_id), x, y);
+    if (npc_world_) {
+        const uint64_t pid = static_cast<uint64_t>(pb_.setup().player_id);
+        std::ignore = npc_world_->step_player_border_handover(pid, x, y);
+        if (world_pawn_ != 0 && world_pawn_ != pid) {
+            std::ignore = npc_world_->step_player_border_handover(world_pawn_, x, y);
+        }
+    }
     r.to = checker_.good();
     spdlog::info("[{}] {}: teleported by {} from ({:.0f}, {:.0f}, {:.0f}) to ({:.0f}, {:.0f}, {:.0f}){}", gm ? "gm" : "floor-net", name(), by, r.from.x, r.from.y, r.from.z, x, y, z,
                  r.dismounted ? "; dismounted first" : "");

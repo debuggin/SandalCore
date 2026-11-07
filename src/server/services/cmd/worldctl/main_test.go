@@ -7,7 +7,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +37,7 @@ type fakeWorld struct {
 	mu        sync.Mutex
 	teleports []*worldadminv1.TeleportRequest
 	speeds    []*worldadminv1.SetMoveSpeedRequest
+	spawns    []*worldadminv1.SpawnNpcRequest
 }
 
 func (f *fakeWorld) ListPlayers(context.Context, *worldadminv1.ListPlayersRequest) (*worldadminv1.ListPlayersResponse, error) {
@@ -74,6 +78,24 @@ func (f *fakeWorld) SetMoveSpeed(_ context.Context, r *worldadminv1.SetMoveSpeed
 	f.speeds = append(f.speeds, r)
 	f.mu.Unlock()
 	return &worldadminv1.SetMoveSpeedResponse{Character: r.GetCharacter(), Previous: 1, Multiplier: r.GetMultiplier()}, nil
+}
+
+func (f *fakeWorld) SpawnNpc(_ context.Context, r *worldadminv1.SpawnNpcRequest) (*worldadminv1.SpawnNpcResponse, error) {
+	f.mu.Lock()
+	f.spawns = append(f.spawns, r)
+	f.mu.Unlock()
+	pt := r.GetPoint()
+	lvl := r.GetLevel()
+	if lvl == 0 {
+		lvl = 15
+	}
+	return &worldadminv1.SpawnNpcResponse{
+		Id:          600777,
+		Npc:         r.GetNpc(),
+		DisplayName: r.GetNpc(),
+		Level:       lvl,
+		Position:    &worldadminv1.Position{X: pt.GetX(), Y: pt.GetY(), Z: pt.GetZ()},
+	}, nil
 }
 
 type ctl struct {
@@ -248,7 +270,110 @@ func TestUsage(t *testing.T) {
 	if rc := run(context.Background(), []string{"fly"}, &out, &errw); rc != 2 {
 		t.Errorf("unknown command: rc %d", rc)
 	}
-	if rc := run(context.Background(), []string{"help"}, &out, &errw); rc != 0 || !strings.Contains(out.String(), "tp <character>") {
-		t.Errorf("help: rc %d\n%s", rc, out.String())
+	for _, helpArgs := range [][]string{
+		{"help"}, {"--help"}, {"-h"}, {"help", "npc"}, {"npc", "--help"}, {"tp", "-h"}, {"watch", "--help"}, {"tick-rate", "--help"}, {"simulate-npcs", "-h"},
+	} {
+		out.Reset()
+		errw.Reset()
+		rc := run(context.Background(), helpArgs, &out, &errw)
+		if rc != 0 || !strings.Contains(out.String(), "npc spawn") || !strings.Contains(out.String(), "tick-rate") || !strings.Contains(out.String(), "simulate-npcs") {
+			t.Errorf("help %v: rc %d\n%s", helpArgs, rc, out.String())
+		}
 	}
 }
+
+func TestNpcSpawn(t *testing.T) {
+	c := newCtl(t)
+	rc, out, errw := c.run("npc", "spawn", "Goblin_Scout", "-582100", "511200", "14200", "--level", "22")
+	if rc != 0 || !strings.Contains(out, "Goblin_Scout") || !strings.Contains(out, "600777") || !strings.Contains(out, "level 22") {
+		t.Fatalf("npc spawn: rc %d, out=%q, err=%q", rc, out, errw)
+	}
+	if len(c.world.spawns) != 1 || c.world.spawns[0].GetLevel() != 22 || !c.world.spawns[0].GetPoint().GetHasZ() {
+		t.Errorf("spawn request = %v", c.world.spawns)
+	}
+	for _, bad := range [][]string{
+		{"spawn", "Goblin_Scout"},
+		{"spawn", "Goblin_Scout", "100"},
+		{"spawn", "Goblin_Scout", "100", "abc"},
+		{"spawn", "Goblin_Scout", "100", "200", "--level", "999"},
+	} {
+		if rc, _, _ := c.run("npc", bad...); rc != 2 {
+			t.Errorf("npc %v: rc %d (want 2)", bad, rc)
+		}
+	}
+}
+
+func TestTickRateAndSimulateNpcs(t *testing.T) {
+	curHz, curSim := 20, true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			fmt.Fprintf(w, `{"status":"ok","server_id":"world-riverlands","tick_hz":%d,"simulate_all_npcs":%t}`, curHz, curSim)
+		case "/admin/tick_hz":
+			prev := curHz
+			fmt.Sscanf(r.URL.Query().Get("tick_hz"), "%d", &curHz)
+			fmt.Fprintf(w, `{"status":"ok","server_id":"world-riverlands","tick_hz":%d,"previous_tick_hz":%d}`, curHz, prev)
+		case "/admin/simulate_all_npcs":
+			curSim = r.URL.Query().Get("simulate_all_npcs") == "1"
+			fmt.Fprintf(w, `{"status":"ok","server_id":"world-riverlands","simulate_all_npcs":%t}`, curSim)
+		}
+	}))
+	defer srv.Close()
+
+	var out, errw bytes.Buffer
+	if rc := run(context.Background(), []string{"tick-rate", "--metrics-url", srv.URL}, &out, &errw); rc != 0 || !strings.Contains(out.String(), "20 Hz") {
+		t.Fatalf("tick-rate get: rc=%d out=%q err=%q", rc, out.String(), errw.String())
+	}
+	out.Reset()
+	if rc := run(context.Background(), []string{"tick-rate", "30", "--metrics-url", srv.URL}, &out, &errw); rc != 0 || !strings.Contains(out.String(), "30 Hz (was 20 Hz)") {
+		t.Fatalf("tick-rate set: rc=%d out=%q err=%q", rc, out.String(), errw.String())
+	}
+	if rc := run(context.Background(), []string{"tick-rate", "999", "--metrics-url", srv.URL}, &out, &errw); rc != 2 {
+		t.Errorf("tick-rate invalid hz: rc=%d (want 2)", rc)
+	}
+	out.Reset()
+	if rc := run(context.Background(), []string{"simulate-npcs", "off", "--metrics-url", srv.URL}, &out, &errw); rc != 0 || !strings.Contains(out.String(), "simulate_all_npcs=off") {
+		t.Fatalf("simulate-npcs off: rc=%d out=%q err=%q", rc, out.String(), errw.String())
+	}
+	if rc := run(context.Background(), []string{"simulate-npcs", "maybe", "--metrics-url", srv.URL}, &out, &errw); rc != 2 {
+		t.Errorf("simulate-npcs invalid arg: rc=%d (want 2)", rc)
+	}
+}
+
+func TestTimeOfDayAndWorkers(t *testing.T) {
+	curTod := 12.5
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			fmt.Fprintf(w, `{"status":"ok","server_id":"world-riverlands","partition_kind":"region","partition_id":"riverlands","tick_hz":45,"cpu_saturation_pct":35.5,"time_of_day_hours":%.2f}`, curTod)
+		case "/admin/time_of_day":
+			prev := curTod
+			fmt.Sscanf(r.URL.Query().Get("hours"), "%f", &curTod)
+			fmt.Fprintf(w, `{"status":"ok","server_id":"world-riverlands","time_of_day_hours":%.2f,"previous_time_of_day_hours":%.2f}`, curTod, prev)
+		case "/api/v1/world/workers":
+			fmt.Fprintf(w, `{"time_of_day_hours":%.2f,"workers":[{"worker_id":"world-riverlands","scope_kind":"region","scope_key":"riverlands","tick_hz":45,"cpu_pct":35.5}]}`, curTod)
+		}
+	}))
+	defer srv.Close()
+
+	var out, errw bytes.Buffer
+	if rc := run(context.Background(), []string{"time", "--metrics-url", srv.URL}, &out, &errw); rc != 0 || !strings.Contains(out.String(), "12:30:00") {
+		t.Fatalf("time get: rc=%d out=%q err=%q", rc, out.String(), errw.String())
+	}
+	out.Reset()
+	if rc := run(context.Background(), []string{"tod", "18:45", "--metrics-url", srv.URL}, &out, &errw); rc != 0 || !strings.Contains(out.String(), "18:45:00") {
+		t.Fatalf("tod 18:45: rc=%d out=%q err=%q", rc, out.String(), errw.String())
+	}
+	out.Reset()
+	if rc := run(context.Background(), []string{"time", "6.5", "--metrics-url", srv.URL}, &out, &errw); rc != 0 || !strings.Contains(out.String(), "06:30:00") {
+		t.Fatalf("time 6.5: rc=%d out=%q err=%q", rc, out.String(), errw.String())
+	}
+	if rc := run(context.Background(), []string{"time", "25:99", "--metrics-url", srv.URL}, &out, &errw); rc != 2 {
+		t.Errorf("time invalid: rc=%d (want 2)", rc)
+	}
+	out.Reset()
+	if rc := run(context.Background(), []string{"workers", "--metrics-url", srv.URL}, &out, &errw); rc != 0 || !strings.Contains(out.String(), "world-riverlands") || !strings.Contains(out.String(), "45 Hz") {
+		t.Fatalf("workers: rc=%d out=%q err=%q", rc, out.String(), errw.String())
+	}
+}
+

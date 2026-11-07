@@ -6,28 +6,39 @@ package worldstream
 
 import (
 	"context"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-const DefaultTickInterval = 100 * time.Millisecond
+const DefaultTickInterval = time.Second / 30
+
+func ServiceTickHz() float64 {
+	if v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("AOC_SERVICE_TICK_HZ")), 64); err == nil && v >= 1 && v <= 240 {
+		return v
+	}
+	return 30.0
+}
 
 type EntitySnapshot struct {
-	ID        string  `json:"id"`
-	Kind      string  `json:"kind"`
-	Name      string  `json:"name"`
-	Zone      string  `json:"zone"`
-	X         float64 `json:"x"`
-	Y         float64 `json:"y"`
-	Z         float64 `json:"z"`
-	Yaw       float64 `json:"yaw"`
-	HealthPct float64 `json:"healthPct"`
-	Level     int     `json:"level"`
-	State     string  `json:"state,omitempty"`
-	UpdatedAt int64   `json:"updatedAtMs"`
+	ID           string  `json:"id"`
+	Kind         string  `json:"kind"`
+	Name         string  `json:"name"`
+	Zone         string  `json:"zone"`
+	X            float64 `json:"x"`
+	Y            float64 `json:"y"`
+	Z            float64 `json:"z"`
+	Yaw          float64 `json:"yaw"`
+	HealthPct    float64 `json:"healthPct"`
+	Level        int     `json:"level"`
+	State        string  `json:"state,omitempty"`
+	ResourceType string  `json:"resource_type,omitempty"`
+	Quality      string  `json:"quality,omitempty"`
+	UpdatedAt    int64   `json:"updatedAtMs"`
 }
 
 type ViewportFilter struct {
@@ -84,12 +95,23 @@ type Coalescer struct {
 	tickInterval time.Duration
 	now          func() time.Time
 	entities     map[string]EntitySnapshot
+	sortedAll    []EntitySnapshot
+	sortedDirty  bool
 	subs         map[string]*Subscription
+}
+
+func sameEntityPayload(a, b EntitySnapshot) bool {
+	a.UpdatedAt = b.UpdatedAt
+	return a == b
 }
 
 func NewCoalescer(tickInterval time.Duration) *Coalescer {
 	if tickInterval <= 0 {
-		tickInterval = DefaultTickInterval
+		if hz := ServiceTickHz(); hz > 0 && hz != 30.0 {
+			tickInterval = time.Duration(float64(time.Second) / hz)
+		} else {
+			tickInterval = DefaultTickInterval
+		}
 	}
 	return &Coalescer{
 		tickInterval: tickInterval,
@@ -105,13 +127,80 @@ func (c *Coalescer) UpsertEntity(e EntitySnapshot) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	prev, exists := c.entities[e.ID]
 	if e.UpdatedAt == 0 {
-		e.UpdatedAt = c.now().UnixMilli()
+		if exists && sameEntityPayload(prev, e) {
+			e.UpdatedAt = prev.UpdatedAt
+		} else {
+			e.UpdatedAt = c.now().UnixMilli()
+		}
+	}
+	if exists && prev == e {
+		return
 	}
 	c.entities[e.ID] = e
-	for _, sub := range c.subs {
-		applyUpsertToSub(sub, e)
+	c.sortedDirty = true
+	if len(c.subs) > 0 {
+		for _, sub := range c.subs {
+			applyUpsertToSub(sub, e)
+		}
 	}
+}
+
+func (c *Coalescer) ReplaceBatch(upserts []EntitySnapshot, shouldPrune func(EntitySnapshot) bool) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	nowMs, hasSubs, mutated := c.now().UnixMilli(), len(c.subs) > 0, false
+	for _, e := range upserts {
+		if e.ID == "" {
+			continue
+		}
+		prev, exists := c.entities[e.ID]
+		if e.UpdatedAt == 0 {
+			if exists && sameEntityPayload(prev, e) {
+				e.UpdatedAt = prev.UpdatedAt
+			} else {
+				e.UpdatedAt = nowMs
+			}
+		}
+		if exists && prev == e {
+			continue
+		}
+		c.entities[e.ID] = e
+		c.sortedDirty, mutated = true, true
+		if hasSubs {
+			for _, sub := range c.subs {
+				applyUpsertToSub(sub, e)
+			}
+		}
+	}
+	if shouldPrune != nil {
+		for id, ent := range c.entities {
+			if shouldPrune(ent) {
+				delete(c.entities, id)
+				c.sortedDirty, mutated = true, true
+				if hasSubs {
+					for _, sub := range c.subs {
+						applyRemoveToSub(sub, id)
+					}
+				}
+			}
+		}
+	}
+	return mutated
+}
+
+func (c *Coalescer) PlayerSnapshots() []EntitySnapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]EntitySnapshot, 0, 8)
+	for _, e := range c.entities {
+		if e.Kind == "player" {
+			out = append(out, e)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 func applyUpsertToSub(sub *Subscription, e EntitySnapshot) {
@@ -142,6 +231,7 @@ func (c *Coalescer) RemoveEntity(id string) {
 		return
 	}
 	delete(c.entities, id)
+	c.sortedDirty = true
 	for _, sub := range c.subs {
 		applyRemoveToSub(sub, id)
 	}
@@ -162,14 +252,30 @@ func applyRemoveToSub(sub *Subscription, id string) {
 
 func (c *Coalescer) Snapshot(filter ViewportFilter) []EntitySnapshot {
 	c.mu.RLock()
+	if c.sortedDirty {
+		c.mu.RUnlock()
+		c.mu.Lock()
+		if c.sortedDirty {
+			all := make([]EntitySnapshot, 0, len(c.entities))
+			for _, e := range c.entities {
+				all = append(all, e)
+			}
+			sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+			c.sortedAll, c.sortedDirty = all, false
+		}
+		c.mu.Unlock()
+		c.mu.RLock()
+	}
 	defer c.mu.RUnlock()
-	out := make([]EntitySnapshot, 0, len(c.entities))
-	for _, e := range c.entities {
+	if !filter.HasBounds && filter.Zone == "" {
+		return append(make([]EntitySnapshot, 0, len(c.sortedAll)), c.sortedAll...)
+	}
+	out := make([]EntitySnapshot, 0, len(c.sortedAll))
+	for _, e := range c.sortedAll {
 		if filter.Matches(e) {
 			out = append(out, e)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
 }
 

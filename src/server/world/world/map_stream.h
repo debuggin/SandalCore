@@ -188,15 +188,41 @@ inline std::string actor_display_name(const WorldActor& a) {
     return name;
 }
 
+inline bool ci_has_token(std::string_view hay, std::string_view needle) noexcept {
+    if (needle.empty() || hay.size() < needle.size()) return false;
+    const size_t limit = hay.size() - needle.size();
+    for (size_t i = 0; i <= limit; ++i) {
+        size_t j = 0;
+        while (j < needle.size() && std::tolower(static_cast<unsigned char>(hay[i + j])) == std::tolower(static_cast<unsigned char>(needle[j]))) ++j;
+        if (j == needle.size()) return true;
+    }
+    return false;
+}
+
 inline bool is_hostile_npc(const WorldActor& a) {
-    if (a.kind != ActorKind::Npc || a.npc.is_gm_vendor || a.npc.vendor_guid != 0 || a.npc.dialogue_root != 0 || a.npc.aggro_off || a.npc.ground_by_data ||
-        a.npc.spawn_ref >= 0x80000000u) {
-        return false;
+    if (a.kind != ActorKind::Npc || a.npc.is_gm_vendor || a.npc.vendor_guid != 0 || a.npc.dialogue_root != 0) return false;
+    const std::string name = actor_display_name(a);
+    const std::string& p = a.npc.archetype;
+    static constexpr std::string_view kFriendlyRoles[] = {
+        "citizen", "guard", "vendor", "merchant", "innkeeper", "villager", "guide", "quest", "trainer", "smith",
+        "banker", "mayor", "artisan", "stablemaster", "towncrier", "healer", "emissary", "quartermaster", "caretaker", "clerk", "herald", "/pcraces/node/"
+    };
+    for (std::string_view role : kFriendlyRoles) {
+        if ((ci_has_token(name, role) || ci_has_token(p, role)) && a.npc.loot_tables.empty()) return false;
     }
     if (a.npc.aggro_radius_cm > 0.0 || !a.npc.loot_tables.empty()) return true;
-    const std::string& p = a.npc.archetype;
-    return p.find("/NPC/Monster/") != std::string::npos || p.find("/NPC/Beast/") != std::string::npos || p.find("/NPC/Humanoid/") != std::string::npos ||
-           p.find("/Bandits") != std::string::npos || p.find("/Cultists") != std::string::npos;
+    static constexpr std::string_view kMonsterTokens[] = {
+        "/npc/monster/", "/npc/beast/", "/npc/humanoid/", "/bandits", "/cultists", "hunting_",
+        "raven", "mycel", "rabid", "wolf", "goblin", "spider", "skeleton", "zombie", "bandit", "bear",
+        "elemental", "dragon", "raider", "cultist", "minotaur", "orc", "troll", "demon", "undead", "slime",
+        "boar", "scorpion", "wyvern", "golem", "stalker", "brute", "grem", "gryphon", "raptor", "bullywog",
+        "crox", "scarab", "beetle", "broodling", "skinwalker", "hoarder", "deer", "stag", "ram", "buck",
+        "doe", "fox", "badger", "crab", "turtle", "drake", "imp", "ooze", "construct"
+    };
+    for (std::string_view tok : kMonsterTokens) {
+        if (ci_has_token(name, tok) || ci_has_token(p, tok)) return true;
+    }
+    return false;
 }
 
 /// The record of a registry actor.  `ov` is its row of the fights' overlay, if it has one.

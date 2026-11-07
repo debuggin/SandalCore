@@ -189,6 +189,9 @@ std::vector<const content::AutoGrant*> setup_character_progress(const svc::Chara
             }
         }
         out.progress = leveling::progress_of(*stat_context.curve, ch.level, xp, debt);
+        if (ch.level > out.progress.level && ch.level <= content::kMaxLevel) {
+            out.progress.level = ch.level;
+        }
         if (xp && *xp < stat_context.curve->xp_for(ch.level)) {
             out.notes.push_back("the record's Adventuring XP " + std::to_string(*xp) + " is below level " + std::to_string(ch.level) +
                                 "'s threshold: the threshold is used");

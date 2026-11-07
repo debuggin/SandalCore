@@ -224,7 +224,7 @@ export function navigateContextMenuKey(
 export function WorldContextMenu(
   props: WorldContextMenuProps,
 ): React.ReactElement | null {
-  if (!props.picked) {
+  if (!props.picked || props.selectedEntityGuid) {
     return null;
   }
   const [mosaicU, mosaicV] = worldCmToMosaicPx(
@@ -234,12 +234,10 @@ export function WorldContextMenu(
   const items: readonly WorldContextMenuItem[] = [
     {
       id: "Teleport",
-      label: props.selectedPlayer
-        ? `Teleport ${props.selectedPlayer} Here`
-        : "Teleport Player Here",
+      label: "Teleport Player Here...",
       disabled: false,
     },
-    { id: "SpawnNpc", label: "Spawn NPC Here", disabled: false },
+    { id: "SpawnNpc", label: "Spawn NPC / Monster Here...", disabled: false },
     {
       id: "OpenSpawnerTab",
       label: "Open in Players & Spawner Tab",

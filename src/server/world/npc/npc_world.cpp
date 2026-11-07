@@ -3,13 +3,12 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #include "npc/npc_world.h"
 
+#include "bootstrap/constants.h"
 #include "protocol/repl/codecs.h"
 #include "protocol/repl/move_packed.h"
 #include "protocol/repl/value.h"
 
 #include <algorithm>
-#include <chrono>
-#include <cmath>
 #include <limits>
 
 namespace aoc::worldd::npc {
@@ -31,11 +30,7 @@ size_t nearest_waypoint_index(const std::vector<nav::Vec3>& route, const nav::Ve
     size_t best_idx = 0;
     double best = 1e30;
     for (size_t i = 0; i < route.size(); ++i) {
-        const double d = dist2d(route[i], home);
-        if (d < best) {
-            best = d;
-            best_idx = i;
-        }
+        if (const double d = dist2d(route[i], home); d < best) { best = d; best_idx = i; }
     }
     return best_idx;
 }
@@ -45,12 +40,8 @@ bool finite_setup(const NpcMotionSetup& s) {
                      s.arrival_distance, s.awake_radius}) {
         if (!std::isfinite(v)) return false;
     }
-    for (const nav::Vec3& p : s.route) {
-        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return false;
-    }
-    for (double p : s.pauses) {
-        if (!std::isfinite(p)) return false;
-    }
+    for (const nav::Vec3& p : s.route) if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return false;
+    for (double p : s.pauses) if (!std::isfinite(p)) return false;
     return s.foot_offset >= 0 && s.foot_offset < 5000 && s.wander_min >= 0 && s.wander_max >= s.wander_min && s.walk_speed >= 0 && s.patrol_speed >= 0 && s.run_speed >= 0;
 }
 
@@ -146,6 +137,17 @@ void NpcWorld::set_global_simulate_all_npcs(bool v) noexcept {
 }
 
 bool NpcWorld::dispatch_gm_work_item(std::string_view kind, std::string_view payload, NpcWorld* world) noexcept {
+    if (kind == "gm.SetTimeOfDay" || kind == "set_time_of_day" || kind == "time_of_day") {
+        double hours = 12.0;
+        for (size_t i = 0; i < payload.size(); ++i) {
+            if ((payload[i] >= '0' && payload[i] <= '9') || (payload[i] == '-' && i + 1 < payload.size() && payload[i + 1] >= '0' && payload[i + 1] <= '9')) {
+                hours = std::strtod(payload.data() + i, nullptr);
+                break;
+            }
+        }
+        bootstrap::set_global_time_of_day_hours(hours);
+        return true;
+    }
     if (kind != "gm.SetSimulateAllNpcs" && kind != "set_simulate_all_npcs" && kind != "simulate_all_npcs") return false;
     bool enabled = true;
     if (payload.find("false") != std::string_view::npos || payload.find("FALSE") != std::string_view::npos ||
@@ -480,24 +482,45 @@ void NpcWorld::step(double t) {
     stats_.max_pathfinds_in_step = std::max(stats_.max_pathfinds_in_step, pathfinds_this_step_);
 }
 
+void NpcWorld::step_roam(Npc& n, double t) {
+    world::WorldActor* a = registry_.find(n.id);
+    if (!a) return;
+    if (n.pending_ground && n.can_ambient_roam) {
+        n.pending_ground = false;
+        if (pending_count_ > 0) --pending_count_;
+    }
+    if (n.setup.ambient == Ambient::Patrol && n.setup.route.size() >= 2) {
+        advance_ambient_patrol(n, *a, t, cfg_.step_seconds);
+    } else {
+        advance_ambient_wander(n, *a, t, cfg_.step_seconds);
+    }
+}
+
 void NpcWorld::step_all_ambient(double t) {
     bool explicit_env = false;
     (void)parse_env_simulate_all_npcs(&explicit_env);
     const bool allow_when_players = explicit_env || seen_global_sim_epoch_ > 0;
     if (!players_.empty() && !allow_when_players) return;
-    const double dt = cfg_.step_seconds;
-    for (auto& [id, n] : npcs_) {
+    const size_t total = npcs_.size();
+    if (total == 0) return;
+    const size_t max_slice = std::min(total, std::max<size_t>(1, cfg_.sim_step_cap));
+    const double budget_ms = std::max(0.5, 0.375 * cfg_.step_seconds * 1000.0);
+    const auto slice_start = std::chrono::steady_clock::now();
+    auto it = npcs_.begin();
+    std::advance(it, static_cast<std::ptrdiff_t>(ambient_cursor_ % total));
+    size_t stepped = 0;
+    for (size_t visited = 0; visited < total && stepped < max_slice; ++visited) {
+        if (it == npcs_.end()) it = npcs_.begin();
+        Npc& n = it->second;
+        ++it;
         if (n.active || n.rm || (!n.can_ambient_roam && !allow_when_players)) continue;
         if (n.mode == Mode::Ordered || n.pursue || n.track) continue;
         if (n.setup.ambient == Ambient::Stationary && !n.hostile && n.setup.route.size() < 2) continue;
-        world::WorldActor* a = registry_.find(id);
-        if (!a) continue;
-        if (n.setup.ambient == Ambient::Patrol && n.setup.route.size() >= 2) {
-            advance_ambient_patrol(n, *a, t, dt);
-        } else {
-            advance_ambient_wander(n, *a, t, dt);
-        }
+        step_roam(n, t);
+        ++stepped;
+        if ((stepped & 63u) == 0 && std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - slice_start).count() >= budget_ms) break;
     }
+    ambient_cursor_ = (ambient_cursor_ + std::max<size_t>(1, stepped)) % total;
 }
 
 void NpcWorld::advance_ambient_patrol(Npc& n, world::WorldActor& a, double t, double dt) {
@@ -506,15 +529,12 @@ void NpcWorld::advance_ambient_patrol(Npc& n, world::WorldActor& a, double t, do
     if (count < 2) return;
     if (n.wp >= count) n.wp = 0;
     const nav::Vec3& wp = n.setup.route[n.wp];
-    const double dx = wp.x - a.x, dy = wp.y - a.y;
-    const double dist = std::hypot(dx, dy);
-    const double speed = std::max(n.setup.patrol_speed, 360.0);
-    const double step_cm = speed * dt;
+    const double dx = wp.x - a.x, dy = wp.y - a.y, dist = std::hypot(dx, dy);
+    const double step_cm = std::max(n.setup.patrol_speed, 360.0) * dt;
     if (dist <= 80.0 || dist <= step_cm) {
         const double pause = n.wp < n.setup.pauses.size() ? std::max(0.0, n.setup.pauses[n.wp]) : 0.2;
-        if (n.setup.loop) {
-            n.wp = (n.wp + 1) % count;
-        } else {
+        if (n.setup.loop) n.wp = (n.wp + 1) % count;
+        else {
             if (n.wp_dir > 0 && n.wp + 1 >= count) n.wp_dir = -1;
             else if (n.wp_dir < 0 && n.wp == 0) n.wp_dir = 1;
             n.wp = static_cast<size_t>(static_cast<long long>(n.wp) + n.wp_dir);
@@ -541,8 +561,7 @@ void NpcWorld::advance_ambient_wander(Npc& n, world::WorldActor& a, double t, do
     const double dist_goal = was_goal ? std::hypot(n.goal_x - a.x, n.goal_y - a.y) : 0.0;
     if (!was_goal || dist_goal < 120.0) {
         if (was_goal && t < n.wait_until) return;
-        const double ang = next_unit(n) * 6.283185307179586;
-        const double rad = (0.25 + 0.75 * std::sqrt(next_unit(n))) * roam_r;
+        const double ang = next_unit(n) * 6.283185307179586, rad = (0.25 + 0.75 * std::sqrt(next_unit(n))) * roam_r;
         n.goal_x = n.home.x + std::cos(ang) * rad;
         n.goal_y = n.home.y + std::sin(ang) * rad;
         n.goal_z = n.home.z;
@@ -551,8 +570,7 @@ void NpcWorld::advance_ambient_wander(Npc& n, world::WorldActor& a, double t, do
         ++stats_.moves_started;
     }
     if (t < n.wait_until) return;
-    const double dx = n.goal_x - a.x, dy = n.goal_y - a.y;
-    const double d = std::hypot(dx, dy);
+    const double dx = n.goal_x - a.x, dy = n.goal_y - a.y, d = std::hypot(dx, dy);
     if (d < 1e-3) { n.has_goal = false; return; }
     const double step_cm = std::min(d, speed * dt);
     const double nx = a.x + (dx / d) * step_cm, ny = a.y + (dy / d) * step_cm;
@@ -577,9 +595,7 @@ void NpcWorld::go_idle(Npc& n) {
         case Ambient::Patrol:
             if (n.setup.route.size() >= 2) { n.mode = Mode::PatrolPause; n.timer = 0.2; break; }
             [[fallthrough]];
-        default:
-            n.mode = Mode::Stand;
-            break;
+        default: n.mode = Mode::Stand; break;
     }
 }
 

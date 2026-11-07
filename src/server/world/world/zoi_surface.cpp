@@ -8,12 +8,55 @@
 
 #include "world/zoi_surface_table.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <iterator>
+#include <mutex>
+#include <string>
 
 namespace aoc::worldd::world {
 
 namespace zs = zoi_surface;
+
+namespace {
+
+bool is_disk_data_mode() noexcept {
+    for (const char* k : {"AOC_DATA_MODE_ZOIS", "AOC_DATA_MODE_DEFAULT"}) {
+        if (const char* v = std::getenv(k); v && *v) return v[0] == 'd' || v[0] == 'D';
+    }
+    return false;
+}
+
+const char* resolve_zois_tsv_path() noexcept {
+    if (const char* p = std::getenv("AOC_ZOIS_TSV_PATH"); p && *p) return p;
+    return "/content/zois.tsv";
+}
+
+std::vector<uint64_t> read_zois_tsv_guids(const char* path) {
+    std::vector<uint64_t> out;
+    std::ifstream in(path);
+    if (!in.is_open() && std::string(path) == "/content/zois.tsv") in.open("dist/content/zois.tsv");
+    if (!in.is_open()) return out;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#' || line.rfind("guid", 0) == 0) continue;
+        char* endp = nullptr;
+        const unsigned long long g = std::strtoull(line.c_str(), &endp, 10);
+        if (endp != line.c_str() && g != 0) out.push_back(static_cast<uint64_t>(g));
+    }
+    return out;
+}
+
+const std::vector<uint64_t>& cached_tsv_guids() {
+    static std::once_flag once;
+    static std::vector<uint64_t> cached;
+    std::call_once(once, [] { cached = read_zois_tsv_guids(resolve_zois_tsv_path()); });
+    return cached;
+}
+
+}  // namespace
 
 uint64_t zoi_at(double x_cm, double y_cm) {
     if (!std::isfinite(x_cm) || !std::isfinite(y_cm)) return 0;
@@ -40,9 +83,18 @@ uint64_t zoi_at(double x_cm, double y_cm) {
     return 0;
 }
 
-std::vector<uint64_t> zoi_surface_palette() { return std::vector<uint64_t>(std::begin(zs::kPalette), std::end(zs::kPalette)); }
+std::vector<uint64_t> zoi_surface_palette() {
+    std::vector<uint64_t> pal(std::begin(zs::kPalette), std::end(zs::kPalette));
+    const std::vector<uint64_t> tsv = is_disk_data_mode() ? read_zois_tsv_guids(resolve_zois_tsv_path()) : cached_tsv_guids();
+    for (uint64_t g : tsv) {
+        if (std::find(pal.begin(), pal.end(), g) == pal.end()) pal.push_back(g);
+    }
+    std::sort(pal.begin(), pal.end());
+    return pal;
+}
 
 ZoiSurfaceInfo zoi_surface_info() {
+    if (!is_disk_data_mode()) (void)cached_tsv_guids();
     ZoiSurfaceInfo info;
     for (const uint32_t slot : zs::kIndex) {
         if (slot == zs::kNone) continue;

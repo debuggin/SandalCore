@@ -78,7 +78,7 @@ function Get-SandalStaleComposeServices {
     if ($ForceBuild) { return @('world') + $goServices + @('web-admin') }
     $stale = [System.Collections.Generic.List[string]]::new()
     $cppNewest = Get-NewestSourceWriteUtc -RootPath $RootPath -RelPaths @('src\server\world', 'src\libs', 'src\server\proto', 'src\deploy\docker\cpp.Dockerfile', 'build\gen\world')
-    $worldCreated = Get-DockerCreatedUtc -Target 'aoc-world-riverlands'
+    $worldCreated = Get-DockerCreatedUtc -Target 'aoc-world'
     $imgCreated = Get-DockerCreatedUtc -Target 'sandal-world:local'
     if ($imgCreated -gt $worldCreated) { $worldCreated = $imgCreated }
     if ($worldCreated -eq [datetime]::MinValue -or $cppNewest -gt $worldCreated) { $stale.Add('world') }
@@ -111,17 +111,27 @@ function Get-UpStageReadiness {
 }
 
 function Build-ComposeUpArguments {
-    param([string]$ComposeFile, [string]$EnvFile, [string]$ProfileName, [bool]$IsDetach, [bool]$IsSingleWorker = $false)
+    param([string]$ComposeFile, [string]$EnvFile, [string]$ProfileName, [string]$ShardMode = 'single', [bool]$IsDetach = $false)
     $cmdArgs = [System.Collections.Generic.List[string]]::new()
     $cmdArgs.AddRange([string[]]@('compose', '-f', $ComposeFile, '--env-file', $EnvFile))
     if ($ProfileName -ne 'default') {
         $cmdArgs.AddRange([string[]]@('--profile', $ProfileName))
     }
+    $effShard = $ShardMode.Trim().ToLowerInvariant()
+    switch ($effShard) {
+        'mixed'                 { $cmdArgs.AddRange([string[]]@('--profile', 'mixed')) }
+        'regional'              { $cmdArgs.AddRange([string[]]@('--profile', 'regional')) }
+        'region'                { $cmdArgs.AddRange([string[]]@('--profile', 'regional')) }
+        'zoi'                   { $cmdArgs.AddRange([string[]]@('--profile', 'zoi')) }
+        'dynamic_zoi'           { $cmdArgs.AddRange([string[]]@('--profile', 'zoi')) }
+        'node_plug_zoi'         { $cmdArgs.AddRange([string[]]@('--profile', 'node_plug_zoi')) }
+        'dynamic_node_plug_zoi' { $cmdArgs.AddRange([string[]]@('--profile', 'node_plug_zoi')) }
+    }
     $cmdArgs.Add('up')
     if ($IsDetach) {
         $cmdArgs.AddRange([string[]]@('-d', '--wait'))
     }
-    if ($IsSingleWorker) {
+    if ($effShard -in @('single', 'world')) {
         $cmdArgs.AddRange([string[]]@(
             'postgres', 'auth', 'character', 'citynode', 'quest',
             'mesh', 'gateway', 'mesh-gateway', 'world', 'web-admin', 'ingress-proxy'
@@ -130,15 +140,48 @@ function Build-ComposeUpArguments {
     return $cmdArgs.ToArray()
 }
 
-function Set-SandalSingleWorkerMode {
-    param([bool]$RemoveExtraContainers = $false)
-    $env:AOC_WORLD_SHARD_MODE = 'single'
-    $env:AOC_WORLD_REGION = 'all'
-    $env:AOC_WORLD_WORKER_ID = 'world-verra'
-    $env:AOC_WORLD_WORKERS = 'world-verra|all|world|world:50061|world:50062|aoc-world-riverlands'
+function Set-SandalTopologyWorkerMode {
+    param([string]$ShardMode = 'single', [string]$EnvFile = '', [bool]$ForceSingle = $false, [bool]$RemoveExtraContainers = $false)
+    $mode = if ($ForceSingle -or [string]::IsNullOrWhiteSpace($ShardMode)) { 'single' } else { $ShardMode.Trim().ToLowerInvariant() }
+    $extraToRemove = @('aoc-world-riverlands', 'aoc-world-sandsquall', 'aoc-world-jundark', 'aoc-world-anvils', 'aoc-world-turquoise-sea', 'aoc-world-sandsquall-sunhaven', 'aoc-world-sandsquall-azmaran')
+    switch ($mode) {
+        'single' {
+            $env:AOC_WORLD_TOPOLOGY_MODE = 'single'; $env:AOC_WORLD_SHARD_MODE = 'single'
+            $env:AOC_WORLD_REGION = 'riverlands'; $env:AOC_WORLD_WORKER_ID = 'world-riverlands'; $env:AOC_WORLD_WORKER_INDEX = '0'
+            $env:AOC_WORLD_WORKERS = 'world-riverlands|riverlands|region|world:50061|world:50062|aoc-world|0'
+            if ($ForceSingle -and $EnvFile -and (Test-Path -LiteralPath $EnvFile -PathType Leaf)) {
+                $raw = [System.IO.File]::ReadAllText($EnvFile, [System.Text.Encoding]::UTF8)
+                $raw = [regex]::Replace($raw, '(?m)^AOC_WORLD_TOPOLOGY_MODE=.*$', 'AOC_WORLD_TOPOLOGY_MODE=single')
+                $raw = [regex]::Replace($raw, '(?m)^AOC_WORLD_SHARD_MODE=.*$', 'AOC_WORLD_SHARD_MODE=single')
+                $raw = [regex]::Replace($raw, '(?m)^AOC_WORLD_REGION=.*$', 'AOC_WORLD_REGION=riverlands')
+                $raw = [regex]::Replace($raw, '(?m)^AOC_WORLD_WORKER_ID=.*$', 'AOC_WORLD_WORKER_ID=world-riverlands')
+                $raw = [regex]::Replace($raw, '(?m)^AOC_WORLD_WORKER_INDEX=.*$', 'AOC_WORLD_WORKER_INDEX=0')
+                $raw = [regex]::Replace($raw, '(?m)^AOC_WORLD_WORKERS=.*$', 'AOC_WORLD_WORKERS=world-riverlands|riverlands|region|world:50061|world:50062|aoc-world|0')
+                [System.IO.File]::WriteAllText($EnvFile, $raw, [System.Text.UTF8Encoding]::new($false))
+            }
+            $extraToRemove += @('aoc-sandsquall', 'aoc-jundark', 'aoc-anvils', 'aoc-turquoise-sea', 'aoc-verra-san-node-sunhaven', 'aoc-verra-san-node-azmaran', 'aoc-sunhaven', 'aoc-azmaran')
+        }
+        'world' {
+            $env:AOC_WORLD_TOPOLOGY_MODE = 'world'; $env:AOC_WORLD_SHARD_MODE = 'world'
+            $env:AOC_WORLD_REGION = 'all'; $env:AOC_WORLD_WORKER_ID = 'world-verra'; $env:AOC_WORLD_WORKER_INDEX = '0'
+            $env:AOC_WORLD_WORKERS = 'world-verra|all|world|world:50061|world:50062|aoc-world|0'
+            $extraToRemove += @('aoc-sandsquall', 'aoc-jundark', 'aoc-anvils', 'aoc-turquoise-sea', 'aoc-verra-san-node-sunhaven', 'aoc-verra-san-node-azmaran', 'aoc-sunhaven', 'aoc-azmaran')
+        }
+        'mixed' {
+            $extraToRemove += @('aoc-sandsquall', 'aoc-sunhaven', 'aoc-azmaran')
+        }
+        { $_ -in @('regional', 'region') } {
+            $extraToRemove += @('aoc-verra-san-node-sunhaven', 'aoc-verra-san-node-azmaran', 'aoc-sunhaven', 'aoc-azmaran')
+        }
+        { $_ -in @('zoi', 'dynamic_zoi') } {
+            $extraToRemove += @('aoc-sandsquall', 'aoc-jundark', 'aoc-anvils', 'aoc-turquoise-sea', 'aoc-sunhaven', 'aoc-azmaran')
+        }
+        { $_ -in @('node_plug_zoi', 'dynamic_node_plug_zoi') } {
+            $extraToRemove += @('aoc-sandsquall', 'aoc-jundark', 'aoc-anvils', 'aoc-turquoise-sea')
+        }
+    }
     if ($RemoveExtraContainers -and (Get-Command docker -ErrorAction SilentlyContinue)) {
-        $extraWorkers = @('aoc-world-sandsquall', 'aoc-world-jundark', 'aoc-world-anvils', 'aoc-world-turquoise-sea')
-        try { & docker rm -f @extraWorkers *> $null } catch { }
+        try { & docker rm -f @extraToRemove *> $null } catch { }
         $global:LASTEXITCODE = 0
     }
 }
@@ -182,7 +225,7 @@ function Remove-SandalLegacyOrUntaggedContainers {
         $parts = $line.Split('|', 2)
         $cName = $parts[0].Trim()
         $cImg = if ($parts.Count -gt 1) { $parts[1].Trim() } else { '' }
-        if ($cName -eq 'aoc-world' -or -not $cImg.StartsWith('sandal-', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($cName -eq 'aoc-world-riverlands' -or -not $cImg.StartsWith('sandal-', [System.StringComparison]::OrdinalIgnoreCase)) {
             $toRemove.Add($cName)
         }
     }
@@ -208,9 +251,6 @@ $baseDefaults = @{
     Json         = [bool]($Json -or $inheritedJson)
 }
 $opts = Resolve-UpOptions -Defaults $baseDefaults -RawArgs (@($Arguments) + @($RemainingArgs))
-if ($opts.SingleWorker) {
-    Set-SandalSingleWorkerMode -RemoveExtraContainers $false
-}
 $quiet = [bool]$opts.Json
 $fromRun = ($env:SANDAL_FROM_RUN -eq '1')
 if ($quiet) { $env:SANDAL_QUIET = '1' }
@@ -219,9 +259,24 @@ if (-not $fromRun) {
     Write-UpStep -Message '[Step 1/3] Staging deploy/ manifests and environment variables...' -Quiet $quiet
     $deploySync = Sync-SandalDeployStage -RepoRoot $rootPath
 }
-$composeFile = Join-Path $rootPath 'deploy\compose.yml'
-$envFile = Join-Path $rootPath 'deploy\.env'
-$composeArgs = Build-ComposeUpArguments -ComposeFile $composeFile -EnvFile $envFile -ProfileName $opts.Profile -IsDetach $opts.Detach -IsSingleWorker $opts.SingleWorker
+$deployDir = Join-Path $rootPath 'deploy'
+$composeFile = Join-Path $deployDir 'compose.yml'
+$envFile = Join-Path $deployDir '.env'
+$bootSecrets = $null
+if (-not $opts.DryRun -or (Test-Path -LiteralPath $envFile -PathType Leaf)) {
+    $bootSecrets = Update-SandalAdminBootSecrets -DeployDir $deployDir
+    if (-not $opts.DryRun -and (Get-Command Ensure-SandalRootLauncherShortcut -ErrorAction SilentlyContinue)) {
+        $null = Ensure-SandalRootLauncherShortcut -RepoRoot $rootPath
+    }
+    if (-not $quiet -and $null -ne $bootSecrets) {
+        [Console]::Out.WriteLine("[Web Admin] URL: http://127.0.0.1:8080/ | Username: $($bootSecrets.Username) | Passphrase: $($bootSecrets.Passphrase)")
+        [Console]::Out.WriteLine("Launcher:    SandalLauncher.lnk -> dist\launcher\SandalLauncher.exe")
+    }
+}
+$envMap = Get-SandalEnvMap -EnvPath $envFile
+$shardMode = if ($opts.SingleWorker) { 'single' } elseif ($envMap.Contains('AOC_WORLD_SHARD_MODE') -and -not [string]::IsNullOrWhiteSpace([string]$envMap['AOC_WORLD_SHARD_MODE'])) { [string]$envMap['AOC_WORLD_SHARD_MODE'] } elseif ($envMap.Contains('AOC_WORLD_TOPOLOGY_MODE') -and -not [string]::IsNullOrWhiteSpace([string]$envMap['AOC_WORLD_TOPOLOGY_MODE'])) { [string]$envMap['AOC_WORLD_TOPOLOGY_MODE'] } else { 'single' }
+Set-SandalTopologyWorkerMode -ShardMode $shardMode -EnvFile $envFile -ForceSingle $opts.SingleWorker -RemoveExtraContainers $false
+$composeArgs = Build-ComposeUpArguments -ComposeFile $composeFile -EnvFile $envFile -ProfileName $opts.Profile -ShardMode $shardMode -IsDetach $opts.Detach
 $stageChecks = @(Get-UpStageReadiness -RootPath $rootPath)
 $allUpToDate = (@($stageChecks | Where-Object { -not $_.up_to_date }).Count -eq 0)
 
@@ -229,14 +284,12 @@ if (-not $opts.DryRun) {
     if (-not $fromRun) {
         Write-UpStep -Message '[Step 2/3] Verifying WSL2 & Docker daemon readiness...' -Quiet $quiet
         $null = Ensure-SandalDockerDaemon
-        Write-UpStep -Message "[Step 3/3] Starting Docker Compose containers (profile=$($opts.Profile), detach=$($opts.Detach))..." -Quiet $quiet
+        Write-UpStep -Message "[Step 3/3] Starting Docker Compose containers (profile=$($opts.Profile), shard=$shardMode, detach=$($opts.Detach))..." -Quiet $quiet
     }
     if (Get-Command Set-SandalWslComposeMountEnv -ErrorAction SilentlyContinue) {
-        Set-SandalWslComposeMountEnv -DeployDir (Join-Path $rootPath 'deploy')
+        Set-SandalWslComposeMountEnv -DeployDir $deployDir
     }
-    if ($opts.SingleWorker) {
-        Set-SandalSingleWorkerMode -RemoveExtraContainers $true
-    }
+    Set-SandalTopologyWorkerMode -ShardMode $shardMode -EnvFile $envFile -ForceSingle $opts.SingleWorker -RemoveExtraContainers $true
     Push-Location $rootPath
     try {
         $staleServices = @(Get-SandalStaleComposeServices -RootPath $rootPath -ForceBuild $opts.Build)

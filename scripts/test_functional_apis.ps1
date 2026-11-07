@@ -56,36 +56,33 @@ function Assert-SandalCertsAndContentReady {
 
 function Test-SandalSingleWorkerTopology {
     if ($env:AOC_WORLD_SHARD_MODE -eq 'single') { return $true }
-    $riverSt = (& docker inspect --format '{{.State.Status}}' aoc-world-riverlands 2>$null) -join ''
+    $worldSt = (& docker inspect --format '{{.State.Status}}' aoc-world 2>$null) -join ''
     $global:LASTEXITCODE = 0
-    if ($riverSt.Trim() -ne 'running') { return $false }
-    $sandSt = (& docker inspect --format '{{.State.Status}}' aoc-world-sandsquall 2>$null) -join ''
+    if ($worldSt.Trim() -ne 'running') { return $false }
+    $junSt = (& docker inspect --format '{{.State.Status}}' aoc-jundark 2>$null) -join ''
     $global:LASTEXITCODE = 0
-    return ($sandSt.Trim() -ne 'running')
+    return ($junSt.Trim() -ne 'running')
 }
 
 function Start-SandalComposeStackIfNeeded {
     param([string]$RootDir, [string[]]$ExpectedContainers)
-    $needsStart = -not (Test-Path -LiteralPath (Join-Path $RootDir 'deploy\compose.yml') -PathType Leaf)
-    if (-not $needsStart) {
-        foreach ($name in $ExpectedContainers) {
-            $st = (& docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $name 2>$null) -join ''
-            if ($LASTEXITCODE -ne 0 -or $st.Trim() -ne 'running|healthy') { $needsStart = $true; break }
-        }
+    $needsStart = $false
+    foreach ($name in $ExpectedContainers) {
+        $st = (& docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $name 2>$null) -join ''
+        if ($LASTEXITCODE -ne 0 -or $st.Trim() -ne 'running|healthy') { $needsStart = $true; break }
     }
     if (-not $needsStart) { return }
-    & pwsh -NoProfile -File (Join-Path $RootDir 'sandal.ps1') deploy -Json *> $null
     if ($env:AOC_WORLD_SHARD_MODE -eq 'single') {
         & pwsh -NoProfile -File (Join-Path $RootDir 'scripts\sandal\up.ps1') -Detach -SingleWorker -Json *> $null
     } else {
-        & docker compose -f (Join-Path $RootDir 'deploy\compose.yml') --env-file (Join-Path $RootDir 'deploy\.env') up -d --wait --remove-orphans *> $null
+        & pwsh -NoProfile -File (Join-Path $RootDir 'scripts\sandal\up.ps1') -Detach -Json *> $null
     }
 }
 
 function Assert-WorldStartupSubsystemsLoaded {
     $bootLogs = ''
     for ($attempt = 0; $attempt -lt 45; $attempt++) {
-        $allLogs = (& docker logs aoc-world-riverlands 2>&1) -join "`n"
+        $allLogs = (& docker logs aoc-world 2>&1) -join "`n"
         $boots = [regex]::Matches($allLogs, '(?m)^.*\[content\] /app/content/content\.db: contentc version.*$')
         $bootLogs = if ($boots.Count -gt 0) { $allLogs.Substring($boots[$boots.Count - 1].Index) } else { $allLogs }
         if ($bootLogs -match 'foliage.*on: \d+ instances|did not open|refuses every login|no such column') { break }
@@ -104,7 +101,7 @@ function Assert-WorldStartupSubsystemsLoaded {
     )
     foreach ($pat in $forbiddenPatterns) {
         if ($bootLogs -match $pat) {
-            throw "aoc-world-riverlands startup logs matched forbidden missing-table/error pattern '$pat'."
+            throw "aoc-world startup logs matched forbidden missing-table/error pattern '$pat'."
         }
     }
     $requiredPatterns = @(
@@ -118,7 +115,7 @@ function Assert-WorldStartupSubsystemsLoaded {
     )
     foreach ($req in $requiredPatterns) {
         if ($bootLogs -notmatch $req) {
-            throw "aoc-world-riverlands startup logs missing required subsystem confirmation '$req'."
+            throw "aoc-world startup logs missing required subsystem confirmation '$req'."
         }
     }
 }
@@ -135,10 +132,10 @@ function Assert-SandalDockerStackHealthy {
     $isSingle = Test-SandalSingleWorkerTopology
     $expected = @(
         'aoc-postgres', 'aoc-auth', 'aoc-character', 'aoc-citynode', 'aoc-quest',
-        'aoc-mesh', 'aoc-gateway', 'aoc-mesh-gateway', 'aoc-web-admin', 'aoc-world-riverlands'
+        'aoc-mesh', 'aoc-gateway', 'aoc-mesh-gateway', 'aoc-web-admin', 'aoc-world'
     )
     if (-not $isSingle) {
-        $expected += @('aoc-world-sandsquall', 'aoc-world-jundark', 'aoc-world-anvils', 'aoc-world-turquoise-sea')
+        $expected += @('aoc-jundark', 'aoc-anvils', 'aoc-turquoise-sea', 'aoc-verra-san-node-sunhaven', 'aoc-verra-san-node-azmaran')
     }
     $expected += 'aoc-ingress-proxy'
     Start-SandalComposeStackIfNeeded -RootDir $RootDir -ExpectedContainers $expected
@@ -240,9 +237,9 @@ function Assert-WebAdminWorldStateAndContainers {
     if ($cSw.Elapsed.TotalSeconds -ge 3.0 -or $cList.Count -lt $minContainers -or -not $cDoc.world_status.connected -or [int]$cDoc.world_status.npcs_total -le 0) {
         throw "GET /api/v1/gm/containers failed: elapsed=$($cSw.ElapsedMilliseconds)ms count=$($cList.Count) expected_min=$minContainers connected=$($cDoc.world_status.connected)."
     }
-    $logsDoc = Invoke-RestMethod -Uri "$BaseUrl/api/v1/gm/logs?container=aoc-world-riverlands&tail=30" -Headers $Headers -Method Get -TimeoutSec 10
+    $logsDoc = Invoke-RestMethod -Uri "$BaseUrl/api/v1/gm/logs?container=aoc-world&tail=30" -Headers $Headers -Method Get -TimeoutSec 10
     if (@($logsDoc.items).Count -le 0) {
-        throw 'GET /api/v1/gm/logs?container=aoc-world-riverlands&tail=30 returned 0 log items.'
+        throw 'GET /api/v1/gm/logs?container=aoc-world&tail=30 returned 0 log items.'
     }
 }
 
@@ -285,12 +282,12 @@ function Invoke-WebAdminFunctionalApiSuite {
     Push-Location $servicesDir
     try {
         if ($Quiet) {
-            $out = @(& go test -v -count=1 ../../tests/go/web_admin_api_e2e_test.go 2>&1)
+            $out = @(& go test -v -count=1 ../../tests/go/web_admin_api_e2e_test.go ../../tests/go/web_admin_handover_and_auth_e2e_test.go 2>&1)
             if ($LASTEXITCODE -ne 0) {
                 throw "Web Admin Go E2E suite failed (exit $LASTEXITCODE):`n$($out -join "`n")"
             }
         } else {
-            & go test -v -count=1 ../../tests/go/web_admin_api_e2e_test.go
+            & go test -v -count=1 ../../tests/go/web_admin_api_e2e_test.go ../../tests/go/web_admin_handover_and_auth_e2e_test.go
             if ($LASTEXITCODE -ne 0) {
                 throw "Web Admin Go E2E suite failed (exit $LASTEXITCODE)."
             }
@@ -335,7 +332,7 @@ function Invoke-LauncherFunctionalApiSuite {
 $rootPath = if ($RepoRoot) { [System.IO.Path]::GetFullPath($RepoRoot) } else { (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
 $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
 
-$expectedContainerTarget = if (Test-SandalSingleWorkerTopology) { 11 } else { 15 }
+$expectedContainerTarget = if (Test-SandalSingleWorkerTopology) { 11 } else { 16 }
 if (-not $Json) {
     [Console]::Out.WriteLine("[SandalCore] [1/4] Verifying $expectedContainerTarget healthy Docker containers and 0 aoc-tether containers...")
 }

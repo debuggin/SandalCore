@@ -6,6 +6,7 @@
 #include "net/connection.h"
 #include "world/relevancy.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <functional>
@@ -86,7 +87,16 @@ public:
     }
 
     TickSchedule(int hz, Clock::time_point start, int max_catch_up = 4)
-        : period_(period_of(hz)), max_catch_up_(std::max(max_catch_up, 0)), origin_(start), next_(start + period_) {}
+        : hz_(std::max(hz, 1)), period_(period_of(hz_)), max_catch_up_(std::max(max_catch_up, 0)), origin_(start), next_(start + period_) {}
+
+    int hz() const noexcept { return hz_; }
+    void set_hz(int hz, Clock::time_point now) noexcept {
+        hz_ = std::clamp(hz, 1, kMaxHz);
+        period_ = period_of(hz_);
+        origin_ = now;
+        k_ = 1;
+        next_ = now + period_;
+    }
 
     Clock::duration period() const { return period_; }
     Clock::time_point next() const { return next_; }
@@ -132,6 +142,7 @@ public:
     void reset_late_max() { late_max_ = Clock::duration::zero(); }
 
 private:
+    int hz_ = 30;
     Clock::duration period_;
     int64_t max_catch_up_;
     Clock::time_point origin_;
@@ -181,6 +192,26 @@ public:
     };
 
     TickLoop(Config config, Clock::time_point start) : config_(config), schedule_(config.hz, start, config.max_catch_up) {}
+
+    static std::atomic<int>& runtime_tick_hz_slot() noexcept {
+        static std::atomic<int> slot{0};
+        return slot;
+    }
+
+    static void set_global_runtime_tick_hz(int hz) noexcept {
+        runtime_tick_hz_slot().store(std::clamp(hz, 1, TickSchedule::kMaxHz), std::memory_order_relaxed);
+    }
+
+    static int effective_tick_hz(int configured_hz) noexcept {
+        const int rt = runtime_tick_hz_slot().load(std::memory_order_relaxed);
+        return rt > 0 ? std::clamp(rt, 1, TickSchedule::kMaxHz) : std::clamp(configured_hz, 1, TickSchedule::kMaxHz);
+    }
+
+    int hz() const noexcept { return schedule_.hz(); }
+    void set_hz(int hz, Clock::time_point now) noexcept {
+        config_.hz = std::clamp(hz, 1, TickSchedule::kMaxHz);
+        schedule_.set_hz(config_.hz, now);
+    }
 
     bool run_once(Ports& p) {
         ++stats_.passes;

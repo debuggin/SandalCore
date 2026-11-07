@@ -451,6 +451,7 @@ yarn-error.log*
 # --- Windows ---
 $RECYCLE.BIN/
 *.lnk
+/SandalLauncher.lnk
 *.stackdump
 [Dd]esktop.ini
 ehthumbs.db

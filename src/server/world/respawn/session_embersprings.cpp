@@ -9,6 +9,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <atomic>
 #include <cmath>
 
 namespace aoc { namespace worldd {
@@ -19,8 +20,47 @@ using protocol::emit::FIntrepidNetworkGUID;
 namespace {
 
 constexpr int64_t kFallbackRecord = 6064632337807835941ll;
+std::atomic<bool> g_global_unlock_all_embersprings{false};
+std::atomic<int32_t> g_global_default_level{0};
 
 }  // namespace
+
+void PlayerSession::set_global_unlock_all_embersprings(bool enabled) noexcept {
+    g_global_unlock_all_embersprings.store(enabled, std::memory_order_relaxed);
+}
+
+bool PlayerSession::global_unlock_all_embersprings() noexcept {
+    return g_global_unlock_all_embersprings.load(std::memory_order_relaxed);
+}
+
+void PlayerSession::set_global_default_level(int32_t level) noexcept {
+    g_global_default_level.store(level > 0 ? std::clamp<int32_t>(level, content::kMinLevel, content::kMaxLevel) : 0, std::memory_order_relaxed);
+}
+
+int32_t PlayerSession::global_default_level() noexcept {
+    return g_global_default_level.load(std::memory_order_relaxed);
+}
+
+size_t PlayerSession::unlock_all_embersprings(Connection* conn) {
+    const respawn::ShrineBook* book = shrine_book();
+    if (book && !book->empty()) {
+        for (const respawn::Shrine& s : book->all()) {
+            if (s.number > 0 && attunements_.discover(s.number)) ++discoveries_;
+            if (attunements_.home == 0 && s.number > 0) attunements_.home = s.number;
+        }
+    } else {
+        for (int n = 1; n <= respawn::kMaxPlaceNumber; ++n) {
+            if (attunements_.discover(n)) ++discoveries_;
+        }
+        if (attunements_.home == 0) attunements_.home = 1;
+    }
+    const double used = attunements_.home_last_used_ms > 0 ? static_cast<double>(attunements_.home_last_used_ms) / 1000.0 : 0.0;
+    (void)pb_.set_attunements(respawn::blocks_of(attunements_), attunements_.home, used);
+    progress_changed_ = true;
+    hand_over_progress("the Embersprings changed");
+    if (conn) send_attunements(*conn, Clock::now());
+    return attunements_.discovered.size();
+}
 
 const respawn::ShrineBook* PlayerSession::shrine_book() const {
     if (!npc_world_) return nullptr;
@@ -62,6 +102,14 @@ void PlayerSession::run_embersprings(Connection& conn, Clock::time_point now) {
     if (!phase_in_done_ || dead_ || finished_ || failed_) return;
     const respawn::ShrineBook* book = shrine_book();
     if (!book) return;
+    if (global_unlock_all_embersprings()) {
+        for (const respawn::Shrine& s : book->all()) {
+            if (s.number > 0 && !attunements_.has(s.number)) {
+                (void)unlock_all_embersprings(&conn);
+                break;
+            }
+        }
+    }
     const GoodPosition g = checker_.good();
     for (const respawn::Shrine* s : book->reaching(g.x, g.y, g.z)) {
         if (attunements_.has(s->number)) continue;

@@ -29,6 +29,11 @@
 //	                                                  (wand); a word that fits several lines is refused with the list. The client is told at once and the character is saved
 //	worldctl npc kill|respawn|reset|heal|despawn <id> a game master's action on one mob, named by its actor id (npc.go says what each does)
 //	worldctl npc move <id> <x> <y> [<z>]              stands a mob at a point (cm; without z, the ground under it); its leash is centred there, its spawn point stays
+//	worldctl npc spawn <def_or_name> <x> <y> [<z>] [--level N]  spawns an NPC/monster by record name, display name, or Guid at (x, y[, z])
+//	worldctl tick-rate [<hz>] [--metrics-url URL]     queries or updates the live worker simulation tick rate (1 to 120 Hz) via /healthz or /admin/tick_hz
+//	worldctl simulate-npcs [on|off] [--metrics-url URL] queries or updates full-world NPC simulation vs player-proximity culling via /admin/simulate_all_npcs
+//	worldctl time [<HH:MM|hours>] [--metrics-url URL] queries or updates authoritative Verra Server Time (0..24h or HH:MM, advancing at 9x real time) via /healthz or /admin/time_of_day
+//	worldctl workers [--metrics-url URL]              queries active world worker partition status (worker_id, scope_kind, scope_key, tick_hz, cpu_saturation_pct, time_of_day_hours)
 //	worldctl watch [--area minx,miny,maxx,maxy] [--density [--cell 50000]] [--layers all|players,npcs,nodes,mounts,loot] [--seconds N]
 //	                                                  watches world's world stream (WorldStreamService, AOC_WORLD_STREAM_ADDR, default 127.0.0.1:50057): one line a second with the
 //	                                                  frames that came, the entities held and the cost of a publish (watch.go)
@@ -90,8 +95,14 @@ const usage = `usage: worldctl <command> [flags] [arguments]
   weapon-xp <character> <line> <level|xp=N>   set a weapon line's experience: a level (1 to 25) or an XP total (xp=12000); the line is its name or a word that ends it, such as wand (a test command)
   npc kill|respawn|reset|heal|despawn <id>   a game master's action on one mob, by its actor id
   npc move <id> <x> <y> [<z>]       stand a mob at a point (cm); its leash is centred there, its spawn point stays
+  npc spawn <def_or_name> <x> <y> [<z>] [--level N]   spawn an NPC/monster by record name, display name, or Guid at (x, y[, z])
+  tick-rate [<hz>] [--metrics-url http://127.0.0.1:18081]   query or set the live worker simulation tick rate (1 to 120 Hz)
+  simulate-npcs [on|off] [--metrics-url http://127.0.0.1:18081]   query or toggle full-world NPC simulation vs player-proximity culling
+  time [<HH:MM|hours>] [--metrics-url http://127.0.0.1:18081]   query or set authoritative Verra Server Time (0..24h or HH:MM, 9x rate)
+  workers [--metrics-url http://127.0.0.1:18081]   query active world worker partition status (tick_hz, cpu_saturation_pct, time_of_day)
   watch [--area minx,miny,maxx,maxy] [--density] [--layers l] [--seconds n]   watch world's world stream (its own address, AOC_WORLD_STREAM_ADDR): one line a second
-every command takes --addr and --token-file`
+  help [<command>]                  print command usage and flag reference
+every command takes --addr and --token-file (or --metrics-url for tick-rate, simulate-npcs, time, and workers)`
 
 type usageError string
 
@@ -198,8 +209,22 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 		return 2
 	}
 	cmd, rest := args[0], args[1:]
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			fmt.Fprintln(out, usage)
+			return 0
+		}
+	}
 	switch cmd {
 	case "players", "places", "tp", "speed", "give-money", "give-item", "place-station", "remove-station", "craft", "tutorials", "weapon-xp", "npc":
+	case "tick-rate":
+		return runTickRate(ctx, rest, out, errw)
+	case "simulate-npcs":
+		return runSimulateNpcs(ctx, rest, out, errw)
+	case "time", "tod", "time-of-day":
+		return runTimeOfDay(ctx, rest, out, errw)
+	case "workers":
+		return runWorkers(ctx, rest, out, errw)
 	case "watch":
 		return runWatch(ctx, rest, out, errw)
 	case "help", "-h", "--help":
@@ -216,12 +241,11 @@ func run(ctx context.Context, args []string, out, errw io.Writer) int {
 	tokenFile := fs.String("token-file", defaultTokenFile(cfg.ServiceTokenFile), "the service token file")
 	if err := fs.Parse(rest); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(out, usage)
 			return 0
 		}
 		return 2
 	}
-
-	// What the command line needs is checked before any connection is made.
 	call, err := parse(cmd, fs.Args())
 	if err != nil {
 		fmt.Fprintf(errw, "worldctl %s: %v\n", cmd, err)
@@ -311,59 +335,73 @@ func parse(cmd string, pos []string) (call, error) {
 	case "npc":
 		return parseNpc(pos)
 	case "craft":
-		if len(pos) >= 1 && (pos[0] == "teach" || pos[0] == "forget") {
-			if len(pos) != 3 {
-				return nil, usageError("needs a character and a recipe: worldctl craft " + pos[0] + " <character> <recipe>, such as: worldctl craft " + pos[0] + " cyb Armorsmithing_T1_Armor_Deepward_Waist")
-			}
-			return func(ctx context.Context, c worldadminv1.WorldAdminServiceClient, out io.Writer) error {
-				if pos[0] == "teach" {
-					r, err := c.TeachRecipe(ctx, &worldadminv1.TeachRecipeRequest{Character: pos[1], Recipe: pos[2]})
-					if err != nil {
-						return err
-					}
-					fmt.Fprintf(out, "%s was taught %s (%d); %d recipe(s) taught in all\n", r.GetCharacter(), r.GetRecipe(), r.GetRecipeGuid(), r.GetTaught())
-					return nil
-				}
-				r, err := c.ForgetRecipe(ctx, &worldadminv1.ForgetRecipeRequest{Character: pos[1], Recipe: pos[2]})
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(out, "%s forgot %s (%d); %d recipe(s) taught in all\n", r.GetCharacter(), r.GetRecipe(), r.GetRecipeGuid(), r.GetTaught())
-				return nil
-			}, nil
-		}
-		if len(pos) == 2 && pos[0] == "taught" {
-			return func(ctx context.Context, c worldadminv1.WorldAdminServiceClient, out io.Writer) error {
-				r, err := c.ListTaughtRecipes(ctx, &worldadminv1.ListTaughtRecipesRequest{Character: pos[1]})
-				if err != nil {
-					return err
-				}
-				fmt.Fprintf(out, "%s was taught %d recipe(s)\n", r.GetCharacter(), len(r.GetRecipes()))
-				for _, rec := range r.GetRecipes() {
-					fmt.Fprintf(out, "  %s (%d)\n", rec.GetRecipe(), rec.GetRecipeGuid())
-				}
-				return nil
-			}, nil
-		}
-		if len(pos) < 2 || len(pos) > 3 || pos[0] != "finish" {
-			return nil, usageError("needs finish, teach, forget or taught and a character: worldctl craft finish <character> [<station>], worldctl craft teach <character> <recipe>, worldctl craft taught <character>")
-		}
-		station := ""
-		if len(pos) == 3 {
-			station = pos[2]
+		return parseCraft(pos)
+	case "tutorials", "weapon-xp", "speed":
+		return parseProgression(cmd, pos)
+	case "give-money", "give-item", "place-station", "remove-station":
+		return parseInventoryAndStations(cmd, pos)
+	}
+	return nil, usageError("unknown command")
+}
+
+func parseCraft(pos []string) (call, error) {
+	if len(pos) >= 1 && (pos[0] == "teach" || pos[0] == "forget") {
+		if len(pos) != 3 {
+			return nil, usageError("needs a character and a recipe: worldctl craft " + pos[0] + " <character> <recipe>, such as: worldctl craft " + pos[0] + " cyb Armorsmithing_T1_Armor_Deepward_Waist")
 		}
 		return func(ctx context.Context, c worldadminv1.WorldAdminServiceClient, out io.Writer) error {
-			r, err := c.FinishJobs(ctx, &worldadminv1.FinishJobsRequest{Character: pos[1], Station: station})
+			if pos[0] == "teach" {
+				r, err := c.TeachRecipe(ctx, &worldadminv1.TeachRecipeRequest{Character: pos[1], Recipe: pos[2]})
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "%s was taught %s (%d); %d recipe(s) taught in all\n", r.GetCharacter(), r.GetRecipe(), r.GetRecipeGuid(), r.GetTaught())
+				return nil
+			}
+			r, err := c.ForgetRecipe(ctx, &worldadminv1.ForgetRecipeRequest{Character: pos[1], Recipe: pos[2]})
 			if err != nil {
 				return err
 			}
-			where := ""
-			if station != "" {
-				where = " at " + station
-			}
-			fmt.Fprintf(out, "%s: %d job(s) finished%s; they are ready to collect\n", r.GetCharacter(), r.GetFinished(), where)
+			fmt.Fprintf(out, "%s forgot %s (%d); %d recipe(s) taught in all\n", r.GetCharacter(), r.GetRecipe(), r.GetRecipeGuid(), r.GetTaught())
 			return nil
 		}, nil
+	}
+	if len(pos) == 2 && pos[0] == "taught" {
+		return func(ctx context.Context, c worldadminv1.WorldAdminServiceClient, out io.Writer) error {
+			r, err := c.ListTaughtRecipes(ctx, &worldadminv1.ListTaughtRecipesRequest{Character: pos[1]})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "%s was taught %d recipe(s)\n", r.GetCharacter(), len(r.GetRecipes()))
+			for _, rec := range r.GetRecipes() {
+				fmt.Fprintf(out, "  %s (%d)\n", rec.GetRecipe(), rec.GetRecipeGuid())
+			}
+			return nil
+		}, nil
+	}
+	if len(pos) < 2 || len(pos) > 3 || pos[0] != "finish" {
+		return nil, usageError("needs finish, teach, forget or taught and a character: worldctl craft finish <character> [<station>], worldctl craft teach <character> <recipe>, worldctl craft taught <character>")
+	}
+	station := ""
+	if len(pos) == 3 {
+		station = pos[2]
+	}
+	return func(ctx context.Context, c worldadminv1.WorldAdminServiceClient, out io.Writer) error {
+		r, err := c.FinishJobs(ctx, &worldadminv1.FinishJobsRequest{Character: pos[1], Station: station})
+		if err != nil {
+			return err
+		}
+		where := ""
+		if station != "" {
+			where = " at " + station
+		}
+		fmt.Fprintf(out, "%s: %d job(s) finished%s; they are ready to collect\n", r.GetCharacter(), r.GetFinished(), where)
+		return nil
+	}, nil
+}
+
+func parseProgression(cmd string, pos []string) (call, error) {
+	switch cmd {
 	case "tutorials":
 		if len(pos) != 2 || pos[0] != "reset" {
 			return nil, usageError("needs reset and a character: worldctl tutorials reset <character>")
@@ -393,7 +431,7 @@ func parse(cmd string, pos []string) (call, error) {
 				r.GetPreviousLevel(), r.GetPreviousXp(), r.GetPointsEarned(), r.GetPointsLeft())
 			return nil
 		}, nil
-	case "speed":
+	default:
 		if len(pos) != 2 {
 			return nil, usageError("needs a character and a multiplier: worldctl speed <character> <multiplier>")
 		}
@@ -416,6 +454,11 @@ func parse(cmd string, pos []string) (call, error) {
 			}
 			return nil
 		}, nil
+	}
+}
+
+func parseInventoryAndStations(cmd string, pos []string) (call, error) {
+	switch cmd {
 	case "give-money":
 		if len(pos) != 2 {
 			return nil, usageError("needs a character and an amount of copper: worldctl give-money <character> <copper>")
@@ -450,7 +493,7 @@ func parse(cmd string, pos []string) (call, error) {
 				return err
 			}
 			as := ""
-			if r.GetRarity() != "" { // (an older world does not say)
+			if r.GetRarity() != "" {
 				as = fmt.Sprintf(" as %s (quality %d)", r.GetRarity(), r.GetQuality())
 			}
 			fmt.Fprintf(out, "%s: %d x %s (%d) given%s, into %s\n", r.GetCharacter(), r.GetCount(), r.GetItem(), r.GetItemGuid(), as, r.GetContainer())
@@ -469,7 +512,7 @@ func parse(cmd string, pos []string) (call, error) {
 			fmt.Fprintf(out, "%s %s: %s of %s placed (actor %d) at %.0f %.0f %.0f\n", r.GetNode(), r.GetPlot(), r.GetStation(), r.GetBuilding(), r.GetActor(), at.GetX(), at.GetY(), at.GetZ())
 			return nil
 		}, nil
-	case "remove-station":
+	default:
 		if len(pos) != 2 {
 			return nil, usageError("needs a node and a plot: worldctl remove-station <node> <plot>")
 		}
@@ -482,7 +525,6 @@ func parse(cmd string, pos []string) (call, error) {
 			return nil
 		}, nil
 	}
-	return nil, usageError("unknown command")
 }
 
 // ~ C-Y-B :: C.O.A ~

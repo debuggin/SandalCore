@@ -210,8 +210,21 @@ public:
         const auto it = authority_states_.find(player_id);
         return it != authority_states_.end() ? it->second : world::AuthorityState::Local;
     }
+    world::RegionalHandoverState regional_handover_state(uint64_t player_id) const noexcept {
+        const auto it = regional_handover_states_.find(player_id);
+        if (it != regional_handover_states_.end()) return it->second;
+        world::RegionalHandoverState s;
+        const uint8_t mask = area_.region_mask;
+        if (mask != 0 && mask != static_cast<uint8_t>(spawns::RegionBit::All)) {
+            s.authoritative_region = static_cast<spawns::RegionBit>(mask);
+            s.candidate_region = s.authoritative_region;
+        }
+        return s;
+    }
+    world::BorderDecision    step_player_border_handover(uint64_t player_id, double x, double y, int64_t now_ms = -1);
+    void                     commit_player_handover(uint64_t player_id, int64_t now_ms = -1) noexcept;
     world::AuthorityState    update_border_authority(uint64_t player_id, double x, double y) noexcept {
-        const auto next = area_.evaluate_handover(x, y, authority_state(player_id));
+        const auto next = area_.evaluate_handover(x, y, authority_state(player_id), area_.handover_hysteresis_cm);
         authority_states_[player_id] = next;
         return next;
     }
@@ -227,7 +240,37 @@ public:
     void                     forget_border_authority(uint64_t player_id) noexcept {
         authority_states_.erase(player_id);
         lease_epochs_.erase(player_id);
+        regional_handover_states_.erase(player_id);
     }
+    void                     set_time_of_day_hours(double hours) noexcept { bootstrap::set_global_time_of_day_hours(hours); }
+    double                   time_of_day_hours(double world_time = -1.0) const noexcept {
+        if (bootstrap::has_global_time_of_day_override()) return bootstrap::global_time_of_day_hours();
+        return bootstrap::client_times(world_time >= 0.0 ? world_time : world_clock_).game_time / 3600.0;
+    }
+    struct HandoverMountSnapshot {
+        bool                      active = false;
+        int64_t                   mount_item_record = 0;
+        protocol::repl::GuidValue mount_item_guid{};
+        uint64_t                  mount_actor_guid = 0;
+        double                    speed_multiplier = 1.0;
+        uint8_t                   movement_mode = 1;
+        double                    dash_ready_at = -1.0;
+    };
+    void remember_handover_mount(std::string_view character_id, HandoverMountSnapshot snapshot) {
+        if (!character_id.empty()) handover_mounts_[std::string(character_id)] = snapshot;
+    }
+    std::optional<HandoverMountSnapshot> take_handover_mount(std::string_view character_id) {
+        const auto it = handover_mounts_.find(std::string(character_id));
+        if (it == handover_mounts_.end()) return std::nullopt;
+        auto out = it->second;
+        handover_mounts_.erase(it);
+        return out;
+    }
+    std::optional<HandoverMountSnapshot> peek_handover_mount(std::string_view character_id) const {
+        const auto it = handover_mounts_.find(std::string(character_id));
+        return it != handover_mounts_.end() ? std::optional<HandoverMountSnapshot>(it->second) : std::nullopt;
+    }
+    size_t sync_boundary_halo_actors(PlayerWorld& other, double halo_cm = spawns::kDefaultAoiBorderHaloCm);
 
     void set_combat_config(combat::CombatWorldConfig config) { combat_config_ = std::move(config); }
     const combat::CombatWorldConfig& combat_config() const { return combat_config_; }
@@ -509,6 +552,8 @@ private:
     uint64_t                                   region_exits_ = 0;
     std::unordered_map<uint64_t, world::AuthorityState> authority_states_;
     std::unordered_map<uint64_t, uint64_t>     lease_epochs_;
+    std::unordered_map<uint64_t, world::RegionalHandoverState> regional_handover_states_;
+    std::unordered_map<std::string, HandoverMountSnapshot> handover_mounts_;
     uint64_t                                   window_failures_logged_ = 0;
     nav::TileRepair                            window_repairs_logged_;
 };

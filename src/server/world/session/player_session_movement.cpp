@@ -356,7 +356,11 @@ void PlayerSession::SessionInternal::accept_move(PlayerSession& s, Connection& c
         const uint64_t pid = s.world_pawn_ != 0
             ? s.world_pawn_
             : static_cast<uint64_t>(s.pb_.setup().guids.pawn.ObjectId);
-        (void)s.npc_world_->update_border_authority(pid, good.x, good.y);
+        (void)s.npc_world_->step_player_border_handover(pid, good.x, good.y);
+        const uint64_t player_id = static_cast<uint64_t>(s.pb_.setup().player_id);
+        if (player_id != 0 && player_id != pid) {
+            (void)s.npc_world_->step_player_border_handover(player_id, good.x, good.y);
+        }
     }
     if (AbilityRuntime* abilities = s.ability_runtime(now)) {
         const bool moving = s.is_moving(before, move);

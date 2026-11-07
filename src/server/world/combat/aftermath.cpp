@@ -465,4 +465,35 @@ void Aftermath::emptied(uint64_t npc, double now) {
     c.close_at = std::min(c.close_at, now + cfg_.emptied_seconds);
 }
 
+void Aftermath::upsert_halo_corpse(const Corpse& c, double now) {
+    if (c.npc == 0) return;
+    auto it = corpses_.find(c.npc);
+    if (it == corpses_.end()) {
+        Corpse copy = c;
+        const double lifetime = c.is_pile ? cfg_.pile_seconds : cfg_.corpse_seconds;
+        if (copy.close_at <= now) copy.close_at = now + lifetime;
+        if (!copy.is_pile && !copy.rights.empty()) {
+            registry_.for_each([&](const world::WorldActor& a) {
+                if (a.kind == world::ActorKind::Player) copy.rights.insert(a.id);
+            });
+        }
+        corpses_.emplace(c.npc, std::move(copy));
+        return;
+    }
+    Corpse& local = it->second;
+    for (const uint64_t r : c.rights) local.rights.insert(r);
+    if (!local.is_pile && !local.rights.empty()) {
+        registry_.for_each([&](const world::WorldActor& a) {
+            if (a.kind == world::ActorKind::Player) local.rights.insert(a.id);
+        });
+    }
+    const size_t n = std::min(local.loot.size(), c.loot.size());
+    for (size_t i = 0; i < n; ++i) {
+        if (c.loot[i].taken && !local.loot[i].taken) local.loot[i].taken = true;
+    }
+    if ((c.emptied || (!local.loot.empty() && local.remaining() == 0)) && !local.emptied) {
+        emptied(c.npc, now);
+    }
+}
+
 }  // namespace aoc::worldd::combat

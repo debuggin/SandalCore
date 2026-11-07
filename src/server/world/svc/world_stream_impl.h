@@ -128,16 +128,32 @@ inline void put_stats(wsv1::StreamStats* s, const mstream::Snapshot& snap) {
 
 struct WorldStreamServer::Impl final : wsv1::WorldStreamService::Service {
     using SteadyClock = std::chrono::steady_clock;
-    static constexpr std::chrono::milliseconds kPublishPeriod{200};   // five a second
-    static constexpr std::chrono::seconds      kHeartbeat{2};         // a stream with nothing to say still sends a frame this often
-    static constexpr std::chrono::seconds      kLogEvery{60};
+    static constexpr std::chrono::seconds kHeartbeat{2};   // a stream with nothing to say still sends a frame this often
+    static constexpr std::chrono::seconds kLogEvery{60};
 
-    Impl(PlayerWorld& w, Directory d, AdminQueue& q, Options o) : world(w), directory(std::move(d)), queue(q), options(std::move(o)) { mirror.attach(world.registry()); }
+    static std::chrono::milliseconds resolve_publish_period() noexcept {
+        int hz = 0;
+        for (const char* k : {"AOC_WORLD_STREAM_HZ", "AOC_WORLD_TICK_HZ", "AOC_TICK_HZ"}) {
+            if (const char* v = std::getenv(k); v && *v) {
+                hz = static_cast<int>(std::strtol(v, nullptr, 10));
+                if (hz > 0) break;
+            }
+        }
+        if (hz <= 0) hz = spawns::AreaConfig::resolve_worker_area({}).default_tick_hz_for_scope();
+        const int publish_hz = std::clamp(hz, 5, 120);
+        return std::chrono::milliseconds(std::max(8, 1000 / publish_hz));
+    }
+
+    Impl(PlayerWorld& w, Directory d, AdminQueue& q, Options o)
+        : world(w), directory(std::move(d)), queue(q), options(std::move(o)), publish_period(resolve_publish_period()) {
+        mirror.attach(world.registry());
+    }
 
     PlayerWorld& world;
     Directory    directory;
     AdminQueue&  queue;
     Options      options;
+    const std::chrono::milliseconds publish_period;
 
     // ---- shared with the stream threads: the newest snapshot, and the flags
     std::mutex                              mu;
@@ -263,7 +279,7 @@ struct WorldStreamServer::Impl final : wsv1::WorldStreamService::Service {
             if (stopping) return;
         }
         if (start < next_publish) return;
-        next_publish = (next_publish == SteadyClock::time_point{} || start - next_publish > 4 * kPublishPeriod) ? start + kPublishPeriod : next_publish + kPublishPeriod;
+        next_publish = (next_publish == SteadyClock::time_point{} || start - next_publish > 4 * publish_period) ? start + publish_period : next_publish + publish_period;
         try {
             gather_players(rows);
             gather_overlay(overlay, summaries);
@@ -398,15 +414,13 @@ struct WorldStreamServer::Impl final : wsv1::WorldStreamService::Service {
                 const mstream::Rec& r = frame.changed[i];
                 wsv1::Entity* e = add();
                 stream_detail::put_entity(e, r);
-                if (r.kind == mstream::kPlayer || r.kind == mstream::kNpc) {
-                    if (i < frame.changed_names.size() && !frame.changed_names[i].empty()) {
-                        e->set_name(frame.changed_names[i]);
-                    } else if (r.kind == mstream::kPlayer) {
-                        for (const mstream::PlayerName& n : frame.names) {
-                            if (n.id == r.id) {
-                                e->set_name(n.name);
-                                break;
-                            }
+                if (i < frame.changed_names.size() && !frame.changed_names[i].empty()) {
+                    e->set_name(frame.changed_names[i]);
+                } else if (r.kind == mstream::kPlayer) {
+                    for (const mstream::PlayerName& n : frame.names) {
+                        if (n.id == r.id) {
+                            e->set_name(n.name);
+                            break;
                         }
                     }
                 }

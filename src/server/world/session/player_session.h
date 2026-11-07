@@ -110,6 +110,10 @@ class PlayerSession {
     size_t item_requests_refused() const { return items_refused_; }
     size_t inventories_handed_over() const { return inventories_handed_over_; }
     const leveling::Progress&   progress() const { return progress_; }
+    int32_t                     level() const { return progress_.level; }
+    bool                        set_character_level(int32_t level, Connection* conn = nullptr);
+    static void                 set_global_default_level(int32_t level) noexcept;
+    static int32_t              global_default_level() noexcept;
     int                         class_id() const { return class_id_; }
     std::vector<int64_t>        universal_ranks() const { return pb_.tree_ranks(content::kGuidUniversalTree); }
     size_t uses_applied() const { return uses_applied_; }
@@ -178,6 +182,9 @@ class PlayerSession {
     size_t   deaths() const { return deaths_; }
     size_t   respawns() const { return respawns_; }
     const respawn::Attunements& attunements() const { return attunements_; }
+    size_t   unlock_all_embersprings(Connection* conn = nullptr);
+    static void set_global_unlock_all_embersprings(bool enabled) noexcept;
+    static bool global_unlock_all_embersprings() noexcept;
     size_t   shrine_uses() const { return shrine_uses_; }
     size_t   discoveries() const { return discoveries_; }
     size_t   homes_set() const { return homes_set_; }
@@ -657,7 +664,7 @@ class PlayerSession {
     bool                           net_last_valid_ = false, cooldowns_pending_ = false;
     std::deque<int64_t>            siege_wait_, node_summary_wait_;
     std::set<int64_t>              siege_queued_, node_summary_queued_;
-    uint64_t                       node_maps_version_ = 0;
+    uint64_t                       node_maps_version_ = 0, seen_time_of_day_epoch_ = 0;
     size_t node_requests_ = 0, node_summaries_sent_ = 0, siege_summaries_sent_ = 0, siege_cooldowns_sent_ = 0, node_map_updates_ = 0, node_requests_dropped_ = 0,
            node_gm_rpcs_ = 0, citizenship_requests_ = 0, node_logged_ = 0;
     bool                           node_unreadable_logged_ = false, node_overflow_logged_ = false, citizenship_logged_ = false, node_unknown_logged_ = false;

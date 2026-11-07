@@ -323,6 +323,12 @@ std::unique_ptr<PlayerSession> PlayerSession::join(Connection& conn, PlayerWorld
     }
     for (bootstrap::Send& s : *sequence) p->join_.push_back(std::move(s));
     SessionInternal::log_join_summary(*p, world);
+    if (global_default_level() > 1 && p->progress_.level < global_default_level()) {
+        (void)p->set_character_level(global_default_level(), &conn);
+    }
+    if (global_unlock_all_embersprings()) {
+        (void)p->unlock_all_embersprings(&conn);
+    }
     p->list_item_chunk(conn);
     p->pump(conn);
     if (refusal) *refusal = bootstrap::SetupRefusal::None;
@@ -489,6 +495,18 @@ void PlayerSession::finish(const char* why) {
     }
     zone_actors_.clear();
     leave_presence(why);
+    if (mounted() && ride_ && mounts_ && npc_world_) {
+        PlayerWorld::HandoverMountSnapshot snap;
+        snap.active = true;
+        snap.mount_item_record = mounts_->item_record();
+        snap.mount_item_guid = mounts_->item_guid();
+        snap.mount_actor_guid = ride_->actor_id();
+        snap.speed_multiplier = ride_->speed_multiplier();
+        snap.movement_mode = ride_->mode();
+        snap.dash_ready_at = ride_->dash_ready_at();
+        npc_world_->remember_handover_mount(character_id_, snap);
+        if (pb_.setup().player_id > 0) npc_world_->remember_handover_mount(std::to_string(pb_.setup().player_id), snap);
+    }
     if (mounts_) {
         if (const auto kept = mounts_->shutdown()) apply_persist(nullptr, *kept);
     }
@@ -690,6 +708,63 @@ void PlayerSession::run_timers(Connection& conn, Clock::time_point now) {
         }
     }
     if (abilities_dirty_) flush_abilities(conn);
+}
+
+bool PlayerSession::set_character_level(int32_t level, Connection* conn) {
+    const int32_t clamped = std::clamp<int32_t>(level, content::kMinLevel, content::kMaxLevel);
+    const int32_t before = progress_.level;
+    progress_.level = clamped;
+    if (world_ && world_->level_curve()) {
+        progress_.xp = std::max(progress_.xp, world_->level_curve()->xp_for(clamped));
+    }
+    (void)pb_.set_level(clamped);
+    (void)pb_.set_progress(progress_.xp, progress_.debt);
+    if (stats_) stats_->set_level(clamped);
+    const Clock::time_point now = Clock::now();
+    bootstrap::AbilityChange rank_effects;
+    std::vector<repl::SkillOnActionbar> skill_updates;
+    if (book_) {
+        book_->set_level(clamped);
+        if (clamped > before) {
+            std::vector<talents::RankRef> granted;
+            for (const talents::Tree* tree : {book_->catalog().universal(), book_->class_tree()}) {
+                if (!tree) continue;
+                const std::vector<talents::RankRef> had = book_->catalog().auto_ranks(*tree, before);
+                for (const talents::RankRef& r : book_->catalog().auto_ranks(*tree, clamped)) {
+                    if (std::none_of(had.begin(), had.end(), [&](const talents::RankRef& h) { return h.node->skill == r.node->skill; })) {
+                        granted.push_back(r);
+                    }
+                }
+            }
+            if (!granted.empty()) grant_ranks(granted, now, rank_effects, skill_updates);
+        }
+        for (const talents::Tree* tree : {book_->catalog().universal(), book_->class_tree()}) {
+            if (tree) (void)pb_.set_tree_ranks(tree->guid, book_->list(*tree));
+        }
+        rebuild_ability_lists();
+        (void)push_abilities();
+    }
+    apply_gear_stats("set_character_level");
+    if (!dead_ && stats_) {
+        if (const stats::StatValue* hp = stats_->find(content::kGuidMaxHealth)) set_current_value(content::kGuidHealth, hp->value);
+        if (const stats::StatValue* mp = stats_->find(content::kGuidMaxMana)) set_current_value(content::kGuidMana, mp->value);
+        if (const stats::StatValue* sp = stats_->find(content::kGuidMaxStamina)) set_current_value(content::kGuidStamina, sp->value);
+    }
+    if (!rank_effects.empty() && pb_.apply_ability_change(rank_effects)) abilities_dirty_ = true;
+    if (clamped > before) levels_gained_ += static_cast<size_t>(clamped - before);
+    progress_changed_ = true;
+    hand_over_progress("a level change");
+    if (conn) {
+        const leveling::Progress p = progress_;
+        queue("XPTracker", [p](bootstrap::PlayerBootstrap& pb) { return pb.set_progress(p.xp, p.debt) ? pb.leveling_update() : std::nullopt; }, *conn, true);
+        queue("BroadcastPlayLevelUpEffects", [clamped](bootstrap::PlayerBootstrap& pb) { return pb.level_up_broadcast(content::kGuidAdventuring, clamped); }, *conn);
+        queue("pawn state", [](bootstrap::PlayerBootstrap& pb) { return pb.pawn_state_update("level and stats"); }, *conn, true);
+        for (const repl::SkillOnActionbar& u : skill_updates) {
+            queue("ClientUpdateSkillOnActionbar", [u](bootstrap::PlayerBootstrap& pb) { return pb.skill_on_actionbar(u); }, *conn, true);
+        }
+        if (abilities_dirty_) flush_abilities(*conn);
+    }
+    return true;
 }
 
 }  // namespace worldd

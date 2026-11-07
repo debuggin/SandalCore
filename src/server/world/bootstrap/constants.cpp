@@ -15,6 +15,9 @@
 #include "protocol/repl/rep_block.h"
 #include "protocol/schema/generated/index.h"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 
 namespace aoc::worldd::bootstrap {
@@ -45,6 +48,16 @@ constexpr uint64_t kGameSystemsPackageId = 158953490572197689ull;   // /Script/G
 ExportChain gameplay_class(uint64_t id, const char* name, uint32_t checksum) {
     return {link(id, name, false, checksum), link(kGameSystemsPackageId, "/Script/GameSystemsPlugin", false, 0)};
 }
+
+int64_t steady_now_ns() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+std::atomic<double>   g_tod_anchor_hours{12.0};
+std::atomic<int64_t>  g_tod_anchor_steady_ns{steady_now_ns()};
+std::atomic<bool>     g_has_time_of_day_override{false};
+std::atomic<uint64_t> g_time_of_day_epoch{0};
 
 }  // namespace
 
@@ -238,10 +251,43 @@ repl::LoadTracker load_tracker(std::string_view flags) {
     return t;
 }
 
+void set_global_time_of_day_hours(double hours) noexcept {
+    if (!std::isfinite(hours)) return;
+    double wrapped = std::fmod(hours, 24.0);
+    if (wrapped < 0.0) wrapped += 24.0;
+    g_tod_anchor_hours.store(wrapped, std::memory_order_relaxed);
+    g_tod_anchor_steady_ns.store(steady_now_ns(), std::memory_order_relaxed);
+    g_has_time_of_day_override.store(true, std::memory_order_relaxed);
+    g_time_of_day_epoch.fetch_add(1, std::memory_order_release);
+}
+
+double global_time_of_day_hours() noexcept {
+    const double anchor_hours = g_tod_anchor_hours.load(std::memory_order_relaxed);
+    const int64_t anchor_ns = g_tod_anchor_steady_ns.load(std::memory_order_relaxed);
+    const double elapsed_real_seconds = anchor_ns > 0
+        ? std::max(0.0, static_cast<double>(steady_now_ns() - anchor_ns) * 1.0e-9)
+        : 0.0;
+    return std::fmod(std::fmod(anchor_hours + elapsed_real_seconds * (kGameTimeFactor / 3600.0), 24.0) + 24.0, 24.0);
+}
+
+bool has_global_time_of_day_override() noexcept {
+    return g_has_time_of_day_override.load(std::memory_order_relaxed);
+}
+
+uint64_t global_time_of_day_epoch() noexcept {
+    return g_time_of_day_epoch.load(std::memory_order_acquire);
+}
+
 ClientTimes client_times(double world_time) {
     ClientTimes t;
     t.synchronized_time = world_time + kSynchronizedTimeOffset;
-    t.game_time = kGameTimeFactor * t.synchronized_time + kGameTimeOffset;
+    const double base_game_time = kGameTimeFactor * t.synchronized_time + kGameTimeOffset;
+    if (has_global_time_of_day_override()) {
+        const double day_floor = std::floor(base_game_time / 86400.0) * 86400.0;
+        t.game_time = day_floor + global_time_of_day_hours() * 3600.0;
+    } else {
+        t.game_time = base_game_time;
+    }
     return t;
 }
 

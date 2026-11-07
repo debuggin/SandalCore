@@ -1,8 +1,7 @@
 #pragma once
-#include "net/udp_socket.h"
+#include "bootstrap/constants.h"
+#include "net/tick_loop.h"
 #include "npc/npc_world.h"
-#include <atomic>
-#include <cstdlib>
 #include <thread>
 #ifndef _WIN32
 #include <netinet/in.h>
@@ -11,6 +10,16 @@
 #endif
 
 namespace aoc::world::telemetry {
+
+[[nodiscard]] inline std::string_view ResolveDataMode() noexcept {
+    for (const char* k : {"AOC_DATA_MODE_ZOIS", "AOC_DATA_MODE_DEFAULT"}) {
+        if (const char* v = std::getenv(k); v && *v) {
+            return (v[0] == 'd' || v[0] == 'D') ? "disk" : "memory";
+        }
+    }
+    return "memory";
+}
+
 struct HealthMetricsState {
     std::string server_id{"world-01"};
     bool content_loaded{false};
@@ -25,6 +34,13 @@ struct HealthMetricsState {
     std::uint64_t active_monsters{0};
     std::uint64_t resource_nodes{0};
     bool simulate_all_npcs{true};
+    std::uint32_t worker_index{0};
+    std::string worker_name{"aoc-world"};
+    std::string scope_kind{"region"};
+    std::string data_mode{"memory"};
+    bool dynamic_scaling_stub{false};
+    double time_of_day_hours{12.0};
+    double cpu_saturation_pct{37.5};
 };
 struct HttpProbeResponse {
     int status_code{200};
@@ -51,30 +67,93 @@ struct DrainResult {
         return {200, "application/json", "{\"status\":\"ready\"}"};
     return {503, "application/json", std::string("{\"status\":\"not_ready\",\"draining\":") + (st.draining ? "true}" : "false}")};
 }
+[[nodiscard]] inline int ParseRequestedTickHz(std::string_view req, int fallback) noexcept {
+    for (const std::string_view key : {std::string_view("tick_hz="), std::string_view("\"tick_hz\":"), std::string_view("tick_hz:")}) {
+        const size_t pos = req.find(key);
+        if (pos == std::string_view::npos) continue;
+        size_t i = pos + key.size();
+        while (i < req.size() && (req[i] == ' ' || req[i] == '"' || req[i] == '\'')) ++i;
+        int val = 0;
+        bool any = false;
+        while (i < req.size() && req[i] >= '0' && req[i] <= '9') {
+            val = val * 10 + (req[i] - '0');
+            any = true;
+            ++i;
+        }
+        if (any && val > 0) return std::clamp(val, 1, 120);
+    }
+    return std::clamp(fallback, 1, 120);
+}
+
+[[nodiscard]] inline double ParseRequestedTimeOfDayHours(std::string_view req, double fallback = 12.0) noexcept {
+    for (const std::string_view key : {std::string_view("time_of_day="), std::string_view("hours="), std::string_view("\"time_of_day\":"), std::string_view("\"hours\":")}) {
+        const size_t pos = req.find(key);
+        if (pos == std::string_view::npos) continue;
+        size_t i = pos + key.size();
+        while (i < req.size() && (req[i] == ' ' || req[i] == '"' || req[i] == '\'')) ++i;
+        std::string num;
+        while (i < req.size() && ((req[i] >= '0' && req[i] <= '9') || req[i] == '.' || req[i] == '-')) num.push_back(req[i++]);
+        if (!num.empty()) return std::strtod(num.c_str(), nullptr);
+    }
+    return fallback;
+}
+
 [[nodiscard]] inline HttpProbeResponse RenderHealthz(const HealthMetricsState& st) {
     const bool r = st.content_loaded && st.mesh_registered && !st.draining;
-    std::string b = "{\"status\":\"" + std::string(r ? "ok" : "degraded") + "\",\"server_id\":\"" + st.server_id + "\",\"ready\":" +
+    const std::string_view wname = st.worker_name.empty() ? std::string_view(st.server_id) : std::string_view(st.worker_name);
+    const std::string_view scope = st.scope_kind.empty() ? std::string_view("region") : std::string_view(st.scope_kind);
+    const std::string_view dmode = st.data_mode.empty() ? ResolveDataMode() : std::string_view(st.data_mode);
+    const int eff_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
+    const double tod = aoc::worldd::bootstrap::has_global_time_of_day_override() ? aoc::worldd::bootstrap::global_time_of_day_hours() : st.time_of_day_hours;
+    std::string b = "{\"status\":\"" + std::string(r ? "ok" : "degraded") + "\",\"server_id\":\"" + st.server_id +
+                    "\",\"worker_name\":\"" + std::string(wname) + "\",\"worker_index\":" + std::to_string(st.worker_index) +
+                    ",\"scope_kind\":\"" + std::string(scope) + "\",\"data_mode\":\"" + std::string(dmode) +
+                    "\",\"dynamic_scaling_stub\":" + (st.dynamic_scaling_stub ? "true" : "false") + ",\"ready\":" +
                     (r ? "true" : "false") + ",\"draining\":" + (st.draining ? "true" : "false") + ",\"active_sessions\":" +
-                    std::to_string(st.active_sessions) + ",\"tick_hz\":" + std::to_string(st.tick_hz) + ",\"uptime_ms\":" + std::to_string(st.uptime_ms) + "}";
+                    std::to_string(st.active_sessions) + ",\"tick_hz\":" + std::to_string(eff_hz) +
+                    ",\"time_of_day_hours\":" + std::to_string(tod) + ",\"cpu_saturation_pct\":" + std::to_string(st.cpu_saturation_pct) +
+                    ",\"uptime_ms\":" + std::to_string(st.uptime_ms) + "}";
     return {r ? 200 : 503, "application/json", std::move(b)};
 }
 [[nodiscard]] inline HttpProbeResponse RenderOpenMetrics(const HealthMetricsState& st) {
     const bool r = st.content_loaded && st.mesh_registered && !st.draining;
     const bool sim = aoc::worldd::npc::NpcWorld::global_simulate_all_npcs();
+    const int eff_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
+    const double tod = aoc::worldd::bootstrap::has_global_time_of_day_override() ? aoc::worldd::bootstrap::global_time_of_day_hours() : st.time_of_day_hours;
     std::string b = "aoc_world_ready " + std::string(r ? "1\n" : "0\n") + "aoc_world_draining " + (st.draining ? "1\n" : "0\n") +
-                    "aoc_world_active_sessions " + std::to_string(st.active_sessions) + "\naoc_world_tick_hz " + std::to_string(st.tick_hz) +
-                    "\naoc_world_packets_in_total " + std::to_string(st.packets_in_total) + "\naoc_world_packets_out_total " + std::to_string(st.packets_out_total) +
-                    "\naoc_world_active_npcs " + std::to_string(st.active_npcs) + "\naoc_world_active_monsters " + std::to_string(st.active_monsters) +
-                    "\naoc_world_resource_nodes " + std::to_string(st.resource_nodes) + "\naoc_world_simulate_all_npcs " + (sim ? "1\n" : "0\n") + "# EOF\n";
+                    "aoc_world_worker_index " + std::to_string(st.worker_index) + "\naoc_world_active_sessions " + std::to_string(st.active_sessions) +
+                    "\naoc_world_tick_hz " + std::to_string(eff_hz) + "\naoc_world_packets_in_total " + std::to_string(st.packets_in_total) +
+                    "\naoc_world_packets_out_total " + std::to_string(st.packets_out_total) + "\naoc_world_active_npcs " + std::to_string(st.active_npcs) +
+                    "\naoc_world_active_monsters " + std::to_string(st.active_monsters) + "\naoc_world_resource_nodes " + std::to_string(st.resource_nodes) +
+                    "\naoc_world_simulate_all_npcs " + (sim ? "1\n" : "0\n") + "aoc_world_time_of_day_hours " + std::to_string(tod) +
+                    "\naoc_world_cpu_saturation_pct " + std::to_string(st.cpu_saturation_pct) + "\n# EOF\n";
     return {200, "application/openmetrics-text; version=1.0.0; charset=utf-8", std::move(b)};
 }
 [[nodiscard]] inline HttpProbeResponse HandleProbePath(std::string_view path, const HealthMetricsState& st, std::string_view full_req = {}) {
+    if (path == "/admin/tick_hz" || path == "/gm/tick_hz" || full_req.find("SetTickRate") != std::string_view::npos ||
+        full_req.find("tick_hz=") != std::string_view::npos) {
+        const int parsed_hz = ParseRequestedTickHz(full_req, static_cast<int>(st.tick_hz));
+        aoc::worldd::TickLoop::set_global_runtime_tick_hz(parsed_hz);
+        const int eff_hz = aoc::worldd::TickLoop::effective_tick_hz(static_cast<int>(st.tick_hz));
+        if (path != "/metrics") {
+            return {200, "application/json", "{\"status\":\"ok\",\"tick_hz\":" + std::to_string(eff_hz) + "}"};
+        }
+    }
     if (path == "/admin/simulate_all_npcs" || path == "/gm/simulate_all_npcs" || full_req.find("SetSimulateAllNpcs") != std::string_view::npos ||
         full_req.find("simulate_all_npcs=") != std::string_view::npos) {
         (void)aoc::worldd::npc::NpcWorld::dispatch_gm_work_item("gm.SetSimulateAllNpcs", full_req);
         const bool sim = aoc::worldd::npc::NpcWorld::global_simulate_all_npcs();
         if (path != "/metrics") {
             return {200, "application/json", std::string("{\"status\":\"ok\",\"simulate_all_npcs\":") + (sim ? "true}" : "false}")};
+        }
+    }
+    if (path == "/admin/time_of_day" || path == "/gm/time_of_day" || full_req.find("SetTimeOfDay") != std::string_view::npos ||
+        full_req.find("time_of_day=") != std::string_view::npos) {
+        const double parsed_tod = ParseRequestedTimeOfDayHours(full_req, st.time_of_day_hours);
+        aoc::worldd::bootstrap::set_global_time_of_day_hours(parsed_tod);
+        const double eff_tod = aoc::worldd::bootstrap::global_time_of_day_hours();
+        if (path != "/metrics") {
+            return {200, "application/json", "{\"status\":\"ok\",\"time_of_day_hours\":" + std::to_string(eff_tod) + "}"};
         }
     }
     if (path == "/livez") return RenderLivez();

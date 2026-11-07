@@ -5,7 +5,6 @@ import {
   type CameraMode,
   computeLayerEntityCounts,
   type StreamConnectionState,
-  STREAM_TARGET_HZ,
   UI_FRAME_BUDGET_MS,
   useWorldStreamStore,
   type WorldStreamState,
@@ -57,18 +56,6 @@ const BADGE_BASE_STYLE: React.CSSProperties = Object.freeze({
   padding: "2px 8px",
   borderRadius: "999px",
   fontWeight: 600,
-});
-
-const TOGGLE_BUTTON_BASE_STYLE: React.CSSProperties = Object.freeze({
-  minWidth: "40px",
-  minHeight: "32px",
-  padding: "4px 10px",
-  borderRadius: "4px",
-  border: "1px solid rgba(140, 108, 66, 0.47)",
-  color: "#F4F1EA",
-  fontWeight: 600,
-  fontSize: "11px",
-  cursor: "pointer",
 });
 
 function formatFiniteInt(value: number | undefined, fallback = 0): string {
@@ -144,7 +131,8 @@ export function buildStreamStatusDescriptor(
   const entityCount = props.entityCount ?? state.entities.size;
   const lastSeq = props.lastSeq ?? state.lastSeq;
   const tickLatencyMs = props.tickLatencyMs ?? state.tickLatencyMs;
-  const streamHz = props.streamHz ?? state.streamHz ?? STREAM_TARGET_HZ;
+  const effectivePollHz = 30;
+  const streamHz = props.streamHz ?? effectivePollHz;
   const cameraMode = props.cameraMode ?? state.camera.mode;
   const visuals = resolveConnectionVisuals(connectionState, streamHz);
   const nextCameraMode: CameraMode = cameraMode === "2d" ? "3d" : "2d";
@@ -167,16 +155,7 @@ export function StreamStatus(props: StreamStatusProps): React.ReactElement {
   const storeSnap = useWorldStreamStore();
   const descriptor = buildStreamStatusDescriptor(props, storeSnap);
   const counts = computeLayerEntityCounts(storeSnap);
-  const cameraMode = props.cameraMode ?? storeSnap.camera.mode;
   const needsResync = props.needsSnapshotResync ?? storeSnap.needsSnapshotResync;
-
-  const handleToggleCameraMode = (): void => {
-    if (props.onCameraModeChange) {
-      props.onCameraModeChange(descriptor.nextCameraMode);
-      return;
-    }
-    storeSnap.setCameraMode(descriptor.nextCameraMode);
-  };
 
   return (
     <div
@@ -207,20 +186,6 @@ export function StreamStatus(props: StreamStatusProps): React.ReactElement {
           RESYNCING
         </span>
       ) : null}
-      <button
-        type="button"
-        data-testid="camera-mode-toggle"
-        aria-pressed={cameraMode === "3d"}
-        aria-label={`Toggle 2D or 3D camera mode (current: ${descriptor.cameraToggleLabel})`}
-        onClick={handleToggleCameraMode}
-        style={{
-          ...TOGGLE_BUTTON_BASE_STYLE,
-          backgroundColor: cameraMode === "3d" ? "#E8B25A" : "rgba(22, 30, 46, 0.92)",
-          color: cameraMode === "3d" ? "#0B0E17" : "#F4F1EA",
-        }}
-      >
-        {cameraMode.toUpperCase()}
-      </button>
     </div>
   );
 }

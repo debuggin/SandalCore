@@ -466,13 +466,7 @@ func (s *Server) handleWorldTile(w http.ResponseWriter, r *http.Request, _ Role)
 	data, entry, found, err := arch.ReadTile(z, x, y)
 	if err != nil || !found {
 		if err == nil && !found && z >= 0 && z <= 7 && len(oceanTilePNG) > 0 {
-			w.Header().Set("Content-Type", "image/png")
-			w.Header().Set("Cache-Control", "public, max-age=300")
-			w.Header().Set("Content-Length", strconv.Itoa(len(oceanTilePNG)))
-			w.WriteHeader(http.StatusOK)
-			if r.Method != http.MethodHead {
-				_, _ = w.Write(oceanTilePNG)
-			}
+			serveCachedBinary(w, r, "image/png", `"tile-ocean-png"`, "public, max-age=3600", oceanTilePNG)
 			return
 		}
 		writeProblem(w, r, http.StatusNotFound, "tile-not-found", fmt.Sprintf("Tile %d/%d/%d not found in archive.", z, x, y))
@@ -506,32 +500,30 @@ func (s *Server) ServeIcon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWorldIcon(w http.ResponseWriter, r *http.Request, _ Role) {
-	iconRaw := r.PathValue("icon")
-	if iconRaw == "" {
-		iconRaw = r.URL.Path
-	}
-	iconKey := normalizeIconKey(iconRaw)
+	iconKey := normalizeIconKey(firstNonEmpty(r.PathValue("icon"), r.URL.Path))
+	data := renderFallbackIconBadgePNG(iconKey)
 	if arch := s.getPmTilesArchive(); arch != nil && iconKey != "" {
 		if idx, ok := arch.IconIndex(iconKey); ok {
-			if data, _, found, err := arch.ReadTile(9, int(idx), 0); err == nil && found && len(data) > 0 {
-				w.Header().Set("Content-Type", "image/png")
-				w.Header().Set("Cache-Control", "public, max-age=86400")
-				w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-				w.WriteHeader(http.StatusOK)
-				if r.Method != http.MethodHead {
-					_, _ = w.Write(data)
-				}
-				return
+			if d, _, found, err := arch.ReadTile(9, int(idx), 0); err == nil && found && len(d) > 0 {
+				data = d
 			}
 		}
 	}
-	badge := renderFallbackIconBadgePNG(iconKey)
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	w.Header().Set("Content-Length", strconv.Itoa(len(badge)))
+	serveCachedBinary(w, r, "image/png", fmt.Sprintf(`"icon-%s-%d"`, iconKey, len(data)), "public, max-age=86400", data)
+}
+
+func serveCachedBinary(w http.ResponseWriter, r *http.Request, ctype, etag, cc string, data []byte) {
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", cc)
+	if matchesIfNoneMatch(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
-		_, _ = w.Write(badge)
+		_, _ = w.Write(data)
 	}
 }
 
@@ -781,4 +773,26 @@ func resolveMapMetaIcons(arch *PmTilesArchive) any {
 		return arch.meta.Icons
 	}
 	return defaultVerraMapIcons(arch)
+}
+
+func extractTimeOfDayHours(p map[string]any) (float64, bool) {
+	if s := extractStringParam(p, "time_of_day", "hour", "hours", "time", "value", "amount"); s != "" {
+		if h, ok := parseClockOrFloatHours(s); ok {
+			return h, true
+		}
+	}
+	if f, ok := extractFloatParam(p, "hour", "time_of_day", "hours", "time_of_day_hours", "value", "amount"); ok && !math.IsNaN(f) && !math.IsInf(f, 0) {
+		return wrapHours24(f), true
+	}
+	return 0, false
+}
+
+func extractNodeIdentParam(p map[string]any, fallback string) string {
+	if s := extractStringParam(p, "node", "node_name", "node_guid", "node_id", "guid", "name"); s != "" {
+		return s
+	}
+	if id, ok := extractInt64Param(p, "node_id", "node_guid", "guid"); ok && id != 0 {
+		return fmt.Sprintf("%d", id)
+	}
+	return fallback
 }

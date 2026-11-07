@@ -3,8 +3,10 @@
 // GNU AGPL v3 with additional terms under section 7: see LICENSE and NOTICE.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <string_view>
 
 namespace aoc::worldd::spawns {
@@ -14,6 +16,7 @@ enum class RegionBit : uint8_t {
     Riverlands = 1u << 0,
     Sandsquall = 1u << 1,
     Jundark = 1u << 2,
+    TableMountains = Jundark,
     Anvils = 1u << 3,
     TurquoiseSea = 1u << 4,
     All = 0x1Fu,
@@ -38,6 +41,7 @@ enum class AuthorityState : uint8_t {
     StayLocal = 0,
     HandoverPending = 1,
     RemoteGhost = 2,
+    HandoverCommitted = 2,
 };
 
 using BorderDecision = AuthorityState;
@@ -50,7 +54,39 @@ struct RegionalHandoverState {
     uint64_t          handover_count = 0;
     uint64_t          lease_epoch = 1;
     bool              last_suppressed_by_hysteresis = false;
+    bool              outside_worker_area = false;
 };
+
+[[nodiscard]] inline float runtime_handover_hysteresis_cm() noexcept {
+    for (const char* k : {"AOC_WORLD_HANDOVER_HYSTERESIS_CM", "WORLD_HANDOVER_HYSTERESIS_CM"}) {
+        if (const char* v = std::getenv(k); v && *v) {
+            char* end = nullptr;
+            const float f = std::strtof(v, &end);
+            if (end != v && std::isfinite(f) && f >= 0.0f) return std::clamp(f, 0.0f, 100000.0f);
+        }
+    }
+    return kRegionHandoverHysteresisCm;
+}
+
+[[nodiscard]] inline uint32_t runtime_handover_dwell_samples() noexcept {
+    for (const char* k : {"AOC_WORLD_HANDOVER_DWELL_SAMPLES", "WORLD_HANDOVER_DWELL_SAMPLES"}) {
+        if (const char* v = std::getenv(k); v && *v) {
+            const long n = std::strtol(v, nullptr, 10);
+            if (n >= 1 && n <= 60) return static_cast<uint32_t>(n);
+        }
+    }
+    return kRegionHandoverDwellSamples;
+}
+
+[[nodiscard]] inline int64_t runtime_handover_cooldown_ms() noexcept {
+    for (const char* k : {"AOC_WORLD_HANDOVER_COOLDOWN_MS", "WORLD_HANDOVER_COOLDOWN_MS"}) {
+        if (const char* v = std::getenv(k); v && *v) {
+            const long long n = std::strtoll(v, nullptr, 10);
+            if (n >= 0 && n <= 60000) return static_cast<int64_t>(n);
+        }
+    }
+    return kRegionHandoverCooldownMs;
+}
 
 [[nodiscard]] constexpr bool is_newer_lease_epoch(uint64_t candidate_epoch,
                                                   uint64_t current_epoch) noexcept {
@@ -95,27 +131,41 @@ struct RegionalHandoverState {
     return current_state;
 }
 
-[[nodiscard]] constexpr BorderDecision evaluate_regional_handover_sample(
+[[nodiscard]] constexpr AuthorityState complete_border_handover(
+    RegionalHandoverState& state,
+    int64_t now_ms) noexcept {
+    state.dwell_samples = 0;
+    if (now_ms > 0) state.last_handover_ms = now_ms;
+    ++state.handover_count;
+    ++state.lease_epoch;
+    state.last_suppressed_by_hysteresis = false;
+    return AuthorityState::HandoverCommitted;
+}
+
+[[nodiscard]] inline BorderDecision evaluate_regional_handover_sample(
     RegionalHandoverState& state,
     spawns::RegionBit target_region,
     float signed_dist_cm,
     int64_t now_ms,
     bool is_explicit_teleport = false) noexcept {
+    const float hyst_cm = runtime_handover_hysteresis_cm();
+    const uint32_t req_dwell = runtime_handover_dwell_samples();
+    const int64_t cooldown_ms = runtime_handover_cooldown_ms();
     if (target_region == spawns::RegionBit::None ||
         target_region == state.authoritative_region ||
-        signed_dist_cm < kRegionHandoverHysteresisCm) {
+        signed_dist_cm < hyst_cm) {
         state.candidate_region = state.authoritative_region;
         state.dwell_samples = 0;
         if (target_region != spawns::RegionBit::None &&
             target_region != state.authoritative_region) {
             state.last_suppressed_by_hysteresis = true;
-        } else if (signed_dist_cm < -kRegionHandoverHysteresisCm) {
+        } else if (signed_dist_cm < -hyst_cm) {
             state.last_suppressed_by_hysteresis = false;
         }
         return BorderDecision::StayLocal;
     }
     if (state.last_handover_ms > 0 &&
-        (now_ms - state.last_handover_ms) < kRegionHandoverCooldownMs) {
+        (now_ms - state.last_handover_ms) < cooldown_ms) {
         state.last_suppressed_by_hysteresis = true;
         return BorderDecision::StayLocal;
     }
@@ -123,11 +173,46 @@ struct RegionalHandoverState {
         state.candidate_region = target_region;
         state.dwell_samples = 0;
     }
-    state.dwell_samples = is_explicit_teleport ? kRegionHandoverDwellSamples
+    state.dwell_samples = is_explicit_teleport ? req_dwell
                                                : (state.dwell_samples + 1);
-    if (state.dwell_samples >= kRegionHandoverDwellSamples) {
+    if (state.dwell_samples >= req_dwell) {
         state.authoritative_region = target_region;
         state.candidate_region = target_region;
+        state.dwell_samples = 0;
+        state.last_handover_ms = now_ms;
+        ++state.handover_count;
+        ++state.lease_epoch;
+        state.last_suppressed_by_hysteresis = false;
+        return BorderDecision::HandoverPending;
+    }
+    state.last_suppressed_by_hysteresis = true;
+    return BorderDecision::StayLocal;
+}
+
+[[nodiscard]] inline BorderDecision evaluate_regional_handover(
+    RegionalHandoverState& state,
+    double signed_dist_cm,
+    int64_t now_ms,
+    float hysteresis_cm = -1.0f,
+    bool is_explicit_teleport = false) noexcept {
+    const float hyst = (hysteresis_cm >= 0.0f) ? hysteresis_cm : runtime_handover_hysteresis_cm();
+    const uint32_t req_dwell = runtime_handover_dwell_samples();
+    const int64_t cooldown_ms = runtime_handover_cooldown_ms();
+    const float penetration = state.outside_worker_area ? static_cast<float>(-signed_dist_cm)
+                                                        : static_cast<float>(signed_dist_cm);
+    if (!std::isfinite(penetration) || penetration < hyst) {
+        state.dwell_samples = 0;
+        if (penetration > 0.0f) state.last_suppressed_by_hysteresis = true;
+        else if (penetration < -hyst) state.last_suppressed_by_hysteresis = false;
+        return BorderDecision::StayLocal;
+    }
+    if (state.last_handover_ms > 0 && (now_ms - state.last_handover_ms) < cooldown_ms) {
+        state.last_suppressed_by_hysteresis = true;
+        return BorderDecision::StayLocal;
+    }
+    state.dwell_samples = is_explicit_teleport ? req_dwell : (state.dwell_samples + 1);
+    if (state.dwell_samples >= req_dwell) {
+        state.outside_worker_area = !state.outside_worker_area;
         state.dwell_samples = 0;
         state.last_handover_ms = now_ms;
         ++state.handover_count;

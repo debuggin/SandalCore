@@ -96,8 +96,34 @@ inline size_t default_max_pathfinds_per_step() {
     return v;
 }
 
+inline double default_npc_step_seconds() noexcept {
+    if (const char* s = std::getenv("AOC_WORLD_NPC_STEP_SECONDS"); s && *s) {
+        const double v = std::strtod(s, nullptr);
+        if (std::isfinite(v) && v >= 1.0 / 120.0 && v <= 1.0) return v;
+    }
+    for (const char* k : {"AOC_WORLD_TICK_HZ", "AOC_TICK_HZ"}) {
+        if (const char* s = std::getenv(k); s && *s) {
+            const long hz = std::strtol(s, nullptr, 10);
+            if (hz >= 15 && hz <= 120) return 1.0 / static_cast<double>(hz);
+        }
+    }
+    for (const char* k : {"AOC_WORLD_REGION", "AOC_WORLD_WORKER_ID", "AOC_WORLD_STREAM_ADDR"}) {
+        if (const char* s = std::getenv(k); s && *s) return 1.0 / 30.0;
+    }
+    return 1.0 / 15.0;
+}
+
+inline size_t default_npc_sim_step_cap() noexcept {
+    if (const char* s = std::getenv("AOC_WORLD_NPC_SIM_STEP_CAP"); s && *s) {
+        const long n = std::strtol(s, nullptr, 10);
+        if (n >= 1 && n <= 200000) return static_cast<size_t>(n);
+    }
+    return 3600;
+}
+
 struct NpcWorldConfig {
-    double step_seconds = 1.0 / 15.0;    // retail's server tick
+    double step_seconds = default_npc_step_seconds();  // server tick period (15..120 Hz)
+    size_t sim_step_cap = default_npc_sim_step_cap();  // max ambient NPCs stepped per tick slice
     int    max_catch_up_steps = 4;       // a clock that jumped ahead is not made up for beyond this
     double awake_cm = 15000.0;           // the relevancy default
     double awake_margin_cm = 2000.0;     // a margin so that an NPC at the ring's edge does not freeze and thaw with every step
@@ -361,6 +387,7 @@ private:
     double next_unit(Npc& n);
     void   step(double t);
     void   step_all_ambient(double t);
+    void   step_roam(Npc& n, double t);
     void   advance_ambient_patrol(Npc& n, world::WorldActor& a, double t, double dt);
     void   advance_ambient_wander(Npc& n, world::WorldActor& a, double t, double dt);
     void   advance_npc(Npc& n, double t);
@@ -405,6 +432,7 @@ private:
     int                           iterations_this_step_ = 0;
     std::atomic<bool>             simulate_all_npcs_{true};
     uint64_t                      seen_global_sim_epoch_ = 0;
+    size_t                        ambient_cursor_ = 0;
 
     Stats                         stats_;
 };

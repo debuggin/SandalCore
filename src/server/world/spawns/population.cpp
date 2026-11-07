@@ -319,6 +319,10 @@ std::vector<DataSpawn> select_data_spawns(const content::PopulationData& data, c
         const content::NpcSetRow& set = set_it->second;
         std::vector<Point> points;
         bool from_area = false;
+        const bool use_halo = area.uses_boundary_halo_for_spawns();
+        const auto in_area = [&](double px, double py) {
+            return use_halo ? area.contains_with_halo(px, py) : area.contains(px, py);
+        };
         if (set.area != 0) {
             // an area set: its instances are not at their offsets, the area's circles hold them
             const auto area_it = data.areas.find(set.area);
@@ -326,13 +330,13 @@ std::vector<DataSpawn> select_data_spawns(const content::PopulationData& data, c
             points = area_spawn_points(placement, set, area_it->second);
             from_area = true;
             bool any = false;
-            for (const Point& pt : points) any = any || area.contains(pt.x, pt.y);
+            for (const Point& pt : points) any = any || in_area(pt.x, pt.y);
             if (any) ++stats.area_sets;
         } else {
             points = placement_points(placement, set);
         }
         for (const Point& pt : points) {
-            if (!area.contains(pt.x, pt.y)) continue;
+            if (!in_area(pt.x, pt.y)) continue;
             ++(from_area ? stats.area_points : stats.points_in_area);
             const auto inst_it = data.instances.find(pt.instance);
             if (inst_it == data.instances.end()) continue;

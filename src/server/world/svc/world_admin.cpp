@@ -458,6 +458,31 @@ struct WorldAdminServer::Service final : adminv1::WorldAdminService::Service {
             resp->set_level(enabled ? 1 : 0);
             return grpc::Status::OK;
         }
+        if (req->npc() == "gm.SetTimeOfDay" || req->npc() == "set_time_of_day" || req->npc() == "time_of_day") {
+            double hours = req->has_point() ? req->point().x() : (req->yaw_degrees() != 0.0 ? req->yaw_degrees() : static_cast<double>(req->level()));
+            if (!req->place().empty()) hours = std::strtod(req->place().c_str(), nullptr);
+            if (auto s = on_net_thread([&] { bootstrap::set_global_time_of_day_hours(hours); }); !s.ok()) return s;
+            resp->set_npc(req->npc());
+            resp->set_display_name("time_of_day=" + std::to_string(bootstrap::global_time_of_day_hours()));
+            resp->set_level(static_cast<int32_t>(bootstrap::global_time_of_day_hours()));
+            return grpc::Status::OK;
+        }
+        if (req->npc() == "gm.UnlockAllEmberSprings" || req->npc() == "unlock_all_embersprings") {
+            const bool enabled = req->level() == 0 ? (req->place() != "0" && req->place() != "false") : (req->level() > 0);
+            if (auto s = on_net_thread([&] { PlayerSession::set_global_unlock_all_embersprings(enabled); }); !s.ok()) return s;
+            resp->set_npc(req->npc());
+            resp->set_display_name(enabled ? "unlock_all_embersprings=true" : "unlock_all_embersprings=false");
+            resp->set_level(enabled ? 1 : 0);
+            return grpc::Status::OK;
+        }
+        if (req->npc() == "gm.SetLevel" || req->npc() == "set_level") {
+            const int32_t lv = req->level() > 0 ? req->level() : content::kMaxLevel;
+            if (auto s = on_net_thread([&] { PlayerSession::set_global_default_level(lv); }); !s.ok()) return s;
+            resp->set_npc(req->npc());
+            resp->set_display_name("default_level=" + std::to_string(PlayerSession::global_default_level()));
+            resp->set_level(PlayerSession::global_default_level());
+            return grpc::Status::OK;
+        }
         GmSpawnNpcRequest r;
         r.npc = req->npc();
         r.level = req->level();

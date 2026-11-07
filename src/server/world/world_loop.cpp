@@ -152,6 +152,12 @@ void run_paced_world_loop(const WorldLoopContext& ctx, TickLoop& tick_loop, Tick
         if (profile.on) ctx.loop_stats.note_unit(unit_us);
     };
     while (!ctx.stop_flag) {
+        const int target_hz = TickLoop::effective_tick_hz(ctx.tick_hz);
+        if (target_hz != tick_loop.hz()) {
+            const int prev = tick_loop.hz();
+            tick_loop.set_hz(target_hz, Clock::now());
+            spdlog::info("[tick] runtime tick rate changed: {} Hz -> {} Hz", prev, target_hz);
+        }
         if (!tick_loop.run_once(ports)) {
             spdlog::error("the UDP socket failed; stopping");
             ctx.exit_code = 1;

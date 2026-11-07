@@ -121,6 +121,10 @@ public:
     /// An accepted move: the mount stands at (x, y, z) facing `yaw` in movement mode `mode`, its rider looking `pitch16` (RemoteViewPitch16: the only thing the retail
     /// server sends on a flying mount besides the move responses [R: 871, 959, 899, 883]); the road under it decides the road effect.
     void moved(double x, double y, double z, double yaw_degrees, double t, uint16_t pitch16 = 0, uint8_t mode = 1);
+    void reposition(double x, double y, double z, double yaw_degrees = 0.0, double t = 0.0) {
+        moved(x, y, z, yaw_degrees, t, view_pitch_ >= 0 ? static_cast<uint16_t>(view_pitch_) : 0, mode_);
+    }
+    [[nodiscard]] double current_speed() const { return base_speed(mode_) * mult_; }
     /// The movement mode of the last accepted move (5: flying).
     uint8_t mode() const { return mode_; }
     bool    can_fly() const { return s_.fly_speed > 0 && s_.row && s_.row->kind == "flying"; }
