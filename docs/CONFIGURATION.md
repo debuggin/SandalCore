@@ -52,18 +52,13 @@ AOC_WORLD_PARTITION_MODE=single_riverlands
 AOC_WORLD_SHARD_MODE=single
 AOC_WORLD_TOPOLOGY_MODE=single
 AOC_WORLD_REGION=riverlands
-AOC_WORLD_TICK_HZ_WORLD=30
-AOC_WORLD_TICK_HZ_REGION=45
-AOC_WORLD_TICK_HZ_ZOI=60
-AOC_WORLD_TICK_HZ_NODE=100
-AOC_WORLD_TICK_HZ_POI=100
 AOC_SERVICE_TICK_HZ=30
 AOC_DATA_MODE_DEFAULT=memory
 ```
 
 With these default settings:
 
-- Only **1 server worker container** (`aoc-riverlands` / `aoc-world`) starts alongside the 10 control-plane, PostgreSQL, and ingress proxy containers (**11 containers total**).
+- Only **1 server worker container** (`aoc-riverlands` / `aoc-world` in `Dynamic (30-60 Hz)` tick mode) starts alongside the 10 control-plane, PostgreSQL, and ingress proxy containers (**11 containers total**).
 - The worker loads only Riverlands terrain tiles, navigation chunks, City Nodes, NPCs, and gatherables (`AOC_WORLD_REGION=riverlands`), keeping startup fast and host memory usage low.
 
 ---
@@ -74,31 +69,27 @@ You can partition the world of Verra across one or more authoritative `world` wo
 
 | Variable | Default | Supported Values and Behavior |
 |:---|:---|:---|
-| `AOC_WORLD_PARTITION_MODE` | `single_riverlands` | - `single_riverlands`: 1 regional worker for Riverlands only (`45 Hz`).<br/>- `single_world`: 1 worker for the entire Verra continent (`30 Hz`).<br/>- `per_region`: 5 regional workers (`aoc-riverlands`, `aoc-sandsquall`, `aoc-jundark`, `aoc-anvils`, `aoc-turquoise-sea` at `45 Hz`).<br/>- `per_zoi`: 1 worker per Zone of Influence (`aoc-<zoi-name>` at `60 Hz`) within `AOC_WORLD_PARTITION_REGION`.<br/>- `per_zoi_nodes_and_pois`: Combines `60 Hz` ZOI workers with dedicated `100 Hz` `1 km x 1 km` City Node OBB Plug workers and POI polygon cut-out workers. |
+| `AOC_WORLD_PARTITION_MODE` | `single_riverlands` | - `single_riverlands`: 1 regional worker for Riverlands only (`Dynamic (30-60 Hz)`).<br/>- `single_world`: 1 worker for the entire Verra continent (`Dynamic (30-60 Hz)`).<br/>- `per_region`: 5 regional workers (`aoc-riverlands`, `aoc-sandsquall`, `aoc-jundark`, `aoc-anvils`, `aoc-turquoise-sea` in `Dynamic (30-60 Hz)`).<br/>- `per_zoi`: 1 worker per Zone of Influence (`aoc-<zoi-name>` in `Dynamic (30-60 Hz)`) within `AOC_WORLD_PARTITION_REGION`.<br/>- `per_zoi_nodes_and_pois`: Combines ZOI workers with dedicated `1 km x 1 km` City Node OBB Plug workers and POI polygon cut-out workers (`Dynamic (30-60 Hz)`). |
 | `AOC_WORLD_SHARD_MODE` / `AOC_WORLD_TOPOLOGY_MODE` | `single` | `single` (`world`), `region` (`per_region`), `zoi` (`per_zoi`), `node_plug_and_zoi`, `dynamic_node_plug_zoi` (NATO `-alpha..zulu` scaling stub), `dynamic_zoi` (NATO `-alpha..zulu` scaling stub), or `mixed`. |
 | `AOC_WORLD_REGION` | `riverlands` | Region filter (`riverlands`, `sandsquall`, `jundark`, `anvils`, `turquoise_sea`, or `all`) when running a single worker. |
 | `AOC_WORLD_PARTITION_REGION` | `sandsquall` | Target region (`sandsquall`, `riverlands`, or `random`) to split into ZOI or Node-Plug workers when `AOC_WORLD_PARTITION_MODE` is `per_zoi` or `per_zoi_nodes_and_pois`. |
-| `AOC_WORLD_POI_CUTOUT` | *(empty)* | Named Point of Interest cut-out (such as `carphin`) or semicolon-delimited convex polygon (`AOC_WORLD_POLYGON_CUTOUT="x1,y1;x2,y2;..."`) to run on a dedicated `100 Hz` worker. |
+| `AOC_WORLD_POI_CUTOUT` | *(empty)* | Named Point of Interest cut-out (such as `carphin`) or semicolon-delimited convex polygon (`AOC_WORLD_POLYGON_CUTOUT="x1,y1;x2,y2;..."`) to run on a dedicated worker (`Dynamic (30-60 Hz)`). |
 | `AOC_WORLD_WORKER_MEM_LIMIT` | `2560M` | Container RAM limit (`2.5 GiB`) applied to each `world` worker container. |
 
 > [!NOTE]
-> **No Artificial Entity Count Caps**: `AOC_WORLD_MAX_*` and `max_gatherables` caps do not exist in SandalCore. Every worker spawns the complete set of authentic NPCs, monsters, and gatherable resource nodes belonging to its assigned spatial boundary, bounded only by in-memory container structures.
+> **No Artificial Entity Count Caps**: `AOC_WORLD_MAX_*`, `max_gatherables`, and `sim_step_cap` truncation caps do not exist in SandalCore. Every worker spawns the complete set of authentic NPCs, monsters, and gatherable resource nodes belonging to its assigned spatial boundary, bounded only by in-memory container structures and governed by fair cursor-resumed scheduling.
 
 ---
 
 ## Tick Rate Settings
 
-Each server worker adjusts its default simulation tick rate (`Hz`) and per-tick NPC AI step slice according to its spatial scope so CPU utilization stays within the `30%--45%` green operating band:
+Every server worker defaults to **`Dynamic (30-60 Hz)`** adaptive tick mode (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `kMaxDynamicHz = 60`, `>= 30 Hz` dynamic floor) with cursor-resumed entity scheduling so CPU utilization stays within the `30%--45%` green operating band:
 
 | Variable | Default | Target Scope and Behavior |
 |:---|:---:|:---|
-| `AOC_WORLD_TICK_HZ_WORLD` | `30` | Simulation tick rate (`30 Hz`, `33.33 ms` frame budget) for a whole-world (`world`) worker. |
-| `AOC_WORLD_TICK_HZ_REGION` | `45` | Simulation tick rate (`45 Hz`, `22.22 ms` frame budget) for regional (`region`) workers. |
-| `AOC_WORLD_TICK_HZ_ZOI` | `60` | Simulation tick rate (`60 Hz`, `16.67 ms` frame budget) for Zone of Influence (`zoi`) workers. |
-| `AOC_WORLD_TICK_HZ_NODE` | `100` | Simulation tick rate (`100 Hz`, `10.00 ms` frame budget) for `1 km x 1 km` City Node OBB Plug (`node_plug`) workers. |
-| `AOC_WORLD_TICK_HZ_POI` | `100` | Simulation tick rate (`100 Hz`, `10.00 ms` frame budget) for POI / convex polygon cut-out (`poi`) workers. |
-| `AOC_WORLD_TICK_HZ` | *(scope default)* | Optional per-worker startup override (`1..120 Hz`). At runtime, operators can set each worker's target tick mode in the Web Admin Studio to `Dynamic (30-60 Hz)` (`kMaxDynamicHz = 60` automatic scaling based on worker load, paired with a read-only actual `Current Hz` display), `0 Hz (Pause NPCs)`, or a fixed manual `10, 15, 20, 25, 30, 40, 50, 60 Hz` (`1..120 Hz` CLI/API) rate. |
-| `AOC_WORLD_NPC_SIM_STEP_CAP_{WORLD,REGION,ZOI,NODE,POI}` | `5200` / `3600` / `2600` / `1500` / `1500` | Per-tick ambient NPC slice cap for each scope, paired with a Little's Law `<= 1.0 s` (`>= 1 Hz`) entity backlog floor so every spawned NPC is stepped at least once per second. |
+| `AOC_WORLD_TICK_HZ` / `AOC_WORLD_TICK_RATE_HZ` | `Dynamic (30-60 Hz)` (`-1`) | Default worker tick mode (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `kMaxDynamicHz = 60`, `>= 30 Hz` floor) across all worker scopes (`world`, `region`, `zoi`, `node_plug`, and `poi`). At runtime, operators can set each worker's target tick mode in the Web Admin Studio to `Dynamic (30-60 Hz)` (paired with a read-only actual `Current Hz` display), `0 Hz (Pause NPCs)`, or a fixed manual `10, 15, 20, 25, 30, 40, 50, 60 Hz` (`1..120 Hz` CLI/API) rate. |
+| `AOC_WORLD_TICK_HZ_{WORLD,REGION,ZOI,NODE,POI}` | `Dynamic (30-60 Hz)` | Optional per-scope startup override variables for `world`, `region`, `zoi`, `node_plug`, and `poi` workers when a fixed startup rate is desired instead of `Dynamic (30-60 Hz)`. |
+| `AOC_WORLD_CPU_TARGET_PCT` | `38` | Target CPU utilization midpoint (`30%--45%` band) used by the 15-tick EWMA `Dynamic (30-60 Hz)` controller (`kMaxDynamicHz = 60`, `>= 30 Hz` floor), paired with cursor-resumed entity scheduling and a `<= 1.0 s` (`>= 1 Hz`) entity service floor so every spawned NPC is stepped at least once per second. |
 | `AOC_SERVICE_TICK_HZ` | `30` | Tick rate (`30 Hz`, `33.33 ms`) for control-plane background loops, the Web Admin `world-stream` coalescer, and the single-source-of-truth mesh clock (`9x` clock speed across a `360`-day Verra year with four `90`-day seasons: `Spring`, `Summer`, `Autumn`, and `Winter`). |
 
 ---

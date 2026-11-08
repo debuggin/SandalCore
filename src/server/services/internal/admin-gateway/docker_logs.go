@@ -612,33 +612,35 @@ func (s *Server) recordGMAuditWithContext(r *http.Request, role Role, req Comman
 }
 
 func formatGMActionWhatProse(req CommandRequest, res map[string]any) string {
-	p, x, y, z := req.Params, 0.0, 0.0, 0.0
-	x, _ = extractFloatParam(res, "x", "x_cm")
-	y, _ = extractFloatParam(res, "y", "y_cm")
-	z, _ = extractFloatParam(res, "z", "z_cm")
-	charName := firstNonEmpty(extractStringParam(res, "character", "player"), extractStringParam(p, "character", "player"), req.TargetID, "player")
-	charGuid := firstNonEmpty(extractStringParam(res, "player_guid", "guid"), extractStringParam(p, "player_guid", "guid", "targetId", "target_id"), charName)
-	targetID := firstNonEmpty(extractStringParam(res, "entity_guid", "target_id"), req.TargetID, "npc")
-	npcName := firstNonEmpty(extractStringParam(res, "display_name", "name", "npc"), extractStringParam(p, "display_name", "name", "npc"), targetID)
+	x, _ := extractFloatParam(res, "x", "x_cm")
+	y, _ := extractFloatParam(res, "y", "y_cm")
+	z, _ := extractFloatParam(res, "z", "z_cm")
+	p, charName := req.Params, firstNonEmpty(extractStringParam(res, "character", "player"), extractStringParam(req.Params, "character", "player"), req.TargetID, "player")
+	charGuid, charLabel := firstNonEmpty(extractStringParam(res, "player_guid", "guid"), extractStringParam(p, "player_guid", "guid", "targetId", "target_id"), charName), charName
+	if charGuid != "" && charGuid != charName {
+		charLabel = charName + " (" + charGuid + ")"
+	}
+	targetID, npcName := firstNonEmpty(extractStringParam(res, "entity_guid", "target_id"), req.TargetID, "npc"), firstNonEmpty(extractStringParam(res, "display_name", "name", "npc"), extractStringParam(p, "display_name", "name", "npc"), firstNonEmpty(extractStringParam(res, "entity_guid", "target_id"), req.TargetID, "npc"))
 	switch req.Command {
 	case "teleport_player", "teleport":
 		if tp := firstNonEmpty(extractStringParam(p, "target_player", "to_player", "target_player_guid"), extractStringParam(res, "target_player", "to_player")); tp != "" {
-			return fmt.Sprintf("%s (%s) teleported to %s at (%.0f, %.0f, %.0f)", charName, charGuid, tp, x, y, z)
+			return fmt.Sprintf("%s teleported to %s at (%.0f, %.0f, %.0f)", charLabel, tp, x, y, z)
+		} else if pl := firstNonEmpty(extractStringParam(res, "place"), extractStringParam(p, "place", "destination")); pl != "" {
+			return fmt.Sprintf("%s teleported to %s (%.0f, %.0f, %.0f)", charLabel, pl, x, y, z)
 		}
-		if pl := firstNonEmpty(extractStringParam(res, "place"), extractStringParam(p, "place", "destination")); pl != "" {
-			return fmt.Sprintf("%s (%s) teleported to %s (%.0f, %.0f, %.0f)", charName, charGuid, pl, x, y, z)
-		}
-		return fmt.Sprintf("%s (%s) teleported to (%.0f, %.0f, %.0f)", charName, charGuid, x, y, z)
+		return fmt.Sprintf("%s teleported to (%.0f, %.0f, %.0f)", charLabel, x, y, z)
 	case "step_player_border", "simulate_border_crossing":
-		return fmt.Sprintf("%s (%s) crossed border %s -> %s at (%.0f, %.0f, %.0f)", charName, charGuid, firstNonEmpty(extractStringParam(res, "from_worker"), "aoc-world"), firstNonEmpty(extractStringParam(res, "to_worker"), "aoc-world"), x, y, z)
+		fromW, toW := firstNonEmpty(extractStringParam(res, "from_worker", "authoritative_worker", "worker_id"), "aoc-world"), firstNonEmpty(extractStringParam(res, "to_worker", "authoritative_worker", "worker_id"), "aoc-world")
+		if fromW == toW {
+			return fmt.Sprintf("%s stepped in %s at (%.0f, %.0f, %.0f)", charLabel, toW, x, y, z)
+		}
+		return fmt.Sprintf("%s crossed border %s -> %s at (%.0f, %.0f, %.0f)", charLabel, fromW, toW, x, y, z)
 	case "nudge_npc", "move_npc":
 		return fmt.Sprintf("Nudged %s (%s) %s to (%.0f, %.0f, %.0f)", npcName, targetID, firstNonEmpty(extractStringParam(p, "axis_delta", "delta", "direction"), fmt.Sprintf("(%.0f, %.0f, %.0f)", x, y, z)), x, y, z)
-	case "kill_npc", "kill":
-		return fmt.Sprintf("Killed %s (%s)", npcName, targetID)
 	case "heal_npc":
 		return fmt.Sprintf("Healed %s (%s) to full health", npcName, targetID)
-	case "reset_npc", "respawn_npc", "despawn_npc", "despawn", "despawn_entity":
-		verb := map[string]string{"reset_npc": "Reset", "respawn_npc": "Respawned"}[req.Command]
+	case "kill_npc", "kill", "reset_npc", "respawn_npc", "despawn_npc", "despawn", "despawn_entity":
+		verb := map[string]string{"kill_npc": "Killed", "kill": "Killed", "reset_npc": "Reset", "respawn_npc": "Respawned"}[req.Command]
 		return fmt.Sprintf("%s %s (%s)", firstNonEmpty(verb, "Despawned"), npcName, targetID)
 	case "spawn_npc", "spawn":
 		cnt, _ := extractIntParam(p, "count", "quantity")

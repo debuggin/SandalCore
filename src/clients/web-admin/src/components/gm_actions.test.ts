@@ -386,25 +386,35 @@ async function testInspectorModalActionsCatalogNpcsAndNpcRemoval(): Promise<void
   const storeMod = await import("../state/worldStreamStore.ts");
   const inspectorMod = await import("./EntityInspector.tsx");
   const modalsMod = await import("./NodeGovernanceAndSpawnModals.tsx");
+  const tab2Mod = await import("./PlayersAndSpawnerTab.tsx");
+  const modalsSrc = readFileSync(fileURLToPath(new URL("./NodeGovernanceAndSpawnModals.tsx", import.meta.url)), "utf8");
+  const spawnerSrc = readFileSync(fileURLToPath(new URL("./PlayersAndSpawnerTab.tsx", import.meta.url)), "utf8");
 
-  assert.deepEqual(
-    modalsMod.DEFAULT_CATALOG_NPCS.map((n) => ({ guid: n.guid, name: n.name, category: n.category })),
-    [
-      { guid: "6064628876645793792", name: "Aela", category: "npc" },
-      { guid: "6064628931065511936", name: "Riverlands Wolf", category: "monster" },
-      { guid: "6064628955249868800", name: "Citizen", category: "npc" },
-    ],
-  );
+  assert.equal(modalsSrc.includes("Spawn NPC\n        </button>"), true);
+  assert.equal(modalsSrc.includes("Spawn {selectedNpc}") || modalsSrc.includes("Spawn Aela"), false);
+  assert.equal(modalsSrc.includes("No matching places found"), true);
+  assert.equal(modalsSrc.includes("e.stopPropagation()"), true);
+  assert.equal(spawnerSrc.includes('placeholder="Search named place (e.g. Winstead, Lionshold, Carphin)..."'), true);
+  assert.equal(spawnerSrc.includes("mouseDownOnBackdropRef"), true);
+  assert.equal(tab2Mod.shouldUpdatePaginatedResourceState("places", { items: [], total: 0, limit: 25, offset: 0, has_more: false, next_cursor: null }, ""), true);
+  assert.equal(tab2Mod.shouldCloseModalOnEscape({ key: "Escape", target: { tagName: "INPUT" } }), false);
+  assert.equal(tab2Mod.shouldCloseModalOnEscape({ key: "Escape", target: { tagName: "DIV" } }, { tagName: "BODY" }), true);
+  const mergedPlaces = tab2Mod.mergeTeleportCatalogPlaces(modalsMod.DEFAULT_CATALOG_PLACES, [{ guid: "poi-carphin", name: "POI_Carphin", display_name: "Tower of Carphin", category: "dungeon", x_cm: -720000, y_cm: 500000, z_cm: 14200, icon_name: "", icon_url: "" }], storeMod.DEFAULT_VERRA_CITY_NODES);
+  const placeOpts = mergedPlaces.map((pl) => ({ value: pl.name, label: pl.display_name, detail: pl.name }));
+  assert.ok(modalsMod.filterCatalogPickerOptions(placeOpts, "Carphin").some((o) => o.label === "Tower of Carphin"));
+  assert.ok(modalsMod.filterCatalogPickerOptions(placeOpts, "Lionshold").some((o) => o.label === "Lionhold"));
+  assert.ok(modalsMod.filterCatalogPickerOptions(placeOpts, "Winstead").some((o) => o.label === "Winstead"));
+  assert.deepEqual(modalsMod.DEFAULT_CATALOG_NPCS.map((n) => ({ guid: n.guid, name: n.name, category: n.category })), [
+    { guid: "6064628876645793792", name: "Aela", category: "npc" },
+    { guid: "6064628931065511936", name: "Riverlands Wolf", category: "monster" },
+    { guid: "6064628955249868800", name: "Citizen", category: "npc" },
+  ]);
 
   const store = storeMod.createWorldStreamStore();
-  store.getState().applyWorldDelta({
-    seq: 1,
-    isSnapshot: true,
-    added: [
-      { guid: "npc-1", name: "Aela", kind: "npc", xCm: -644519.4, yCm: 376773.2, zCm: 12012.8, yawDeg: 0, level: 15, healthPct: 100 },
-      { guid: "npc-2", name: "Riverlands Wolf", kind: "monster", xCm: -640000.0, yCm: 375000.0, zCm: 11800.0, yawDeg: 0, level: 12, healthPct: 100 },
-    ],
-  });
+  store.getState().applyWorldDelta({ seq: 1, isSnapshot: true, added: [
+    { guid: "npc-1", name: "Aela", kind: "npc", xCm: -644519.4, yCm: 376773.2, zCm: 12012.8, yawDeg: 0, level: 15, healthPct: 100 },
+    { guid: "npc-2", name: "Riverlands Wolf", kind: "monster", xCm: -640000.0, yCm: 375000.0, zCm: 11800.0, yawDeg: 0, level: 12, healthPct: 100 },
+  ] });
   store.getState().selectEntity("npc-1");
   const exclEntity = inspectorMod.resolveMutuallyExclusiveInspectorTarget(store.getState());
   assert.equal(exclEntity.activeKind, "entity");
@@ -423,10 +433,7 @@ async function testInspectorModalActionsCatalogNpcsAndNpcRemoval(): Promise<void
 
   let worldStateRefreshes = 0;
   const mockFetch: typeof fetch = async (input) => {
-    if (String(input).includes("/api/v1/world/state")) {
-      worldStateRefreshes += 1;
-      return new Response(JSON.stringify({ entities: [] }), { status: 200 });
-    }
+    if (String(input).includes("/api/v1/world/state")) { worldStateRefreshes += 1; return new Response(JSON.stringify({ entities: [] }), { status: 200 }); }
     return new Response(JSON.stringify({ ok: true, message: "executed" }), { status: 200 });
   };
   await modalsMod.dispatchAuxiliaryGmAction({ action: "kill_npc", entity_guid: "npc-1" }, mockFetch, store.getState());
@@ -435,11 +442,7 @@ async function testInspectorModalActionsCatalogNpcsAndNpcRemoval(): Promise<void
   assert.equal(store.getState().entities.has("npc-2"), false);
   assert.equal(worldStateRefreshes, 2);
 
-  const errRes = await modalsMod.dispatchAuxiliaryGmAction(
-    { action: "kill_npc", entity_guid: "missing" },
-    async () => new Response(JSON.stringify({ detail: "Entity not found in zone" }), { status: 404 }),
-    store.getState(),
-  );
+  const errRes = await modalsMod.dispatchAuxiliaryGmAction({ action: "kill_npc", entity_guid: "missing" }, async () => new Response(JSON.stringify({ detail: "Entity not found in zone" }), { status: 404 }), store.getState());
   assert.equal(errRes.ok, false);
   assert.equal(errRes.message, "Entity not found in zone");
 }

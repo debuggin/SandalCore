@@ -712,13 +712,14 @@ func (s *Server) evaluatePlayerRegionalHandover(charName string, x, y, z float64
 	}
 	targetReg, targetZoi, depthCm := computeRegionAndBorderDepth(st, x, y, p)
 	targetWorker, stepDepth := s.resolveAuthoritativeWorkerForTarget(st, targetReg, targetZoi, [2]float64{x, y}, p), depthCm
+	prevWorker := firstNonEmpty(st.AuthoritativeWorker, targetWorker)
 	if isTeleport {
 		stepDepth = math.Inf(1)
 	}
 	st.stepTo(targetReg, targetWorker, targetZoi, stepDepth, now.Add(st.VirtualOffset))
 	res, authReg := map[string]any{
 		"authoritative_region": st.AuthoritativeRegion, "region": st.AuthoritativeRegion, "authoritative_worker": st.AuthoritativeWorker, "worker_id": st.AuthoritativeWorker,
-		"zoi_id": st.CurrentZoiID, "current_zoi_id": st.CurrentZoiID, "zone": st.AuthoritativeRegion, "handover_count": st.HandoverCount, "lease_epoch": st.LeaseEpoch,
+		"from_worker": prevWorker, "to_worker": st.AuthoritativeWorker, "zoi_id": st.CurrentZoiID, "current_zoi_id": st.CurrentZoiID, "zone": st.AuthoritativeRegion, "handover_count": st.HandoverCount, "lease_epoch": st.LeaseEpoch,
 		"hysteresis_suppressed": st.SuppressedByHysteresis, "suppressed_by_hysteresis": st.SuppressedByHysteresis, "dwell_samples": st.DwellSamples, "border_distance_cm": depthCm,
 	}, st.AuthoritativeRegion
 	playerHandoversMu.Unlock()

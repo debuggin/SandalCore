@@ -84,6 +84,7 @@ import {
   MIN_VERRA_MAP_ZOOM,
   parsePoisFromPayload,
   PURE_BLACK_TILE_BG,
+  resolveNativeCanvasRenderArea,
   resolveVerraMapViewState,
   screenOffsetToWorldCm,
   VerraTileCache,
@@ -206,7 +207,8 @@ export function parseWorldStateResponse(raw: unknown, layers: LayerToggles): rea
         guid, name, kind: "player",
         xCm: Number(p.x_cm ?? p.x ?? 0), yCm: Number(p.y_cm ?? p.y ?? 0), zCm: Number(p.z_cm ?? p.z ?? 0),
         yawDeg: Number(p.yaw_deg ?? p.yaw_degrees ?? 0), level: Number(p.level ?? 1), healthPct: 100,
-      });
+        ...(Boolean(p.mounted || p.is_mounted || p.mount_guid || p.mount_id) ? { mounted: true } : {}),
+      } as WorldEntity);
     }
   }
   const rawEntities = (Array.isArray(obj.entities) ? obj.entities : []) as readonly Record<string, unknown>[];
@@ -235,7 +237,13 @@ export function parseWorldStateResponse(raw: unknown, layers: LayerToggles): rea
       npc_subkind: rawSubkind, npcSubkind: rawSubkind, resourceType: resType, resource_type: resType, quality: qual,
       poiCategory: isEmber ? "Ember Spring" : kind === "poi" ? formatPoiCategoryDisplay({ category: String(e.category ?? rawKind), name: rawName }) : undefined,
       zoneId: typeof e.zone === "string" ? e.zone : typeof e.zone_id === "string" ? e.zone_id : undefined,
-    };
+      ...(kind === "player" && Boolean(e.mounted || e.is_mounted || e.mount_guid || e.mount_id) ? { mounted: true } : {}),
+    } as WorldEntity;
+    if (kind === "mount") {
+      for (const pl of added) {
+        if (pl.kind === "player" && Math.hypot(pl.xCm - ent.xCm, pl.yCm - ent.yCm) <= 250) (pl as { mounted?: boolean }).mounted = true;
+      }
+    }
     if (isEntityVisibleForLayers(ent, layers, 5)) added.push(ent);
   }
   return added;
@@ -547,7 +555,7 @@ function renderInteractiveMapCanvas(
         e.stopPropagation();
         handleCanvasRightClickClear(storeSnap);
       }}
-      style={{ display: "block", width: "100%", height: "100%", cursor: "grab", backgroundColor: PURE_BLACK_TILE_BG }}
+      style={{ position: "absolute", inset: 0, display: "block", width: "100%", height: "100%", boxSizing: "border-box", cursor: "grab", backgroundColor: PURE_BLACK_TILE_BG }}
     ></canvas>
   );
 }
@@ -641,6 +649,7 @@ function useCanvasNativeWheelAndDraw(
   mapMeta: VerraMapMeta,
   storeSnap: WorldStreamState,
   tileCacheRef: React.MutableRefObject<VerraTileCache | null>,
+  onResize: () => void,
 ): void {
   const storeSnapRef = React.useRef(storeSnap);
   storeSnapRef.current = storeSnap;
@@ -652,29 +661,27 @@ function useCanvasNativeWheelAndDraw(
       ev.preventDefault();
       ev.stopPropagation();
       const snap = storeSnapRef.current;
-      const nextZoom = Math.max(
-        MIN_VERRA_MAP_ZOOM,
-        Math.min(MAX_VERRA_MAP_ZOOM, snap.camera.zoom + (ev.deltaY < 0 ? 0.5 : -0.5)),
-      );
+      const nextZoom = Math.max(MIN_VERRA_MAP_ZOOM, Math.min(MAX_VERRA_MAP_ZOOM, snap.camera.zoom + (ev.deltaY < 0 ? 0.5 : -0.5)));
       snap.setCameraViewport({ zoom: nextZoom });
     };
     canvas.addEventListener("wheel", handleNativeWheel, { passive: false });
+    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(() => onResize()) : null;
+    if (ro) ro.observe(canvas.parentElement ?? canvas);
+    if (typeof window !== "undefined") window.addEventListener("resize", onResize);
     return () => {
       canvas.removeEventListener("wheel", handleNativeWheel);
+      ro?.disconnect();
+      if (typeof window !== "undefined") window.removeEventListener("resize", onResize);
     };
   }, []);
 
   React.useEffect(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
+    const canvas = canvasRef.current, ctx = canvas?.getContext("2d");
     if (!canvas || !ctx || !tileCacheRef.current) return;
-    const rect = canvas.getBoundingClientRect();
-    const width = Math.max(320, Math.round(rect.width || 960));
-    const height = Math.max(240, Math.round(rect.height || 540));
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
-    }
+    const parentRect = canvas.parentElement?.getBoundingClientRect();
+    const rect = parentRect && parentRect.width > 0 && parentRect.height > 0 ? parentRect : canvas.getBoundingClientRect();
+    const { width, height } = resolveNativeCanvasRenderArea(rect.width || 960, rect.height || 540);
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
     drawCanvasScene(ctx, { width, height }, mapMeta, storeSnap, tileCacheRef.current);
   });
 }
@@ -697,7 +704,7 @@ function renderUnifiedInspectorSlot(
   return (
     <div
       data-testid="unified-map-inspector-slot"
-      style={{ position: "absolute", top: "12px", right: "12px", width: "360px", zIndex: 25, display: "flex", flexDirection: "column", gap: "8px" }}
+      style={{ position: "absolute", top: "12px", right: "12px", width: "360px", maxHeight: "calc(100% - 24px)", overflowY: "auto", zIndex: 25, display: "flex", flexDirection: "column", gap: "8px" }}
     >
       {selectedCityNode ? (
         <NodeGovernanceModalCard storeSnap={storeSnap} />
@@ -741,7 +748,7 @@ export function VerraMapCanvas(props: VerraMapCanvasProps): React.ReactElement {
   }
 
   useWorldMapPolling(storeSnap, setMapMeta, canvasRef);
-  useCanvasNativeWheelAndDraw(canvasRef, mapMeta, storeSnap, tileCacheRef);
+  useCanvasNativeWheelAndDraw(canvasRef, mapMeta, storeSnap, tileCacheRef, () => setRenderTick((t) => t + 1));
   const remoteSearchHits = useMapRemoteSearch(searchText, storeSnap.layers);
   const viewState = resolveVerraMapViewState(storeSnap);
   const deckLayers = buildVerraDeckOverlayLayers(storeSnap);
@@ -753,7 +760,7 @@ export function VerraMapCanvas(props: VerraMapCanvasProps): React.ReactElement {
       data-testid="verra-map-workspace"
       data-view-state={viewState}
       data-pmtiles-source={props.pmtilesUrl ?? DEFAULT_VERRA_PMTILES_URL}
-      style={{ position: "relative", display: "flex", flexDirection: "column", width: props.width ?? "100%", height: props.height ?? "100%", minHeight: "540px", backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, overflow: "hidden" }}
+      style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column", width: props.width ?? "100%", height: props.height ?? "100%", maxHeight: "100%", boxSizing: "border-box", backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, overflow: "hidden" }}
     >
       {renderMapHeader(searchText, searchResults, storeSnap, setSearchText, (hit) => {
         storeSnap.setCameraViewport({ centerXCm: hit.xCm, centerYCm: hit.yCm, zoom: Math.max(5.5, storeSnap.camera.zoom) });
@@ -763,7 +770,7 @@ export function VerraMapCanvas(props: VerraMapCanvasProps): React.ReactElement {
         else if (hit.poiGuid) storeSnap.selectPoi(hit.poiGuid);
         setSearchText("");
       })}
-      <div style={{ position: "relative", zIndex: 1, flex: 1, minHeight: "460px" }}>
+      <div style={{ position: "relative", zIndex: 1, flex: 1, minHeight: 0, height: "100%", maxHeight: "100%", boxSizing: "border-box", overflow: "hidden" }}>
         {renderInteractiveMapCanvas(canvasRef, dragRef, storeSnap, deckLayers.filter((l) => l.visible).length, props.onCoordinatePick, props.onEntitySelect)}
         {renderZoomAndNodeControls(storeSnap, cityFilterText, setCityFilterText)}
         {renderBottomLeftMapEntityLegend()}

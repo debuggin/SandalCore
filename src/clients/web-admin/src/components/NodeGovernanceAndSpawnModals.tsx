@@ -153,14 +153,29 @@ export async function dispatchAuxiliaryGmAction(
   }
 }
 
+export function filterCatalogPickerOptions(
+  options: readonly CatalogPickerOption[],
+  text: string,
+): readonly CatalogPickerOption[] {
+  const q = text.trim().toLowerCase();
+  if (!q) return options;
+  const qNorm = q.replace(/lionshold/g, "lionhold");
+  return options.filter((o) => {
+    const label = o.label.toLowerCase();
+    const val = o.value.toLowerCase();
+    const det = (o.detail ?? "").toLowerCase();
+    return (
+      label.includes(q) || val.includes(q) || det.includes(q) ||
+      label.includes(qNorm) || val.includes(qNorm) || det.includes(qNorm)
+    );
+  });
+}
+
 export function CatalogComboboxPicker(props: CatalogComboboxPickerProps): React.ReactElement {
   const [open, setOpen] = React.useState(false);
   const [activeIndex, setActiveIndex] = React.useState(0);
   const listId = `${props.testIdPrefix}-listbox`;
-  const q = props.text.trim().toLowerCase();
-  const visibleOptions = q && !props.options.some((o) => o.label.toLowerCase() === q)
-    ? props.options.filter((o) => o.label.toLowerCase().includes(q) || o.value.toLowerCase().includes(q))
-    : props.options;
+  const visibleOptions = filterCatalogPickerOptions(props.options, props.text);
   const choose = (opt: CatalogPickerOption): void => { props.onSelectOption(opt); setOpen(false); };
   return (
     <div data-testid={`${props.testIdPrefix}-picker`} style={{ position: "relative", marginBottom: "8px" }}>
@@ -168,23 +183,28 @@ export function CatalogComboboxPicker(props: CatalogComboboxPickerProps): React.
       <input
         type="search" role="combobox" aria-label={props.label} aria-expanded={open} aria-controls={listId} data-testid={`${props.testIdPrefix}-search`}
         value={props.text} placeholder={props.placeholder} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
+        onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); setOpen(true); }}
         onChange={(e) => { setOpen(true); setActiveIndex(0); props.onTextChange(e.currentTarget.value); }}
         onKeyDown={(e) => {
-          if (e.key === "Escape") setOpen(false);
-          else if (e.key === "ArrowDown") setActiveIndex((i) => Math.min(Math.max(0, visibleOptions.length - 1), i + 1));
-          else if (e.key === "ArrowUp") setActiveIndex((i) => Math.max(0, i - 1));
+          e.stopPropagation();
+          if (e.key === "Escape") {
+            if (open || props.text.length > 0) { e.preventDefault(); setOpen(false); if (props.text.length > 0) props.onTextChange(""); }
+          } else if (e.key === "ArrowDown") { setOpen(true); setActiveIndex((i) => Math.min(Math.max(0, visibleOptions.length - 1), i + 1)); }
+          else if (e.key === "ArrowUp") { setOpen(true); setActiveIndex((i) => Math.max(0, i - 1)); }
           else if (e.key === "Enter" && open && visibleOptions[activeIndex]) { e.preventDefault(); choose(visibleOptions[activeIndex]); }
         }}
         style={{ ...INPUT_STYLE, width: "100%" }}
       />
-      {open && visibleOptions.length > 0 ? (
+      {open ? (
         <ul id={listId} role="listbox" data-testid={`${props.testIdPrefix}-options`} style={{ position: "absolute", top: "58px", left: 0, right: 0, maxHeight: "200px", overflowY: "auto", margin: 0, padding: "4px", listStyle: "none", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, zIndex: 10020 }}>
-          {visibleOptions.map((opt, idx) => (
-            <li key={opt.value} role="option" aria-selected={idx === activeIndex} data-testid={`${props.testIdPrefix}-option-${opt.value}`} onMouseDown={(e) => { e.preventDefault(); choose(opt); }} style={{ padding: "6px 8px", borderRadius: "4px", cursor: "pointer", backgroundColor: idx === activeIndex ? "rgba(232, 178, 90, 0.22)" : "transparent", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, display: "flex", justifyContent: "space-between", fontSize: "12px" }}>
+          {visibleOptions.length > 0 ? visibleOptions.map((opt, idx) => (
+            <li key={opt.value} role="option" aria-selected={idx === activeIndex} data-testid={`${props.testIdPrefix}-option-${opt.value}`} onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); choose(opt); }} style={{ padding: "6px 8px", borderRadius: "4px", cursor: "pointer", backgroundColor: idx === activeIndex ? "rgba(232, 178, 90, 0.22)" : "transparent", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, display: "flex", justifyContent: "space-between", fontSize: "12px" }}>
               <span>{opt.label}</span>
               {opt.detail ? <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, fontSize: "11px" }}>{opt.detail}</span> : null}
             </li>
-          ))}
+          )) : (
+            <li role="option" aria-selected={false} onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }} style={{ padding: "6px 8px", color: "#94a3b8" }}>No matching places found</li>
+          )}
         </ul>
       ) : null}
     </div>
@@ -253,11 +273,11 @@ async function executeSpawnNpcSubmission(
 }
 
 export function SpawnNpcCard(props: SpawnNpcCardProps): React.ReactElement {
-  const { npcEnv, npcQuery, places, players, onNpcQueryChange } = props;
+  const { npcEnv, npcQuery = "", places, players, onNpcQueryChange } = props;
   const storeSnap = useWorldStreamStore();
   const catalogNpcs = npcEnv.items;
   const rawSelectedNpc = storeSnap.selectedNpcTemplate;
-  const selectedNpc = rawSelectedNpc ? rawSelectedNpc : catalogNpcs[0]?.name || DEFAULT_CATALOG_NPCS[0]?.name || "Aela";
+  const selectedNpc = rawSelectedNpc ? rawSelectedNpc : catalogNpcs[0]?.name || DEFAULT_CATALOG_NPCS[0]?.name || "";
   const [level, setLevel] = React.useState(15);
   const targetMode = storeSnap.spawnTargetMode;
   const [place, setPlace] = React.useState(DEFAULT_CATALOG_PLACES[2]?.name ?? "Verra_RVR_Winstead");
@@ -304,7 +324,7 @@ export function SpawnNpcCard(props: SpawnNpcCardProps): React.ReactElement {
           </div>
         ) : null}
         <button type="button" data-testid="spawn-npc-submit" onClick={() => void executeSpawnNpcSubmission(storeSnap, { selectedNpc, level, place, coords }, places, players)} style={BTN_STYLE}>
-          Spawn {selectedNpc}
+          Spawn NPC
         </button>
       </div>
     </section>

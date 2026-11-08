@@ -13,16 +13,16 @@ This runbook explains in plain English how to start and stop SandalCore, switch 
 When you run `.\start.bat` (`.\sandal.ps1 up`) on a fresh checkout, SandalCore starts **1 authoritative zone worker for the Riverlands region** with no manual `.env` configuration required:
 
 1. **Verifies Game Data and Local `.usmap` Override**: Checks that `dist/content/content.db` (schema `v41`) and all 25 extracted game-data files exist, running the extractor pipeline automatically if any file is missing or out of date. When `$HOME/.aoc/aoc.usmap` (`~/.aoc/aoc.usmap`) exists on the host, it is preferred and synced to `dist/content/aoc.usmap` and `deploy/content/aoc.usmap` without modifying `src/config/layouts/aoc.usmap`.
-2. **Starts 11 Linux Containers and Purges Temporary Accounts**: Launches the 10 control-plane, PostgreSQL, and ingress proxy containers plus 1 Riverlands worker container (`aoc-riverlands` / `aoc-world` at `45 Hz` with a `2560M` RAM limit). On startup, `aoc-auth` automatically purges stale `TMP_*` and `TST_*` temporary accounts and characters from PostgreSQL.
+2. **Starts 11 Linux Containers and Purges Temporary Accounts**: Launches the 10 control-plane, PostgreSQL, and ingress proxy containers plus 1 Riverlands worker container (`aoc-riverlands` / `aoc-world` in `Dynamic (30-60 Hz)` tick mode with a `2560M` RAM limit). On startup, `aoc-auth` automatically purges stale `TMP_*` and `TST_*` temporary accounts and characters from PostgreSQL.
 3. **Opens the Launcher and Prints Web Admin Credentials**: Prints the single-boot Web Admin passphrase (`Username: Admin`) in the console, creates the `SandalLauncher.lnk` shortcut in the repository root, and launches `SandalLauncher.exe`.
 
 ### Switching Server Worker Topologies
 
-To change how Verra is partitioned across server workers, open the `.env` file in the repository root, paste one of the five configurations below, and run `.\start.bat`. Your root `.env` is copied automatically to `deploy/.env` on startup.
+To change how Verra is partitioned across server workers, open the `.env` file in the repository root, paste one of the five configurations below, and run `.\start.bat`. Your root `.env` is copied automatically to `deploy/.env` on startup. All worker topologies run in **`Dynamic (30-60 Hz)`** adaptive tick mode by default with cursor-resumed scheduling across the full authoritative entity population.
 
 #### Setup 1: One Worker for One Region (Default: Riverlands)
 
-Runs a single regional worker for Riverlands at `45 Hz` (`3600` NPC step slice). This is the fastest configuration for everyday development and single-region testing:
+Runs a single regional worker for Riverlands in `Dynamic (30-60 Hz)` tick mode. This is the fastest configuration for everyday development and single-region testing:
 
 ```ini
 AOC_WORLD_PARTITION_MODE=single_riverlands
@@ -32,7 +32,7 @@ AOC_WORLD_TOPOLOGY_MODE=single
 
 #### Setup 2: One Worker for the Whole World
 
-Loads all five Verra regions (`riverlands`, `sandsquall`, `jundark`, `anvils`, and `turquoise-sea`) onto a single whole-world worker running at `30 Hz` (`5200` NPC step slice):
+Loads all five Verra regions (`riverlands`, `sandsquall`, `jundark`, `anvils`, and `turquoise-sea`) onto a single whole-world worker running in `Dynamic (30-60 Hz)` tick mode:
 
 ```ini
 AOC_WORLD_PARTITION_MODE=single_world
@@ -42,7 +42,7 @@ AOC_WORLD_TOPOLOGY_MODE=world
 
 #### Setup 3: One Worker per Region
 
-Runs five parallel regional workers (`aoc-riverlands`, `aoc-sandsquall`, `aoc-jundark`, `aoc-anvils`, and `aoc-turquoise-sea`) at `45 Hz` (`3600` NPC step slice per worker). Players walking or riding across regional borders are handed over seamlessly between workers:
+Runs five parallel regional workers (`aoc-riverlands`, `aoc-sandsquall`, `aoc-jundark`, `aoc-anvils`, and `aoc-turquoise-sea`) in `Dynamic (30-60 Hz)` tick mode. Players walking or riding across regional borders are handed over seamlessly between workers:
 
 ```ini
 AOC_WORLD_PARTITION_MODE=per_region
@@ -51,7 +51,7 @@ AOC_WORLD_TOPOLOGY_MODE=region
 
 #### Setup 4: One Worker per Zone of Influence
 
-Splits a target region (`sandsquall`, `riverlands`, or `random`) into dedicated Zone of Influence (ZOI) workers running at `60 Hz` (`2600` NPC step slice per ZOI worker):
+Splits a target region (`sandsquall`, `riverlands`, or `random`) into dedicated Zone of Influence (ZOI) workers running in `Dynamic (30-60 Hz)` tick mode:
 
 ```ini
 AOC_WORLD_PARTITION_MODE=per_zoi
@@ -61,7 +61,7 @@ AOC_WORLD_PARTITION_REGION=sandsquall
 
 #### Setup 5: ZOI Workers with City Node and POI Cut-Outs
 
-Combines `60 Hz` ZOI workers (`--area-exclude-node-plug=Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Azmaran`) with dedicated `100 Hz` (`1500` NPC step slice) workers for `1 km x 1 km` City Node OBB plugs and high-density Points of Interest such as `carphin`. Each parent worker enforces hole-punching (`has_carve_out` at the top of `contains_with_halo`, strict `area.contains` for static spawns, and area-filtered `NodeScenery` and `FoliageCells`) so carved-out City Nodes and POIs never double-spawn actors:
+Combines ZOI workers (`--area-exclude-node-plug=Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Azmaran`) with dedicated workers for `1 km x 1 km` City Node OBB plugs and high-density Points of Interest such as `carphin`, all running in `Dynamic (30-60 Hz)` tick mode. Each parent worker enforces hole-punching (`has_carve_out` at the top of `contains_with_halo`, strict `area.contains` for static spawns, and area-filtered `NodeScenery` and `FoliageCells`) so carved-out City Nodes and POIs never double-spawn actors:
 
 ```ini
 AOC_WORLD_PARTITION_MODE=per_zoi_nodes_and_pois
@@ -72,12 +72,12 @@ AOC_WORLD_POI_CUTOUT=carphin
 
 ```mermaid
 flowchart LR
-    subgraph EnvConfig["Root .env Partition Mode"]
-        S1["1. single_riverlands (1 Region Worker - 45 Hz)"]
-        S2["2. single_world (1 Whole-World Worker - 30 Hz)"]
-        S3["3. per_region (5 Regional Workers - 45 Hz)"]
-        S4["4. per_zoi (Per-ZOI Workers - 60 Hz)"]
-        S5["5. per_zoi_nodes_and_pois (ZOI 60 Hz + Node & POI Cut-Outs 100 Hz)"]
+    subgraph EnvConfig["Root .env Partition Mode (Dynamic 30-60 Hz)"]
+        S1["1. single_riverlands (1 Region Worker)"]
+        S2["2. single_world (1 Whole-World Worker)"]
+        S3["3. per_region (5 Regional Workers)"]
+        S4["4. per_zoi (Per-ZOI Workers)"]
+        S5["5. per_zoi_nodes_and_pois (ZOI + Node & POI Cut-Out Workers)"]
     end
 
     subgraph MeshRegistry["aoc-mesh (:50055) & aoc-mesh-gateway (:50056)"]
@@ -97,26 +97,26 @@ flowchart LR
 
 ## Worker Tick Rates, Memory Limits, and Simulation Persistence
 
-### Default Tick Rates by Worker Scope
+### Default Tick Mode by Worker Scope
 
-Each worker scope uses a default tick rate and per-tick NPC step slice chosen to keep container CPU usage in the `30%--45%` green operating band. Entity counts are never restricted by `AOC_WORLD_MAX_*` or `max_gatherables` caps; every worker loads the full authentic population inside its territory.
+Every worker scope runs in **`Dynamic (30-60 Hz)`** adaptive tick mode by default (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `kMaxDynamicHz = 60`, `>= 30 Hz` dynamic floor) to keep container CPU usage in the `30%--45%` green operating band. Entity counts and per-tick slices are never restricted by `AOC_WORLD_MAX_*`, `max_gatherables`, or `sim_step_cap` truncation caps; every worker loads the full authentic population inside its territory and steps entities via fair cursor-resumed scheduling.
 
-| Spatial Scope | Partition Mode | Default Tick Rate | Frame Budget | Default NPC Step Slice | `.env` Override Variables |
-|:---|:---|:---:|:---:|:---:|:---|
-| **`world`** | `single_world` | **`30 Hz`** | `33.33 ms` | **`5200`** | `AOC_WORLD_TICK_HZ_WORLD=30`, `AOC_WORLD_NPC_SIM_STEP_CAP_WORLD=5200` |
-| **`region`** | `single_riverlands`, `per_region` | **`45 Hz`** | `22.22 ms` | **`3600`** | `AOC_WORLD_TICK_HZ_REGION=45`, `AOC_WORLD_NPC_SIM_STEP_CAP_REGION=3600` |
-| **`zoi`** | `per_zoi`, `per_zoi_nodes_and_pois` | **`60 Hz`** | `16.67 ms` | **`2600`** | `AOC_WORLD_TICK_HZ_ZOI=60`, `AOC_WORLD_NPC_SIM_STEP_CAP_ZOI=2600` |
-| **`node_plug`** | `per_zoi_nodes_and_pois` (City Node OBB) | **`100 Hz`** | `10.00 ms` | **`1500`** | `AOC_WORLD_TICK_HZ_NODE=100`, `AOC_WORLD_NPC_SIM_STEP_CAP_NODE=1500` |
-| **`poi`** | `per_zoi_nodes_and_pois` (`AOC_WORLD_POI_CUTOUT`) | **`100 Hz`** | `10.00 ms` | **`1500`** | `AOC_WORLD_TICK_HZ_POI=100`, `AOC_WORLD_NPC_SIM_STEP_CAP_POI=1500` |
+| Spatial Scope | Partition Mode | Default Tick Mode | Adaptive Range & Floor | Entity Scheduling |
+|:---|:---|:---:|:---:|:---|
+| **`world`** | `single_world` | **`Dynamic (30-60 Hz)`** | `30--60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` floor) | Cursor-resumed across full population (`0` truncation caps) |
+| **`region`** | `single_riverlands`, `per_region` | **`Dynamic (30-60 Hz)`** | `30--60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` floor) | Cursor-resumed across full population (`0` truncation caps) |
+| **`zoi`** | `per_zoi`, `per_zoi_nodes_and_pois` | **`Dynamic (30-60 Hz)`** | `30--60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` floor) | Cursor-resumed across full population (`0` truncation caps) |
+| **`node_plug`** | `per_zoi_nodes_and_pois` (City Node OBB) | **`Dynamic (30-60 Hz)`** | `30--60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` floor) | Cursor-resumed across full population (`0` truncation caps) |
+| **`poi`** | `per_zoi_nodes_and_pois` (`AOC_WORLD_POI_CUTOUT`) | **`Dynamic (30-60 Hz)`** | `30--60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` floor) | Cursor-resumed across full population (`0` truncation caps) |
 
 ### Runtime Tick Rate Selector and `0 Hz` NPC Pause
 
 You can adjust any worker's simulation frequency live from the Web Admin Main Page (`Visible Server Workers` panel) or the Observability Page (`World Workers` table) without restarting containers:
 
-- **`Dynamic` (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `30-60 Hz` (`kMaxDynamicHz = 60`) adaptive range)**: The default mode on both the Main Page Server List and the Observability Page. Automatically scales the worker's tick rate between `30 Hz` and `60 Hz` in `5 Hz` steps around its scope baseline (`30 / 45 / 60 / 100 Hz`) whenever CPU utilization stays above `45%` or below `30%` for 15 consecutive ticks, paired with a read-only **`Actual Hz` / `Current Hz`** badge (`aria-readonly="true"`) fed by live `aoc_world_tick_hz` telemetry.
+- **`Dynamic` (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `30-60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` floor) adaptive range)**: The default mode on both the Main Page Server List and the Observability Page. Automatically scales the worker's tick rate between `30 Hz` and `60 Hz` in `5 Hz` steps whenever CPU utilization stays above `45%` or below `30%` for 15 consecutive ticks, paired with a read-only **`Actual Hz` / `Current Hz`** badge (`aria-readonly="true"`) fed by live `aoc_world_tick_hz` telemetry.
 - **`0 Hz (Pause NPCs)` (`0 Hz (Off)`)**: Pauses ambient NPC AI movement and evaluation on **just that worker** while keeping player movement, combat, handovers, and GM commands active.
 - **Manual Rates (`10, 15, 20, 25, 30, 40, 50, 60 Hz`)**: Locks that worker to a fixed simulation frequency (`tick_mode: "manual"`).
-- **One-Second NPC Service Guarantee**: Regardless of how many thousands of NPCs are spawned on a worker, the simulation loop adjusts its per-tick slice floor so every ambient NPC is stepped at least once per second (`<= 1.0 s` service floor).
+- **Cursor-Resumed Scheduling and One-Second NPC Service Guarantee**: Regardless of how many thousands of NPCs are spawned on a worker, the simulation loop steps entities via fair cursor-resumed scheduling and guarantees that every ambient NPC is stepped at least once per second (`<= 1.0 s` service floor).
 
 ### PostgreSQL Simulation State, `WorldClock`, and Authentic 4-Season Verra Calendar
 

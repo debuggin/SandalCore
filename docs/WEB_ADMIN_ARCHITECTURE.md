@@ -26,10 +26,10 @@ flowchart TB
     end
 
     subgraph AuthoritativeWorkers["Authoritative World Workers (2560M RAM, read_only: true)"]
-        WorldScope["world Scope (30 Hz / 5200 NPC Slice)"]
-        RegionScope["region Scope (45 Hz / 3600 NPC Slice)"]
-        ZoiScope["zoi Scope (60 Hz / 2600 NPC Slice)"]
-        CutoutScope["node_plug & poi Scope (100 Hz / 1500 NPC Slice)"]
+        WorldScope["world Scope (Dynamic 30-60 Hz)"]
+        RegionScope["region Scope (Dynamic 30-60 Hz)"]
+        ZoiScope["zoi Scope (Dynamic 30-60 Hz)"]
+        CutoutScope["node_plug & poi Scope (Dynamic 30-60 Hz)"]
     end
 
     Store -->|"GET /api/v1/world/state every 33 ms (30 Hz)"| WorldStateAPI
@@ -48,8 +48,8 @@ flowchart TB
 
 1. **Constant `30 Hz` (`33 ms`) Polling Cadence**:
    `worldStreamStore.ts` (`DEFAULT_MAP_POLL_HZ = 30`) polls `/api/v1/world/state` every `33 ms` across all zoom levels (`z0..z7+`). Instead of dropping or downsampling markers when the camera pans or zooms, the store merges incoming entity snapshots into a persistent `Map<string, WorldEntity>` keyed by `guid`, eliminating marker flicker while keeping HTML5 canvas rendering smooth at `60 FPS`.
-2. **Scope-Tuned Server Worker Tick Rates and Default `Dynamic (30-60 Hz)` Mode**:
-   Authoritative server workers default to **`Dynamic (30-60 Hz)`** tick mode (`target_tick_hz: -1`, `tick_mode: "dynamic"`), automatically scaling between **`30 Hz` and `60 Hz`** (`kMaxDynamicHz = 60`) around their spatial scope baseline (`30 Hz` for `world`, `45 Hz` for `region`, `60 Hz` for `zoi`, and `100 Hz` for `node_plug` and `poi`) so container CPU usage stays in the `30%--45%` green operating band inside a `2560M` (`2.5 GiB`) RAM limit while reporting their live read-only `Current Hz` (`Actual Hz`) via `aoc_world_tick_hz`.
+2. **Default `Dynamic (30-60 Hz)` Server Worker Tick Mode and Cursor-Resumed Scheduling**:
+   Authoritative server workers across all spatial scopes (`world`, `region`, `zoi`, `node_plug`, and `poi`) default to **`Dynamic (30-60 Hz)`** tick mode (`target_tick_hz: -1`, `tick_mode: "dynamic"`), automatically scaling between **`30 Hz` and `60 Hz`** (`kMaxDynamicHz = 60`, `>= 30 Hz` dynamic floor) with cursor-resumed entity scheduling across the full authoritative population so container CPU usage stays in the `30%--45%` green operating band inside a `2560M` (`2.5 GiB`) RAM limit while reporting their live read-only `Current Hz` (`Actual Hz`) via `aoc_world_tick_hz`.
 3. **Read-Only Containers and Zero Disk Log Churn**:
    Every container in `src/deploy/compose.yml` mounts its root filesystem with `read_only: true` and uses RAM-backed `tmpfs` mounts at `/tmp` and `/app/logs`, writing structured JSON logs only to `stdout`/`stderr`.
 

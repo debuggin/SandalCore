@@ -55,8 +55,7 @@ var effTestWords64 = [64]string{
 }
 var effTestNameSeq uint64
 func nextEffTestCharacterName() string {
-	idx := atomic.AddUint64(&effTestNameSeq, 1) - 1
-	if idx < 3 { return "TST " + effTestWords64[idx*3] + effTestWords64[idx*3+1] + effTestWords64[idx*3+2] }
+	idx := atomic.AddUint64(&effTestNameSeq, 1)
 	var b [3]byte; _, _ = rand.Read(b[:])
 	return fmt.Sprintf("TST %s%s%s", effTestWords64[(int(b[0])+int(idx))%64], effTestWords64[(int(b[1])+int(idx)*7)%64], effTestWords64[(int(b[2])+int(idx)*13)%64])
 }
@@ -183,14 +182,13 @@ func TestFlow1_AuthAndTokenSecurityE2E(t *testing.T) {
 }
 func verifyFlow1NegativeCases(t *testing.T, baseURL string, h *authFlowHarness, svcTok, validTok string, clockNow *time.Time) {
 	t.Helper()
-	tampered := validTok[:63] + "0"
+	negPass, dupUser, tampered := generateUniqueTestPassphrase(), h.sessions[validTok].Username, validTok[:63]+"0"
 	if validTok[63] == '0' { tampered = validTok[:63] + "1" }
 	for _, tc := range []struct{ name, header, token string }{{"missing_bearer", "", validTok}, {"wrong_service_token", "Bearer " + strings.Repeat("ff", 32), validTok}, {"tampered_session_token", "Bearer " + svcTok, tampered}, {"short_session_token", "Bearer " + svcTok, validTok[:32]}, {"uppercase_hex_token", "Bearer " + svcTok, strings.ToUpper(validTok)}} {
 		if _, err := h.validateSessionToken(tc.header, tc.token); err == nil { t.Fatalf("expected negative auth case %q to fail validation", tc.name) }
 	}
 	*clockNow = clockNow.Add(16 * time.Minute)
 	if _, err := h.validateSessionToken("Bearer "+svcTok, validTok); err == nil { t.Fatal("expected expired session token to be rejected") }
-	negPass, dupUser := generateUniqueTestPassphrase(), "TST_GruelingBiscuitLauncher"
 	for _, badBody := range []string{fmt.Sprintf(`{"username":%q,"password":%q}`, dupUser, negPass), fmt.Sprintf(`{"username":"ae","password":%q}`, negPass), fmt.Sprintf(`{"username":%q,"password":"short"}`, dupUser), fmt.Sprintf(`{"username":%q,"password":%q,"role":"admin"}`, dupUser, negPass), fmt.Sprintf(`{"username":%q,"password":%q}{"extra":1}`, dupUser, negPass)} {
 		if resp, _ := postAuthJSON(t, baseURL+"/api/v1/auth/register", badBody); resp.StatusCode < 400 { t.Fatalf("expected HTTP >= 400 for negative payload %s, got %d", badBody, resp.StatusCode) }
 	}

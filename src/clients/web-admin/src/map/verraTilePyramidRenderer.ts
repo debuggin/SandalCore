@@ -68,50 +68,30 @@ export class VerraTileCache {
   private circuitOpenUntilMs = 0;
 
   constructor(onLoaded: () => void, maxEntries = 2048, maxInflight = 32) {
-    this.onLoaded = onLoaded;
-    this.maxEntries = maxEntries;
-    this.maxInflight = maxInflight;
+    this.onLoaded = onLoaded; this.maxEntries = maxEntries; this.maxInflight = maxInflight;
     subscribeRetryReset(() => this.resetAllRetries());
   }
 
   beginFrame(): void {
     this.frame += 1;
     const curTokenUrl = appendAdminAccessTokenToUrl("/t");
-    if (curTokenUrl !== this.lastTokenUrl) {
-      this.lastTokenUrl = curTokenUrl;
-      this.resetAllRetries();
-    }
+    if (curTokenUrl !== this.lastTokenUrl) { this.lastTokenUrl = curTokenUrl; this.resetAllRetries(); }
   }
 
   resetAllRetries(): void {
     for (const timer of this.retryTimers) clearTimeout(timer);
-    this.retryTimers.clear();
-    this.consecutiveFailures = 0;
-    this.circuitOpenUntilMs = 0;
-    tileFetchState.clear();
+    this.retryTimers.clear(); this.consecutiveFailures = 0; this.circuitOpenUntilMs = 0; tileFetchState.clear();
     for (const entry of this.map.values()) {
       if (entry.state === "error" || entry.state === "missing") {
-        entry.state = "queued";
-        entry.retries = 0;
-        entry.retryAfterMs = 0;
-        this.queue.push(entry);
+        entry.state = "queued"; entry.retries = 0; entry.retryAfterMs = 0; this.queue.push(entry);
       }
     }
-    this.pump();
-    this.onLoaded();
+    this.pump(); this.onLoaded();
   }
 
-  resetFailedEntries(): void {
-    this.resetAllRetries();
-  }
-
-  notifyLoaded(): void {
-    this.onLoaded();
-  }
-
-  getFrame(): number {
-    return this.frame;
-  }
+  resetFailedEntries(): void { this.resetAllRetries(); }
+  notifyLoaded(): void { this.onLoaded(); }
+  getFrame(): number { return this.frame; }
 
   preloadCoarseLevels(meta: VerraMapMeta = DEFAULT_VERRA_MAP_META, maxCoarseZ = 2): void {
     if (this.preloaded) return;
@@ -156,17 +136,12 @@ export class VerraTileCache {
     let entry = this.map.get(key);
     if (!entry) {
       entry = { key, url, state: "queued", img: null, used: this.frame, dist, retries: 0, retryAfterMs: 0, pinned };
-      this.map.set(key, entry);
-      this.queue.push(entry);
-      this.evictIfNeeded();
+      this.map.set(key, entry); this.queue.push(entry); this.evictIfNeeded();
     } else {
-      entry.used = this.frame;
-      entry.dist = dist;
+      entry.used = this.frame; entry.dist = dist;
       if (pinned) entry.pinned = true;
       if ((entry.state === "error" || entry.state === "missing") && Date.now() >= entry.retryAfterMs) {
-        entry.state = "queued";
-        entry.retries = 0;
-        this.queue.push(entry);
+        entry.state = "queued"; entry.retries = 0; this.queue.push(entry);
       }
     }
     return entry;
@@ -174,32 +149,21 @@ export class VerraTileCache {
 
   private handleTileError(entry: TileCacheEntry): void {
     this.inflight = Math.max(0, this.inflight - 1);
-    this.consecutiveFailures += 1;
-    recordRetryFailure();
-    if (this.consecutiveFailures >= CIRCUIT_FAILURE_THRESHOLD) {
-      this.circuitOpenUntilMs = Date.now() + CIRCUIT_OPEN_COOLDOWN_MS;
-    }
+    this.consecutiveFailures += 1; recordRetryFailure();
+    if (this.consecutiveFailures >= CIRCUIT_FAILURE_THRESHOLD) this.circuitOpenUntilMs = Date.now() + CIRCUIT_OPEN_COOLDOWN_MS;
     if (entry.retries < RETRY_MAX_ATTEMPTS) {
       const backoffMs = computeExponentialBackoffMs(entry.retries, RETRY_BASE_DELAY_MS, RETRY_MAX_DELAY_MS);
       const delay = Math.max(Math.max(0, this.circuitOpenUntilMs - Date.now()), backoffMs);
-      entry.retries += 1;
-      entry.state = "error";
-      entry.retryAfterMs = Date.now() + delay;
+      entry.retries += 1; entry.state = "error"; entry.retryAfterMs = Date.now() + delay;
       if (typeof setTimeout === "function") {
         const timer = setTimeout(() => {
           this.retryTimers.delete(timer);
-          if (entry.state === "error" || entry.state === "missing") {
-            entry.state = "queued";
-            this.queue.push(entry);
-            this.pump();
-          }
+          if (entry.state === "error" || entry.state === "missing") { entry.state = "queued"; this.queue.push(entry); this.pump(); }
         }, delay);
-        this.retryTimers.add(timer);
-        registerPendingRetryTimer(timer);
+        this.retryTimers.add(timer); registerPendingRetryTimer(timer);
       }
     } else {
-      entry.state = "missing";
-      entry.retryAfterMs = Date.now() + RETRY_MAX_DELAY_MS;
+      entry.state = "missing"; entry.retryAfterMs = Date.now() + RETRY_MAX_DELAY_MS;
     }
     this.pump();
   }
@@ -209,26 +173,15 @@ export class VerraTileCache {
     this.queue.sort((a, b) => a.dist - b.dist);
     while (this.inflight < this.maxInflight && this.queue.length > 0) {
       const entry = this.queue.shift()!;
-      if (!entry.pinned && entry.used < this.frame - 600) {
-        this.map.delete(entry.key);
-        continue;
-      }
+      if (!entry.pinned && entry.used < this.frame - 600) { this.map.delete(entry.key); continue; }
       if (entry.state !== "queued") continue;
-      entry.state = "loading";
-      this.inflight += 1;
-      const img = new Image();
-      img.decoding = "async";
+      entry.state = "loading"; this.inflight += 1;
+      const img = new Image(); img.decoding = "async";
       img.onload = () => {
-        entry.img = img;
-        entry.state = "ready";
-        entry.retries = 0;
-        this.consecutiveFailures = 0;
-        this.circuitOpenUntilMs = 0;
-        recordRetrySuccess();
-        tileImageCache.set(entry.url, img);
-        this.inflight = Math.max(0, this.inflight - 1);
-        this.pump();
-        this.onLoaded();
+        entry.img = img; entry.state = "ready"; entry.retries = 0;
+        this.consecutiveFailures = 0; this.circuitOpenUntilMs = 0; recordRetrySuccess();
+        tileImageCache.set(entry.url, img); this.inflight = Math.max(0, this.inflight - 1);
+        this.pump(); this.onLoaded();
       };
       img.onerror = () => this.handleTileError(entry);
       img.src = entry.url;
@@ -312,29 +265,35 @@ export function buildVerraDeckOverlayLayers(
   ];
 }
 
+export const NATIVE_DISPLAY_RESOLUTIONS = Object.freeze([
+  { id: "1080p", width: 1920, height: 1080 },
+  { id: "2k", width: 2560, height: 1440 },
+  { id: "4k", width: 3840, height: 2160 },
+  { id: "8k", width: 7680, height: 4320 },
+] as const);
+
+export function resolveNativeCanvasRenderArea(
+  viewportWidth: number,
+  viewportHeight: number,
+  chromeHeightPx = 0,
+): { readonly width: number; readonly height: number } {
+  const w = Number.isFinite(viewportWidth) && viewportWidth > 0 ? Math.floor(viewportWidth) : 1920;
+  const h = Number.isFinite(viewportHeight) && viewportHeight > 0 ? Math.floor(viewportHeight - Math.max(0, chromeHeightPx)) : 1080;
+  return { width: Math.max(320, w), height: Math.max(240, h) };
+}
+
 export function screenOffsetToWorldCm(
-  offsetX: number,
-  offsetY: number,
-  viewport: { readonly width: number; readonly height: number },
-  camera: Pick<CameraViewport, "centerXCm" | "centerYCm" | "zoom">,
+  offsetX: number, offsetY: number, viewport: { readonly width: number; readonly height: number }, camera: Pick<CameraViewport, "centerXCm" | "centerYCm" | "zoom">,
 ): VerraUnrealPoint {
-  const [centerU, centerV] = worldCmToMosaicPx(camera.centerXCm, camera.centerYCm);
-  const scale = Math.pow(2, camera.zoom - 5);
-  const [xCm, yCm] = mosaicPxToWorldCm(
-    centerU + (offsetX - viewport.width / 2) / scale,
-    centerV + (offsetY - viewport.height / 2) / scale,
-  );
+  const [centerU, centerV] = worldCmToMosaicPx(camera.centerXCm, camera.centerYCm), scale = Math.pow(2, camera.zoom - 5);
+  const [xCm, yCm] = mosaicPxToWorldCm(centerU + (offsetX - viewport.width / 2) / scale, centerV + (offsetY - viewport.height / 2) / scale);
   return { xCm, yCm, zCm: 0.0 };
 }
 
 export function worldCmToScreenOffset(
-  xCm: number,
-  yCm: number,
-  viewport: { readonly width: number; readonly height: number },
-  camera: Pick<CameraViewport, "centerXCm" | "centerYCm" | "zoom">,
+  xCm: number, yCm: number, viewport: { readonly width: number; readonly height: number }, camera: Pick<CameraViewport, "centerXCm" | "centerYCm" | "zoom">,
 ): readonly [number, number, number] {
-  const [centerU, centerV] = worldCmToMosaicPx(camera.centerXCm, camera.centerYCm);
-  const [u, v] = worldCmToMosaicPx(xCm, yCm);
+  const [centerU, centerV] = worldCmToMosaicPx(camera.centerXCm, camera.centerYCm), [u, v] = worldCmToMosaicPx(xCm, yCm);
   const scale = Math.pow(2, camera.zoom - 5);
   return [viewport.width / 2 + (u - centerU) * scale, viewport.height / 2 + (v - centerV) * scale, scale];
 }
@@ -346,14 +305,8 @@ function requestTileImage(url: string, onReady: () => void): HTMLImageElement | 
   tileFetchState.set(url, "loading");
   const img = new Image();
   img.decoding = "async";
-  img.onload = () => {
-    tileFetchState.delete(url);
-    tileImageCache.set(url, img);
-    onReady();
-  };
-  img.onerror = () => {
-    tileFetchState.set(url, "error");
-  };
+  img.onload = () => { tileFetchState.delete(url); tileImageCache.set(url, img); onReady(); };
+  img.onerror = () => { tileFetchState.set(url, "error"); };
   img.src = appendAdminAccessTokenToUrl(url);
   return null;
 }
@@ -586,14 +539,21 @@ function drawCollisionSafeLabel(ctx: CanvasRenderingContext2D, text: string, cx:
 
 export type WorldPopulationCategory = "players" | "npcs" | "monsters" | "huntables" | "trees" | "rocks" | "ore_gems" | "plants" | "mounts";
 
+export const CATEGORY_MARKER_COLORS: Readonly<Record<WorldPopulationCategory, string>> = Object.freeze({
+  players: "#c084fc", npcs: "#5b9bd5", monsters: "#d65a5a", huntables: "#d98245",
+  trees: "#4da866", rocks: "#8b9bb0", ore_gems: "#c8a438", plants: "#43a895", mounts: "#818cf8",
+});
+
 export const ENTITY_MAP_LEGEND_SWATCHES = Object.freeze([
-  { id: "npcs", label: "NPCs", color: "#38bdf8" },
-  { id: "monsters", label: "Monsters", color: "#ef4444" },
-  { id: "huntables", label: "Huntables", color: "#f97316" },
-  { id: "trees", label: "Trees", color: "#22c55e" },
-  { id: "rocks", label: "Rocks", color: "#94a3b8" },
-  { id: "ore_gems", label: "Ore/Gems", color: "#eab308" },
-  { id: "plants", label: "Plants", color: "#2dd4bf" },
+  { id: "players", label: "Players", color: "#c084fc" },
+  { id: "mounts", label: "Mounts", color: "#818cf8" },
+  { id: "npcs", label: "NPCs", color: "#5b9bd5" },
+  { id: "monsters", label: "Monsters", color: "#d65a5a" },
+  { id: "huntables", label: "Huntables", color: "#d98245" },
+  { id: "trees", label: "Trees", color: "#4da866" },
+  { id: "rocks", label: "Rocks", color: "#8b9bb0" },
+  { id: "ore_gems", label: "Ore/Gems", color: "#c8a438" },
+  { id: "plants", label: "Plants", color: "#43a895" },
 ] as const);
 
 export function classifyWorldEntityCategory(
@@ -615,15 +575,52 @@ export function classifyWorldEntityCategory(
   return entity.kind === "monster" ? "monsters" : "npcs";
 }
 
-const CATEGORY_MARKER_COLORS: Readonly<Record<WorldPopulationCategory, string>> = Object.freeze({
-  players: "#22c55e", npcs: "#38bdf8", monsters: "#ef4444", huntables: "#f97316",
-  trees: "#22c55e", rocks: "#94a3b8", ore_gems: "#eab308", plants: "#2dd4bf", mounts: "#38bdf8",
-});
+export function isPlayerEntityMounted(
+  player: Partial<Pick<WorldEntity, "xCm" | "yCm">> & { readonly mounted?: boolean },
+  entities?: Iterable<WorldEntity>,
+): boolean {
+  if (Boolean((player as Record<string, unknown>).mounted)) return true;
+  if (!entities || typeof player.xCm !== "number" || typeof player.yCm !== "number") return false;
+  for (const e of entities) {
+    if (e.kind === "mount" && Math.hypot(e.xCm - player.xCm, e.yCm - player.yCm) <= 250) return true;
+  }
+  return false;
+}
 
 export function resolveEntityMapMarkerColor(
-  entity: Pick<WorldEntity, "kind" | "name" | "npc_subkind" | "npcSubkind" | "resourceType" | "resource_type">,
+  entity: Pick<WorldEntity, "kind" | "name" | "npc_subkind" | "npcSubkind" | "resourceType" | "resource_type"> & Partial<Pick<WorldEntity, "xCm" | "yCm">> & { readonly mounted?: boolean },
+  entities?: Iterable<WorldEntity>,
 ): string {
-  return entity.kind === "poi" ? "#d4af37" : CATEGORY_MARKER_COLORS[classifyWorldEntityCategory(entity)];
+  if (entity.kind === "poi") return "#d4af37";
+  if (entity.kind === "player" && isPlayerEntityMounted(entity, entities)) {
+    return CATEGORY_MARKER_COLORS.mounts;
+  }
+  return CATEGORY_MARKER_COLORS[classifyWorldEntityCategory(entity)];
+}
+
+function getVisibleEntitiesOnScreen(
+  state: WorldStreamState, viewport: { readonly width: number; readonly height: number },
+): ReadonlyArray<readonly [WorldEntity, number, number]> {
+  const out: Array<readonly [WorldEntity, number, number]> = [];
+  for (const entity of state.entities.values()) {
+    if (!isEntityVisibleForLayers(entity, state.layers, state.camera.zoom)) continue;
+    const [sx, sy] = worldCmToScreenOffset(entity.xCm, entity.yCm, viewport, state.camera);
+    if (sx < -20 || sy < -20 || sx > viewport.width + 20 || sy > viewport.height + 20) continue;
+    out.push([entity, sx, sy]);
+  }
+  return out;
+}
+
+function drawNonPlayerEntityMarker(ctx: CanvasRenderingContext2D, entity: WorldEntity, sx: number, sy: number, onIconLoaded: () => void): void {
+  ctx.beginPath();
+  if ((entity.npcSubkind ?? entity.npc_subkind) === "emberspring") {
+    const iconImg = requestTileImage("/api/v1/world/icons/TUI_Icon_Map_ReviveShrine_Active.png", onIconLoaded);
+    if (iconImg) { ctx.drawImage(iconImg, sx - 9, sy - 9, 18, 18); return; }
+    ctx.moveTo(sx, sy - 6); ctx.lineTo(sx + 6, sy); ctx.lineTo(sx, sy + 6); ctx.lineTo(sx - 6, sy);
+    ctx.closePath?.(); ctx.fillStyle = "#43a895"; ctx.fill(); return;
+  }
+  ctx.arc(sx, sy, entity.kind === "poi" ? 4.5 : 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = resolveEntityMapMarkerColor(entity); ctx.fill();
 }
 
 function drawEntityAndCrosshairMarkers(
@@ -632,33 +629,27 @@ function drawEntityAndCrosshairMarkers(
   state: WorldStreamState,
   onIconLoaded: () => void = () => {},
 ): void {
-  for (const entity of state.entities.values()) {
-    if (!isEntityVisibleForLayers(entity, state.layers, state.camera.zoom)) continue;
-    const [sx, sy] = worldCmToScreenOffset(entity.xCm, entity.yCm, viewport, state.camera);
-    if (sx < -20 || sy < -20 || sx > viewport.width + 20 || sy > viewport.height + 20) continue;
-    ctx.beginPath();
-    if (entity.kind === "player") {
-      ctx.arc(sx, sy, 6.5, 0, Math.PI * 2);
-      ctx.fillStyle = entity.dead ? "#ef4444" : "#22c55e";
-      ctx.fill();
-      ctx.lineWidth = 2; ctx.strokeStyle = "#ffffff"; ctx.stroke();
-      ctx.fillStyle = "#ffffff"; ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
-      ctx.fillText(entity.name, sx + 9, sy + 4);
-    } else if ((entity.npcSubkind ?? entity.npc_subkind) === "emberspring") {
-      const iconImg = requestTileImage("/api/v1/world/icons/TUI_Icon_Map_ReviveShrine_Active.png", onIconLoaded);
-      if (iconImg) ctx.drawImage(iconImg, sx - 9, sy - 9, 18, 18);
-      else {
-        ctx.moveTo(sx, sy - 6); ctx.lineTo(sx + 6, sy); ctx.lineTo(sx, sy + 6); ctx.lineTo(sx - 6, sy);
-        ctx.closePath?.(); ctx.fillStyle = "#22d3ee"; ctx.fill();
-      }
-    } else {
-      ctx.arc(sx, sy, entity.kind === "poi" ? 4.5 : 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = resolveEntityMapMarkerColor(entity); ctx.fill();
-    }
-    if (state.selectedEntityGuid === entity.guid) {
-      ctx.strokeStyle = "#d4af37"; ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.arc(sx, sy, 12, 0, Math.PI * 2); ctx.stroke();
-    }
+  let selectedPos: readonly [number, number] | null = null;
+  const visibleEntities = getVisibleEntitiesOnScreen(state, viewport);
+  ctx.globalAlpha = 0.9;
+  for (const [entity, sx, sy] of visibleEntities) {
+    if (state.selectedEntityGuid === entity.guid) selectedPos = [sx, sy];
+    if (entity.kind === "player") continue;
+    drawNonPlayerEntityMarker(ctx, entity, sx, sy, onIconLoaded);
+  }
+  for (const [entity, sx, sy] of visibleEntities) {
+    if (entity.kind !== "player") continue;
+    const isMounted = isPlayerEntityMounted(entity, state.entities.values());
+    ctx.beginPath(); ctx.arc(sx, sy, 6.5, 0, Math.PI * 2);
+    ctx.fillStyle = entity.dead ? "#d65a5a" : isMounted ? CATEGORY_MARKER_COLORS.mounts : CATEGORY_MARKER_COLORS.players;
+    ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = "rgba(255, 255, 255, 0.9)"; ctx.stroke();
+    ctx.fillStyle = "#ffffff"; ctx.font = '600 12px "Segoe UI", system-ui, sans-serif'; ctx.fillText(entity.name, sx + 9, sy + 4);
+  }
+  ctx.globalAlpha = 1;
+  if (selectedPos) {
+    ctx.strokeStyle = "#d4af37"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(selectedPos[0], selectedPos[1], 12, 0, Math.PI * 2); ctx.stroke();
   }
   const pin = state.lastClickedPoint ?? state.pickedCoordinate;
   if (!pin) return;

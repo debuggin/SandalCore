@@ -13,7 +13,7 @@ This page records the release history and major changes in SandalCore.
 See [Server Workers and Spatial Authority](SERVER_WORKERS.md) for architecture details.
 
 - **Out-of-the-Box Single-Worker Riverlands Default and 5 Partition Topologies**:
-  - Defaults to 1 regional worker for Riverlands (`AOC_WORLD_PARTITION_MODE=single_riverlands`, `45 Hz`, `11` containers total) and supports `single_world` (`30 Hz`), `per_region` (`45 Hz`), `per_zoi` (`60 Hz`), and `per_zoi_nodes_and_pois` (`60 Hz` ZOI + `100 Hz` City Node OBB and POI cut-out workers).
+  - Defaults to 1 regional worker for Riverlands (`AOC_WORLD_PARTITION_MODE=single_riverlands`, `Dynamic (30-60 Hz)`, `11` containers total) and supports `single_world`, `per_region`, `per_zoi`, and `per_zoi_nodes_and_pois` (ZOI + City Node OBB and POI cut-out workers), with all worker partition topologies running in `Dynamic (30-60 Hz)` mode by default.
 - **Per-Worker Runtime Tick-Rate Control and `0 Hz` NPC Pause**:
   - Operators can set any worker independently to `Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)`, or manual `10..60 Hz` from the Web Admin `Visible Server Workers` panel or `worldctl`, backed by a Little's Law `<= 1.0 s` (`>= 1 Hz`) entity service floor.
 - **Unbounded Authentic Entity Populations and Client/PCAP Resource Provenance**:

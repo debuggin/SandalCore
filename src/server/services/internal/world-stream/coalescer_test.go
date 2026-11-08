@@ -96,7 +96,7 @@ func TestCoalescerUpsertRemoveSubscriptionAndDeltaMerging(t *testing.T) {
 	nowMs := int64(1762500000000)
 	c.now = func() time.Time { return time.UnixMilli(nowMs) }
 
-	c.UpsertEntity(EntitySnapshot{ID: "player:1", Kind: "player", Name: "TST GruelingBiscuitLauncher", Zone: "riverlands", X: -644519, Y: 376773, HealthPct: 100, Level: 50})
+	c.UpsertEntity(EntitySnapshot{ID: "player:1", Kind: "player", Name: "TST CoalescerProbe", Zone: "riverlands", X: -644519, Y: 376773, HealthPct: 100, Level: 50})
 	filter := ViewportFilter{Zone: "riverlands", HasBounds: true, MinX: -700000, MinY: 300000, MaxX: -600000, MaxY: 400000}
 	sub := c.Subscribe("sub-1", filter)
 	if c.SubscriberCount() != 1 {
@@ -111,12 +111,12 @@ func TestCoalescerUpsertRemoveSubscriptionAndDeltaMerging(t *testing.T) {
 		t.Fatalf("unexpected first delta: %#v", d1)
 	}
 
-	c.UpsertEntity(EntitySnapshot{ID: "player:1", Kind: "player", Name: "TST GruelingBiscuitLauncher", Zone: "riverlands", X: -640000, Y: 375000, HealthPct: 90, Level: 50})
+	c.UpsertEntity(EntitySnapshot{ID: "player:1", Kind: "player", Name: "TST CoalescerProbe", Zone: "riverlands", X: -640000, Y: 375000, HealthPct: 90, Level: 50})
 	c.UpsertEntity(EntitySnapshot{ID: "npc:2", Kind: "npc", Name: "Quartermaster", Zone: "riverlands", X: -650000, Y: 350000, HealthPct: 100, Level: 30})
 	c.Flush()
 
 	c.RemoveEntity("npc:2")
-	c.UpsertEntity(EntitySnapshot{ID: "player:1", Kind: "player", Name: "TST GruelingBiscuitLauncher", Zone: "riverlands", X: -100000, Y: 100000, HealthPct: 90, Level: 50})
+	c.UpsertEntity(EntitySnapshot{ID: "player:1", Kind: "player", Name: "TST CoalescerProbe", Zone: "riverlands", X: -100000, Y: 100000, HealthPct: 90, Level: 50})
 	c.Flush()
 
 	if sub.DroppedCount() != 1 {

@@ -3,11 +3,15 @@
 import React from "react";
 import { createPortal } from "react-dom";
 import {
+  DEFAULT_VERRA_CITY_NODES,
+  getCityNodeCenterCm,
   type GmModalId,
+  type PoiOverlay,
   resolveWorkerForCoordinateOrZone,
   type SpawnTargetSubMode,
   type TeleportSubMode,
   useWorldStreamStore,
+  type VerraCityNodeMeta,
   type WorldStreamState,
 } from "../state/worldStreamStore";
 import {
@@ -35,6 +39,7 @@ import {
   DEFAULT_CATALOG_PLACES,
   DEFAULT_ONLINE_PLAYERS,
   dispatchAuxiliaryGmAction,
+  filterCatalogPickerOptions,
   MOVE_SPEED_MULTIPLIERS,
   NodeGovernanceModalCard,
   type OnlinePlayerRecord,
@@ -56,6 +61,7 @@ export {
   DEFAULT_CATALOG_PLACES,
   DEFAULT_ONLINE_PLAYERS,
   dispatchAuxiliaryGmAction,
+  filterCatalogPickerOptions,
   MOVE_SPEED_MULTIPLIERS,
   NodeGovernanceModalCard,
   type OnlinePlayerRecord,
@@ -130,8 +136,33 @@ export function shouldUpdatePaginatedResourceState<T>(
     query.trim().length > 0 ||
     fallbackKey === "players" ||
     fallbackKey === "items" ||
-    fallbackKey === "npcs"
+    fallbackKey === "npcs" ||
+    fallbackKey === "places"
   );
+}
+
+export function mergeTeleportCatalogPlaces(
+  catalogPlaces: readonly CatalogPlaceEntry[],
+  pois: readonly PoiOverlay[] = [],
+  cityNodes: readonly VerraCityNodeMeta[] = DEFAULT_VERRA_CITY_NODES,
+): readonly CatalogPlaceEntry[] {
+  const byKey = new Map<string, CatalogPlaceEntry>();
+  for (const pl of [...catalogPlaces, ...DEFAULT_CATALOG_PLACES]) {
+    const key = (pl.name || pl.display_name || pl.guid).trim().toLowerCase();
+    if (key && !byKey.has(key)) byKey.set(key, pl);
+  }
+  for (const node of [...cityNodes, ...DEFAULT_VERRA_CITY_NODES]) {
+    const key = (node.name || node.display_name || node.guid).trim().toLowerCase();
+    if (!key || byKey.has(key)) continue;
+    const c = getCityNodeCenterCm(node);
+    byKey.set(key, { guid: node.guid || node.name, name: node.name, display_name: node.display_name || node.name, x_cm: c.cx_cm, y_cm: c.cy_cm, z_cm: Number(node.z_cm ?? node.oz ?? 12000) });
+  }
+  for (const poi of pois) {
+    const key = (poi.name || poi.display_name || poi.guid).trim().toLowerCase();
+    if (!key || byKey.has(key)) continue;
+    byKey.set(key, { guid: poi.guid || poi.name, name: poi.name || poi.display_name, display_name: poi.display_name || poi.name, x_cm: Number(poi.x_cm ?? 0), y_cm: Number(poi.y_cm ?? 0), z_cm: Number(poi.z_cm ?? 12000) });
+  }
+  return Array.from(byKey.values());
 }
 
 export function usePaginatedResource<T>(
@@ -176,6 +207,8 @@ export interface TeleportCardProps {
   readonly places: readonly CatalogPlaceEntry[];
   readonly storeSnap: WorldStreamState;
   readonly onRecordRun: (entry: RecentGmRunEntry) => void;
+  readonly placeQuery?: string;
+  readonly onPlaceQueryChange?: (q: string) => void;
 }
 
 export function mergeAndFilterOnlinePlayers(
@@ -336,7 +369,7 @@ function renderTeleportModeInputs(
 ): React.ReactElement {
   const { targetPlace, placeText, targetPlayer, operatorChar, activeChar, coords, pin } = state;
   if (mode === "place") {
-    return <CatalogComboboxPicker label="Destination Named Place" testIdPrefix="teleport-place" placeholder="Type place name..." value={targetPlace} text={placeText} options={placeOpts} onTextChange={handlers.setPlaceText} onSelectOption={(o) => { handlers.setTargetPlace(o.value); handlers.setPlaceText(o.label); }} />;
+    return <CatalogComboboxPicker label="Destination Named Place" testIdPrefix="teleport-place" placeholder="Search named place (e.g. Winstead, Lionshold, Carphin)..." value={targetPlace} text={placeText} options={placeOpts} onTextChange={handlers.setPlaceText} onSelectOption={(o) => { handlers.setTargetPlace(o.value); handlers.setPlaceText(o.label); }} />;
   }
   if (mode === "player") {
     return <input type="search" aria-label="Destination Player" data-testid="teleport-target-player" value={targetPlayer} onChange={(e) => handlers.setTargetPlayer(e.currentTarget.value)} placeholder="Search destination player by character name, ID, or account name..." style={{ ...INPUT_STYLE, width: "100%", boxSizing: "border-box", marginBottom: "6px" }} />;
@@ -355,12 +388,13 @@ function renderTeleportModeInputs(
 }
 
 export function TeleportCard(props: TeleportCardProps): React.ReactElement {
-  const { playerX, players, places, storeSnap, onRecordRun } = props;
+  const { playerX, players, places, storeSnap, onRecordRun, onPlaceQueryChange } = props;
   const mode = storeSnap.teleportMode;
   const [playerSearch, setPlayerSearch] = React.useState(storeSnap.selectedPlayer || playerX);
   const [targetPlayer, setTargetPlayer] = React.useState("");
   const [operatorChar, setOperatorChar] = React.useState("");
-  const [placeText, setPlaceText] = React.useState("Winstead");
+  const [placeText, setPlaceTextState] = React.useState(props.placeQuery ?? "");
+  const setPlaceText = (next: string): void => { setPlaceTextState(next); onPlaceQueryChange?.(next); };
   const [targetPlace, setTargetPlace] = React.useState(DEFAULT_CATALOG_PLACES[2]?.name ?? "Verra_RVR_Winstead");
   const selectedEntity = storeSnap.selectedEntityGuid ? storeSnap.entities.get(storeSnap.selectedEntityGuid) ?? null : null;
   const selectedPoi = storeSnap.selectedPoiGuid ? storeSnap.pois.find((p) => p.guid === storeSnap.selectedPoiGuid) ?? null : null;
@@ -372,9 +406,10 @@ export function TeleportCard(props: TeleportCardProps): React.ReactElement {
   const activeChar = (storeSnap.selectedPlayer || playerSearch || playerX).trim();
   const filteredPlayers = mergeAndFilterOnlinePlayers(players, storeSnap, playerSearch);
   const receipt = storeSnap.lastReceiptsByScope.teleport;
-  const allPlaceOpts: readonly CatalogPickerOption[] = places.map((pl) => ({ value: pl.name, label: pl.display_name, detail: pl.name }));
-  const placeQ = placeText.trim().toLowerCase();
-  const placeOpts: readonly CatalogPickerOption[] = placeQ && !allPlaceOpts.some((o) => o.label.toLowerCase() === placeQ) ? allPlaceOpts.filter((o) => o.label.toLowerCase().includes(placeQ) || o.value.toLowerCase().includes(placeQ)) : allPlaceOpts;
+  const mergedPlaces = mergeTeleportCatalogPlaces(places, storeSnap.pois, storeSnap.cityNodes);
+  const allPlaceOpts: readonly CatalogPickerOption[] = mergedPlaces.map((pl) => ({ value: pl.name, label: pl.display_name, detail: pl.name }));
+  const placeOpts: readonly CatalogPickerOption[] = filterCatalogPickerOptions(allPlaceOpts, placeText);
+  const resolvedPlace = placeText.trim() && !allPlaceOpts.some((o) => o.value === targetPlace && o.label.toLowerCase() === placeText.trim().toLowerCase()) ? (placeOpts[0]?.value ?? targetPlace) : targetPlace;
 
   return (
     <section aria-label="Teleport Player Card" data-testid="teleport-player-card" style={CARD_STYLE}>
@@ -382,16 +417,16 @@ export function TeleportCard(props: TeleportCardProps): React.ReactElement {
       {renderTeleportPlayerSearchSection(playerSearch, activeChar, filteredPlayers, (next) => { setPlayerSearch(next); storeSnap.setSelectedPlayer(next); }, (rowPlayer) => {
         setPlayerSearch(rowPlayer);
         storeSnap.setSelectedPlayer(rowPlayer);
-        void dispatchTeleportAction({ character: rowPlayer, mode: "coords", targetPlayer, operatorChar, targetPlace, coords, players: filteredPlayers, places, storeSnap, onRecordRun });
+        void dispatchTeleportAction({ character: rowPlayer, mode: "coords", targetPlayer, operatorChar, targetPlace: resolvedPlace, coords, players: filteredPlayers, places: mergedPlaces, storeSnap, onRecordRun });
       })}
       <div style={{ display: "flex", gap: "6px", marginBottom: "8px", flexWrap: "wrap" }}>
         {([{ id: "place", label: "Player -> Named Place" }, { id: "player", label: "Player -> Destination Player" }, { id: "coords", label: "Player -> Map Location (X, Y, Z)" }] as const).map((m) => (
           <button key={m.id} type="button" data-testid={`teleport-mode-${m.id}`} onClick={() => storeSnap.setTeleportMode(m.id)} style={{ ...CHIP_STYLE, backgroundColor: mode === m.id ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: mode === m.id ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>{m.label}</button>
         ))}
       </div>
-      {renderTeleportModeInputs(mode, placeOpts, { targetPlace, placeText, targetPlayer, operatorChar, activeChar, coords, pin }, { setPlaceText, setTargetPlace, setTargetPlayer, setOperatorChar, setCoords })}
+      {renderTeleportModeInputs(mode, placeOpts, { targetPlace: resolvedPlace, placeText, targetPlayer, operatorChar, activeChar, coords, pin }, { setPlaceText, setTargetPlace, setTargetPlayer, setOperatorChar, setCoords })}
       <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-        <button type="button" data-testid="teleport-submit-btn" onClick={() => void dispatchTeleportAction({ character: activeChar, mode, targetPlayer, operatorChar, targetPlace, coords, players: filteredPlayers, places, storeSnap, onRecordRun })} style={BTN_STYLE}>Teleport Player</button>
+        <button type="button" data-testid="teleport-submit-btn" onClick={() => void dispatchTeleportAction({ character: activeChar, mode, targetPlayer, operatorChar, targetPlace: resolvedPlace, coords, players: filteredPlayers, places: mergedPlaces, storeSnap, onRecordRun })} style={BTN_STYLE}>Teleport Player</button>
         {filteredPlayers.length > 0 && mode === "player" ? <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400, fontSize: "11px" }}>Online: {filteredPlayers.map((p) => p.name).join(", ")}</span> : null}
         {receipt ? <span role="status" data-testid="teleport-receipt-banner" style={{ color: receipt.ok ? SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 : SANDAL_LAUNCHER_TOKENS.VerraRuinCrimson500, fontSize: "11px" }}>{receipt.message}</span> : null}
       </div>
@@ -454,23 +489,39 @@ export function GiveGoldAndItemCards(props: GiveGoldAndItemCardsProps): React.Re
   );
 }
 
+export function shouldCloseModalOnEscape(
+  e: { readonly key: string; readonly defaultPrevented?: boolean; readonly target?: unknown },
+  activeEl: unknown = typeof document !== "undefined" ? document.activeElement : null,
+): boolean {
+  if (e.key !== "Escape" || e.defaultPrevented) return false;
+  const isFormInput = (el: unknown): boolean => {
+    if (!el || typeof el !== "object") return false;
+    const tag = String((el as { tagName?: string }).tagName ?? "").toUpperCase();
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  };
+  return !isFormInput(e.target) && !isFormInput(activeEl);
+}
+
 interface GmModalDialogProps {
   readonly modal: Exclude<GmModalId, null>;
   readonly activePlayer: string;
   readonly playerEnv: PaginatedListEnvelope<OnlinePlayerRecord>;
   readonly itemEnv: PaginatedListEnvelope<CatalogItemEntry>;
   readonly npcEnv: PaginatedListEnvelope<CatalogNpcEntry>;
-  readonly placeEnv: PaginatedListEnvelope<CatalogPlaceEntry>;
+  readonly places: readonly CatalogPlaceEntry[];
   readonly itemQuery: string;
   readonly npcQuery: string;
+  readonly placeQuery: string;
   readonly setItemQuery: (q: string) => void;
   readonly setNpcQuery: (q: string) => void;
+  readonly setPlaceQuery: (q: string) => void;
   readonly onRecordRun: (entry: RecentGmRunEntry) => void;
   readonly storeSnap: WorldStreamState;
 }
 
 function GmModalDialogBody(props: GmModalDialogProps): React.ReactElement {
-  const { modal, activePlayer, playerEnv, itemEnv, npcEnv, placeEnv, itemQuery, npcQuery, setItemQuery, setNpcQuery, onRecordRun, storeSnap } = props;
+  const { modal, activePlayer, playerEnv, itemEnv, npcEnv, places, itemQuery, npcQuery, placeQuery, setItemQuery, setNpcQuery, setPlaceQuery, onRecordRun, storeSnap } = props;
+  const mouseDownOnBackdropRef = React.useRef(false);
   return (
     <div
       role="dialog"
@@ -478,10 +529,16 @@ function GmModalDialogBody(props: GmModalDialogProps): React.ReactElement {
       aria-label={`GM Modal: ${modal}`}
       data-testid={`gm-modal-${modal}`}
       onKeyDown={(e) => {
-        if (e.key === "Escape") storeSnap.setActiveModal(null);
+        if (shouldCloseModalOnEscape(e)) storeSnap.setActiveModal(null);
+      }}
+      onMouseDown={(e) => {
+        mouseDownOnBackdropRef.current = e.target === e.currentTarget;
       }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) storeSnap.setActiveModal(null);
+        if (e.target === e.currentTarget && mouseDownOnBackdropRef.current) {
+          mouseDownOnBackdropRef.current = false;
+          storeSnap.setActiveModal(null);
+        }
       }}
       style={{
         position: "fixed",
@@ -503,9 +560,9 @@ function GmModalDialogBody(props: GmModalDialogProps): React.ReactElement {
         {modal === "give-item" || modal === "give-currency" ? (
           <GiveGoldAndItemCards playerX={activePlayer} itemEnv={itemEnv} itemQuery={itemQuery} onItemQueryChange={setItemQuery} onRecordRun={onRecordRun} />
         ) : modal === "teleport" ? (
-          <TeleportCard playerX={activePlayer} players={playerEnv.items} places={placeEnv.items} storeSnap={storeSnap} onRecordRun={onRecordRun} />
+          <TeleportCard playerX={activePlayer} players={playerEnv.items} places={places} placeQuery={placeQuery} onPlaceQueryChange={setPlaceQuery} storeSnap={storeSnap} onRecordRun={onRecordRun} />
         ) : modal === "spawn-npc" ? (
-          <SpawnNpcCard npcEnv={npcEnv} npcQuery={npcQuery} places={placeEnv.items} players={playerEnv.items} onNpcQueryChange={setNpcQuery} />
+          <SpawnNpcCard npcEnv={npcEnv} npcQuery={npcQuery} places={places} players={playerEnv.items} onNpcQueryChange={setNpcQuery} />
         ) : (
           <NodeGovernanceModalCard storeSnap={storeSnap} />
         )}
@@ -525,18 +582,20 @@ export function GmActionModalsDock(): React.ReactElement {
   const storeSnap = useWorldStreamStore();
   const [itemQuery, setItemQuery] = React.useState("");
   const [npcQuery, setNpcQuery] = React.useState("");
+  const [placeQuery, setPlaceQuery] = React.useState("");
   const [, setRecentRuns] = React.useState<readonly RecentGmRunEntry[]>([]);
   const playerEnv = usePaginatedResource<OnlinePlayerRecord>("/api/v1/world/players", "players", DEFAULT_ONLINE_PLAYERS, storeSnap.selectedPlayer);
   const itemEnv = usePaginatedResource<CatalogItemEntry>("/api/v1/catalog/items", "items", DEFAULT_CATALOG_ITEMS, itemQuery);
   const npcEnv = usePaginatedResource<CatalogNpcEntry>("/api/v1/catalog/npcs", "npcs", DEFAULT_CATALOG_NPCS, npcQuery);
-  const placeEnv = usePaginatedResource<CatalogPlaceEntry>("/api/v1/catalog/places", "places", DEFAULT_CATALOG_PLACES, "");
+  const placeEnv = usePaginatedResource<CatalogPlaceEntry>("/api/v1/catalog/places", "places", DEFAULT_CATALOG_PLACES, placeQuery);
+  const mergedPlaces = mergeTeleportCatalogPlaces(placeEnv.items, storeSnap.pois, storeSnap.cityNodes);
   const activePlayer = storeSnap.selectedPlayer || (playerEnv.items.length === 1 ? playerEnv.items[0].name : "");
   const modal = storeSnap.activeModal;
 
   React.useEffect(() => {
     if (!modal || typeof window === "undefined") return;
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") storeSnap.setActiveModal(null);
+      if (shouldCloseModalOnEscape(e)) storeSnap.setActiveModal(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -551,11 +610,13 @@ export function GmActionModalsDock(): React.ReactElement {
           playerEnv={playerEnv}
           itemEnv={itemEnv}
           npcEnv={npcEnv}
-          placeEnv={placeEnv}
+          places={mergedPlaces}
           itemQuery={itemQuery}
           npcQuery={npcQuery}
+          placeQuery={placeQuery}
           setItemQuery={setItemQuery}
           setNpcQuery={setNpcQuery}
+          setPlaceQuery={setPlaceQuery}
           onRecordRun={(r) => setRecentRuns((p) => [r, ...p.slice(0, 7)])}
           storeSnap={storeSnap}
         />
@@ -569,11 +630,13 @@ export function PlayersAndSpawnerTab(): React.ReactElement {
   const [playerQuery, setPlayerQuery] = React.useState("");
   const [itemQuery, setItemQuery] = React.useState("");
   const [npcQuery, setNpcQuery] = React.useState("");
+  const [placeQuery, setPlaceQuery] = React.useState("");
   const [recentRuns, setRecentRuns] = React.useState<readonly RecentGmRunEntry[]>([]);
   const playerEnv = usePaginatedResource<OnlinePlayerRecord>("/api/v1/world/players", "players", DEFAULT_ONLINE_PLAYERS, playerQuery);
   const itemEnv = usePaginatedResource<CatalogItemEntry>("/api/v1/catalog/items", "items", DEFAULT_CATALOG_ITEMS, itemQuery);
   const npcEnv = usePaginatedResource<CatalogNpcEntry>("/api/v1/catalog/npcs", "npcs", DEFAULT_CATALOG_NPCS, npcQuery);
-  const placeEnv = usePaginatedResource<CatalogPlaceEntry>("/api/v1/catalog/places", "places", DEFAULT_CATALOG_PLACES, "");
+  const placeEnv = usePaginatedResource<CatalogPlaceEntry>("/api/v1/catalog/places", "places", DEFAULT_CATALOG_PLACES, placeQuery);
+  const mergedPlaces = mergeTeleportCatalogPlaces(placeEnv.items, storeSnap.pois, storeSnap.cityNodes);
   const activePlayer = storeSnap.selectedPlayer || (playerEnv.items.length === 1 ? playerEnv.items[0].name : "");
   const recordRun = (entry: RecentGmRunEntry): void => setRecentRuns((prev) => [entry, ...prev.slice(0, 7)]);
 
@@ -587,8 +650,8 @@ export function PlayersAndSpawnerTab(): React.ReactElement {
         {playerEnv.items.length === 0 ? <div role="status" data-testid="players-empty-state" style={{ paddingTop: "6px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>0 players currently online.</div> : null}
       </section>
       <GiveGoldAndItemCards playerX={activePlayer} itemEnv={itemEnv} itemQuery={itemQuery} onItemQueryChange={setItemQuery} onRecordRun={recordRun} />
-      <TeleportCard playerX={activePlayer} players={playerEnv.items} places={placeEnv.items} storeSnap={storeSnap} onRecordRun={recordRun} />
-      <SpawnNpcCard npcEnv={npcEnv} npcQuery={npcQuery} places={placeEnv.items} players={playerEnv.items} onNpcQueryChange={setNpcQuery} />
+      <TeleportCard playerX={activePlayer} players={playerEnv.items} places={mergedPlaces} placeQuery={placeQuery} onPlaceQueryChange={setPlaceQuery} storeSnap={storeSnap} onRecordRun={recordRun} />
+      <SpawnNpcCard npcEnv={npcEnv} npcQuery={npcQuery} places={mergedPlaces} players={playerEnv.items} onNpcQueryChange={setNpcQuery} />
       <NodeGovernanceModalCard storeSnap={storeSnap} />
       {recentRuns.length > 0 ? (
         <section aria-label="Recent GM Runs Replay Strip" data-testid="recent-gm-runs-strip" style={CARD_STYLE}>

@@ -83,8 +83,13 @@ type borderHopSpec struct {
 
 func verifyLiveBorderHandoverHysteresis(t *testing.T, baseURL string) {
 	t.Helper()
-	charName := "TST GruelingBiscuitLauncher"
+	charName := fmt.Sprintf("TST_BorderProbe_%d", time.Now().UnixNano()%10000)
 	spawnedTestPlayers.Store(charName, true)
+	defer func() {
+		hdr := map[string]string{"Content-Type": "application/json", "Idempotency-Key": fmt.Sprintf("hb6-rm-%d", time.Now().UnixNano())}
+		_, _, _ = doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/commands", hdr, []byte(fmt.Sprintf(`{"command":"despawn_entity","entity_guid":%q,"character":%q}`, "player:"+strings.ToLower(charName), charName)))
+		spawnedTestPlayers.Delete(charName)
+	}()
 	seq := 0
 	stepBorder := func(body string) map[string]any {
 		seq++
@@ -121,8 +126,12 @@ func verifyLiveBorderHandoverHysteresis(t *testing.T, baseURL string) {
 			}
 			if sample == 3 {
 				reg, zoi, wrk := fmt.Sprint(doc["region"]), fmt.Sprint(doc["zoi_id"]), strings.ToLower(fmt.Sprint(doc["authoritative_worker"]))
+				fromW, toW := strings.ToLower(fmt.Sprint(doc["from_worker"])), strings.ToLower(fmt.Sprint(doc["to_worker"]))
 				if doc["suppressed_by_hysteresis"] == true || intField(doc, "handover_count") != h.wantCount || reg != h.wantRegion || zoi != h.wantZoi || !strings.Contains(wrk, h.wantWorker) {
 					t.Fatalf("hop %d handover mismatch: got reg=%q zoi=%q worker=%q count=%d, want reg=%q zoi=%q worker~=%q count=%d", h.wantCount, reg, zoi, wrk, intField(doc, "handover_count"), h.wantRegion, h.wantZoi, h.wantWorker, h.wantCount)
+				}
+				if fromW == "" || fromW == "<nil>" || fromW == "aoc-world" || toW == "" || toW == "<nil>" || toW == "aoc-world" || fromW == toW || (h.wantWorker == "azmaran" && (!strings.Contains(fromW, "sunhaven") || !strings.Contains(toW, "azmaran"))) {
+					t.Fatalf("hop %d invalid worker handover provenance: from_worker=%q to_worker=%q doc=%#v", h.wantCount, fromW, toW, doc)
 				}
 			}
 		}
@@ -388,4 +397,3 @@ func TestSixPartitionTopologiesAndMultiBotCrossBoundaryE2E(t *testing.T) {
 	verifySixteenBotEightClassLevel50BoundaryPlay(t, baseURL)
 	verifyLiveBorderHandoverHysteresis(t, baseURL)
 }
-

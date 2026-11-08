@@ -124,33 +124,33 @@ flowchart LR
 
 Out of the box, `.\start.bat` starts **1 zone worker for the Riverlands region** (`AOC_WORLD_PARTITION_MODE=single_riverlands`, `AOC_WORLD_REGION=riverlands`, `AOC_WORLD_TOPOLOGY_MODE=single`).
 
-This default stack runs **11 Linux containers**: 10 control-plane and database containers (`aoc-postgres`, `aoc-auth`, `aoc-character`, `aoc-citynode`, `aoc-quest`, `aoc-mesh`, `aoc-mesh-gateway`, `aoc-gateway`, `aoc-web-admin`, and `aoc-ingress-proxy`) plus 1 Riverlands worker (`aoc-riverlands` / `aoc-world` at `45 Hz` with a `2560M` RAM limit).
+This default stack runs **11 Linux containers**: 10 control-plane and database containers (`aoc-postgres`, `aoc-auth`, `aoc-character`, `aoc-citynode`, `aoc-quest`, `aoc-mesh`, `aoc-mesh-gateway`, `aoc-gateway`, `aoc-web-admin`, and `aoc-ingress-proxy`) plus 1 Riverlands worker (`aoc-riverlands` / `aoc-world` in `Dynamic (30-60 Hz)` tick mode with a `2560M` RAM limit).
 
 ### Worker Partition Topologies
 
 To divide the world across multiple server workers, copy one of the five configurations below into your root `.env` file and run `.\start.bat`. See the [Operational Runbook](docs/RUNBOOK.md) and [Server Workers](docs/SERVER_WORKERS.md) for details.
 
 ```ini
-# Setup 1: 1 Worker for 1 Region (Default: Riverlands at 45 Hz)
+# Setup 1: 1 Worker for 1 Region (Default: Riverlands)
 AOC_WORLD_PARTITION_MODE=single_riverlands
 AOC_WORLD_REGION=riverlands
 AOC_WORLD_TOPOLOGY_MODE=single
 
-# Setup 2: 1 Worker for the Whole World (All 5 Regions on 1 Worker at 30 Hz)
+# Setup 2: 1 Worker for the Whole World (All 5 Regions on 1 Worker)
 AOC_WORLD_PARTITION_MODE=single_world
 AOC_WORLD_REGION=all
 AOC_WORLD_TOPOLOGY_MODE=world
 
-# Setup 3: 1 Worker per Region (5 Regional Workers at 45 Hz)
+# Setup 3: 1 Worker per Region (5 Regional Workers)
 AOC_WORLD_PARTITION_MODE=per_region
 AOC_WORLD_TOPOLOGY_MODE=region
 
-# Setup 4: 1 Worker per ZOI (Zone of Influence Workers at 60 Hz)
+# Setup 4: 1 Worker per ZOI (Zone of Influence Workers)
 AOC_WORLD_PARTITION_MODE=per_zoi
 AOC_WORLD_TOPOLOGY_MODE=zoi
 AOC_WORLD_PARTITION_REGION=sandsquall
 
-# Setup 5: ZOI Workers with City Node and POI Cut-Outs (60 Hz ZOI + 100 Hz Sub-Areas)
+# Setup 5: ZOI Workers with City Node and POI Cut-Outs
 AOC_WORLD_PARTITION_MODE=per_zoi_nodes_and_pois
 AOC_WORLD_TOPOLOGY_MODE=mixed
 AOC_WORLD_PARTITION_REGION=sandsquall
@@ -171,7 +171,7 @@ flowchart TB
         Gateway["aoc-gateway (:8080) - Auth, Admin API & 30 Hz World-Stream"]
         Character["aoc-character (:50061 ICS TLS 1.3 / :50052 gRPC)"]
         ControlPlane["Control-Plane Services (:50051..:50056) - aoc-auth, aoc-citynode, aoc-quest, aoc-mesh, aoc-mesh-gateway"]
-        Workers["World Workers (:7777+ UDP, 2560M RAM) - world (30 Hz) | region (45 Hz) | zoi (60 Hz) | node_plug & poi (100 Hz)"]
+        Workers["World Workers (:7777+ UDP, 2560M RAM) - Dynamic (30-60 Hz) across world | region | zoi | node_plug | poi"]
         Postgres["aoc-postgres (:5432) - PostgreSQL 16 Database"]
     end
 

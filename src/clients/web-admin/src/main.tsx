@@ -225,7 +225,11 @@ export function App(): React.ReactElement {
       style={{
         display: "flex",
         flexDirection: "column",
-        minHeight: "100vh",
+        width: "100%",
+        height: "100vh",
+        maxHeight: "100dvh",
+        boxSizing: "border-box",
+        overflow: "hidden",
         scrollbarGutter: "stable",
         backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100,
         color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100,
@@ -233,7 +237,18 @@ export function App(): React.ReactElement {
       }}
     >
       {renderAdminTopBar(storeSnap.activeTab, isAnalyticsUnified, storeSnap.setActiveTab)}
-      <main data-testid="web-admin-main-view" style={{ flex: 1, display: "flex", flexDirection: "column", scrollbarGutter: "stable" }}>
+      <main
+        data-testid="web-admin-main-view"
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: storeSnap.activeTab === "map" ? "hidden" : "auto",
+          display: "flex",
+          flexDirection: "column",
+          boxSizing: "border-box",
+          scrollbarGutter: "stable",
+        }}
+      >
         <WebAdminErrorBoundary>
           {storeSnap.activeTab === "map" ? (
             <VerraMapCanvas />
@@ -252,7 +267,14 @@ export function App(): React.ReactElement {
 if (typeof document !== "undefined") {
   if (document.documentElement?.style) {
     document.documentElement.style.scrollbarGutter = "stable";
-    document.documentElement.style.overflowY = "scroll";
+    document.documentElement.style.overflow = "hidden";
+    document.documentElement.style.height = "100%";
+    document.documentElement.style.margin = "0";
+  }
+  if (document.body?.style) {
+    document.body.style.overflow = "hidden";
+    document.body.style.height = "100%";
+    document.body.style.margin = "0";
   }
   const rootElement = document.getElementById("root");
   if (rootElement) {

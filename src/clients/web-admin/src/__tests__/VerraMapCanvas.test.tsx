@@ -10,13 +10,18 @@ import {
   resolveMutuallyExclusiveInspectorTarget,
 } from "../components/EntityInspector";
 import {
+  CATEGORY_MARKER_COLORS,
   classifyWorldEntityCategory,
   drawCanvasScene,
+  ENTITY_MAP_LEGEND_SWATCHES,
   findNearestEntityOrNodeAtScreen,
+  isPlayerEntityMounted,
   mergePoiOverlays,
+  NATIVE_DISPLAY_RESOLUTIONS,
   parsePoisFromPayload,
   POI_FALLBACK_ICON_BY_KIND,
   resolveEntityMapMarkerColor,
+  resolveNativeCanvasRenderArea,
   resolvePoiIconName,
   VerraTileCache,
   worldCmToScreenOffset,
@@ -263,13 +268,13 @@ describe("VerraMapCanvas Wave 41E/41F Regression Suite", () => {
 
   it("classifies bare Verra resource def_names into distinct marker colors and renders clean VerraCalendarPopover labels and dark inputs", () => {
     const bareResourceCases = [
-      { defName: "Tree_EasternHemlock_Large_1", category: "trees", color: "#22c55e" },
-      { defName: "Stone_Basalt_Medium_1", category: "rocks", color: "#94a3b8" },
-      { defName: "Stone_Wyrdstone_Large_1", category: "ore_gems", color: "#eab308" },
-      { defName: "Stone_Resonite_Medium_1", category: "ore_gems", color: "#eab308" },
-      { defName: "Metal_Rividium_Large_1", category: "ore_gems", color: "#eab308" },
-      { defName: "Plant_Banana_Fruited_1", category: "plants", color: "#2dd4bf" },
-      { defName: "Coral_BlueCoral_Large_1", category: "plants", color: "#2dd4bf" },
+      { defName: "Tree_EasternHemlock_Large_1", category: "trees", color: "#4da866" },
+      { defName: "Stone_Basalt_Medium_1", category: "rocks", color: "#8b9bb0" },
+      { defName: "Stone_Wyrdstone_Large_1", category: "ore_gems", color: "#c8a438" },
+      { defName: "Stone_Resonite_Medium_1", category: "ore_gems", color: "#c8a438" },
+      { defName: "Metal_Rividium_Large_1", category: "ore_gems", color: "#c8a438" },
+      { defName: "Plant_Banana_Fruited_1", category: "plants", color: "#43a895" },
+      { defName: "Coral_BlueCoral_Large_1", category: "plants", color: "#43a895" },
     ] as const;
 
     for (const c of bareResourceCases) {
@@ -277,6 +282,16 @@ describe("VerraMapCanvas Wave 41E/41F Regression Suite", () => {
       expect(classifyWorldEntityCategory(entity)).toBe(c.category);
       expect(resolveEntityMapMarkerColor(entity)).toBe(c.color);
     }
+    expect(resolveEntityMapMarkerColor({ kind: "player", name: "Aurelia" })).toBe("#c084fc");
+    expect(resolveEntityMapMarkerColor({ kind: "player", name: "Aurelia", mounted: true })).toBe("#818cf8");
+    expect(resolveEntityMapMarkerColor({ kind: "mount", name: "Swiftclaw" })).toBe("#818cf8");
+    expect(resolveEntityMapMarkerColor({ kind: "npc", name: "Guard" })).toBe("#5b9bd5");
+    expect(resolveEntityMapMarkerColor({ kind: "monster", name: "Wolf" })).toBe("#d65a5a");
+    expect(resolveEntityMapMarkerColor({ kind: "npc", name: "Deer", npcSubkind: "huntable" })).toBe("#d98245");
+    expect(ENTITY_MAP_LEGEND_SWATCHES.find((s) => s.id === "players")).toEqual({ id: "players", label: "Players", color: "#c084fc" });
+    expect(ENTITY_MAP_LEGEND_SWATCHES.find((s) => s.id === "mounts")).toEqual({ id: "mounts", label: "Mounts", color: "#818cf8" });
+    expect(new Set(ENTITY_MAP_LEGEND_SWATCHES.map((s) => s.color)).size).toBe(ENTITY_MAP_LEGEND_SWATCHES.length);
+    expect(new Set(Object.values(CATEGORY_MARKER_COLORS)).size).toBe(Object.keys(CATEGORY_MARKER_COLORS).length);
 
     expect(VERRA_SEASON_PRESETS.map((p) => p.label)).toEqual(["Spring", "Summer", "Autumn", "Winter"]);
     expect(VERRA_SEASON_PRESETS.some((p) => p.label.includes("(D"))).toBe(false);
@@ -390,5 +405,85 @@ describe("VerraMapCanvas Wave 41E/41F Regression Suite", () => {
     expect(anvils.target_tick_hz).toBe(-1);
     expect(anvils.tick_mode).toBe("dynamic");
     await store.getState().executeSetWorkerTickRateAction("world-riverlands", -1, async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  });
+
+  it("renders entity markers at 90% opacity, draws on-foot (#c084fc) vs mounted (#818cf8) players after NPCs, draws selected entity circle last, and prevents scrollbars at 1080p/2K/4K/8K", () => {
+    const drawOps: Array<{ kind: string; radius?: number; fillStyle?: string; strokeStyle?: string; alpha: number }> = [];
+    let currentAlpha = 1;
+    let currentFill = "";
+    let currentStroke = "";
+    let lastArcRadius = 0;
+    const mockCtx = {
+      get globalAlpha() { return currentAlpha; },
+      set globalAlpha(v: number) { currentAlpha = v; },
+      get fillStyle() { return currentFill; },
+      set fillStyle(v: string) { currentFill = v; },
+      get strokeStyle() { return currentStroke; },
+      set strokeStyle(v: string) { currentStroke = v; },
+      lineWidth: 1, font: "", textBaseline: "alphabetic", lineJoin: "miter",
+      fillRect: () => {}, strokeRect: () => {}, clip: () => {}, drawImage: () => {},
+      beginPath: () => {}, closePath: () => {}, setLineDash: () => {},
+      arc: (_x: number, _y: number, r: number) => { lastArcRadius = r; },
+      fill: () => { drawOps.push({ kind: "fill", radius: lastArcRadius, fillStyle: currentFill, alpha: currentAlpha }); },
+      stroke: () => { drawOps.push({ kind: "stroke", radius: lastArcRadius, strokeStyle: currentStroke, alpha: currentAlpha }); },
+      moveTo: () => {}, lineTo: () => {}, rect: () => {},
+      strokeText: () => {}, fillText: () => {},
+      measureText: (txt: string) => ({ width: txt.length * 8 }),
+      save: () => {}, restore: () => {}, translate: () => {}, rotate: () => {},
+    } as unknown as CanvasRenderingContext2D;
+
+    const store = createWorldStreamStore({ layers: DEFAULT_LAYER_TOGGLES });
+    store.getState().setCameraViewport({ centerXCm: -644519, centerYCm: 376773, zoom: 5.0 });
+    store.getState().applyWorldDelta({
+      seq: 1,
+      isSnapshot: true,
+      added: [
+        { guid: "player-foot", name: "Aurelia", kind: "player", xCm: -644519, yCm: 376773, zCm: 12000, yawDeg: 0, level: 25, healthPct: 100 },
+        { guid: "player-mounted", name: "Kaelen", kind: "player", xCm: -644000, yCm: 376500, zCm: 12000, yawDeg: 0, level: 25, healthPct: 100 },
+        { guid: "mount-1", name: "Royal Steed", kind: "mount", xCm: -644000, yCm: 376500, zCm: 12000, yawDeg: 0, level: 1, healthPct: 100 },
+        { guid: "npc-1", name: "Guard", kind: "npc", xCm: -644519, yCm: 376773, zCm: 12000, yawDeg: 0, level: 25, healthPct: 100 },
+      ],
+    });
+    store.getState().selectEntity("npc-1");
+
+    expect(isPlayerEntityMounted({ xCm: -644000, yCm: 376500 }, store.getState().entities.values())).toBe(true);
+    expect(isPlayerEntityMounted({ xCm: -644519, yCm: 376773 }, store.getState().entities.values())).toBe(false);
+
+    drawCanvasScene(mockCtx, { width: 1920, height: 1080 }, DEFAULT_VERRA_MAP_META, store.getState(), new VerraTileCache(() => {}));
+
+    const entityFills = drawOps.filter((op) => op.kind === "fill" && (op.radius === 3.5 || op.radius === 6.5));
+    expect(entityFills.length).toBe(4);
+    expect(entityFills.every((op) => op.alpha === 0.9)).toBe(true);
+    expect(entityFills.slice(0, 2).every((op) => op.radius === 3.5)).toBe(true);
+    expect(entityFills.slice(2).map((op) => ({ radius: op.radius, fillStyle: op.fillStyle }))).toEqual([
+      { radius: 6.5, fillStyle: "#c084fc" },
+      { radius: 6.5, fillStyle: "#818cf8" },
+    ]);
+
+    const lastEntityFillIdx = drawOps.map((op, idx) => (op.kind === "fill" && (op.radius === 3.5 || op.radius === 6.5) ? idx : -1)).reduce((a, b) => Math.max(a, b), -1);
+    const selectedRingIdx = drawOps.findIndex((op) => op.kind === "stroke" && op.radius === 12 && op.strokeStyle === "#d4af37");
+    expect(selectedRingIdx).toBeGreaterThan(lastEntityFillIdx);
+    expect(drawOps[selectedRingIdx].alpha).toBe(1);
+
+    expect(NATIVE_DISPLAY_RESOLUTIONS.map((r) => [r.width, r.height])).toEqual([
+      [1920, 1080],
+      [2560, 1440],
+      [3840, 2160],
+      [7680, 4320],
+    ]);
+    for (const res of NATIVE_DISPLAY_RESOLUTIONS) {
+      const area = resolveNativeCanvasRenderArea(res.width, res.height, 96);
+      expect(area.width).toBe(res.width);
+      expect(area.height).toBe(res.height - 96);
+    }
+
+    const indexHtml = readFileSync(fileURLToPath(new URL("../../index.html", import.meta.url)), "utf8");
+    const mainSrc = readFileSync(fileURLToPath(new URL("../main.tsx", import.meta.url)), "utf8");
+    const mapSrc = readVerraMapCanvasSource();
+    expect(indexHtml.includes("overflow-y: scroll")).toBe(false);
+    expect(indexHtml).toContain("overflow: hidden");
+    expect(mainSrc.includes('overflowY = "scroll"')).toBe(false);
+    expect(mainSrc).toContain('overflow: "hidden"');
+    expect(mapSrc.includes('minHeight: "540px"')).toBe(false);
   });
 });

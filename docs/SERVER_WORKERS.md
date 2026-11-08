@@ -10,19 +10,19 @@ This guide explains how SandalCore partitions the continent of Verra across one 
 
 SandalCore partitions Verra (`[-1,433,600 .. +716,800]` cm X, `[-1,331,200 .. +819,200]` cm Y) across one or more authoritative `world` processes. You can run a single worker for one region or the whole world, split the map by region or Zone of Influence (ZOI), or carve out high-frequency City Node and Point of Interest (POI) sub-areas:
 
-| Topology Setup | `.env` Partition Mode | Worker Naming Pattern | Worker Count | Default Tick Rate | How It Works |
+| Topology Setup | `.env` Partition Mode | Worker Naming Pattern | Worker Count | Default Tick Mode | How It Works |
 |:---|:---|:---|:---:|:---:|:---|
-| **1. Single Regional or Whole-World Worker** | `single_riverlands` (default) or `single_world` | `aoc-riverlands` / `aoc-world` | `1` worker | `45 Hz` (`single_riverlands`) or `30 Hz` (`single_world`) | Out of the box, `single_riverlands` runs 1 worker for Riverlands at `45 Hz` (`11` containers total). Setting `single_world` loads all 5 regions onto 1 worker at `30 Hz`. |
-| **2. Per-Region Workers** | `per_region` | `aoc-<region-name>` (`aoc-riverlands`, `aoc-sandsquall`, `aoc-jundark`, `aoc-anvils`, `aoc-turquoise-sea`) | `5` workers | `45 Hz` | Dedicates one worker to each biome region. Each worker loads only the terrain, navmesh tiles, NPCs, and gatherables inside its regional polygon. |
-| **3. Per-ZOI Workers** | `per_zoi` | `aoc-<zoi-name>` (`aoc-sunhaven`, `aoc-azmaran`, `aoc-winstead`, `aoc-joeva`, etc.) | `1` per ZOI (`27` ZOIs) | `60 Hz` | Splits authority along the 27 Voronoi Zone of Influence polygons (`zoi_polygons.tsv`) so each territory runs at `60 Hz`. |
-| **4. Node-Plug and ZOI Workers** | `per_zoi_nodes_and_pois` (`node_plug_and_zoi`) | Node Plug: `aoc-<city-name>`<br/>Surrounding ZOI: `aoc-<zoi-name>` | `1` per city plug + `1` per ZOI | `100 Hz` Node Plug / `60 Hz` ZOI | Carves the rotated `1 km x 1 km` City Node Oriented Bounding Box (OBB) into a `100 Hz` `aoc-<city-name>` worker while the surrounding `60 Hz` ZOI worker excludes that OBB (`--area-exclude-node-plug=Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Azmaran`). |
-| **5. Dynamic Node-Plug and ZOI Scaling Stub** | `dynamic_node_plug_zoi` | `aoc-<city-name>-alpha..zulu`<br/>`aoc-<zoi-name>-alpha..zulu` | `1..26` per city & per ZOI (`min = 1` `-alpha`) | `100 Hz` Node Plug / `60 Hz` ZOI | Reserves NATO phonetic worker names (`-alpha` through `-zulu`, never `0`). Currently runs the baseline `-alpha` worker as a deterministic scaling stub. |
-| **6. Dynamic ZOI Scaling Stub** | `dynamic_zoi` | `aoc-<zoi-name>-alpha..zulu` | `1..26` per ZOI (`min = 1` `-alpha`) | `60 Hz` | Reserves NATO phonetic ZOI worker names (`-alpha` through `-zulu`, never `0`). Currently runs the baseline `-alpha` worker as a deterministic scaling stub. |
-| **7. Convex Polygon and POI Cutout Workers** | `per_zoi_nodes_and_pois` (`AOC_WORLD_POI_CUTOUT`) | `aoc-<cutout-name>` (e.g., `aoc-carphin`) | `1+` additive workers | `100 Hz` | Carves out a counter-clockwise convex polygon (`--area-polygon="x1,y1;x2,y2;..."`) for a high-density dungeon, siege arena, or POI at `100 Hz`. |
-| **8. Mix-and-Match Composition** | `mixed` | Any combination of the above | Per tier | `30 / 45 / 60 / 100 Hz` | Combines regional workers (`45 Hz`) with ZOI (`60 Hz`), City Node Plug (`100 Hz`), and POI Cutout (`100 Hz`) workers in the same live mesh. |
+| **1. Single Regional or Whole-World Worker** | `single_riverlands` (default) or `single_world` | `aoc-riverlands` / `aoc-world` | `1` worker | `Dynamic (30-60 Hz)` | Out of the box, `single_riverlands` runs 1 worker for Riverlands (`11` containers total). Setting `single_world` loads all 5 regions onto 1 worker. |
+| **2. Per-Region Workers** | `per_region` | `aoc-<region-name>` (`aoc-riverlands`, `aoc-sandsquall`, `aoc-jundark`, `aoc-anvils`, `aoc-turquoise-sea`) | `5` workers | `Dynamic (30-60 Hz)` | Dedicates one worker to each biome region. Each worker loads only the terrain, navmesh tiles, NPCs, and gatherables inside its regional polygon. |
+| **3. Per-ZOI Workers** | `per_zoi` | `aoc-<zoi-name>` (`aoc-sunhaven`, `aoc-azmaran`, `aoc-winstead`, `aoc-joeva`, etc.) | `1` per ZOI (`27` ZOIs) | `Dynamic (30-60 Hz)` | Splits authority along the 27 Voronoi Zone of Influence polygons (`zoi_polygons.tsv`) so each territory runs on its own worker. |
+| **4. Node-Plug and ZOI Workers** | `per_zoi_nodes_and_pois` (`node_plug_and_zoi`) | Node Plug: `aoc-<city-name>`<br/>Surrounding ZOI: `aoc-<zoi-name>` | `1` per city plug + `1` per ZOI | `Dynamic (30-60 Hz)` | Carves the rotated `1 km x 1 km` City Node Oriented Bounding Box (OBB) into an `aoc-<city-name>` worker while the surrounding ZOI worker excludes that OBB (`--area-exclude-node-plug=Verra_SAN_Node_Sunhaven,Verra_SAN_Node_Azmaran`). |
+| **5. Dynamic Node-Plug and ZOI Scaling Stub** | `dynamic_node_plug_zoi` | `aoc-<city-name>-alpha..zulu`<br/>`aoc-<zoi-name>-alpha..zulu` | `1..26` per city & per ZOI (`min = 1` `-alpha`) | `Dynamic (30-60 Hz)` | Reserves NATO phonetic worker names (`-alpha` through `-zulu`, never `0`). Currently runs the baseline `-alpha` worker as a deterministic scaling stub. |
+| **6. Dynamic ZOI Scaling Stub** | `dynamic_zoi` | `aoc-<zoi-name>-alpha..zulu` | `1..26` per ZOI (`min = 1` `-alpha`) | `Dynamic (30-60 Hz)` | Reserves NATO phonetic ZOI worker names (`-alpha` through `-zulu`, never `0`). Currently runs the baseline `-alpha` worker as a deterministic scaling stub. |
+| **7. Convex Polygon and POI Cutout Workers** | `per_zoi_nodes_and_pois` (`AOC_WORLD_POI_CUTOUT`) | `aoc-<cutout-name>` (e.g., `aoc-carphin`) | `1+` additive workers | `Dynamic (30-60 Hz)` | Carves out a counter-clockwise convex polygon (`--area-polygon="x1,y1;x2,y2;..."`) for a high-density dungeon, siege arena, or POI on its own worker. |
+| **8. Mix-and-Match Composition** | `mixed` | Any combination of the above | Per tier | `Dynamic (30-60 Hz)` | Combines regional workers with ZOI, City Node Plug, and POI Cutout workers in the same live mesh. |
 
 > [!NOTE]
-> **Unbounded Authentic Entity Populations**: SandalCore does not use `AOC_WORLD_MAX_*` or `max_gatherables` caps. Every worker spawns the complete set of authentic NPCs, monsters, and gatherable resource nodes located inside its spatial boundary, bounded only by in-memory container structures.
+> **Unbounded Authentic Entity Populations**: SandalCore does not use `AOC_WORLD_MAX_*`, `max_gatherables`, or `sim_step_cap` truncation caps. Every worker spawns the complete set of authentic NPCs, monsters, and gatherable resource nodes located inside its spatial boundary, bounded only by in-memory container structures and governed by fair cursor-resumed scheduling.
 
 ---
 
@@ -42,7 +42,7 @@ Every server worker uses a consistent name across Docker containers, structured 
 
 When a `world` worker starts, it registers with [`aoc-mesh`](../src/server/services/cmd/mesh/README.md) (`:50055`) via `RegisterWorld`:
 
-1. **Sequential `worker_index` Assignment**: `aoc-mesh` assigns each worker a unique sequential `worker_index` (`1..N`) and records its polygon boundary, UDP game port (`:7777+`), gRPC control port (`:50061+`), and tick rate.
+1. **Sequential `worker_index` Assignment**: `aoc-mesh` assigns each worker a unique sequential `worker_index` (`1..N`) and records its polygon boundary, UDP game port (`:7777+`), gRPC control port (`:50061+`), and tick mode.
 2. **Collision-Free Actor GUIDs**: The worker seeds `ServerGuidAllocator(worker_index, randomizer)` (`src/server/world/session.h`) with its `worker_index`, embedding that index into the upper bits of every dynamically spawned 128-bit `FGuid` so NPC, loot, and projectile IDs never collide across workers.
 
 ```mermaid
@@ -54,11 +54,11 @@ flowchart LR
     end
 
     subgraph WorkerStack["Authoritative Server Worker Stack"]
-        WWorld["aoc-world (idx=1) - Whole-World Tier (30 Hz)"]
-        WRegion["aoc-riverlands (idx=2) - Region Tier (45 Hz)"]
-        WZOI["aoc-sunhaven (idx=3) - ZOI Tier (60 Hz)"]
-        WPlug["aoc-joeva (idx=4) - Node-Plug OBB Tier (100 Hz)"]
-        WPoly["aoc-carphin (idx=5) - POI Cutout Tier (100 Hz)"]
+        WWorld["aoc-world (idx=1) - Whole-World Tier (Dynamic 30-60 Hz)"]
+        WRegion["aoc-riverlands (idx=2) - Region Tier (Dynamic 30-60 Hz)"]
+        WZOI["aoc-sunhaven (idx=3) - ZOI Tier (Dynamic 30-60 Hz)"]
+        WPlug["aoc-joeva (idx=4) - Node-Plug OBB Tier (Dynamic 30-60 Hz)"]
+        WPoly["aoc-carphin (idx=5) - POI Cutout Tier (Dynamic 30-60 Hz)"]
     end
 
     WWorld -->|"RegisterWorld -> worker_index=1"| Mesh
@@ -75,22 +75,22 @@ flowchart LR
 
 ## Simulation Tick Rates and Runtime Controls
 
-Each worker runs a fixed-timestep simulation loop (`src/server/world/world_loop.cpp`) whose default rate matches its spatial tier:
+Each worker runs an adaptive simulation loop (`src/server/world/world_loop.cpp`) that defaults to **`Dynamic (30-60 Hz)`** across all spatial tiers, with cursor-resumed entity scheduling and `0` artificial entity truncation caps:
 
-| Environment Variable | Default | Target Tier | Frame Budget and NPC Slice | Purpose |
-|:---|:---:|:---|:---:|:---|
-| `AOC_WORLD_TICK_HZ_NODE` / `AOC_WORLD_TICK_HZ_POI` | `100` (`100 Hz`) | `node_plug`, `poi` | `10.00 ms` (`1500` NPC slice) | High-density City Node OBB plugs and POI cutouts run at `100 Hz` for responsive town and dungeon combat. |
-| `AOC_WORLD_TICK_HZ_ZOI` | `60` (`60 Hz`) | `zoi` | `16.67 ms` (`2600` NPC slice) | Zone of Influence territories run at `60 Hz` within the `30%--45%` CPU target band. |
-| `AOC_WORLD_TICK_HZ_REGION` | `45` (`45 Hz`) | `region` | `22.22 ms` (`3600` NPC slice) | Regional biomes (`aoc-riverlands`, `aoc-sandsquall`, etc.) run at `45 Hz`. |
-| `AOC_WORLD_TICK_HZ_WORLD` | `30` (`30 Hz`) | `world` | `33.33 ms` (`5200` NPC slice) | Whole-world single-worker mode (`aoc-world`) simulates all 5 regions in one `2560M` container at `30 Hz`. |
-| `AOC_SERVICE_TICK_HZ` | `30` (`30 Hz`) | Control Plane | `33.33 ms` | Drives the `world-stream` entity coalescer (`/api/v1/world/state` at `30 Hz`) and mesh health checks. |
+| Spatial Tier | Default Tick Mode | Adaptive Range & Floor | Entity Scheduling | Purpose |
+|:---|:---:|:---:|:---|:---|
+| `node_plug`, `poi` | `Dynamic (30-60 Hz)` | `30--60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` floor) | Cursor-resumed across full population (`0` truncation caps) | Dedicated `1 km x 1 km` City Node OBB plugs and convex polygon POI cutouts. |
+| `zoi` | `Dynamic (30-60 Hz)` | `30--60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` floor) | Cursor-resumed across full population (`0` truncation caps) | Voronoi Zone of Influence territories within the `30%--45%` CPU target band. |
+| `region` | `Dynamic (30-60 Hz)` | `30--60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` floor) | Cursor-resumed across full population (`0` truncation caps) | Regional biomes (`aoc-riverlands`, `aoc-sandsquall`, `aoc-jundark`, `aoc-anvils`, `aoc-turquoise-sea`). |
+| `world` | `Dynamic (30-60 Hz)` | `30--60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` floor) | Cursor-resumed across full population (`0` truncation caps) | Whole-world single-worker mode (`aoc-world`) simulating all 5 regions in one `2560M` container. |
+| Control Plane (`AOC_SERVICE_TICK_HZ`) | `30 Hz` | `30 Hz` (`33.33 ms`) | Snapshot coalescer | Drives the `world-stream` entity coalescer (`/api/v1/world/state` at `30 Hz`) and mesh health checks. |
 
 At runtime, operators can adjust any individual worker's tick mode from the Web Admin Main Page (`Visible Server Workers` panel) or Observability Page (`World Workers` table), persisted in PostgreSQL `world_simulation_state`:
 
-- **`Dynamic (30-60 Hz)` (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `kMaxDynamicHz = 60` adaptive range)**: The default mode for every worker (`TickLoop`). Scales the worker's simulation frequency between `30 Hz` and `60 Hz` (`kMaxDynamicHz = 60`) in `5 Hz` steps around its scope baseline (`30 / 45 / 60 / 100 Hz`) based on a 15-tick EWMA CPU utilization window (`30%--45%` target band). Both the Main Page Server List and the Observability Page pair this selector with a read-only **`Actual Hz` / `Current Hz`** badge (`aria-readonly="true"`) fed by live `aoc_world_tick_hz` telemetry.
+- **`Dynamic (30-60 Hz)` (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `kMaxDynamicHz = 60`, `>= 30 Hz` floor)**: The default mode for every worker (`TickLoop`). Scales the worker's simulation frequency between `30 Hz` and `60 Hz` (`kMaxDynamicHz = 60`, `>= 30 Hz` dynamic floor) in `5 Hz` steps based on a 15-tick EWMA CPU utilization window (`30%--45%` target band). Both the Main Page Server List and the Observability Page pair this selector with a read-only **`Actual Hz` / `Current Hz`** badge (`aria-readonly="true"`) fed by live `aoc_world_tick_hz` telemetry.
 - **`0 Hz (Pause NPCs)` (`0 Hz (Off)`)**: Pauses ambient NPC AI simulation on **just that worker** without affecting other workers or connected players.
 - **Manual Rates (`10, 15, 20, 25, 30, 40, 50, 60 Hz` Web Admin UI / `1..120 Hz` CLI & API)**: Locks that worker to a specific manual tick rate (`tick_mode: "manual"`).
-- **One-Second NPC Service Guarantee**: Every active worker dynamically raises its per-tick NPC slice floor when needed so its entire spawned NPC population is stepped at least once per second (`<= 1.0 s` service floor).
+- **Cursor-Resumed Scheduling and One-Second NPC Service Guarantee**: Domain containers hold the full authoritative dataset without artificial step-slice truncation caps. Every active worker steps entities via fair cursor-resumed scheduling and guarantees that its entire spawned NPC population is stepped at least once per second (`<= 1.0 s` service floor).
 - **`WorldClock` (`--world-hour` / `AOC_WORLD_HOUR`) and Mesh-Wide Calendar Sync**: Each worker initializes its `WorldClock` from `--world-hour` / `AOC_WORLD_HOUR` (`0.0..24.0`, default `12.0` noon; `--spawn-hour` / `AOC_SPAWN_HOUR` is supported as an alias) to evaluate time-of-day spawn filters, and continuously synchronizes mesh-wide time and calendar date (`time_of_day_hours`, `calendar_year`, `calendar_day_of_year`) from `aoc-mesh-gateway` across the `360`-day, `4 x 90`-day season (`Spring`, `Summer`, `Autumn`, `Winter`) Verra Calendar at `9x` clock speed.
 
 ---
@@ -99,11 +99,11 @@ At runtime, operators can adjust any individual worker's tick mode from the Web 
 
 When multiple workers cover nested geographic areas, such as a City Node plug inside a ZOI that sits inside a Region, `aoc-mesh` and the worker area filter (`AreaConfig`) assign authority to the most specific boundary containing `(x, y)`:
 
-1. **Convex Polygon / POI Cutout (`poi`)**: Highest priority (`100 Hz`, e.g., `aoc-carphin`).
-2. **City Node OBB Plug (`node_plug`)**: Second priority (`100 Hz`, rotated `1 km x 1 km` box around a settlement center). The parent ZOI worker passes `--area-exclude-node-plug=<NodeNames>` so NPCs and stations inside the city box are never spawned twice.
-3. **Zone of Influence (`zoi`)**: Third priority (`60 Hz`, 27 Voronoi ZOI polygons from `zoi_polygons.tsv`).
-4. **Biome Region (`region`)**: Fourth priority (`45 Hz`, 5 regional polygons).
-5. **Whole World (`world`)**: Continent-wide fallback worker (`30 Hz`).
+1. **Convex Polygon / POI Cutout (`poi`)**: Highest priority (e.g., `aoc-carphin`).
+2. **City Node OBB Plug (`node_plug`)**: Second priority (rotated `1 km x 1 km` box around a settlement center). The parent ZOI worker passes `--area-exclude-node-plug=<NodeNames>` so NPCs and stations inside the city box are never spawned twice.
+3. **Zone of Influence (`zoi`)**: Third priority (27 Voronoi ZOI polygons from `zoi_polygons.tsv`).
+4. **Biome Region (`region`)**: Fourth priority (5 regional polygons).
+5. **Whole World (`world`)**: Continent-wide fallback worker.
 
 ### Worker Hole-Punching, Spawn Filtering, and Foliage Provenance
 
@@ -117,14 +117,14 @@ To guarantee zero duplicate actors across nested workers:
 ```mermaid
 flowchart TD
     Query["ResolveWorkerForPosition(x, y)"] --> CheckCutout{"Inside POI / Polygon Cutout?"}
-    CheckCutout -->|"Yes"| RouteCutout["Route to aoc-<cutout-name> (100 Hz POI Tier)"]
+    CheckCutout -->|"Yes"| RouteCutout["Route to aoc-<cutout-name> (POI Cutout Tier)"]
     CheckCutout -->|"No"| CheckPlug{"Inside 1 km x 1 km City Node OBB?"}
-    CheckPlug -->|"Yes"| RoutePlug["Route to aoc-<city-name> (100 Hz Node-Plug Tier)"]
+    CheckPlug -->|"Yes"| RoutePlug["Route to aoc-<city-name> (Node-Plug Tier)"]
     CheckPlug -->|"No"| CheckZOI{"Inside 27 Voronoi ZOI Polygons?"}
-    CheckZOI -->|"Yes"| RouteZOI["Route to aoc-<zoi-name> (60 Hz ZOI Tier)"]
+    CheckZOI -->|"Yes"| RouteZOI["Route to aoc-<zoi-name> (ZOI Tier)"]
     CheckZOI -->|"No"| CheckRegion{"Inside 5 Biome Region Polygons?"}
-    CheckRegion -->|"Yes"| RouteRegion["Route to aoc-<region-name> (45 Hz Region Tier)"]
-    CheckRegion -->|"No"| RouteWorld["Route to aoc-world (30 Hz Whole-World Fallback)"]
+    CheckRegion -->|"Yes"| RouteRegion["Route to aoc-<region-name> (Region Tier)"]
+    CheckRegion -->|"No"| RouteWorld["Route to aoc-world (Whole-World Fallback)"]
 ```
 
 ---
