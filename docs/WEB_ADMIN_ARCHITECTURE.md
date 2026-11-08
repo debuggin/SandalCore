@@ -48,8 +48,8 @@ flowchart TB
 
 1. **Constant `30 Hz` (`33 ms`) Polling Cadence**:
    `worldStreamStore.ts` (`DEFAULT_MAP_POLL_HZ = 30`) polls `/api/v1/world/state` every `33 ms` across all zoom levels (`z0..z7+`). Instead of dropping or downsampling markers when the camera pans or zooms, the store merges incoming entity snapshots into a persistent `Map<string, WorldEntity>` keyed by `guid`, eliminating marker flicker while keeping HTML5 canvas rendering smooth at `60 FPS`.
-2. **Scope-Tuned Server Worker Tick Rates and Default `Dynamic` Mode**:
-   Authoritative server workers default to **`Dynamic`** tick mode (`target_tick_hz: -1`, `tick_mode: "dynamic"`), automatically scaling between **`30 Hz` and `120 Hz`** around their spatial scope baseline (`30 Hz` for `world`, `45 Hz` for `region`, `60 Hz` for `zoi`, and `100 Hz` for `node_plug` and `poi`) so container CPU usage stays in the `30%--45%` green operating band inside a `2560M` (`2.5 GiB`) RAM limit while reporting their live read-only `Current Hz` (`Actual Hz`) via `aoc_world_tick_hz`.
+2. **Scope-Tuned Server Worker Tick Rates and Default `Dynamic (30-60 Hz)` Mode**:
+   Authoritative server workers default to **`Dynamic (30-60 Hz)`** tick mode (`target_tick_hz: -1`, `tick_mode: "dynamic"`), automatically scaling between **`30 Hz` and `60 Hz`** (`kMaxDynamicHz = 60`) around their spatial scope baseline (`30 Hz` for `world`, `45 Hz` for `region`, `60 Hz` for `zoi`, and `100 Hz` for `node_plug` and `poi`) so container CPU usage stays in the `30%--45%` green operating band inside a `2560M` (`2.5 GiB`) RAM limit while reporting their live read-only `Current Hz` (`Actual Hz`) via `aoc_world_tick_hz`.
 3. **Read-Only Containers and Zero Disk Log Churn**:
    Every container in `src/deploy/compose.yml` mounts its root filesystem with `read_only: true` and uses RAM-backed `tmpfs` mounts at `/tmp` and `/app/logs`, writing structured JSON logs only to `stdout`/`stderr`.
 
@@ -61,7 +61,7 @@ flowchart TB
 
 `aoc-mesh-gateway` (`src/server/services/internal/admin-gateway/sim_persistence.go` and migration `0025_world_simulation_state.sql`) persists cluster-wide simulation settings and settlement governance in PostgreSQL:
 
-- **`world_simulation_state`**: Stores `time_of_day_anchor_hours`, `time_of_day_anchor_at`, `calendar_anchor_year`, `calendar_anchor_day`, `time_scale = 9.0`, `simulate_all_npcs`, `worker_tick_mode`, and per-worker `worker_tick_hz` overrides, and synchronizes `time_of_day_hours`, `calendar_year`, and `calendar_day_of_year` mesh-wide to all `world` workers.
+- **`world_simulation_state`**: Stores `time_of_day_anchor_hours`, `time_of_day_anchor_at`, `calendar_anchor_year`, `calendar_anchor_day`, `time_scale = 9.0`, `simulate_all_npcs`, `worker_tick_mode`, and per-worker `worker_tick_hz` overrides, and synchronizes `time_of_day_hours`, `calendar_year`, and `calendar_day_of_year` mesh-wide to all `world` workers. During startup hydration and runtime updates, `applyHydratedTickState` and `workerOverrideAliasKeys` scrub targetless `"aoc-world"` container-name override aliases back to `-1` (`"dynamic"`) so shared container names never contaminate regional or ZOI worker tick rates.
 - **`city_node_state`**: Stores each settlement's `node_guid`, `node_id`, progression `level` (`0..6`), `experience`, `mayor_character_id`, `mayor_name`, `tax_rate_pct`, `treasury_gold`, and `buildings`. When a settlement advances to Tier `5` (`City`) or Tier `6` (`Metropolis`), `src/server/world/spawns/node_population.cpp` automatically falls back to the highest authored population layout in `content.db` (Tier `4` `Town`, `kMaxAuthoredNodePopLevel = 4`) so high-tier cities remain fully populated.
 
 ### Continuous `9x` Clock and Authentic `content.db` Seasons
@@ -74,11 +74,17 @@ flowchart TB
 
 ## Map Tile Pyramid, ZOI Borders, and Worker Controls
 
-### Crisp `z=7` Base Tiles at `zoom >= 3.0`
+### Crisp `z=7` Base Tiles at `zoom >= 3.0` and Strict 3-Tier `VerraMapCanvas` Render Order
 
 `verraTilePyramidRenderer.ts` promotes the minimap tile pyramid to its sharpest **`z=7` (`128 x 128` tile grid, `TUI_s50000`)** resolution as soon as camera zoom reaches **`zoom >= 3.0`**. Unloaded or out-of-bounds areas clear to pure black (`#000000`) so there is never a white or grey flash during fast pans.
 
-### Three-Pass ZOI Border Rendering
+`VerraMapCanvas.tsx` draws the world map in a strict **3-tier render order** so settlement and node icons always remain legible and clickable above dense entity clusters:
+
+1. **`Tier 1` (Base Tiles, Overlays, ZOI Borders, and Live Entities)**: Renders `z=7` base tiles, rotated `1024x1024` Node Plug overlays, 3-pass ZOI borders, and all live world entities (`Players`, `NPCs`, `Monsters`, `Huntables`, `Trees`, `Rocks`, `Ore & Gems`, `Plants`, and `Mounts`).
+2. **`Tier 2` (Standard POIs)**: Renders standard Points of Interest (`Harbor / Port`, `Siege Camp`, `Ember Spring / Home Shrine`, dungeons, and ruins) using real `verra.pmtiles` `z=9` icon texture names (`TUI_Icon_Map_Node_Dock`, `TUI_Icon_Map_Siege`, `TUI_Icon_Map_HomeShrine`, `TUI_Icon_Map_ReviveShrine_Active`, and `TUI_Icon_Node_Sovereignty`).
+3. **`Tier 3` (Node Plug / City Node POIs on Top)**: Renders all 85 City Node / Node Plug markers last on top of all other POI types and live entities using authentic `z=9` emblem and stage textures (`TUI_Icon_NodeSummary_NodeEmblem_*` and `TUI_Icon_Node_LVL3`).
+
+### Three-Pass ZOI Border Rendering, POI Selection, and Single-Control Modals
 
 `verraTilePyramidRenderer.ts` and `verraZoiPolygons.ts` render all **27 Zone of Influence (ZOI)** territories in three passes:
 
@@ -86,13 +92,18 @@ flowchart TB
 2. **Outer Glow Stroke**: Strokes the polygon perimeter at `4.0px` width and `0.22` alpha (`lineJoin: "round"`).
 3. **Crisp Inner Border and Label**: Draws the `1.6px` (`0.68` alpha) border line and renders `700 11px` `#F6CC7E` uppercase ZOI labels at `zoom >= 1.8`.
 
+Interactive map controls enforce consistent hit-testing and modal ergonomics:
+
+- **Click-to-Select Across All POI Types and Ember Springs**: Hovering or clicking any POI marker, City Node, or Ember Spring sets `cursor: pointer`, draws a `#d4af37` selection ring on `VerraMapCanvas`, and populates full `EntityInspector` metadata (`GUID`, `Category / Subtype`, world `(X, Y, Z)` cm coordinates, and owning worker shard).
+- **Bottom-Left Vertical Map Legend and Single-Control GM Modals**: The map workspace renders a vertical legend stack in the bottom-left corner (`data-testid="map-entity-legend"`, `flexDirection: "column"`) and provides clean single-control GM modals for `Teleport Player` (`"Player -> Named Place"`, `"Player -> Destination Player"`, `"Player -> Map Location (X, Y, Z)"`), `Give Currency / Item`, `Spawn NPC`, and `Node Governance` (`Set Mayor` searchable player picker, with `0` duplicate preset chip strips below comboboxes).
+
 ### Fixed-Frame `Visible Server Workers` Panel and Tick Rate Selector
 
 The **`Visible Server Workers`** panel on the Main Page and the **`World Workers`** table on the Observability Page share a unified worker tick model (`resolveWorkerTickFields` in `worldStreamStore.ts`). On the map workspace, the panel uses a fixed outer frame (`450px x 208px`) and a fixed `176px` scrollable list (`overflowY: "auto"`, `scrollbarGutter: "stable"`). When more than 6 workers are active, the list scrolls vertically without resizing the panel or shifting nearby HUD cards.
 
 Each worker row provides click-to-zoom navigation, a **`Target Tick Mode`** selector, and a read-only **`Actual Hz` / `Current Hz`** badge (`aria-readonly="true"`):
 
-- **`Dynamic` (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `30..120 Hz` adaptive range)**: The default mode on both the Main Page Server List and the Observability Page. Auto-scales the worker's simulation frequency between `30 Hz` and `120 Hz` in `5 Hz` steps based on a 15-tick EWMA CPU utilization window to stay within the `30%--45%` CPU band.
+- **`Dynamic (30-60 Hz)` (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `30-60 Hz` (`kMaxDynamicHz = 60`) adaptive range)**: The default mode on both the Main Page Server List and the Observability Page. Auto-scales the worker's simulation frequency between `30 Hz` and `60 Hz` (`kMaxDynamicHz = 60`) in `5 Hz` steps based on a 15-tick EWMA CPU utilization window to stay within the `30%--45%` CPU band.
 - **Read-Only `Actual Hz` / `Current Hz` (`aria-readonly="true"`)**: Displays the worker's live actual tick rate (`Hz`) reported by `aoc_world_tick_hz` telemetry.
 - **`0 Hz (Pause NPCs)` (`0 Hz (Off)`)**: Pauses ambient NPC AI simulation on **just that worker** while keeping player sessions and GM commands responsive.
 - **Manual Rates (`10, 15, 20, 25, 30, 40, 50, 60 Hz`)**: Locks the worker to a fixed manual tick rate (`tick_mode: "manual"`), backed by a `<= 1.0 s` (`>= 1 Hz`) entity service floor so every spawned NPC is stepped at least once per second.
@@ -124,7 +135,7 @@ The **`Observability`** tab (`LogsAndContainersTab.tsx`) presents cluster health
   - **`Traffic & Cache`**: Displays `Gateway Requests`, **`API Cache Hits / Misses`** (requests served from memory vs. backend queries, with hit percentage), and `UDP Frames Forwarded`.
   - **`Errors & Saturation`**: Displays `Gateway Errors / Retries` (`<errors> / <retries>` composite format), `Active Containers`, and **`Monitored Metrics`** (`active` metrics and metric groups).
 - **`World Workers` and `Container Metrics & Analytics` Tables**:
-  - **`World Workers`**: Displays discrete columns for `Mesh #`, `Canonical Worker`, **`Scope Tier`**, **`Target Tick Mode`** (default **`Dynamic`** `30..120 Hz`), and read-only **`Current Hz`** (`Actual Hz`, `aria-readonly="true"` from `aoc_world_tick_hz`).
+  - **`World Workers`**: Displays discrete columns for `Mesh #`, `Canonical Worker`, **`Scope Tier`**, **`Target Tick Mode`** (default **`Dynamic (30-60 Hz)`**), and read-only **`Current Hz`** (`Actual Hz`, `aria-readonly="true"` from `aoc_world_tick_hz`).
   - **`Container Metrics & Analytics`**: Displays `Container`, `Image`, `State / Status`, `CPU %`, `Memory (Used / Limit / %)`, **`Processes`**, `Net RX / TX`, **`Health (Status / Metrics / Latency)`**, and `Logs`.
 - **`Service Routing & Connection Health` (`2xx` / `3xx` / `4xx` / `5xx` Status Classes)**:
   Formats every route card header using the **`<Service Name> (<Protocol>)`** convention (`Auth Service (gRPC)`, `Character Service (gRPC)`, `City Node Service (gRPC)`, `Quest Service (gRPC)`, `Mesh Directory (gRPC)`, `Gateway Service (HTTP)`, `Mesh Gateway (HTTP)`, `World Admin Service (gRPC)`, `Web Admin UI (HTTP)`, `Ingress Proxy (HTTPS/TLS)`) and reports per-route **`Requests`**, **`2xx`**, **`3xx`**, **`4xx`**, and **`5xx`** HTTP status classes, `Timeouts`, `Active Conn`, and `Healthy` members.

@@ -131,8 +131,8 @@ Describe 'SandalCore Public Hygiene Check, Heavy Lock & Nav Stamp Decoupling' {
             if ($line -match 'CMakeLists\.txt') {
                 throw "Expected Get-CodeNav not to reference CMakeLists.txt, but found: $line"
             }
-            if ($line -notmatch '(?:server\\world\\nav|libs[\\/]aocnav)' -or $line -notmatch 'third_party[\\/]recastnavigation' -or $line -notmatch 'vcpkg\.json') {
-                throw "Expected Get-CodeNav to retain nav, recastnavigation, and vcpkg.json inputs, got: $line"
+            if ($line -notmatch '(?:server\\world\\nav|libs[\\/]aocnav)' -or $line -notmatch 'tools[\\/]navbuild' -or $line -notmatch 'third_party[\\/]recastnavigation') {
+                throw "Expected Get-CodeNav to retain aocnav, navbuild, and recastnavigation inputs, got: $line"
             }
         }
     }
@@ -249,7 +249,7 @@ Describe 'Test-SandalRootDirectoryHierarchy' {
         }
     }
 
-    It 'accepts deploy as a valid 4-Tier root directory and rejects root .env, CMakeLists.txt, and .beads.gate.lock (category = root-layout)' {
+    It 'accepts deploy and local .env as valid 4-Tier root entries and rejects root vcpkg.json, CMakeLists.txt, and .beads.gate.lock (category = root-layout)' {
         $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('sandal-hierarchy-4tier-' + [guid]::NewGuid().ToString('N'))
         try {
             foreach ($tierDir in @('src', 'build', 'dist', 'deploy', 'docs', 'scripts', '.github')) {
@@ -257,6 +257,7 @@ Describe 'Test-SandalRootDirectoryHierarchy' {
             }
             Set-Content -LiteralPath (Join-Path $tmpRoot 'README.md') -Value '# SandalCore' -Encoding utf8
             Set-Content -LiteralPath (Join-Path $tmpRoot 'sandal.ps1') -Value '# CLI' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $tmpRoot '.env') -Value 'AOC_ENV=dev' -Encoding utf8
             Set-Content -LiteralPath (Join-Path $tmpRoot 'deploy\.env') -Value 'AOC_ENV=dev' -Encoding utf8
             Set-Content -LiteralPath (Join-Path $tmpRoot 'deploy\compose.yml') -Value 'name: sandalcore' -Encoding utf8
 
@@ -266,7 +267,7 @@ Describe 'Test-SandalRootDirectoryHierarchy' {
                 throw "Expected 0 findings when 4-Tier root directories including deploy are present, got: $($validFindings -join '; ')"
             }
 
-            Set-Content -LiteralPath (Join-Path $tmpRoot '.env') -Value 'POSTGRES_PASSWORD=leaked' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $tmpRoot 'vcpkg.json') -Value '{"name":"sandal"}' -Encoding utf8
             Set-Content -LiteralPath (Join-Path $tmpRoot 'CMakeLists.txt') -Value 'cmake_minimum_required(VERSION 3.28)' -Encoding utf8
             Set-Content -LiteralPath (Join-Path $tmpRoot '.beads.gate.lock') -Value 'locked' -Encoding utf8
             $null = New-Item -ItemType Directory -Path (Join-Path $tmpRoot 'stray_root_folder') -Force
@@ -278,7 +279,7 @@ Describe 'Test-SandalRootDirectoryHierarchy' {
                 throw "Expected deploy to be accepted as a valid 4-Tier root directory, got: $joined"
             }
             foreach ($expectedPattern in @(
-                'RootFileAllowlist: unexpected root file: \.env',
+                'RootFileAllowlist: unexpected root file: vcpkg\.json',
                 'RootFileAllowlist: unexpected root file: CMakeLists\.txt',
                 'NoRootCacheOrGateLocks: forbidden root cache or lock artifact: \.beads\.gate\.lock',
                 'RootDirectoryAllowlist: unexpected root directory: stray_root_folder'

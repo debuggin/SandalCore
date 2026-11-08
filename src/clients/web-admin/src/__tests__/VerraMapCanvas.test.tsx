@@ -15,16 +15,20 @@ import {
   findNearestEntityOrNodeAtScreen,
   mergePoiOverlays,
   parsePoisFromPayload,
+  POI_FALLBACK_ICON_BY_KIND,
   resolveEntityMapMarkerColor,
+  resolvePoiIconName,
   VerraTileCache,
   worldCmToScreenOffset,
 } from "../map/verraTilePyramidRenderer";
+import { parseWorldStateResponse } from "../map/VerraMapCanvas";
 import { VERRA_SEASON_PRESETS } from "../map/VerraCalendarPopover";
 import {
   computeViewportWorldBoundsCm,
   computeVerraCalendar,
   createWorldStreamStore,
   DEFAULT_CAMERA_VIEWPORT,
+  DEFAULT_LAYER_TOGGLES,
   DEFAULT_REGIONAL_WORLD_WORKERS,
   DEFAULT_VERRA_MAP_META,
   formatCanonicalWorkerName,
@@ -334,5 +338,57 @@ describe("VerraMapCanvas Wave 41E/41F Regression Suite", () => {
     expect(playersTabSrc).toContain("Teleport Player ({activeChar || \"Select Player\"})");
     expect(playersTabSrc.includes("Teleport & Movement Speed")).toBe(false);
     expect(playersTabSrc.includes("Move Speed:")).toBe(false);
+  });
+
+  it("maps POI fallback icons, filters offline/duplicate players in parseWorldStateResponse, and isolates per-worker tick rate overrides across shared container_name", async () => {
+    expect(POI_FALLBACK_ICON_BY_KIND.harbor).toBe("TUI_Icon_Map_Node_Dock");
+    expect(POI_FALLBACK_ICON_BY_KIND.castle).toBe("TUI_Icon_Map_Siege");
+    expect(POI_FALLBACK_ICON_BY_KIND.starting_area).toBe("TUI_Icon_Map_HomeShrine");
+    expect(POI_FALLBACK_ICON_BY_KIND.spawn).toBe("TUI_Icon_Map_HomeShrine");
+    expect(POI_FALLBACK_ICON_BY_KIND.outpost).toBe("TUI_Icon_Map_MinorPOI_Discovered");
+    expect(POI_FALLBACK_ICON_BY_KIND.city_node).toBe("TUI_Icon_Node_LVL3");
+    expect(POI_FALLBACK_ICON_BY_KIND.node_plug).toBe("TUI_Icon_Node_LVL3");
+    expect(resolvePoiIconName("harbor")).toBe("TUI_Icon_Map_Node_Dock");
+    expect(resolvePoiIconName("castle")).toBe("TUI_Icon_Map_Siege");
+    expect(resolvePoiIconName("starting_area")).toBe("TUI_Icon_Map_HomeShrine");
+    expect(resolvePoiIconName("spawn")).toBe("TUI_Icon_Map_HomeShrine");
+    expect(resolvePoiIconName("outpost")).toBe("TUI_Icon_Map_MinorPOI_Discovered");
+    expect(resolvePoiIconName("city_node")).toBe("TUI_Icon_Node_LVL3");
+    expect(resolvePoiIconName("node_plug")).toBe("TUI_Icon_Node_LVL3");
+
+    const parsedEntities = parseWorldStateResponse(
+      {
+        players: [
+          { character_id: "char-1", name: "Aurelia", online: true, x_cm: -640000, y_cm: 376000, z_cm: 12000 },
+          { character_id: "char-2", name: "OfflineHero", online: false, x_cm: -640100, y_cm: 376100, z_cm: 12000 },
+          { character_id: "char-3", name: "StateOffline", state: "offline", x_cm: -640200, y_cm: 376200, z_cm: 12000 },
+        ],
+        entities: [
+          { id: "char-1", name: "Aurelia", kind: "player", online: true, x_cm: -640000, y_cm: 376000, z_cm: 12000 },
+          { id: "char-99", name: "aurelia", kind: "player", online: true, x_cm: -640000, y_cm: 376000, z_cm: 12000 },
+          { id: "char-4", name: "OfflineEnt", kind: "player", online: false, x_cm: -640300, y_cm: 376300, z_cm: 12000 },
+          { id: "char-5", name: "Kaelen", kind: "player", online: true, x_cm: -641000, y_cm: 377000, z_cm: 12000 },
+        ],
+      },
+      DEFAULT_LAYER_TOGGLES,
+    );
+    const playerEntities = parsedEntities.filter((e) => e.kind === "player");
+    expect(playerEntities.map((p) => p.name)).toEqual(["Aurelia", "Kaelen"]);
+
+    const sharedContainerWorkers: readonly WorldWorkerInfo[] = DEFAULT_REGIONAL_WORLD_WORKERS.map((w) => ({
+      ...w,
+      container_name: "aoc-world",
+      target_tick_hz: -1,
+      tick_mode: "dynamic",
+    }));
+    const store = createWorldStreamStore({ workers: sharedContainerWorkers });
+    await store.getState().executeSetWorkerTickRateAction("world-riverlands", 25, async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const riverlands = store.getState().workers.find((w) => w.worker_id === "world-riverlands")!;
+    const anvils = store.getState().workers.find((w) => w.worker_id === "world-anvils")!;
+    expect(riverlands.target_tick_hz).toBe(25);
+    expect(riverlands.tick_mode).toBe("manual");
+    expect(anvils.target_tick_hz).toBe(-1);
+    expect(anvils.tick_mode).toBe("dynamic");
+    await store.getState().executeSetWorkerTickRateAction("world-riverlands", -1, async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
   });
 });

@@ -453,6 +453,9 @@ func TestDynamicTickModeDefaultScrapedHzAndAliasClearing(t *testing.T) {
 	srv.applyHydratedTickState("dynamic", []byte(`{"aoc-world":40,"world-riverlands":45,"aoc-world-riverlands":40}`))
 	assertWorldStateWorkerTick(t, srv, "after-dynamic-db-hydrate", "dynamic", [2]float64{-1, 45.0})
 
+	srv.applyHydratedTickState("manual", []byte(`{"aoc-world":20,"world-riverlands":20,"aoc-world-riverlands":20}`))
+	assertWorldStateWorkerTick(t, srv, "after-legacy-global-manual-db-hydrate", "dynamic", [2]float64{-1, 45.0})
+
 	srv.scrapeAllServiceOpenMetrics(context.Background(), srv.snapshotWorldWorkers())
 	assertWorldStateWorkerTick(t, srv, "after-openmetrics-scrape", "dynamic", [2]float64{-1, 52.5})
 

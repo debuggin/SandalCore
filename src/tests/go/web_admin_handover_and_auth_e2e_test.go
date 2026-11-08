@@ -44,9 +44,9 @@ func TestWebAdminPassphraseJWTAndTickRateLive(t *testing.T) {
 	if c25 != http.StatusOK {
 		t.Fatalf("POST /api/v1/gm/command set_tick_rate=25 status=%d body=%s", c25, string(b25))
 	}
-	cRestore, _, bRestore := doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/command", authHdr, []byte(`{"command":"set_tick_rate","tick_hz":20}`))
+	cRestore, _, bRestore := doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/command", authHdr, []byte(`{"command":"set_tick_rate","tick_hz":-1,"tick_mode":"dynamic"}`))
 	if cRestore != http.StatusOK {
-		t.Fatalf("POST /api/v1/gm/command restore set_tick_rate=20 status=%d body=%s", cRestore, string(bRestore))
+		t.Fatalf("POST /api/v1/gm/command restore set_tick_rate=-1 (dynamic) status=%d body=%s", cRestore, string(bRestore))
 	}
 }
 
@@ -344,7 +344,7 @@ func verifySixEnvConfigurablePartitionTopologies(t *testing.T, baseURL string) {
 			t.Fatalf("partition mode %s set_tick_rate=%d failed: status=%d body=%s", m.mode, m.tick, code, string(raw))
 		}
 	}
-	_, _, _ = doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/command", hdr, []byte(`{"command":"set_tick_rate","tick_hz":20}`))
+	_, _, _ = doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/command", hdr, []byte(`{"command":"set_tick_rate","tick_hz":-1,"tick_mode":"dynamic"}`))
 }
 
 func verifySixteenBotEightClassLevel50BoundaryPlay(t *testing.T, baseURL string) {

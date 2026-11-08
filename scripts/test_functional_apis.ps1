@@ -167,12 +167,12 @@ function Invoke-GoFunctionalApiSuite {
     Push-Location $servicesDir
     try {
         if ($Quiet) {
-            $out = @(& go test -v -count=1 ../../tests/go/functional_api_e2e_test.go ../../tests/go/functional_api_e2e_helpers_test.go 2>&1)
+            $out = @(& go test -v -count=1 ../../tests/go/functional_api_e2e_test.go 2>&1)
             if ($LASTEXITCODE -ne 0) {
                 throw "Go functional API E2E suite failed (exit $LASTEXITCODE):`n$($out -join "`n")"
             }
         } else {
-            & go test -v -count=1 ../../tests/go/functional_api_e2e_test.go ../../tests/go/functional_api_e2e_helpers_test.go
+            & go test -v -count=1 ../../tests/go/functional_api_e2e_test.go
             if ($LASTEXITCODE -ne 0) {
                 throw "Go functional API E2E suite failed (exit $LASTEXITCODE)."
             }

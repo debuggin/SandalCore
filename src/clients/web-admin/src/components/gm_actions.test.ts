@@ -275,7 +275,7 @@ async function testScopedReceiptsMayorElectionsAndPersistence(): Promise<void> {
   store.getState().setActiveTab("map");
   store.getState().setActiveModal("spawn-npc");
   store.getState().setSelectedPlayer("Aurelia");
-  store.getState().setTeleportMode("to_player");
+  store.getState().setTeleportMode("player");
   store.getState().setSpawnTargetMode("coords");
   store.getState().setSelectedContainer("aoc-gateway");
   store.getState().setLogQuery("WARN");
@@ -284,7 +284,7 @@ async function testScopedReceiptsMayorElectionsAndPersistence(): Promise<void> {
   assert.equal(restored.activeTab, "analytics");
   assert.equal(restored.activeModal, "node-governance");
   assert.equal(restored.selectedPlayer, "Aurelia");
-  assert.equal(restored.teleportMode, "to_player");
+  assert.equal(restored.teleportMode, "player");
   assert.equal(restored.spawnTargetMode, "coords");
   assert.equal(restored.selectedContainer, "aoc-gateway");
   assert.equal(restored.logQuery, "WARN");
@@ -545,7 +545,7 @@ async function testZeroObjectLogFalsificationAndConsistentEntityTaxonomy(): Prom
   assert.equal(snap.world_status.mounts_total, 12);
   assert.equal(snap.workers.length, 1);
   assert.equal(snap.workers[0].total_entities, 250);
-  assert.equal(snap.workers[0].tick_hz, 100);
+  assert.equal(snap.workers[0].tick_hz, 60);
   assert.equal(snap.workers[0].scope_tier_badge, "NODE_PLUG");
 
   const logsSrc = readFileSync(fileURLToPath(new URL("./LogsAndContainersTab.tsx", import.meta.url)), "utf8");

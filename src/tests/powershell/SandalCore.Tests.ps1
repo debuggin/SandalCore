@@ -52,11 +52,11 @@ Describe 'SandalCore CLI Dispatcher, WSL Docker Preflight, Heavy Lock & Legacy S
             }
 
             $docJson = (@(& pwsh -NoProfile -File $script:SandalCli doctor -DryRun -Json) -join "`n") | ConvertFrom-Json
-            if ($LASTEXITCODE -ne 0 -or -not $docJson.ok -or $docJson.command -ne 'doctor' -or -not $docJson.dry_run -or $docJson.tier_count -ne 6) {
+            if ($LASTEXITCODE -ne 0 -or -not $docJson.ok -or $docJson.command -ne 'doctor' -or -not $docJson.dry_run -or $docJson.tier_count -ne 5) {
                 throw "Unexpected doctor -DryRun -Json payload: $($docJson | ConvertTo-Json -Compress)"
             }
-            if (@($docJson.toolchains).Count -ne 5 -or @($docJson.ports).Count -ne 5) {
-                throw "Expected 5 toolchains and 5 port checks in doctor output."
+            if (@($docJson.toolchains).Count -ne 4 -or @($docJson.ports).Count -ne 5) {
+                throw "Expected 4 toolchains and 5 port checks in doctor output."
             }
 
             foreach ($verb in @('up', 'down', 'extract', 'certs', 'build', 'deploy', 'test', 'run')) {
@@ -72,7 +72,8 @@ Describe 'SandalCore CLI Dispatcher, WSL Docker Preflight, Heavy Lock & Legacy S
             }
         }
 
-        It 'executes the turnkey CLI chain (build, deploy, test, run, up, down) in DryRun JSON mode with valid payloads and 0 root .env' {
+        It 'executes the turnkey CLI chain (build, deploy, test, run, up, down) in DryRun JSON mode with valid payloads and 0 new root .env' {
+            $rootEnvExisted = Test-Path -LiteralPath (Join-Path $script:RepoRoot '.env')
             $chainResults = @{}
             foreach ($verb in @('build', 'deploy', 'test', 'run', 'up', 'down')) {
                 $rawJson = (@(& pwsh -NoProfile -File $script:SandalCli $verb -DryRun -Json) -join "`n")
@@ -100,8 +101,8 @@ Describe 'SandalCore CLI Dispatcher, WSL Docker Preflight, Heavy Lock & Legacy S
             if ($chainResults['up'].compose_file -notmatch 'deploy[\\/]compose\.yml$' -or $chainResults['down'].compose_file -notmatch 'deploy[\\/]compose\.yml$') {
                 throw 'Expected up and down -DryRun -Json compose_file to target deploy/compose.yml.'
             }
-            if (Test-Path -LiteralPath (Join-Path $script:RepoRoot '.env')) {
-                throw 'Expected 0 .env file in repository root after turnkey CLI DryRun chain.'
+            if ((-not $rootEnvExisted) -and (Test-Path -LiteralPath (Join-Path $script:RepoRoot '.env'))) {
+                throw 'Expected 0 .env file created in repository root after turnkey CLI DryRun chain.'
             }
         }
     }
@@ -259,7 +260,7 @@ public static class SandalCoreLockContentionHelper {
                 Set-Content -LiteralPath (Join-Path $tmpRepo 'src\deploy\postgres\init\000_init.sql') -Value 'CREATE EXTENSION pgcrypto;' -Encoding utf8
                 Set-Content -LiteralPath (Join-Path $tmpRepo 'src\deploy\compose.yml') -Value 'name: sandalcore' -Encoding utf8
                 Set-Content -LiteralPath (Join-Path $tmpRepo 'src\deploy\k8s\world-statefulset.yaml') -Value 'kind: StatefulSet' -Encoding utf8
-                Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\sandal.env.example') -Value "AOC_ENV=dev`nPOSTGRES_PASSWORD=CHANGE_ME_DB`nAOC_SERVICE_TOKEN=CHANGE_ME_TOKEN`nSANDAL_SECRET_KEY=" -Encoding utf8
+                Set-Content -LiteralPath (Join-Path $tmpRepo 'src\config\sandal.env.example') -Value "AOC_ENV=dev`nPOSTGRES_PASSWORD=CHANGE_ME_DB`nAOC_SERVICE_TOKEN=CHANGE_ME_TOKEN`nAOC_JWT_SECRET=" -Encoding utf8
 
                 $distRes = Sync-SandalDistStage -RepoRoot $tmpRepo -Config 'Release'
                 if ($distRes.DistDir -ne (Join-Path $tmpRepo 'dist') -or $distRes.Config -ne 'Release') {
@@ -304,9 +305,9 @@ public static class SandalCoreLockContentionHelper {
                     throw 'Expected Sync-SandalDeployStage to create 0 .env file in the repository root.'
                 }
                 $envMap = Get-SandalEnvMap -EnvPath $deployRes.EnvPath
-                foreach ($secretKey in @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'SANDAL_SECRET_KEY')) {
-                    if ($envMap[$secretKey] -notmatch '^[0-9a-f]{64}$') {
-                        throw "Expected '$secretKey' in deploy/.env to be a 64-hex CSPRNG secret, got '$($envMap[$secretKey])'"
+                foreach ($secretKey in @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN', 'AOC_JWT_SECRET')) {
+                    if ($envMap[$secretKey] -notmatch '^(?:[0-9a-f]{64}|[a-z][a-z-]{1,14}(?:-[a-z][a-z-]{1,14}){4,})$') {
+                        throw "Expected '$secretKey' in deploy/.env to be a 64-hex CSPRNG secret or passphrase, got '$($envMap[$secretKey])'"
                     }
                 }
                 $rootFindings = Test-SandalRootDirectoryHierarchy -RepoRoot $tmpRepo

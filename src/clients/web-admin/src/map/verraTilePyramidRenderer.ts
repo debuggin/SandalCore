@@ -2,18 +2,9 @@
 
 import { normalizePaginatedEnvelope } from "../components/GmCommandPalette";
 import {
-  appendAdminAccessTokenToUrl,
-  CIRCUIT_FAILURE_THRESHOLD,
-  CIRCUIT_OPEN_COOLDOWN_MS,
-  computeExponentialBackoffMs,
-  isUnauthenticatedViewOnly,
-  recordRetryFailure,
-  recordRetrySuccess,
-  registerPendingRetryTimer,
-  RETRY_BASE_DELAY_MS,
-  RETRY_MAX_ATTEMPTS,
-  RETRY_MAX_DELAY_MS,
-  subscribeRetryReset,
+  appendAdminAccessTokenToUrl, CIRCUIT_FAILURE_THRESHOLD, CIRCUIT_OPEN_COOLDOWN_MS, computeExponentialBackoffMs,
+  isUnauthenticatedViewOnly, recordRetryFailure, recordRetrySuccess, registerPendingRetryTimer,
+  RETRY_BASE_DELAY_MS, RETRY_MAX_ATTEMPTS, RETRY_MAX_DELAY_MS, subscribeRetryReset,
 } from "../state/adminAuthClient";
 import { clipZoiRingToValidMinimapTiles, hydrateVerraZoiPolygonsFromTsvApi, VERRA_ZOI_POLYGONS, type VerraZoiPolygon } from "./verraZoiPolygons";
 export { clipZoiRingToValidMinimapTiles, hydrateVerraZoiPolygonsFromTsvApi, VERRA_ZOI_POLYGONS, type VerraZoiPolygon };
@@ -35,53 +26,28 @@ export type VerraMapViewState = "loading" | "empty" | "error" | "degraded" | "po
 export type DeckLayerKind = "PathLayer" | "ScatterplotLayer" | "IconLayer";
 
 export interface VerraDeckLayerDescriptor<TData = unknown> {
-  readonly id: string;
-  readonly layerType: DeckLayerKind;
-  readonly visible: boolean;
-  readonly pickable: boolean;
-  readonly data: readonly TData[];
-  readonly props: Readonly<Record<string, unknown>>;
+  readonly id: string; readonly layerType: DeckLayerKind; readonly visible: boolean;
+  readonly pickable: boolean; readonly data: readonly TData[]; readonly props: Readonly<Record<string, unknown>>;
 }
 
 export interface MapSearchResultItem {
-  readonly id: string;
-  readonly label: string;
+  readonly id: string; readonly label: string;
   readonly category: "player" | "node" | "place" | "npc" | "monster" | "poi" | "resource_node";
-  readonly xCm: number;
-  readonly yCm: number;
-  readonly zCm: number;
-  readonly playerName?: string;
-  readonly nodeName?: string;
-  readonly entityGuid?: string;
-  readonly poiGuid?: string;
+  readonly xCm: number; readonly yCm: number; readonly zCm: number;
+  readonly playerName?: string; readonly nodeName?: string; readonly entityGuid?: string; readonly poiGuid?: string;
 }
 
-export type MapLibreProtocolTileHandler = (
-  params: { readonly url: string },
-  abortController: AbortController,
-) => Promise<{ readonly data: ArrayBuffer }>;
+export type MapLibreProtocolTileHandler = (params: { readonly url: string }, abortController: AbortController) => Promise<{ readonly data: ArrayBuffer }>;
 export type MapLibreAddProtocolFn = (customProtocol: string, handler: MapLibreProtocolTileHandler) => void;
 export type MapLibreRemoveProtocolFn = (customProtocol: string) => void;
 
 interface TileCacheEntry {
-  readonly key: string;
-  readonly url: string;
-  state: "queued" | "loading" | "ready" | "missing" | "error";
-  img: HTMLImageElement | null;
-  used: number;
-  dist: number;
-  retries: number;
-  retryAfterMs: number;
-  pinned: boolean;
+  readonly key: string; readonly url: string; state: "queued" | "loading" | "ready" | "missing" | "error";
+  img: HTMLImageElement | null; used: number; dist: number; retries: number; retryAfterMs: number; pinned: boolean;
 }
 
 export interface AncestorTileFallback {
-  readonly img: HTMLImageElement;
-  readonly sx: number;
-  readonly sy: number;
-  readonly sw: number;
-  readonly sh: number;
-  readonly ancestorZ: number;
+  readonly img: HTMLImageElement; readonly sx: number; readonly sy: number; readonly sw: number; readonly sh: number; readonly ancestorZ: number;
 }
 
 export const tileImageCache = new Map<string, HTMLImageElement>();
@@ -498,6 +464,18 @@ function drawNodePlugOverlays(
   }
 }
 
+export const POI_FALLBACK_ICON_BY_KIND: Readonly<Record<string, string>> = Object.freeze({
+  emberspring: "TUI_Icon_Map_ReviveShrine_Active",
+  wayshrine: "TUI_Icon_Map_ReviveShrine_Active",
+  harbor: "TUI_Icon_Map_Node_Dock",
+  castle: "TUI_Icon_Map_Siege",
+  starting_area: "TUI_Icon_Map_HomeShrine",
+  spawn: "TUI_Icon_Map_HomeShrine",
+  outpost: "TUI_Icon_Map_MinorPOI_Discovered",
+  city_node: "TUI_Icon_Node_LVL3",
+  node_plug: "TUI_Icon_Node_LVL3",
+});
+
 export function resolveCityNodeIconName(node: { readonly name?: string; readonly display_name?: string; readonly level?: number; readonly stage?: number; readonly icon_name?: string; readonly iconName?: string }): string {
   const custom = (node.icon_name ?? node.iconName ?? "").trim().replace(/\.png$/i, "");
   if (custom.startsWith("TUI_Icon_")) return custom;
@@ -507,42 +485,45 @@ export function resolveCityNodeIconName(node: { readonly name?: string; readonly
   return `TUI_Icon_Node_LVL${clamped}`;
 }
 
-function drawPoiAndCityNodeMarkers(
-  ctx: CanvasRenderingContext2D,
-  viewport: { readonly width: number; readonly height: number },
-  state: WorldStreamState,
-  onIconLoaded: () => void,
-): void {
+function isCityNodePoi(poi: PoiOverlay): boolean {
+  const k = (poi.kind ?? poi.category ?? "").trim().toLowerCase(), c = (poi.category ?? "").trim().toLowerCase();
+  return k === "city_node" || k === "node_plug" || c === "city_node" || c === "node_plug";
+}
+
+function measureCleanLabelBox(ctx: CanvasRenderingContext2D, text: string, cx: number, ty: number): readonly [number, number, number, number] | null {
+  const cleanText = text.replace(/\s*\((?:Wilderness|Expedition|Encampment|Village|Town|City|Metropolis|Lv\s*\d+)\)\s*$/i, "").trim();
+  if (!cleanText) return null;
+  ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
+  const halfW = (typeof ctx.measureText === "function" ? ctx.measureText(cleanText).width : cleanText.length * 6.5) / 2;
+  return [cx - halfW - 2, ty - 8, cx + halfW + 2, ty + 8];
+}
+
+function drawPoiAndCityNodeMarkers(ctx: CanvasRenderingContext2D, viewport: { readonly width: number; readonly height: number }, state: WorldStreamState, onIconLoaded: () => void): void {
   const iconPx = Math.max(18, Math.min(28, Math.round(18 + (state.camera.zoom - 2) * 2)));
   ctx.font = '700 11px "Segoe UI", system-ui, sans-serif';
   ctx.textBaseline = "middle";
-  const takenLabels: Array<readonly [number, number, number, number]> = [];
+  const poiTakenLabels: Array<readonly [number, number, number, number]> = [];
   if (state.layers.cityNodes) {
     for (const node of state.cityNodes) {
       const { cx_cm, cy_cm } = getCityNodeCenterCm(node);
       const [sx, sy] = worldCmToScreenOffset(cx_cm, cy_cm, viewport, state.camera);
-      if (sx < -80 || sy < -30 || sx > viewport.width + 80 || sy > viewport.height + 30) continue;
-      const nodeIconName = resolveCityNodeIconName(node);
-      const nodeImg = requestTileImage(`/api/v1/world/icons/${nodeIconName}.png`, onIconLoaded);
-      if (nodeImg) {
-        ctx.beginPath(); ctx.arc(sx, sy, 14, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(8, 11, 17, 0.78)"; ctx.fill();
-        if (state.selectedCityNodeName === node.name) { ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.stroke(); }
-        ctx.drawImage(nodeImg, sx - 13, sy - 13, 26, 26);
-      } else {
-        ctx.fillStyle = node.level >= 1 ? "#d4af37" : "#64748b";
-        ctx.strokeStyle = state.selectedCityNodeName === node.name ? "#ffffff" : "#080b11";
-        ctx.lineWidth = state.selectedCityNodeName === node.name ? 2.5 : 1.5;
-        ctx.beginPath(); ctx.rect(sx - 6, sy - 6, 12, 12); ctx.fill(); ctx.stroke();
-      }
-      drawCollisionSafeLabel(ctx, node.display_name || node.name, sx, sy - 21, takenLabels);
+      const box = measureCleanLabelBox(ctx, node.display_name || node.name, sx, sy - 21);
+      if (box) poiTakenLabels.push(box);
     }
   }
+  renderPoiMarkers(ctx, viewport, state, iconPx, poiTakenLabels, onIconLoaded);
+  const cityTakenLabels: Array<readonly [number, number, number, number]> = [];
+  renderCityNodes(ctx, viewport, state, cityTakenLabels, onIconLoaded);
+}
+
+export function renderPoiMarkers(ctx: CanvasRenderingContext2D, viewport: { readonly width: number; readonly height: number }, state: WorldStreamState, iconPx: number, takenLabels: Array<readonly [number, number, number, number]>, onIconLoaded: () => void): void {
   for (const poi of state.pois ?? []) {
-    if (state.layers.cityNodes && poi.kind !== "wayshrine" && (poi.kind === "city_node" || state.cityNodes.some((n) => n.name === poi.name || n.display_name === poi.display_name || n.guid === poi.guid))) continue;
+    if (isCityNodePoi(poi) || (state.layers.cityNodes && poi.kind !== "wayshrine" && state.cityNodes.some((n) => n.name === poi.name || n.display_name === poi.display_name || n.guid === poi.guid))) continue;
     const [sx, sy] = worldCmToScreenOffset(poi.x_cm, poi.y_cm, viewport, state.camera);
     if (sx < -40 || sy < -30 || sx > viewport.width + 40 || sy > viewport.height + 30) continue;
-    const iconImg = poi.icon_url ? requestTileImage(poi.icon_url, onIconLoaded) : null;
+    const fb = POI_FALLBACK_ICON_BY_KIND[(poi.kind ?? poi.category ?? "").trim().toLowerCase()];
+    const iconUrl = poi.icon_url || (fb ? `/api/v1/world/icons/${fb}.png` : "");
+    const iconImg = iconUrl ? requestTileImage(iconUrl, onIconLoaded) : null;
     if (iconImg) ctx.drawImage(iconImg, sx - iconPx / 2, sy - iconPx / 2, iconPx, iconPx);
     else { ctx.beginPath(); ctx.arc(sx, sy, 5.5, 0, Math.PI * 2); ctx.fillStyle = poi.tint_color || "#d4af37"; ctx.fill(); }
     if (state.selectedPoiGuid === poi.guid) {
@@ -552,6 +533,37 @@ function drawPoiAndCityNodeMarkers(
     if (state.selectedPoiGuid === poi.guid || (!isNodeShrineLabel && state.camera.zoom >= 3.2)) {
       drawCollisionSafeLabel(ctx, poi.display_name || poi.name, sx, sy - Math.round(iconPx / 2) - 7, takenLabels);
     }
+  }
+}
+
+export function renderCityNodes(ctx: CanvasRenderingContext2D, viewport: { readonly width: number; readonly height: number }, state: WorldStreamState, takenLabels: Array<readonly [number, number, number, number]>, onIconLoaded: () => void): void {
+  if (!state.layers.cityNodes) return;
+  for (const node of state.cityNodes) {
+    const { cx_cm, cy_cm } = getCityNodeCenterCm(node);
+    const [sx, sy] = worldCmToScreenOffset(cx_cm, cy_cm, viewport, state.camera);
+    if (sx < -80 || sy < -30 || sx > viewport.width + 80 || sy > viewport.height + 30) continue;
+    const nodeImg = requestTileImage(`/api/v1/world/icons/${resolveCityNodeIconName(node)}.png`, onIconLoaded);
+    if (nodeImg) {
+      ctx.beginPath(); ctx.arc(sx, sy, 14, 0, Math.PI * 2); ctx.fillStyle = "rgba(8, 11, 17, 0.78)"; ctx.fill();
+      if (state.selectedCityNodeName === node.name) { ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.stroke(); }
+      ctx.drawImage(nodeImg, sx - 13, sy - 13, 26, 26);
+    } else {
+      ctx.fillStyle = node.level >= 1 ? "#d4af37" : "#64748b";
+      ctx.strokeStyle = state.selectedCityNodeName === node.name ? "#ffffff" : "#080b11";
+      ctx.lineWidth = state.selectedCityNodeName === node.name ? 2.5 : 1.5;
+      ctx.beginPath(); ctx.rect(sx - 6, sy - 6, 12, 12); ctx.fill(); ctx.stroke();
+    }
+    drawCollisionSafeLabel(ctx, node.display_name || node.name, sx, sy - 21, takenLabels);
+  }
+  for (const poi of state.pois ?? []) {
+    if (!isCityNodePoi(poi) || state.cityNodes.some((n) => n.name === poi.name || n.display_name === poi.display_name || n.guid === poi.guid)) continue;
+    const [sx, sy] = worldCmToScreenOffset(poi.x_cm, poi.y_cm, viewport, state.camera);
+    if (sx < -80 || sy < -30 || sx > viewport.width + 80 || sy > viewport.height + 30) continue;
+    const iconName = resolveCityNodeIconName({ name: poi.name, display_name: poi.display_name, level: poi.level, icon_name: poi.icon_name || POI_FALLBACK_ICON_BY_KIND.city_node });
+    const nodeImg = requestTileImage(`/api/v1/world/icons/${iconName}.png`, onIconLoaded);
+    if (nodeImg) ctx.drawImage(nodeImg, sx - 13, sy - 13, 26, 26);
+    else { ctx.fillStyle = "#d4af37"; ctx.beginPath(); ctx.rect(sx - 6, sy - 6, 12, 12); ctx.fill(); }
+    drawCollisionSafeLabel(ctx, poi.display_name || poi.name, sx, sy - 21, takenLabels);
   }
 }
 
@@ -629,48 +641,31 @@ function drawEntityAndCrosshairMarkers(
       ctx.arc(sx, sy, 6.5, 0, Math.PI * 2);
       ctx.fillStyle = entity.dead ? "#ef4444" : "#22c55e";
       ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "#ffffff";
-      ctx.stroke();
-      ctx.fillStyle = "#ffffff";
-      ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
+      ctx.lineWidth = 2; ctx.strokeStyle = "#ffffff"; ctx.stroke();
+      ctx.fillStyle = "#ffffff"; ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
       ctx.fillText(entity.name, sx + 9, sy + 4);
     } else if ((entity.npcSubkind ?? entity.npc_subkind) === "emberspring") {
       const iconImg = requestTileImage("/api/v1/world/icons/TUI_Icon_Map_ReviveShrine_Active.png", onIconLoaded);
       if (iconImg) ctx.drawImage(iconImg, sx - 9, sy - 9, 18, 18);
       else {
-        ctx.moveTo(sx, sy - 6);
-        ctx.lineTo(sx + 6, sy);
-        ctx.lineTo(sx, sy + 6);
-        ctx.lineTo(sx - 6, sy);
-        ctx.closePath?.();
-        ctx.fillStyle = "#22d3ee";
-        ctx.fill();
+        ctx.moveTo(sx, sy - 6); ctx.lineTo(sx + 6, sy); ctx.lineTo(sx, sy + 6); ctx.lineTo(sx - 6, sy);
+        ctx.closePath?.(); ctx.fillStyle = "#22d3ee"; ctx.fill();
       }
     } else {
       ctx.arc(sx, sy, entity.kind === "poi" ? 4.5 : 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = resolveEntityMapMarkerColor(entity);
-      ctx.fill();
+      ctx.fillStyle = resolveEntityMapMarkerColor(entity); ctx.fill();
     }
     if (state.selectedEntityGuid === entity.guid) {
-      ctx.strokeStyle = "#d4af37";
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.arc(sx, sy, 12, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.strokeStyle = "#d4af37"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(sx, sy, 12, 0, Math.PI * 2); ctx.stroke();
     }
   }
   const pin = state.lastClickedPoint ?? state.pickedCoordinate;
   if (!pin) return;
   const [px, py] = worldCmToScreenOffset(pin.xCm, pin.yCm, viewport, state.camera);
-  ctx.strokeStyle = "#d4af37";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(px, py, 8, 0, Math.PI * 2);
-  ctx.moveTo(px - 14, py);
-  ctx.lineTo(px + 14, py);
-  ctx.moveTo(px, py - 14);
-  ctx.lineTo(px, py + 14);
+  ctx.strokeStyle = "#d4af37"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
+  ctx.moveTo(px - 14, py); ctx.lineTo(px + 14, py); ctx.moveTo(px, py - 14); ctx.lineTo(px, py + 14);
   ctx.stroke();
 }
 
@@ -752,10 +747,12 @@ export function filterMapSearchItems(
   return results.slice(0, 20);
 }
 
-export function resolvePoiIconName(rawIconOrKind: string): string {
+export function resolvePoiIconName(rawIconOrKind: string, fallbackKind = ""): string {
   const cleaned = rawIconOrKind.trim().replace(/\.png$/i, "");
-  if (/wayshrine|emberspring|attune|shrine/i.test(cleaned)) return "TUI_Icon_Map_ReviveShrine_Active";
-  return cleaned || "T_Icon_Poi_Default";
+  if (/wayshrine|emberspring|attune|shrine/i.test(`${cleaned} ${fallbackKind}`)) return POI_FALLBACK_ICON_BY_KIND.emberspring;
+  if (cleaned.startsWith("TUI_Icon_")) return cleaned;
+  const byKind = POI_FALLBACK_ICON_BY_KIND[cleaned.toLowerCase()] ?? POI_FALLBACK_ICON_BY_KIND[fallbackKind.trim().toLowerCase()];
+  return byKind ?? (cleaned || "TUI_Icon_Map_MinorPOI_Discovered");
 }
 
 export function parsePoisFromPayload(raw: unknown): readonly PoiOverlay[] {
@@ -770,7 +767,7 @@ export function parsePoisFromPayload(raw: unknown): readonly PoiOverlay[] {
     const baseGuid = rawGuid && rawGuid !== "0" ? rawGuid : `${category}:${name || `${Math.round(x_cm)}_${Math.round(y_cm)}`}`;
     const guid = seen.has(baseGuid) ? `${baseGuid}:${name}:${Math.round(x_cm)}:${Math.round(y_cm)}` : baseGuid;
     seen.add(guid);
-    const iconName = resolvePoiIconName(String(item.icon_name ?? item.icon ?? category)), rad = Number(item.radius ?? item.radius_cm ?? 0);
+    const iconName = resolvePoiIconName(String(item.icon_name ?? item.icon ?? category), kind), rad = Number(item.radius ?? item.radius_cm ?? 0);
     out.push({
       guid, name: name || guid, display_name: String(item.display_name ?? (name || guid)), category, kind, x_cm, y_cm, z_cm,
       node_name: typeof item.node_name === "string" && item.node_name.trim() ? item.node_name.trim() : undefined,
@@ -796,3 +793,7 @@ export function mergePoiOverlays(existing: readonly PoiOverlay[], incoming: read
   for (const p of incoming) byKey.set(p.guid || p.name, { ...byKey.get(p.guid || p.name), ...p });
   return [...byKey.values()];
 }
+
+export const renderVerraMapFrame = drawCanvasScene;
+export const renderMapImageOverlays = drawNodePlugOverlays;
+export const renderEntityMarkers = drawEntityAndCrosshairMarkers;

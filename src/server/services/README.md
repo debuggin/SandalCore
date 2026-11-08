@@ -48,7 +48,7 @@ pwsh -NoProfile -File scripts/test_functional_apis.ps1
 
 ## Database Migration Rollback Reference
 
-The following deterministic PostgreSQL rollback blocks reverse individual `internal/db/migrations` schema versions (`0003` through `0024`) and are verified by the `go test ./internal/db` migration rollback suite:
+The following deterministic PostgreSQL rollback blocks reverse individual `sql/migrations` schema versions (`0001` through `0025` forward migrations; rollback reference blocks for `0003` through `0024` below) and are verified by the `go test ./internal/db` migration rollback suite:
 
 ```sql
 -- rollback of migration 0003

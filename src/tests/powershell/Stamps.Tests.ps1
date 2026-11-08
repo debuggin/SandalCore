@@ -2,7 +2,34 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if ($null -ne (Get-Module Pester) -and (Get-Module Pester).Version.Major -lt 5) {
+$inPester = ($null -ne (Get-Module -Name Pester)) -and (
+    @(Get-PSCallStack | Where-Object {
+        ($null -ne $_.Command -and $_.Command -match 'Pester') -or
+        ($null -ne $_.ScriptName -and $_.ScriptName -match 'Pester')
+    }).Count -gt 0
+)
+
+if (-not $inPester) {
+    function Describe([string]$Name, [scriptblock]$Fixture) { Write-Host "[Describe] $Name"; . $Fixture }
+    function Context([string]$Name, [scriptblock]$Fixture) { Write-Host "  [Context] $Name"; . $Fixture }
+    function BeforeAll([scriptblock]$Action) { . $Action }
+    function It([string]$Name, [scriptblock]$Test) { . $Test; Write-Host "    [PASS] $Name" }
+    function Should {
+        param([switch]$BeTrue, [switch]$BeFalse, [switch]$Not, [object]$Be, [string]$Match)
+        $items = @($input); $actual = if ($items.Count -gt 0) { $items[0] } else { $null }
+        if ($args -contains '-Throw') {
+            $threw = $false; foreach ($sbItem in $items) { try { & $sbItem *>$null } catch { $threw = $true } }
+            if ($threw -eq [bool]$Not) { throw "Expected Throw (Not=$Not) failed." }
+            return
+        }
+        $ok = if ($BeTrue) { [bool]$actual }
+              elseif ($BeFalse) { -not [bool]$actual }
+              elseif ($PSBoundParameters.ContainsKey('Be')) { $actual -eq $Be }
+              elseif ($PSBoundParameters.ContainsKey('Match')) { "$actual" -match $Match }
+              else { $true }
+        if ($ok -eq [bool]$Not) { throw "Assertion failed (Not=$Not) for actual '$actual'." }
+    }
+} elseif ((Get-Module Pester).Version.Major -lt 5) {
     function Should {
         if ($args.Count -ge 1 -and "$($args[0])" -match '^-?Throw$') {
             $threw = $false
@@ -38,7 +65,7 @@ Describe 'SandalCore Wave 03.1: sandal.ps1, SandalCore.psd1, Env.psm1 & 11-Stage
         Import-Module (Join-Path $script:RepoRoot 'scripts\lib\Stamps.psm1') -Force -DisableNameChecking
         Import-Module $script:ManifestPath -Force -DisableNameChecking
 
-        function New-TestRepoFixture {
+        function script:New-TestRepoFixture {
             $root = Join-Path ([System.IO.Path]::GetTempPath()) ("sandal-stamps-" + [guid]::NewGuid().ToString('N'))
             $baseFiles = @{
                 'config/layouts/aoc.usmap'                 = 'usmap-v1'
@@ -339,21 +366,21 @@ public static class SandalMutexTestHelper {
                 )
                 [System.IO.File]::WriteAllLines($envFile, $initialContent, [System.Text.UTF8Encoding]::new($false))
 
-                $init1 = Initialize-SandalEnv -EnvPath $envFile -SecretKeys @('AOC_SERVICE_TOKEN', 'POSTGRES_PASSWORD', 'SANDAL_SECRET_KEY')
+                $init1 = Initialize-SandalEnv -EnvPath $envFile -SecretKeys @('AOC_SERVICE_TOKEN', 'POSTGRES_PASSWORD', 'AOC_JWT_SECRET')
                 $map1 = Get-SandalEnvMap -EnvPath $envFile
                 $map1['AOC_ENV'] | Should -Be 'development'
-                $map1['AOC_SERVICE_TOKEN'] | Should -Match '^[0-9a-f]{64}$'
-                $map1['SANDAL_SECRET_KEY'] | Should -Match '^[0-9a-f]{64}$'
+                $map1['AOC_SERVICE_TOKEN'] | Should -Match '^(?:[0-9a-f]{64}|[a-z][a-z-]{1,14}(?:-[a-z][a-z-]{1,14}){4,})$'
+                $map1['AOC_JWT_SECRET'] | Should -Match '^(?:[0-9a-f]{64}|[a-z][a-z-]{1,14}(?:-[a-z][a-z-]{1,14}){4,})$'
                 $map1['POSTGRES_PASSWORD'] | Should -Be 'existing_non_empty_secret_value'
                 $init1.Acl.InheritanceDisabled | Should -BeTrue
 
                 # Second invocation without -Force must preserve generated secrets idempotently
                 $tokenBefore = $map1['AOC_SERVICE_TOKEN']
-                $keyBefore = $map1['SANDAL_SECRET_KEY']
-                $null = Initialize-SandalEnv -EnvPath $envFile -SecretKeys @('AOC_SERVICE_TOKEN', 'POSTGRES_PASSWORD', 'SANDAL_SECRET_KEY')
+                $keyBefore = $map1['AOC_JWT_SECRET']
+                $null = Initialize-SandalEnv -EnvPath $envFile -SecretKeys @('AOC_SERVICE_TOKEN', 'POSTGRES_PASSWORD', 'AOC_JWT_SECRET')
                 $map2 = Get-SandalEnvMap -EnvPath $envFile
                 $map2['AOC_SERVICE_TOKEN'] | Should -Be $tokenBefore
-                $map2['SANDAL_SECRET_KEY'] | Should -Be $keyBefore
+                $map2['AOC_JWT_SECRET'] | Should -Be $keyBefore
                 $map2['POSTGRES_PASSWORD'] | Should -Be 'existing_non_empty_secret_value'
 
                 $rawEnv = [System.IO.File]::ReadAllText($envFile, [System.Text.Encoding]::UTF8)

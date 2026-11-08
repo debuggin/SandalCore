@@ -193,19 +193,19 @@ function useWorldMapPolling(storeSnap: WorldStreamState, onMetaLoaded: (meta: Ve
 
 export function parseWorldStateResponse(raw: unknown, layers: LayerToggles): readonly WorldEntity[] {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const added: WorldEntity[] = [];
+  const added: WorldEntity[] = [], seenPlayers = new Set<string>();
   if (layers.players) {
     for (const p of normalizePaginatedEnvelope<Record<string, unknown>>(obj.players ?? obj, ["players"]).items) {
+      if (p.online === false || String(p.state ?? "").toLowerCase() === "offline") continue;
+      const guid = String(p.character_id ?? p.guid ?? p.name ?? "player"), name = String(p.name ?? "Player");
+      const gKey = guid.trim().toLowerCase(), nKey = name.trim().toLowerCase();
+      if ((gKey && seenPlayers.has(gKey)) || (nKey && seenPlayers.has(nKey))) continue;
+      if (gKey) seenPlayers.add(gKey);
+      if (nKey) seenPlayers.add(nKey);
       added.push({
-        guid: String(p.character_id ?? p.guid ?? p.name ?? "player"),
-        name: String(p.name ?? "Player"),
-        kind: "player",
-        xCm: Number(p.x_cm ?? p.x ?? 0),
-        yCm: Number(p.y_cm ?? p.y ?? 0),
-        zCm: Number(p.z_cm ?? p.z ?? 0),
-        yawDeg: Number(p.yaw_deg ?? p.yaw_degrees ?? 0),
-        level: Number(p.level ?? 1),
-        healthPct: 100,
+        guid, name, kind: "player",
+        xCm: Number(p.x_cm ?? p.x ?? 0), yCm: Number(p.y_cm ?? p.y ?? 0), zCm: Number(p.z_cm ?? p.z ?? 0),
+        yawDeg: Number(p.yaw_deg ?? p.yaw_degrees ?? 0), level: Number(p.level ?? 1), healthPct: 100,
       });
     }
   }
@@ -217,11 +217,19 @@ export function parseWorldStateResponse(raw: unknown, layers: LayerToggles): rea
     const isEmber = rawKind === "emberspring" || rawKind === "wayshrine" || explicitSub === "emberspring" || /\bemberspring\b|ember\s+spring|revive\s*shrine|attunable.*shrine|\bwayshrine\b/i.test(rawName);
     const rawSubkind = isEmber ? "emberspring" : explicitSub;
     const kind = rawKind === "player" || rawKind === "monster" || rawKind === "resource_node" || rawKind === "mount" || rawKind === "loot_pile" || rawKind === "poi" ? rawKind : "npc";
+    const guid = String(e.id ?? e.guid ?? e.name ?? "entity");
+    if (kind === "player") {
+      if (e.online === false || String(e.state ?? "").toLowerCase() === "offline") continue;
+      const gKey = guid.trim().toLowerCase(), nKey = rawName.trim().toLowerCase();
+      if ((gKey && seenPlayers.has(gKey)) || (nKey && seenPlayers.has(nKey))) continue;
+      if (gKey) seenPlayers.add(gKey);
+      if (nKey) seenPlayers.add(nKey);
+    }
     const rawResType = typeof e.resourceType === "string" && e.resourceType.length > 0 ? e.resourceType : typeof e.resource_type === "string" && e.resource_type.length > 0 ? e.resource_type : undefined;
     const resType = kind === "resource_node" || rawSubkind === "huntable" || Boolean(rawResType) ? inferResourceNodeType(rawName, rawResType, rawSubkind) : undefined;
     const qual = typeof e.quality === "string" && e.quality.length > 0 ? e.quality : typeof e.rarity === "string" && e.rarity.length > 0 ? e.rarity : kind === "resource_node" ? "Common · Tier 1 (Novice)" : undefined;
     const ent: WorldEntity = {
-      guid: String(e.id ?? e.guid ?? e.name ?? "entity"), name: rawName, kind,
+      guid, name: rawName, kind,
       xCm: Number(e.x_cm ?? e.x ?? 0), yCm: Number(e.y_cm ?? e.y ?? 0), zCm: Number(e.z_cm ?? e.z ?? 0),
       yawDeg: Number(e.yaw_deg ?? e.yaw ?? 0), level: Number(e.level ?? 1), healthPct: Number(e.health_pct ?? e.hp ?? 100),
       npc_subkind: rawSubkind, npcSubkind: rawSubkind, resourceType: resType, resource_type: resType, quality: qual,

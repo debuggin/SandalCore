@@ -1,8 +1,8 @@
 # Wire Protocol Specifications
 
-**Related Guides**: [Root Overview](../../README.md) | [Wire Protocol Library (`libaocnet`)](../../src/libs/aocnet/README.md) | [World Server](../../src/server/world/README.md) | [Contributing Guide](../CONTRIBUTING.md)
+**Related Guides**: [Root Overview](../../../README.md) | [Wire Protocol Library (`libaocnet`)](../../../src/libs/aocnet/README.md) | [World Server](../../../src/server/world/README.md) | [Contributing Guide](../../CONTRIBUTING.md)
 
-This directory contains the clean-room wire protocol specifications for Unreal Engine 5.6 UDP bit-stream framing, property replication, RPC serialization, the `127.0.0.1:19021` launcher tether protocol, and the `:50061` ICS TLS 1.3 lobby protocol implemented in [`src/libs/aocnet/`](../../src/libs/aocnet/README.md).
+This directory contains the clean-room wire protocol specifications for Unreal Engine 5.6 UDP bit-stream framing, property replication, RPC serialization, the `127.0.0.1:19021` launcher tether protocol, and the `:50061` ICS TLS 1.3 lobby protocol implemented in [`src/libs/aocnet/`](../../../src/libs/aocnet/README.md).
 
 Every specification records normalized module-relative RVAs, bit-level field layouts, overflow-safe bounds checks, and synthetic hex test vectors, with zero proprietary source code or decompiler output.
 

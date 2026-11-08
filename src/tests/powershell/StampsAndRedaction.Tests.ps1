@@ -164,8 +164,8 @@ Describe 'SandalCore SHA-256 Stamp DAG, Secret Redaction & Polyglot Stage Gate V
                 [System.IO.File]::WriteAllLines($envPath, @('AOC_ENV=dev', 'POSTGRES_PASSWORD=CHANGE_ME_NOW'), [System.Text.UTF8Encoding]::new($false))
                 $null = Initialize-SandalEnv -EnvPath $envPath -SecretKeys @('POSTGRES_PASSWORD', 'AOC_SERVICE_TOKEN')
                 $envMap = Get-SandalEnvMap -EnvPath $envPath
-                if ($envMap['POSTGRES_PASSWORD'] -notmatch '^[0-9a-f]{64}$' -or $envMap['AOC_SERVICE_TOKEN'] -notmatch '^[0-9a-f]{64}$') {
-                    throw 'Expected Initialize-SandalEnv to replace CHANGE_ME and missing keys with 64-hex CSPRNG secrets.'
+                if ($envMap['POSTGRES_PASSWORD'] -notmatch '^(?:[0-9a-f]{64}|[a-z][a-z-]{1,14}(?:-[a-z][a-z-]{1,14}){4,})$' -or $envMap['AOC_SERVICE_TOKEN'] -notmatch '^(?:[0-9a-f]{64}|[a-z][a-z-]{1,14}(?:-[a-z][a-z-]{1,14}){4,})$') {
+                    throw 'Expected Initialize-SandalEnv to replace CHANGE_ME and missing keys with 64-hex CSPRNG secrets or passphrases.'
                 }
                 if (Test-Path -LiteralPath (Join-Path $tmpDir '.env')) {
                     throw 'Expected Initialize-SandalEnv on deploy/.env to leave 0 .env file in repo root.'

@@ -20,7 +20,7 @@ ConfigurationDirectory=sandal
 EnvironmentFile=-/etc/sandal/sandal.env
 EnvironmentFile=-/etc/sandal/zones/%i.env
 LoadCredential=service_token:/etc/credstore/sandal_service_token.cred
-ExecStart=/usr/local/bin/world --zone=%i --config=/etc/sandal/sandal.env
+ExecStart=/usr/local/bin/world --area-region=%i --config=/etc/sandal/sandal.env
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=30

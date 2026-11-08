@@ -412,7 +412,7 @@ func TestLiveWebAdminAPIsE2E(t *testing.T) {
 	baseURL := resolveLiveOrEphemeralBaseURL(t)
 	verifyLiveAdminAuthLoginAndSession(t, baseURL)
 	if os.Getenv("SANDAL_REQUIRE_LIVE_WEB_ADMIN") != "1" {
-		if c, _, _ := doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/commands", map[string]string{"Content-Type": "application/json", "Idempotency-Key": fmt.Sprintf("probe-tr-%d", time.Now().UnixNano())}, []byte(`{"command":"set_tick_rate","tick_hz":20}`)); c != http.StatusOK {
+		if c, _, _ := doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/commands", map[string]string{"Content-Type": "application/json", "Idempotency-Key": fmt.Sprintf("probe-tr-%d", time.Now().UnixNano())}, []byte(`{"command":"set_tick_rate","tick_hz":-1,"tick_mode":"dynamic"}`)); c != http.StatusOK {
 			baseURL = ensureEphemeralAdminGateway(t)
 			verifyLiveAdminAuthLoginAndSession(t, baseURL)
 		} else if c2, _, _ := doAdminHTTP(t, http.MethodPost, baseURL+"/api/v1/gm/commands", map[string]string{"Content-Type": "application/json", "Idempotency-Key": fmt.Sprintf("probe-mc-%d", time.Now().UnixNano())}, []byte(`{"command":"give_currency","character":"TST Probe","copper":1}`)); c2 != http.StatusOK {
@@ -617,6 +617,12 @@ func assertWorldStatePayload(t *testing.T, statePath string, doc map[string]any)
 		ent, _ := raw.(map[string]any)
 		if kind, _ := ent["kind"].(string); (kind == "npc" || kind == "monster") && strings.TrimSpace(fmt.Sprint(ent["name"])) == "" {
 			t.Fatalf("GET %s contains unnamed blank %s entity: %#v", statePath, kind, ent)
+		}
+	}
+	for _, rawW := range extractSliceField(doc, "workers") {
+		w, _ := rawW.(map[string]any)
+		if mode, targetHz := fmt.Sprint(w["tick_mode"]), intField(w, "target_tick_hz"); mode != "dynamic" || targetHz != -1 {
+			t.Fatalf("GET %s worker %v tick_mode=%q target_tick_hz=%d, want dynamic (-1)", statePath, w["worker_id"], mode, targetHz)
 		}
 	}
 }

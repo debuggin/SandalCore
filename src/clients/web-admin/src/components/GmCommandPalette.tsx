@@ -456,6 +456,16 @@ async function resolveEtagCachedResponse(url: string, response: Response, cached
   return response;
 }
 
+let fallbackSeqCounter = 0;
+
+function nextRandomSeq12Bit(): number {
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    return globalThis.crypto.getRandomValues(new Uint16Array(1))[0] & 0x0fff;
+  }
+  fallbackSeqCounter = (fallbackSeqCounter + 1) & 0x0fff;
+  return fallbackSeqCounter;
+}
+
 export async function fetchWithTransientRetry(
   url: string,
   init: RequestInit = {},
@@ -465,7 +475,7 @@ export async function fetchWithTransientRetry(
   const baseDelayMs = options.baseDelayMs ?? 15;
   const maxDelayMs = options.maxDelayMs ?? RETRY_MAX_DELAY_MS;
   const fetchFn = options.fetchImpl ?? fetch;
-  const correlationId = options.correlationId ?? formatDeterministicUuidV7(Date.now(), Math.floor(Math.random() * 4096));
+  const correlationId = options.correlationId ?? formatDeterministicUuidV7(Date.now(), nextRandomSeq12Bit());
   const method = (init.method ?? "GET").toUpperCase();
   if (method !== "GET" && method !== "HEAD") clearEtagResponseCache();
   const cached = method === "GET" ? etagResponseCache.get(url) : undefined;
@@ -507,7 +517,7 @@ export async function sendGmCommand(
   readonly idempotencyKey: string;
   readonly problem?: Rfc9457ProblemDetails;
 }> {
-  const seq = Math.floor(Math.random() * 4096);
+  const seq = nextRandomSeq12Bit();
   const idemKey = formatDeterministicUuidV7(Date.now(), seq);
   const correlationId = formatDeterministicUuidV7(Date.now(), seq + 1);
   const res = await fetchWithTransientRetry(

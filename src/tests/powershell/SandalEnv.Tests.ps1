@@ -44,10 +44,10 @@ function New-SyntheticCompleteGameDataDir {
     $outDir = Join-Path $RootPath $ContentRelPath
     $reqFiles = @(
         'content.db', 'aoc.usmap', 'artisan_curves.tsv', 'mount_speeds.tsv', 'mount_riders.tsv', 'item_names.tsv',
-        'roads.tsv', 'roads_levels.tsv', 'town_platforms.bin', 'town_layout_items.tsv', 'town_layouts.bin',
+        'roads.tsv', 'roads_levels.tsv', 'town_platforms.bin', 'town_layout_items.tsv', 'town_layouts.bin', 'verra.pmtiles',
         'npc_abilities.tsv', 'npc_montages.tsv', 'npc_targeting.tsv', 'npc_senses.tsv', 'npc_aggro_curves.tsv',
         'npc_looks.tsv', 'npc_appearances.tsv', 'npc_names.tsv', 'npc_trees.tsv',
-        'npc_motion.tsv', 'region_foliage.tsv', 'area_geom.bin', 'area_nav.bin', 'client_config\DefaultCombat.ini'
+        'npc_motion.tsv', 'region_foliage.tsv', 'pcap_resource_spawners.tsv', 'area_geom.bin', 'area_nav.bin', 'client_config\DefaultCombat.ini'
     )
     foreach ($rel in $reqFiles) {
         $fullPath = Join-Path $outDir $rel

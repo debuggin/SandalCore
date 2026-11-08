@@ -552,6 +552,7 @@ void AbilityPipeline::step_cost(Cast &cast, double t) {
 }
 
 void AbilityPipeline::step_own(Cast &cast, double t) {
+  if (cast.held_release_due && *cast.held_release_due <= t) return;
   const ConsumedScope consumed(*this, cast.item_cast);
   const AbilityDef &def = *cast.def;
   AbilityChange c;

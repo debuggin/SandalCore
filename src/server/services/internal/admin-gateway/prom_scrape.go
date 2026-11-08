@@ -457,7 +457,9 @@ func (s *Server) fallbackTeleportCommand(charName string, tpReq *worldadminv1.Te
 			x, y, z = pt.GetX(), pt.GetY(), pt.GetZ()
 		}
 	}
-	s.coalescer.UpsertEntity(worldstream.EntitySnapshot{ID: "player:0:" + charName, Kind: "player", Name: charName, Zone: "verra", X: x, Y: y, Z: z, HealthPct: 100, Level: 50, State: "online", UpdatedAt: s.now().UnixMilli()})
+	if !s.hasAnyWorldAdminClient() {
+		s.coalescer.UpsertEntity(worldstream.EntitySnapshot{ID: "player:0:" + charName, Kind: "player", Name: charName, Zone: "verra", X: x, Y: y, Z: z, HealthPct: 100, Level: 50, State: "online", UpdatedAt: s.now().UnixMilli()})
+	}
 	return map[string]any{"character": charName, "x": x, "y": y, "z": z, "place": place, "status": "executed", "fallback": true}
 }
 

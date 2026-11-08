@@ -157,7 +157,7 @@ func BuiltInPlaces() []PlaceEntry {
 		{GUID: "place:garden", Name: "garden", DisplayName: "GM Garden", NodeName: "GM Garden", NodeType: "Spawn", Kind: "spawn", X: -777664.5, Y: 616578.6875, Z: 11524.0},
 	}
 	for _, p := range out {
-		registerPlaceVisual(p.GUID, p.Name, PlaceVisualMeta{Category: "spawn", IconName: "TUI_Icon_Map_StartingArea", TintColor: "#22c55e", IconSize: 28, NodeType: "Spawn"})
+		registerPlaceVisual(p.GUID, p.Name, PlaceVisualMeta{Category: "spawn", IconName: "TUI_Icon_Map_HomeShrine", TintColor: "#22c55e", IconSize: 28, NodeType: "Spawn"})
 	}
 	return out
 }
@@ -418,16 +418,17 @@ func resolveCityNodeIconName(visGUID, nodeIcon, nodeType, cat string, visuals ma
 	}
 	nt := strings.ToLower(nodeType)
 	for _, m := range []struct{ key, icon string }{
-		{"economic", "TUI_Icon_NodeSummary_NodeEmblem_Economic"}, {"divine", "TUI_Icon_NodeSummary_NodeEmblem_Divine"},
-		{"military", "TUI_Icon_NodeSummary_NodeEmblem_Military"}, {"martial", "TUI_Icon_NodeSummary_NodeEmblem_Military"},
-		{"scientific", "TUI_Icon_NodeSummary_NodeEmblem_Scientific"}, {"harbor", "TUI_Icon_Map_Harbor"},
-		{"castle", "TUI_Icon_Map_Castle"}, {"startingarea", "TUI_Icon_Map_StartingArea"},
+		{"economic", "TUI_Icon_NodeSummary_NodeEmblem_EcoScale"}, {"divine", "TUI_Icon_NodeSummary_NodeEmblem_IntTome"},
+		{"military", "TUI_Icon_NodeSummary_NodeEmblem_MilWingedSword"}, {"martial", "TUI_Icon_NodeSummary_NodeEmblem_MilWingedSword"},
+		{"scientific", "TUI_Icon_NodeSummary_NodeEmblem_SciOwl"}, {"harbor", "TUI_Icon_Map_Node_Dock"},
+		{"castle", "TUI_Icon_Map_Siege"}, {"startingarea", "TUI_Icon_Map_HomeShrine"},
+		{"outpost", "TUI_Icon_Map_MinorPOI_Discovered"},
 	} {
 		if strings.Contains(nt, m.key) || (m.key == cat) || (m.key == "startingarea" && cat == "starting_area") {
 			return m.icon
 		}
 	}
-	return "TUI_Icon_Map_Node_LVL3"
+	return "TUI_Icon_Node_LVL3"
 }
 
 func (st *placeLoadCtx) appendPOIPlaces() {
@@ -484,7 +485,7 @@ func (st *placeLoadCtx) appendWayshrinePlaces() {
 func (st *placeLoadCtx) appendLegacyZoneAndSpawnPlaces() {
 	for _, tbl := range []struct{ table, kind, icon, tint string }{
 		{"zone_volume", "zone", "TUI_Icon_Map_MinorPOI", "#10b981"},
-		{"spawn_location", "spawn", "TUI_Icon_Map_StartingArea", "#22c55e"},
+		{"spawn_location", "spawn", "TUI_Icon_Map_HomeShrine", "#22c55e"},
 	} {
 		if !hasTable(st.ctx, st.db, tbl.table) {
 			continue
@@ -664,7 +665,7 @@ func trimEnumPrefix(raw string) string {
 }
 
 var (
-	defaultKindIcons = map[string]string{"wayshrine": "TUI_Icon_Map_ReviveShrine_Active", "attune": "TUI_Icon_Map_ReviveShrine_Active", "harbor": "TUI_Icon_Map_Harbor", "castle": "TUI_Icon_Map_Castle", "starting_area": "TUI_Icon_Map_StartingArea", "spawn": "TUI_Icon_Map_StartingArea"}
+	defaultKindIcons = map[string]string{"wayshrine": "TUI_Icon_Map_ReviveShrine_Active", "attune": "TUI_Icon_Map_ReviveShrine_Active", "harbor": "TUI_Icon_Map_Node_Dock", "castle": "TUI_Icon_Map_Siege", "starting_area": "TUI_Icon_Map_HomeShrine", "spawn": "TUI_Icon_Map_HomeShrine", "outpost": "TUI_Icon_Map_MinorPOI_Discovered"}
 	defaultKindTints = map[string]string{"wayshrine": "#38bdf8", "attune": "#38bdf8", "harbor": "#0ea5e9", "castle": "#ef4444", "starting_area": "#22c55e", "spawn": "#22c55e", "city_node": "#f59e0b", "outpost": "#f59e0b"}
 )
 

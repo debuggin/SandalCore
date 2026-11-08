@@ -135,6 +135,7 @@ COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_ability_
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_ability_pipeline_chains /usr/local/bin/test_world_ability_pipeline_chains
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_ability_pipeline_casts /app/test_world_ability_pipeline_casts
 COPY --from=builder --chown=65532:65532 /workspace/build/bin/test_world_ability_pipeline_casts /usr/local/bin/test_world_ability_pipeline_casts
+COPY --from=builder --chown=65532:65532 /workspace/build/gen/fixtures /workspace/build/gen/fixtures
 COPY --from=builder --chown=65532:65532 /workspace/build/linux/bin/service /usr/local/bin/service
 USER 65532:65532
 EXPOSE 7777/udp 50061/tcp

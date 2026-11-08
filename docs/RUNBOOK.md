@@ -113,7 +113,7 @@ Each worker scope uses a default tick rate and per-tick NPC step slice chosen to
 
 You can adjust any worker's simulation frequency live from the Web Admin Main Page (`Visible Server Workers` panel) or the Observability Page (`World Workers` table) without restarting containers:
 
-- **`Dynamic` (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `30..120 Hz` adaptive range)**: The default mode on both the Main Page Server List and the Observability Page. Automatically scales the worker's tick rate between `30 Hz` and `120 Hz` in `5 Hz` steps around its scope baseline (`30 / 45 / 60 / 100 Hz`) whenever CPU utilization stays above `45%` or below `30%` for 15 consecutive ticks, paired with a read-only **`Actual Hz` / `Current Hz`** badge (`aria-readonly="true"`) fed by live `aoc_world_tick_hz` telemetry.
+- **`Dynamic` (`target_tick_hz: -1`, `tick_mode: "dynamic"`, `30-60 Hz` (`kMaxDynamicHz = 60`) adaptive range)**: The default mode on both the Main Page Server List and the Observability Page. Automatically scales the worker's tick rate between `30 Hz` and `60 Hz` in `5 Hz` steps around its scope baseline (`30 / 45 / 60 / 100 Hz`) whenever CPU utilization stays above `45%` or below `30%` for 15 consecutive ticks, paired with a read-only **`Actual Hz` / `Current Hz`** badge (`aria-readonly="true"`) fed by live `aoc_world_tick_hz` telemetry.
 - **`0 Hz (Pause NPCs)` (`0 Hz (Off)`)**: Pauses ambient NPC AI movement and evaluation on **just that worker** while keeping player movement, combat, handovers, and GM commands active.
 - **Manual Rates (`10, 15, 20, 25, 30, 40, 50, 60 Hz`)**: Locks that worker to a fixed simulation frequency (`tick_mode: "manual"`).
 - **One-Second NPC Service Guarantee**: Regardless of how many thousands of NPCs are spawned on a worker, the simulation loop adjusts its per-tick slice floor so every ambient NPC is stepped at least once per second (`<= 1.0 s` service floor).
@@ -214,8 +214,8 @@ docker exec aoc-world worldctl --addr 127.0.0.1:50061 npc spawn "Goblin Scout" -
    ```powershell
    pwsh -NoProfile -File scripts/checks/public_check.ps1
    ```
-2. **Run the live API and 8-class `Lv 50` bot suite**:
+2. **Run the live API, 10-stage `fake::Client` session, and 26 modular bot plans (`/app/test_world_live_e2e`)**:
    ```powershell
    pwsh -NoProfile -File scripts/test_functional_apis.ps1
    ```
-3. **Verify completion**: Confirm that `test_functional_apis.ps1` exits with code `0` after validating HTTP authentication (`:8080`), UDP launcher tether (`:19021`), ICS TLS 1.3 character creation (`:50061`), `30 Hz` Web Admin state streaming, authentic resource node metadata, and the 8-class `fake::Client` bot play-flow across UDP `:7777`.
+3. **Verify completion**: Confirm that `test_functional_apis.ps1` exits with code `0` after validating HTTP authentication (`:8080`), UDP launcher tether (`:19021`), ICS TLS 1.3 character creation (`:50061`), `30 Hz` Web Admin state streaming, authentic resource node metadata, and the live UDP `:7777` 10-stage `fake::Client` session plus 26 modular bot plans (`/app/test_world_live_e2e`).

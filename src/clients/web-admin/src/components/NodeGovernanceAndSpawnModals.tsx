@@ -177,13 +177,6 @@ export function CatalogComboboxPicker(props: CatalogComboboxPickerProps): React.
         }}
         style={{ ...INPUT_STYLE, width: "100%" }}
       />
-      {props.presets && props.presets.length > 0 ? (
-        <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "4px" }}>
-          {props.presets.map((pr) => (
-            <button key={pr.value} type="button" data-testid={`${props.testIdPrefix}-chip-${pr.value}`} onClick={() => choose(pr)} style={{ ...CHIP_STYLE, backgroundColor: props.value === pr.value ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: props.value === pr.value ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>{pr.label}</button>
-          ))}
-        </div>
-      ) : null}
       {open && visibleOptions.length > 0 ? (
         <ul id={listId} role="listbox" data-testid={`${props.testIdPrefix}-options`} style={{ position: "absolute", top: "58px", left: 0, right: 0, maxHeight: "200px", overflowY: "auto", margin: 0, padding: "4px", listStyle: "none", borderRadius: "6px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.VerraBorder400}`, backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, zIndex: 10020 }}>
           {visibleOptions.map((opt, idx) => (
@@ -264,7 +257,7 @@ export function SpawnNpcCard(props: SpawnNpcCardProps): React.ReactElement {
   const storeSnap = useWorldStreamStore();
   const catalogNpcs = npcEnv.items;
   const rawSelectedNpc = storeSnap.selectedNpcTemplate;
-  const selectedNpc = rawSelectedNpc && !rawSelectedNpc.startsWith("DesignData_NPC_") ? rawSelectedNpc : catalogNpcs[0]?.name || DEFAULT_CATALOG_NPCS[0]?.name || "Aela";
+  const selectedNpc = rawSelectedNpc ? rawSelectedNpc : catalogNpcs[0]?.name || DEFAULT_CATALOG_NPCS[0]?.name || "Aela";
   const [level, setLevel] = React.useState(15);
   const targetMode = storeSnap.spawnTargetMode;
   const [place, setPlace] = React.useState(DEFAULT_CATALOG_PLACES[2]?.name ?? "Verra_RVR_Winstead");
@@ -274,24 +267,23 @@ export function SpawnNpcCard(props: SpawnNpcCardProps): React.ReactElement {
     if (pin) setCoords({ x: Math.round(Number(pin.xCm ?? -644519)), y: Math.round(Number(pin.yCm ?? 376773)), z: Math.round(Number(pin.zCm ?? 12012)) });
   }, [pin?.xCm, pin?.yCm, pin?.zCm]);
   React.useEffect(() => {
-    if (catalogNpcs.length > 0 && (!rawSelectedNpc || rawSelectedNpc.startsWith("DesignData_NPC_"))) storeSnap.setSelectedNpcTemplate(catalogNpcs[0].name);
+    if (catalogNpcs.length > 0 && !rawSelectedNpc) storeSnap.setSelectedNpcTemplate(catalogNpcs[0].name);
   }, [catalogNpcs, rawSelectedNpc]);
   const npcOptions: readonly CatalogPickerOption[] = catalogNpcs.map((n) => {
     const lvlStr = typeof n.default_level === "number" ? `Lv ${n.default_level}` : typeof n.min_level === "number" && typeof n.max_level === "number" ? `Lv ${n.min_level}-${n.max_level}` : "Lv 15";
     return { value: n.name, label: `${n.display_name || n.name} (${lvlStr})`, detail: n.name };
   });
-  const npcPresets: readonly CatalogPickerOption[] = DEFAULT_CATALOG_NPCS.map((n) => ({ value: n.name, label: n.display_name || n.name, detail: n.name }));
   return (
     <section aria-label="Spawn NPC from Catalog (New Instance)" data-testid="spawn-npc-card" style={CARD_STYLE}>
       <strong style={{ display: "block", marginBottom: "8px", color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 }}>Spawn NPC Definition (New Instance)</strong>
       <CatalogComboboxPicker
         label="NPC Definition to Spawn (Click an already-spawned NPC on the map to inspect/manage it)"
         testIdPrefix="catalog-npcs" placeholder="Search NPC definitions by name or GUID..." value={selectedNpc} text={npcQuery}
-        options={npcOptions} presets={npcPresets} onTextChange={onNpcQueryChange}
+        options={npcOptions} onTextChange={onNpcQueryChange}
         onSelectOption={(opt) => { storeSnap.setSelectedNpcTemplate(opt.value); onNpcQueryChange(opt.label); }}
       />
       <div style={{ display: "flex", gap: "6px", marginBottom: "8px", flexWrap: "wrap", alignItems: "center" }}>
-        {([{ id: "coords", label: "At Map Location (X, Y, Z)" }, { id: "player", label: "At Player X" }, { id: "place", label: "At Named Place" }] as const).map((m) => (
+        {([{ id: "coords", label: "At Map Location (X, Y, Z)" }, { id: "player", label: "At Player" }, { id: "place", label: "At Named Place" }] as const).map((m) => (
           <button key={m.id} type="button" data-testid={`spawn-mode-${m.id}`} onClick={() => storeSnap.setSpawnTargetMode(m.id)} style={{ ...CHIP_STYLE, backgroundColor: targetMode === m.id ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: targetMode === m.id ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>{m.label}</button>
         ))}
         <label style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
@@ -353,16 +345,65 @@ export async function refreshWorldEntitiesAfterNodeTierChange(
   } catch { /* Non-fatal */ }
 }
 
+function filterOnlineMayorCandidates(storeSnap: WorldStreamState, query: string): readonly OnlinePlayerRecord[] {
+  const out: OnlinePlayerRecord[] = [], seen = new Set<string>();
+  for (const ent of storeSnap.entities.values()) {
+    if (ent.kind !== "player") continue;
+    const key = (ent.name || ent.guid).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ character_id: ent.guid, name: ent.name || ent.guid, x_cm: ent.xCm, y_cm: ent.yCm, z_cm: ent.zCm, online: true, zone: ent.zoneId });
+  }
+  const q = query.trim().toLowerCase();
+  return q ? out.filter((p) => p.name.toLowerCase().includes(q) || p.character_id.toLowerCase().includes(q)) : out;
+}
+
+function renderNodeMayorAndElectionSection(
+  node: VerraCityNodeMeta,
+  mayorInput: string,
+  setMayorInput: (next: string) => void,
+  storeSnap: WorldStreamState,
+): React.ReactElement {
+  const mayorCandidates = filterOnlineMayorCandidates(storeSnap, mayorInput);
+  const electionActions: readonly { readonly id: NodeElectionAction; readonly label: string }[] = [
+    { id: "start", label: "Start Election" }, { id: "open_voting", label: "Open Voting" },
+    { id: "conclude", label: "Conclude Election" }, { id: "cancel", label: "Cancel" },
+  ];
+  return (
+    <div style={{ borderTop: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, paddingTop: "8px" }}>
+      <div style={{ marginBottom: "6px" }}>
+        Mayor: <strong data-testid="city-node-current-mayor">{node.mayor_name || "Vacant"}</strong> | Election: <strong data-testid="city-node-election-status">{node.election_status || "none"}</strong>
+      </div>
+      <div style={{ display: "flex", gap: "4px", marginBottom: "6px", flexWrap: "wrap" }}>
+        <input type="search" aria-label="Mayor character name or GUID" data-testid="city-node-mayor-input" value={mayorInput} onChange={(e) => setMayorInput(e.currentTarget.value)} placeholder="Search player by character name, ID, or account name..." style={{ ...INPUT_STYLE, flex: 1 }} />
+        <button type="button" data-testid="city-node-set-mayor-btn" onClick={() => void storeSnap.setNodeMayor(node.name, mayorInput || storeSnap.selectedPlayer)} style={BTN_STYLE}>Set Mayor</button>
+        <button type="button" data-testid="city-node-clear-mayor-btn" onClick={() => void storeSnap.setNodeMayor(node.name, "")} style={CHIP_STYLE}>Clear</button>
+      </div>
+      {mayorCandidates.length > 0 ? (
+        <div data-testid="city-node-mayor-search-results" style={{ maxHeight: "96px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "3px", marginBottom: "6px", padding: "4px", borderRadius: "4px", border: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, backgroundColor: "rgba(9, 13, 22, 0.65)" }}>
+          {mayorCandidates.slice(0, 6).map((pl) => (
+            <button key={pl.character_id || pl.name} type="button" data-testid={`city-node-mayor-candidate-${pl.name}`} onClick={() => { setMayorInput(pl.name); storeSnap.setSelectedPlayer(pl.name); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", padding: "4px 6px", border: "none", borderRadius: "4px", cursor: "pointer", backgroundColor: mayorInput === pl.name ? "rgba(232, 178, 90, 0.18)" : "transparent", color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100, fontSize: "11px", textAlign: "left" }}>
+              <strong>{pl.name}</strong>
+              <span style={{ color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>({pl.character_id}{pl.zone ? ` · ${pl.zone}` : ""})</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "4px" }}>
+        {electionActions.map((act) => (
+          <button key={act.id} type="button" data-testid={`city-node-election-${act.id}`} onClick={() => void storeSnap.triggerNodeElection(node.name, act.id)} style={CHIP_STYLE}>{act.label}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function NodeGovernanceModalCard(props: { readonly storeSnap: WorldStreamState }): React.ReactElement {
   const { storeSnap } = props;
   const [mayorInput, setMayorInput] = React.useState("");
   const node: VerraCityNodeMeta = storeSnap.cityNodes.find((n) => n.name === storeSnap.selectedCityNodeName) ?? storeSnap.cityNodes[0];
   const nodeCenter = getCityNodeCenterCm(node);
   const nodeWorker = resolveWorkerForCoordinateOrZone(nodeCenter.cx_cm, nodeCenter.cy_cm, undefined, storeSnap.workers, node.name);
-  const electionActions: readonly { readonly id: NodeElectionAction; readonly label: string }[] = [
-    { id: "start", label: "Start Election" }, { id: "open_voting", label: "Open Voting" },
-    { id: "conclude", label: "Conclude Election" }, { id: "cancel", label: "Cancel" },
-  ];
   return (
     <section aria-label="City Node Stage & Governance Control" data-testid="city-node-stage-editor" style={CARD_STYLE}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", gap: "8px" }}>
@@ -397,22 +438,7 @@ export function NodeGovernanceModalCard(props: { readonly storeSnap: WorldStream
         <button type="button" data-testid="city-node-teleport-here-btn" onClick={() => { const c = getCityNodeCenterCm(node); storeSnap.openCommandModal("teleport", { xCm: c.xCm, yCm: c.yCm, zCm: c.zCm }); }} style={BTN_STYLE}>Teleport Player Here...</button>
         <button type="button" data-testid="city-node-spawn-here-btn" onClick={() => { const c = getCityNodeCenterCm(node); storeSnap.openCommandModal("spawn", { xCm: c.xCm, yCm: c.yCm, zCm: c.zCm }); }} style={CHIP_STYLE}>Spawn NPC / Monster Here...</button>
       </div>
-      <div style={{ borderTop: `1px solid ${SANDAL_LAUNCHER_TOKENS.AoCCardBorderBrush}`, paddingTop: "8px" }}>
-        <div style={{ marginBottom: "6px" }}>
-          Mayor: <strong data-testid="city-node-current-mayor">{node.mayor_name || "Vacant"}</strong> | Election: <strong data-testid="city-node-election-status">{node.election_status || "none"}</strong>
-        </div>
-        <div style={{ display: "flex", gap: "4px", marginBottom: "6px", flexWrap: "wrap" }}>
-          <input type="text" aria-label="Mayor character name or GUID" data-testid="city-node-mayor-input" value={mayorInput} onChange={(e) => setMayorInput(e.currentTarget.value)} placeholder="Mayor character or GUID..." style={{ ...INPUT_STYLE, flex: 1 }} />
-          <button type="button" data-testid="city-node-set-mayor-btn" onClick={() => void storeSnap.setNodeMayor(node.name, mayorInput || storeSnap.selectedPlayer)} style={BTN_STYLE}>Set Mayor</button>
-          <button type="button" data-testid="city-node-assign-player-mayor-btn" onClick={() => void storeSnap.setNodeMayor(node.name, storeSnap.selectedPlayer || mayorInput)} style={CHIP_STYLE}>Assign Player X</button>
-          <button type="button" data-testid="city-node-clear-mayor-btn" onClick={() => void storeSnap.setNodeMayor(node.name, "")} style={CHIP_STYLE}>Clear</button>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "4px" }}>
-          {electionActions.map((act) => (
-            <button key={act.id} type="button" data-testid={`city-node-election-${act.id}`} onClick={() => void storeSnap.triggerNodeElection(node.name, act.id)} style={CHIP_STYLE}>{act.label}</button>
-          ))}
-        </div>
-      </div>
+      {renderNodeMayorAndElectionSection(node, mayorInput, setMayorInput, storeSnap)}
     </section>
   );
 }

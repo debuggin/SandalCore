@@ -125,8 +125,13 @@ export function shouldUpdatePaginatedResourceState<T>(
   parsed: PaginatedListEnvelope<T>,
   query: string,
 ): boolean {
-  if (fallbackKey === "players") return true;
-  return parsed.items.length > 0 || query.trim().length > 0;
+  return (
+    parsed.items.length > 0 ||
+    query.trim().length > 0 ||
+    fallbackKey === "players" ||
+    fallbackKey === "items" ||
+    fallbackKey === "npcs"
+  );
 }
 
 export function usePaginatedResource<T>(
@@ -334,7 +339,7 @@ function renderTeleportModeInputs(
     return <CatalogComboboxPicker label="Destination Named Place" testIdPrefix="teleport-place" placeholder="Type place name..." value={targetPlace} text={placeText} options={placeOpts} onTextChange={handlers.setPlaceText} onSelectOption={(o) => { handlers.setTargetPlace(o.value); handlers.setPlaceText(o.label); }} />;
   }
   if (mode === "player") {
-    return <input type="search" aria-label="Target Player Y" data-testid="teleport-target-player" value={targetPlayer} onChange={(e) => handlers.setTargetPlayer(e.currentTarget.value)} placeholder="Search destination player by character name, ID, or account name..." style={{ ...INPUT_STYLE, width: "100%", boxSizing: "border-box", marginBottom: "6px" }} />;
+    return <input type="search" aria-label="Destination Player" data-testid="teleport-target-player" value={targetPlayer} onChange={(e) => handlers.setTargetPlayer(e.currentTarget.value)} placeholder="Search destination player by character name, ID, or account name..." style={{ ...INPUT_STYLE, width: "100%", boxSizing: "border-box", marginBottom: "6px" }} />;
   }
   if (mode === "to_player") {
     return <input type="search" aria-label="Operator Character" data-testid="teleport-operator-char" value={operatorChar} onChange={(e) => handlers.setOperatorChar(e.currentTarget.value)} placeholder="Search destination player by character name, ID, or account name..." style={{ ...INPUT_STYLE, width: "100%", boxSizing: "border-box", marginBottom: "6px" }} />;
@@ -380,7 +385,7 @@ export function TeleportCard(props: TeleportCardProps): React.ReactElement {
         void dispatchTeleportAction({ character: rowPlayer, mode: "coords", targetPlayer, operatorChar, targetPlace, coords, players: filteredPlayers, places, storeSnap, onRecordRun });
       })}
       <div style={{ display: "flex", gap: "6px", marginBottom: "8px", flexWrap: "wrap" }}>
-        {([{ id: "place", label: "Player X -> Named Place" }, { id: "player", label: "Player X -> Player Y" }, { id: "to_player", label: "Teleport to Player X" }, { id: "coords", label: "Player X -> Map Location (X, Y, Z)" }] as const).map((m) => (
+        {([{ id: "place", label: "Player -> Named Place" }, { id: "player", label: "Player -> Destination Player" }, { id: "coords", label: "Player -> Map Location (X, Y, Z)" }] as const).map((m) => (
           <button key={m.id} type="button" data-testid={`teleport-mode-${m.id}`} onClick={() => storeSnap.setTeleportMode(m.id)} style={{ ...CHIP_STYLE, backgroundColor: mode === m.id ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: mode === m.id ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>{m.label}</button>
         ))}
       </div>
@@ -415,13 +420,12 @@ export function GiveGoldAndItemCards(props: GiveGoldAndItemCardsProps): React.Re
   const currencyReceipt = storeSnap.lastReceiptsByScope.currency;
   const itemReceipt = storeSnap.lastReceiptsByScope.giveItem;
   const itemOptions: readonly CatalogPickerOption[] = itemEnv.items.map((it) => ({ value: it.guid, label: it.display_name || it.name, detail: `${it.equip_slot} Lv${it.level} (${it.guid})` }));
-  const starterItemPresets: readonly CatalogPickerOption[] = DEFAULT_CATALOG_ITEMS.map((it) => ({ value: it.guid, label: it.display_name, detail: it.guid }));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
       <input type="search" aria-label="Search player for currency or item grant" data-testid="give-modal-player-search-input" value={activeChar} onChange={(e) => storeSnap.setSelectedPlayer(e.currentTarget.value)} placeholder="Search player by character name, ID, or account name..." style={{ ...INPUT_STYLE, width: "100%", boxSizing: "border-box" }} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-        <section aria-label="Give Currency to Player X" data-testid="give-gold-card" style={CARD_STYLE}>
+        <section aria-label="Give Currency to Player" data-testid="give-gold-card" style={CARD_STYLE}>
           <strong style={{ display: "block", marginBottom: "8px", color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 }}>Give Gold / Currency ({activeChar || "Select Player"})</strong>
           <div style={{ display: "flex", gap: "6px", marginBottom: "8px" }}>{[1, 10, 100].map((gAdd) => <button key={gAdd} type="button" data-testid={`give-gold-chip-${gAdd}`} onClick={() => setGold((g) => g + gAdd)} style={CHIP_STYLE}>+{gAdd}g</button>)}</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px", marginBottom: "8px" }}>
@@ -434,9 +438,9 @@ export function GiveGoldAndItemCards(props: GiveGoldAndItemCardsProps): React.Re
             {currencyReceipt ? <span role="status" data-testid="currency-receipt-banner" style={{ color: currencyReceipt.ok ? SANDAL_LAUNCHER_TOKENS.VerraSanctumEmerald500 : SANDAL_LAUNCHER_TOKENS.VerraRuinCrimson500, fontSize: "11px" }}>{currencyReceipt.message}</span> : null}
           </div>
         </section>
-        <section aria-label="Give Item to Player X" data-testid="give-item-card" style={CARD_STYLE}>
+        <section aria-label="Give Item to Player" data-testid="give-item-card" style={CARD_STYLE}>
           <strong style={{ display: "block", marginBottom: "8px", color: SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 }}>Give Item ({activeChar || "Select Player"})</strong>
-          <CatalogComboboxPicker label="Item Definition (Catalog Search)" testIdPrefix="catalog-items" placeholder="Search items by name or GUID..." value={selectedItem} text={itemQuery} options={itemOptions} presets={starterItemPresets} onTextChange={onItemQueryChange} onSelectOption={(opt) => { setSelectedItem(opt.value); onItemQueryChange(opt.label); }} />
+          <CatalogComboboxPicker label="Item Definition (Catalog Search)" testIdPrefix="catalog-items" placeholder="Search items by name or GUID..." value={selectedItem} text={itemQuery} options={itemOptions} onTextChange={onItemQueryChange} onSelectOption={(opt) => { setSelectedItem(opt.value); onItemQueryChange(opt.label); }} />
           <div style={{ display: "flex", gap: "4px", marginBottom: "8px", flexWrap: "wrap" }}>{[1, 5, 20, 100].map((qtyPill) => <button key={qtyPill} type="button" data-testid={`give-item-qty-pill-${qtyPill}`} onClick={() => setCount(qtyPill)} style={{ ...CHIP_STYLE, backgroundColor: count === qtyPill ? SANDAL_LAUNCHER_TOKENS.VerraRelicGold500 : SANDAL_LAUNCHER_TOKENS.AoCSecondaryBtnBrush, color: count === qtyPill ? SANDAL_LAUNCHER_TOKENS.VerraObsidian100 : SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>Qty {qtyPill}</button>)}</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: "6px", alignItems: "end" }}>
             <label>Qty (1..100)<input type="number" min={1} max={100} data-testid="give-item-qty" value={count} onChange={(e) => setCount(Number(e.currentTarget.value))} style={{ ...INPUT_STYLE, width: "100%" }} /></label>
@@ -577,7 +581,7 @@ export function PlayersAndSpawnerTab(): React.ReactElement {
     <div data-testid="players-and-spawner-tab" style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "12px", backgroundColor: SANDAL_LAUNCHER_TOKENS.VerraObsidian100, color: SANDAL_LAUNCHER_TOKENS.VerraAlabaster100 }}>
       <section aria-label="Online Players Roster" data-testid="players-roster-card" style={CARD_STYLE}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
-          <strong>Online Players (Active Player X: {activePlayer || "None"})</strong>
+          <strong>Online Players (Selected Player: {activePlayer || "None"})</strong>
           <input type="search" aria-label="Search online players" data-testid="players-search-input" value={playerQuery} onChange={(e) => setPlayerQuery(e.currentTarget.value)} placeholder="Search online players..." style={{ ...INPUT_STYLE, width: "220px" }} />
         </div>
         {playerEnv.items.length === 0 ? <div role="status" data-testid="players-empty-state" style={{ paddingTop: "6px", color: SANDAL_LAUNCHER_TOKENS.VerraMutedAsh400 }}>0 players currently online.</div> : null}

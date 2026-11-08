@@ -154,7 +154,7 @@ func TestLoadPlacesWithGzipRecordsAndVisuals(t *testing.T) {
 		byGUID[p.GUID] = p
 	}
 	win, ok := byGUID["108646108518008"]
-	if !ok || win.IconName() != "TUI_Icon_NodeSummary_NodeEmblem_Economic" || win.Biome() != "Riverlands" || win.IconUrl() != "/api/v1/world/icons/TUI_Icon_NodeSummary_NodeEmblem_Economic.png" {
+	if !ok || win.IconName() != "TUI_Icon_NodeSummary_NodeEmblem_EcoScale" || win.Biome() != "Riverlands" || win.IconUrl() != "/api/v1/world/icons/TUI_Icon_NodeSummary_NodeEmblem_EcoScale.png" {
 		t.Fatalf("unexpected Winstead place: %+v (meta=%+v)", win, win.VisualMeta())
 	}
 	poi, ok := byGUID["8501"]

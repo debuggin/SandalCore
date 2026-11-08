@@ -210,12 +210,12 @@ export function formatWorkerTickHzOptionLabel(hz: number, compact = false): stri
 }
 
 export function resolveWorkerTickFields(w: WorldWorkerInfo): WorldWorkerInfo {
-  const override = MANUAL_WORKER_TICK_OVERRIDES.get(w.worker_id) ?? (w.canonical_name ? MANUAL_WORKER_TICK_OVERRIDES.get(w.canonical_name) : undefined) ?? (w.container_name ? MANUAL_WORKER_TICK_OVERRIDES.get(w.container_name) : undefined);
+  const override = MANUAL_WORKER_TICK_OVERRIDES.get(w.worker_id) ?? (w.canonical_name ? MANUAL_WORKER_TICK_OVERRIDES.get(w.canonical_name) : undefined);
   const isManual = override !== undefined ? override >= 0 : String(w.tick_mode ?? "").trim().toLowerCase() === "manual" && (w.target_tick_hz === undefined || Number(w.target_tick_hz) >= 0);
   const tickMode = isManual ? "manual" : "dynamic", targetHz = override !== undefined ? override : isManual ? normalizeWorkerTickHz(w.target_tick_hz ?? w.tick_hz, "manual") : -1;
   const rawCur = Number(w.current_tick_hz ?? w.tick_hz), kind = String(w.scope_kind ?? "").toLowerCase();
-  const defCur = kind === "world" ? 30 : kind === "zoi" || kind === "dynamic_zoi" ? 60 : kind.includes("node") ? 100 : 45;
-  const currentHz = isManual ? targetHz : Math.max(30, Math.round(Number.isFinite(rawCur) && rawCur >= 30 ? rawCur : defCur));
+  const defCur = kind === "world" ? 30 : kind === "zoi" || kind === "dynamic_zoi" ? 60 : kind.includes("node") ? 60 : 45;
+  const currentHz = isManual ? targetHz : Math.min(60, Math.max(30, Math.round(Number.isFinite(rawCur) && rawCur >= 30 ? rawCur : defCur)));
   return { ...w, tick_mode: tickMode, target_tick_hz: targetHz, current_tick_hz: currentHz, tick_hz: currentHz, simulate_npcs: currentHz !== 0 };
 }
 
@@ -649,7 +649,7 @@ async function runSetWorkerTickRateAction(setState: WorldStreamStoreApi["setStat
   MANUAL_WORKER_TICK_OVERRIDES.set(workerId, normalizedHz);
   setSubpartitionWorkerTickHz(workerId, normalizedHz === -1 ? 45 : normalizedHz);
   setState((prev) => ({ workers: prev.workers.map((w) => {
-    if (w.worker_id !== workerId && w.canonical_name !== workerId && w.container_name !== workerId) return w;
+    if (w.worker_id !== workerId && w.canonical_name !== workerId && w.scope_key !== workerId) return w;
     MANUAL_WORKER_TICK_OVERRIDES.set(w.worker_id, normalizedHz);
     return resolveWorkerTickFields({ ...w, tick_mode: tickMode, target_tick_hz: normalizedHz, simulate_npcs: simNpcs });
   }) }));

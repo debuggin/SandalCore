@@ -397,8 +397,15 @@ func workerOverrideAliasKeys(w *WorldWorkerEndpoint) []string {
 	if w == nil {
 		return []string{"aoc-world"}
 	}
-	out := make([]string, 0, 5)
-	for _, raw := range []string{w.WorkerID, w.ScopeKey, w.ContainerName, "aoc-" + w.ScopeKey, "aoc-world"} {
+	candidates := []string{w.WorkerID, w.ScopeKey, "aoc-" + w.ScopeKey}
+	if !strings.EqualFold(w.ContainerName, "aoc-world") || strings.EqualFold(w.WorkerID, "aoc-world") {
+		candidates = append(candidates, w.ContainerName)
+	}
+	if w.WorkerID == "" || strings.EqualFold(w.WorkerID, "aoc-world") {
+		candidates = append(candidates, "aoc-world")
+	}
+	out := make([]string, 0, len(candidates))
+	for _, raw := range candidates {
 		if k := strings.ToLower(strings.TrimSpace(raw)); k != "" {
 			out = append(out, k)
 		}
@@ -411,7 +418,7 @@ func (s *Server) resolveWorkerTickFieldsLocked(w *WorldWorkerEndpoint, rawMeasur
 	if w != nil && w.ScopeKind != "" {
 		scopeKind = w.ScopeKind
 	}
-	if w != nil && s.WorkerTickMode() == "manual" {
+	if w != nil {
 		var foundHz float64
 		var foundOk bool
 		playerHandoversMu.Lock()
@@ -426,7 +433,7 @@ func (s *Server) resolveWorkerTickFieldsLocked(w *WorldWorkerEndpoint, rawMeasur
 			return foundHz, foundHz, foundHz, "manual"
 		}
 	}
-	defaultHz := max(defaultWorkerTierTickHz(scopeKind), 30.0)
+	defaultHz := min(max(defaultWorkerTierTickHz(scopeKind), 30.0), 60.0)
 	cur := rawMeasuredHz
 	if w != nil && s.workerMeta != nil {
 		if meta := s.workerMeta[w.WorkerID]; meta.ScrapedTickHz >= 30.0 {
@@ -436,6 +443,7 @@ func (s *Server) resolveWorkerTickFieldsLocked(w *WorldWorkerEndpoint, rawMeasur
 	if cur < 30.0 {
 		cur = defaultHz
 	}
+	cur = min(max(cur, 30.0), 60.0)
 	return cur, cur, -1, "dynamic"
 }
 
@@ -588,10 +596,8 @@ func (s *Server) hydrateFromPostgres(ctx context.Context) {
 	var simAll bool
 	var tickMode string
 	var tickHzRaw []byte
-	err := s.pool.QueryRow(qctx, `
-		SELECT time_of_day_anchor_hours, time_of_day_anchor_at, calendar_anchor_year, calendar_anchor_day,
-		       time_scale, simulate_all_npcs, worker_tick_mode, worker_tick_hz
-		FROM world_simulation_state WHERE id = TRUE`).Scan(&anchorHours, &anchorAt, &year, &day, &scale, &simAll, &tickMode, &tickHzRaw)
+	err := s.pool.QueryRow(qctx, `SELECT time_of_day_anchor_hours, time_of_day_anchor_at, calendar_anchor_year, calendar_anchor_day, time_scale, simulate_all_npcs, worker_tick_mode, worker_tick_hz FROM world_simulation_state WHERE id = TRUE`).
+		Scan(&anchorHours, &anchorAt, &year, &day, &scale, &simAll, &tickMode, &tickHzRaw)
 	if err == nil {
 		s.timeOfDayMu.Lock()
 		s.timeOfDayHours, s.timeOfDayUpdatedAt = wrapHours24(anchorHours), anchorAt
@@ -602,6 +608,9 @@ func (s *Server) hydrateFromPostgres(ctx context.Context) {
 		s.simulateAllNpcs = simAll
 		s.timeOfDayMu.Unlock()
 		s.applyHydratedTickState(tickMode, tickHzRaw)
+		if strings.EqualFold(strings.TrimSpace(tickMode), "manual") && s.WorkerTickMode() == "dynamic" {
+			s.persistSimulationState(qctx)
+		}
 	}
 	s.hydrateCityNodesFromPostgres(qctx)
 }
@@ -610,15 +619,16 @@ func (s *Server) applyHydratedTickState(tickMode string, tickHzRaw []byte) {
 	s.timeOfDayMu.Lock()
 	defer s.timeOfDayMu.Unlock()
 	s.workerTickMode = strings.ToLower(strings.TrimSpace(firstNonEmpty(tickMode, "dynamic")))
-	if s.workerTickMode != "manual" {
-		s.workerTickMode = "dynamic"
-	}
 	s.workerTickHzMap = make(map[string]float64)
 	_ = json.Unmarshal(tickHzRaw, &s.workerTickHzMap)
+	legacyGlobalContaminated := s.workerTickHzMap["aoc-world"] > 0
+	if legacyGlobalContaminated || s.workerTickMode != "manual" {
+		s.workerTickMode = "dynamic"
+	}
 	playerHandoversMu.Lock()
 	for k, hz := range s.workerTickHzMap {
 		normKey := strings.ToLower(strings.TrimSpace(k))
-		if s.workerTickMode == "manual" && hz >= 0 {
+		if !legacyGlobalContaminated && hz >= 0 && normKey != "aoc-world" {
 			workerTickHzOverrides[serverPlayerKey{srv: s, player: normKey}] = hz
 		} else {
 			delete(workerTickHzOverrides, serverPlayerKey{srv: s, player: normKey})

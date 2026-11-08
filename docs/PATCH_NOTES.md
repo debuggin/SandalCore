@@ -8,7 +8,9 @@ This page records the release history and major changes in SandalCore.
 
 ## 2026-11-07 (`v0.9.42` -- Authentic Data Provenance, 4-Season Verra Calendar, Observability Tab & Scope-Tuned Worker Tick Rates)
 
-### Server Workers and Spatial Authority ([`docs/SERVER_WORKERS.md`](SERVER_WORKERS.md))
+### Server Workers and Spatial Authority
+
+See [Server Workers and Spatial Authority](SERVER_WORKERS.md) for architecture details.
 
 - **Out-of-the-Box Single-Worker Riverlands Default and 5 Partition Topologies**:
   - Defaults to 1 regional worker for Riverlands (`AOC_WORLD_PARTITION_MODE=single_riverlands`, `45 Hz`, `11` containers total) and supports `single_world` (`30 Hz`), `per_region` (`45 Hz`), `per_zoi` (`60 Hz`), and `per_zoi_nodes_and_pois` (`60 Hz` ZOI + `100 Hz` City Node OBB and POI cut-out workers).
@@ -19,7 +21,9 @@ This page records the release history and major changes in SandalCore.
 - **PostgreSQL Simulation Persistence and Tier 5/6 City Node Population Fallback**:
   - `mesh-gateway` persists global world time, calendar anchors, worker tick overrides (`world_simulation_state`), and settlement progression (`city_node_state`) in PostgreSQL. Promoting a settlement to Tier `5` (`City`) or Tier `6` (`Metropolis`) automatically uses the Tier `4` (`Town`) populated layout in `content.db`.
 
-### Web Admin and GM Studio ([`docs/WEB_ADMIN.md`](WEB_ADMIN.md))
+### Web Admin and GM Studio
+
+See [Web Admin and GM Studio](WEB_ADMIN.md) for operator workflow details.
 
 - **Single-Boot Passphrase Authentication (`Username: Admin`)**:
   - Startup generates a fresh passphrase exchanged via `POST /api/v1/admin/auth/login` for a scoped `HS256` JWT bound to the current `boot_id`, with an explicit **`END SESSION`** button in the top bar.

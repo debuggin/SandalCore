@@ -23,14 +23,28 @@ struct CraftingRecipeSpec {
 inline std::array<CraftingRecipeSpec, 5> build_town_crafting_recipes(const bots::LiveSession& s) {
     const auto& r = s.catalog.craft_recipe_guids;
     const auto& c = s.catalog.consumable_item_guids;
-    const int64_t in0 = !s.catalog.resource_nodes.empty() ? s.catalog.resource_nodes[0].yield_item_guid : c[0];
-    const int64_t in1 = s.catalog.resource_nodes.size() > 1 ? s.catalog.resource_nodes[1].yield_item_guid : c[1];
+    const auto& in_cat = s.catalog.craft_input_item_guids;
+    const auto& out_cat = s.catalog.craft_output_item_guids;
+    auto out_at = [&](size_t i) -> int64_t {
+        return (out_cat.size() >= 5 && out_cat[i] != 0) ? out_cat[i] : c[i % c.size()];
+    };
+    auto in_at = [&](size_t i, int64_t out_guid) -> int64_t {
+        int64_t in_guid = (in_cat.size() >= 5 && in_cat[i] != 0) ? in_cat[i] : c[(i + 2) % c.size()];
+        if (in_guid == out_guid) {
+            for (size_t k = 0; k < c.size(); ++k) {
+                const int64_t cand = c[(i + 2 + k) % c.size()];
+                if (cand != 0 && cand != out_guid) return cand;
+            }
+        }
+        return in_guid;
+    };
+    const int64_t out0 = out_at(0), out1 = out_at(1), out2 = out_at(2), out3 = out_at(3), out4 = out_at(4);
     return {{
-        {"Smelter", r[0], in0, "Copper Ore", 4, c[0], "Refined Copper Ingot", 2},
-        {"Lumbermill", r[1], in1, "Oak Wood", 4, c[1], "Seasoned Oak Timber", 2},
-        {"Forge", r[2], c[0], "Refined Copper Ingot", 2, c[2], "Tempered Verra Greatsword", 1},
-        {"Loom", r[3], in0, "Riverreed Fiber", 4, c[3], "Woven Mooncloth Bolt", 2},
-        {"Alchemy", r[4], in1, "Granite Powder & Herbs", 3, c[4], "Draught of Unyielding Vigor", 2},
+        {"Smelter", r[0], in_at(0, out0), "Copper Ore", 4, out0, "Refined Copper Ingot", 2},
+        {"Lumbermill", r[1], in_at(1, out1), "Oak Wood", 4, out1, "Seasoned Oak Timber", 2},
+        {"Forge", r[2], in_at(2, out2), "Refined Copper Ingot", 2, out2, "Tempered Verra Greatsword", 1},
+        {"Loom", r[3], in_at(3, out3), "Riverreed Fiber", 4, out3, "Woven Mooncloth Bolt", 2},
+        {"Alchemy", r[4], in_at(4, out4), "Granite Powder & Herbs", 3, out4, "Draught of Unyielding Vigor", 2},
     }};
 }
 

@@ -22,8 +22,8 @@ Both interfaces pair a dark background canvas with translucent floating cards:
 ### Interaction and Information Clarity
 
 1. **Separate Entity Counts**:
-   Every population readout, worker row, and map filter tracks the five entity categories separately:
-   `Total Entities = Players + NPCs + Monsters + Resource Nodes + Mounts`
+   Every population readout, worker row, and map filter tracks the 9 mutually-exclusive population categories separately:
+   `Total Entities = Players + NPCs + Monsters + Huntables + Trees + Rocks + Ore & Gems + Plants + Mounts`
 2. **One Map Selection at a Time**:
    Clicking an item on the map selects a single target (`Entity`, `Map Position`, `CityNode`, or `POI`) in the top-right inspector slot and clears any previous selection.
 3. **Formatted Scalar and Key-Value Display**:
@@ -109,10 +109,11 @@ flowchart TB
 | **Resource Nodes** | `resource` / `resource_node` | Amber / Gold `#f59e0b` / `#fbbf24` (HUD) & `#22c55e` (map dot) | `3.5px` map dot and amber resource badges showing `Resource Type` and `Quality / Rarity`. |
 | **Mounts** | `mount` | Violet `#a855f7` (`#c084fc` text) | `3.5px` violet marker and dedicated `Mounts` column in worker tables. |
 | **Loot Piles** | `loot` | Gold `#eab308` | `3.5px` gold marker (hidden by default until toggled on). |
-| **Points of Interest** | `poi` | Relic Gold `#d4af37` | Map icon `/api/v1/world/icons/<icon_name>.png` (`18px..28px`) with `11px` label at `zoom >= 3.2`. |
-| **City Nodes** | `city_nodes` | Gold `#d4af37` / Cyan `#38bdf8` ring over dark disc | Stage icon (`TUI_Icon_Node_LVL0..4.png` or `TUI_Icon_Node_Sovereignty.png`) plus rotated `1 km x 1 km` OBB boundary box. |
+| **Points of Interest** | `poi` | Relic Gold `#d4af37` | Rendered in Tier 2 of `VerraMapCanvas` (`1`: base tiles, ZOI borders, map overlays, and all world entities first -> `2`: standard POIs second -> `3`: Node Plug / City Node POIs last) with map icon `/api/v1/world/icons/<icon_name>.png` (`18px..28px`), click-to-select (`cursor: pointer`, `#d4af37` ring), and `11px` label at `zoom >= 3.2`. |
+| **City Nodes** | `city_nodes` | Gold `#d4af37` / Cyan `#38bdf8` ring over dark disc | Rendered last in Tier 3 of `VerraMapCanvas` on top of all other POI types and entities using real `verra.pmtiles` `z=9` icon texture names (`TUI_Icon_Map_Node_Dock`, `TUI_Icon_Map_Siege`, `TUI_Icon_Map_HomeShrine`, `TUI_Icon_NodeSummary_NodeEmblem_*`, `TUI_Icon_Node_LVL3`, `TUI_Icon_Node_LVL0..4.png`, or `TUI_Icon_Node_Sovereignty.png`) plus rotated `1 km x 1 km` OBB boundary box. |
 | **ZOI Borders** | `zoiBorders` | Gold `#E89B32`, Cyan `#38BDF8`, Green `#4ADE80`, Purple `#C084FC`, Coral `#F87171` | 3-pass polygon border (`0.05` fill, `4.0px` outer glow, `1.6px` inner line) with `#F6CC7E` uppercase labels at `zoom >= 1.8`. |
 | **Worker Authority Grid** | `workerGrid` | Active emerald `#22c55e` / Idle amber `#eab308` | Dashed `[6, 4]` boundary box with `<worker_id> (<player_count>p)` label pill. |
+| **Map Entity Legend & Stream Status** | `map-entity-legend` / `StreamStatus` | Dark-slate HUD glass (`rgba(8, 13, 24, 0.90)`) | Bottom-left vertical legend (`data-testid="map-entity-legend"`, `flexDirection: "column"`) and uniform `Players Online: 0` typography (`fontFamily: "inherit"`) in `StreamStatus`. |
 
 ---
 
@@ -170,11 +171,12 @@ The **Map** workspace anchors its floating HUD panels to fixed corners of the vi
 
 | HUD Area | Position and Size | Purpose |
 |:---|:---|:---|
-| **Top Bar** | Full-width top header (`padding: 8px 18px`) | Brand title (`SANDALCORE`), workspace tabs (`Map`, `Observability`), active user badge (`Admin`), `30 Hz` stream status, `9x` world clock and calendar popover, `Sim All NPCs` toggle, and `END SESSION` button. |
+| **Top Bar** | Full-width top header (`padding: 8px 18px`) | Brand title (`SANDALCORE`), workspace tabs (`Map`, `Observability`), active user badge (`Admin`), `30 Hz` `StreamStatus` (`Players Online: 0` with `fontFamily: "inherit"`), `9x` world clock and `VerraCalendarPopover` (`Spring`, `Summer`, `Autumn`, `Winter`), `Sim All NPCs` toggle, and `END SESSION` button. |
 | **Layer Filter Strip** | Full-width sub-header (`padding: 8px 14px`) | Player search input and layer toggle pills (`Players`, `NPCs`, `Monsters`, `Resource Nodes`, `Mounts`, `Loot Piles`, `POIs`, `City Nodes`, `ZOI Borders`, `Worker Grid`) with live count badges. |
 | **Top-Left Control Cluster** | `top: 12px, left: 12px`, `width: 220px` | Zoom buttons (`+`, `-`, `Reset`, `Zoom / 30 Hz` badge) and the searchable City Quick-Jump combobox (`26` settlements). |
+| **Bottom-Left Entity Legend** | `bottom: 12px, left: 12px` (`data-testid="map-entity-legend"`) | Vertical entity legend (`flexDirection: "column"`) over `VerraMapCanvas`. |
 | **Top-Right Inspector Slot** | `top: 12px, right: 12px`, `width: 360px` | Displays the active **City Node Governance Card**, **Entity / POI Inspector**, or **Picked Coordinate Readout**, along with triggers for the **`Teleport Player Here...`** and **`Spawn NPC / Monster Here...`** modals. |
-| **Visible Server Workers Panel** | Fixed `width: 450px`, `height: 208px` (`176px` scrollable list) | Lists workers intersecting the viewport. Clicking a row zooms to that worker's territory; the per-row dropdown switches its tick rate between `Dynamic (30-60 Hz)`, `0 Hz (Pause NPCs)`, and `10..60 Hz`. |
+| **Visible Server Workers Panel** | Fixed `width: 450px`, `height: 208px` (`176px` scrollable list) | Lists workers intersecting the viewport. Clicking a row zooms to that worker's territory; the per-row dropdown switches its tick rate between `Dynamic (30-60 Hz)` (`kMaxDynamicHz = 60`), `0 Hz (Pause NPCs)`, and `10..60 Hz`. |
 | **Action Feedback Toasts** | `width: 450px`, stacked above the worker panel | Shows confirmation toasts for GM actions and auto-dismisses after `4.5 seconds`. |
 
 ---
@@ -185,10 +187,10 @@ The **Observability** tab organizes cluster monitoring and logs into four vertic
 
 | Zone | Panel | Contents |
 |:---:|:---|:---|
-| **Zone 1** | **Four Golden Signals Grid** | Four summary KPI cards for **Latency** (tick duration `p50 / p95 / p99` vs. budget), **Traffic** (active players, packet rates, SQLite cache hit ratio), **Errors** (failed RPCs and error log counts), and **Saturation** (healthy containers and CPU/RAM headroom). |
-| **Zone 2** | **Server Worker Shards Table** | Full-width table of all active `aoc-*` workers in `worker_index` order (`#1..#N`), showing scope, online status, tick rate, and separate counts for `Players`, `NPCs`, `Monsters`, `Resources`, `Mounts`, and `Total Entities`. |
-| **Zone 3** | **Container USE and Service Health** | Side-by-side panels showing per-container CPU `%`, memory usage (`MB`), network I/O, and restart controls alongside `<Service Name> (<Protocol>)` upstream health cards. |
-| **Zone 4** | **Structured Logs and GM Audit Trail** | Live viewer for container JSON logs (`#060a12` background, `11px` `JetBrains Mono`) and the `gm_audit_log` table, with service and severity filters plus **`Auto Tail`** and **`Auto Follow`** toggles. |
+| **Zone 1** | **`Simulation`, `World Population`, `Traffic & Cache`, and `Errors & Saturation`** | Four summary KPI cards for **`Simulation`** (tick `Hz` `p50 / p99` and `Publish Avg / Max` at `30 Hz`), **`World Population`** (`Total Entities` across the 9 mutually-exclusive categories: `Players`, `NPCs`, `Monsters`, `Huntables`, `Trees`, `Rocks`, `Ore & Gems`, `Plants`, and `Mounts`), **`Traffic & Cache`** (`Gateway Requests`, `API Cache Hits / Misses`, and `UDP Frames Forwarded`), and **`Errors & Saturation`** (`Gateway Errors / Retries` formatted as `<errors> / <retries>`, `Active Containers`, and `Monitored Metrics`). |
+| **Zone 2** | **`World Workers` Table** | Full-width table of all active `aoc-*` workers in `worker_index` order (`#0..#N`), showing discrete `Scope Tier`, `Target Tick Mode` (`Dynamic (30-60 Hz)` with `kMaxDynamicHz = 60`, `0 Hz (Pause NPCs)`, or manual `10..60 Hz`), and read-only `Current Hz` (`Actual Hz`, `aria-readonly="true"`) columns, plus separate counts for `Total Entities`, `Players`, `NPCs`, `Monsters`, and `Resources`. |
+| **Zone 3** | **`Container Metrics & Analytics`, `Service Routing & Connection Health`, and `Telemetry & Metrics`** | Per-container resource and health table (`CPU %`, `Memory (Used / Limit / %)`, `Processes`, `Net RX / TX`, `Health (Status / Metrics / Latency)`) alongside `<Service Name> (<Protocol>)` upstream routing cards (`2xx` / `3xx` / `4xx` / `5xx` status classes) and cluster-internal `/metrics` target status. |
+| **Zone 4** | **`Log Explorer` and `GM Audit Log`** | Live viewer for container JSON logs (`#060a12` background, `11px` `JetBrains Mono`) and the `gm_audit_log` table, with service and severity filters plus **`Auto Tail`** and **`Auto Follow`** toggles. |
 
 ---
 
